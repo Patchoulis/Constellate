@@ -93,6 +93,7 @@ export function Workspace({ name, catalog, children }: { name: string; catalog: 
 						community={paperNode && roots[paperNode.community]}
 						related={related.map((other) => ({ ...other, community: roots[other.community] }))}
 						catalog={catalog}
+						run={name}
 						onRatings={onRatings}
 						onOpen={setPaper}
 						onClose={() => setPaper(null)}

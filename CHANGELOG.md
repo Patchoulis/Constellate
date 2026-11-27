@@ -9,6 +9,11 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `npm run setup` (or `make setup`) gets a fresh clone ready to work on in one command.
 
+- A Citations tab in the reader shows a paper's citation network: the works it cites and the papers that cite it,
+  laid out by year with the links between them, and as lists you can filter and sort. It is built from the
+  reference lists of the papers Constellate has read, so "cited by" counts only those papers. Communities can be
+  sorted by how often they are cited and by how many works they cite.
+
 - The engine uses any maker's graphics card: through DirectML on Windows and through Vulkan (WebGPU) on Linux, with
   the processor as the fallback. It is built and tested on Linux as well as Windows.
 
