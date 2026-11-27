@@ -1,0 +1,23 @@
+name: Feature request
+description: Something Constellate should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What would you like?
+      description: As concretely as you can.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: What are you trying to find out with it?
+      description: The question about the papers that this would help answer.
+    validations:
+      required: true
+  - type: textarea
+    id: examples
+    attributes:
+      label: Other tools that do this
+      description: If any.
