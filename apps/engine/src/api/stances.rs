@@ -213,10 +213,37 @@ struct Questions {
     questions: Vec<Asked>,
     #[serde(default)]
     proposal_round: u32,
+    /// The ids of questions listed whose jobs have kept no answer yet: those that may make room for a new one
+    /// ([`make_room`]). A question kept before this was written down is taken as answered, and never removed.
+    #[serde(default)]
+    unanswered: Vec<String>,
+}
+
+/// The most questions kept for one scope. Past it, the oldest questions with no answer kept are taken off the list
+/// (the job's log says so); when every one has answers, a new question is refused rather than one with answers
+/// dropped.
+pub const MOST_QUESTIONS: usize = 200;
+
+/// Take the oldest questions with no answer kept off `kept`'s list until it holds at most [`MOST_QUESTIONS`],
+/// leaving the newest (just asked) where it is: how many went, or `None` when no room could be made.
+fn make_room(kept: &mut Questions) -> Option<usize> {
+    let mut removed = 0;
+    while kept.questions.len() > MOST_QUESTIONS {
+        // newest first: the last one without an answer is the oldest, and the first is the one just asked
+        let place = kept.questions.iter().skip(1).rposition(|asked| kept.unanswered.contains(&asked.id))? + 1;
+        let gone = kept.questions.remove(place);
+        kept.unanswered.retain(|id| *id != gone.id);
+        removed += 1;
+    }
+    Some(removed)
 }
 
 /// One change to a scope's questions at a time: each is a read, a change and a write.
 static CHANGING: Mutex<()> = Mutex::new(());
+
+/// One question started at a time, from reading its round to its job's start (or its refusal): so that the key its
+/// budget was worked out under is the one it is asked under, and a refused start can take back its listing.
+static STARTING: Mutex<()> = Mutex::new(());
 
 fn list_slot(run: &str, scope: &Scope) -> Slot {
     let question = format!("questions\n{run}\n{}", scope.label());
@@ -497,25 +524,43 @@ fn estimate(engine: &Shared, run: &str, scope: Scope, asked: QuestionBody) -> Re
     })
 }
 
-/// Ask `items`, kept answers skipped, within the budget their estimate set; a line for the job's log.
-/// The job fails, with why, when the model could not be asked (a refused key, billing, the budget) or answered
-/// none of what was asked: the interface shows a failed job's error, not a finished one's log.
+/// The budget `approved` gives `items`, worked out before any job is started: a budget refused (the estimate grew
+/// past what was accepted, or nothing was accepted) is the request's 400, never a job that fails.
+fn budget_for<T: serde::de::DeserializeOwned>(
+    library: &Library,
+    chosen: &Chosen,
+    items: &[Item<'_>],
+    approved: &Approved,
+) -> Result<Budget, ApiError> {
+    let estimate = batch::estimate_batch::<T>(library, items, chosen)?;
+    approved.budget(&estimate).map_err(ApiError::Invalid)
+}
+
+/// What came of asking a batch.
+struct Came {
+    /// Items answered now or before.
+    answered: usize,
+    /// Why the job fails, when it does.
+    failing: Option<String>,
+}
+
+/// Ask `items`, kept answers skipped, within `budget`. The job fails, with why, when the model could not be asked
+/// (a refused key, billing, the budget) or answered none of what was asked: the interface shows a failed job's
+/// error, not a finished one's log.
 fn ask_items<T>(
     engine: &Shared,
     library: &Library,
     chosen: &Chosen,
     items: &[Item<'_>],
-    approved: &Approved,
+    budget: &Budget,
     tracker: &Tracker<'_>,
-) -> Result<String, String>
+) -> Result<Came, String>
 where
     T: serde::de::DeserializeOwned + Serialize + Send + Clone,
 {
     let endpoint = chosen.endpoint().map_err(|why| why.to_string())?;
-    let estimate = batch::estimate_batch::<T>(library, items, chosen).map_err(|error| error.to_string())?;
-    let budget = approved.budget(&estimate)?;
     let asking = Asking { library, transport: &*engine.transport, endpoint, recorder: library, in_flight: IN_FLIGHT };
-    let outcomes = batch::ask_all::<T>(asking, items, &budget, tracker).map_err(|error| error.to_string())?;
+    let outcomes = batch::ask_all::<T>(asking, items, budget, tracker).map_err(|error| error.to_string())?;
     let count = |wanted: fn(&Outcome<T>) -> bool| outcomes.iter().filter(|outcome| wanted(outcome)).count();
     let stopped = outcomes.iter().find_map(|outcome| match outcome {
         Outcome::NotStarted(Stopped::Cancelled) => None,
@@ -537,11 +582,9 @@ where
         stopped.map(|why| format!(" ({why})")).unwrap_or_default(),
     );
     tracker.log(&line);
-    match failing {
-        // what was answered is kept all the same
-        Some(why) => Err(format!("{why} ({line})")),
-        None => Ok(line),
-    }
+    // what was answered is kept all the same
+    let failing = failing.map(|why| format!("{why} ({line})"));
+    Ok(Came { answered, failing })
 }
 
 /// `{job}`: the number of the job started, for `/api/status` and its stop button; and the question's id.
@@ -568,46 +611,84 @@ fn ask(
     let id = question_id(&question, scope_papers(&papers.scope));
     approved.check_model(&chosen)?;
     let ids: Vec<String> = plan.part(part).iter().map(|position| papers.id(*position).to_owned()).collect();
-    let round = change_questions(&library, run, &papers.scope, |kept| {
-        let include_unrelated = asked.include_unrelated;
-        match kept.questions.iter_mut().find(|known| known.id == id) {
-            Some(known) => {
-                known.include_unrelated = include_unrelated;
-                Ok(known.round)
-            }
-            None => {
-                kept.questions.insert(
-                    0,
-                    Asked {
-                        id: id.clone(),
-                        question: question.clone(),
-                        round: 0,
-                        include_unrelated,
-                        papers: scope_papers(&papers.scope).to_vec(),
-                        asked_at: now(),
-                    },
-                );
-                Ok(0)
-            }
-        }
-    })?;
+    let wanted: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let readings = library.paper_texts(&wanted)?;
+    let prepared: Vec<Prepared> =
+        wanted.iter().zip(&readings).filter_map(|(id, reading)| stances::prepare(id, reading)).collect();
+    let (schema, prompt) = (stances::schema(), stances::question_prompt(&question));
+    let _one = STARTING.lock().unwrap_or_else(PoisonError::into_inner);
+    let round = round_of(&library, run, &papers.scope, &id)?;
     let key = stances::key_question(&question, round);
+    // the budget before anything is listed or started: refused, it is this request's answer
+    let budget =
+        budget_for::<Said>(&library, &chosen, &stances::items(&prepared, &prompt, &key, &chosen, &schema), &approved)?;
+    let (new, removed) = change_questions(&library, run, &papers.scope, |kept| {
+        let include_unrelated = asked.include_unrelated;
+        if let Some(known) = kept.questions.iter_mut().find(|known| known.id == id) {
+            known.include_unrelated = include_unrelated;
+            return Ok((false, 0));
+        }
+        kept.questions.insert(
+            0,
+            Asked {
+                id: id.clone(),
+                question: question.clone(),
+                round,
+                include_unrelated,
+                papers: scope_papers(&papers.scope).to_vec(),
+                asked_at: now(),
+            },
+        );
+        kept.unanswered.push(id.clone());
+        let removed = make_room(kept).ok_or_else(|| {
+            ApiError::Invalid(format!(
+                "at most {MOST_QUESTIONS} questions are kept for these papers, and each has answers kept: ask one of \
+                 them again instead"
+            ))
+        })?;
+        Ok((true, removed))
+    })?;
     let worker = Shared::clone(engine);
     let subject = papers.scope.subject(run);
-    let job = engine.job.start_tracked("asking where papers stand on a question", move |tracker| {
+    let (scope, owned_run, question_id) = (papers.scope.clone(), run.to_owned(), id.clone());
+    let about = crate::jobs::About { feature: Feature::Stances, subject: subject.clone(), item: Some(id.clone()) };
+    let started = engine.job.start_about("asking where papers stand on a question", about, move |tracker| {
+        if removed > 0 {
+            tracker.log(&format!(
+                "{removed} older questions with no answer kept were taken off the list, to keep at most \
+                 {MOST_QUESTIONS}"
+            ));
+        }
         let library = worker.library().map_err(|error| error.to_string())?;
         tracker.log(&format!("Reading {} papers for: {question}", ids.len()));
-        let wanted: Vec<&str> = ids.iter().map(String::as_str).collect();
-        let readings = library.paper_texts(&wanted).map_err(|error| error.to_string())?;
-        let prepared: Vec<Prepared> =
-            wanted.iter().zip(&readings).filter_map(|(id, reading)| stances::prepare(id, reading)).collect();
-        let schema = stances::schema();
-        let prompt = stances::question_prompt(&question);
         let items = stances::items(&prepared, &prompt, &key, &chosen, &schema);
-        ask_items::<Said>(&worker, &library, &chosen, &items, &approved, tracker)?;
-        Ok(Finished::Feature { feature: Feature::Stances, subject })
-    })?;
-    Ok(Started { job, id })
+        let came = ask_items::<Said>(&worker, &library, &chosen, &items, &budget, tracker)?;
+        if came.answered > 0 {
+            change_questions(&library, &owned_run, &scope, |kept| {
+                kept.unanswered.retain(|known| *known != question_id);
+                Ok(())
+            })
+            .map_err(|error| error.to_string())?;
+        }
+        match came.failing {
+            Some(why) => Err(why),
+            None => Ok(Finished::Feature { feature: Feature::Stances, subject }),
+        }
+    });
+    match started {
+        Ok(job) => Ok(Started { job, id }),
+        Err(busy) => {
+            // nothing was asked: a question listed only now is taken off again
+            if new {
+                change_questions(&library, run, &papers.scope, |kept| {
+                    kept.questions.retain(|known| known.id != id);
+                    kept.unanswered.retain(|known| *known != id);
+                    Ok(())
+                })?;
+            }
+            Err(busy.into())
+        }
+    }
 }
 
 /// One paper as it is placed: `StanceRow` in the contracts.
@@ -713,6 +794,8 @@ fn result(engine: &Shared, run: &str, scope: &Scope, id: &str) -> Result<StanceR
 
 fn redo(engine: &Shared, run: &str, scope: &Scope, id: &str) -> Result<Asked, ApiError> {
     let library = engine.library()?;
+    // not while a question is being started: its budget was worked out under the round it read
+    let _one = STARTING.lock().unwrap_or_else(PoisonError::into_inner);
     change_questions(&library, run, scope, |kept| {
         let asked = kept.questions.iter_mut().find(|asked| asked.id == id).ok_or(ApiError::NotFound)?;
         asked.round += 1;
@@ -870,8 +953,18 @@ fn propose(engine: &Shared, run: &str, community: &str, body: ProposeBody) -> Re
     let run = run.to_owned();
     let fresh = body.fresh;
     approved.check_model(&chosen)?;
+    let budget = {
+        let records: Vec<(&str, Record<'_>)> =
+            sent.iter().map(|(id, title, abstract_text)| (id.as_str(), Record { title, abstract_text })).collect();
+        let shared = stances::proposal_text(&records);
+        let (prompt, schema) = (stances::proposal_prompt(), stances::proposal_schema());
+        let items = proposal_slot_items(&records, &shared, &prompt, round, &chosen, &schema, subject.clone());
+        // the budget before the job: refused, it is this request's answer
+        budget_for::<Proposals>(&library, &chosen, &items, &approved)?
+    };
     let worker = Shared::clone(engine);
-    let job = engine.job.start_tracked("proposing questions for a community", move |tracker| {
+    let about = crate::jobs::About { feature: Feature::Stances, subject: subject.clone(), item: None };
+    let job = engine.job.start_about("proposing questions for a community", about, move |tracker| {
         let library = worker.library().map_err(|error| error.to_string())?;
         let records: Vec<(&str, Record<'_>)> =
             sent.iter().map(|(id, title, abstract_text)| (id.as_str(), Record { title, abstract_text })).collect();
@@ -879,7 +972,10 @@ fn propose(engine: &Shared, run: &str, community: &str, body: ProposeBody) -> Re
         let prompt = stances::proposal_prompt();
         let schema = stances::proposal_schema();
         let items = proposal_slot_items(&records, &shared, &prompt, round, &chosen, &schema, subject.clone());
-        ask_items::<Proposals>(&worker, &library, &chosen, &items, &approved, tracker)?;
+        let came = ask_items::<Proposals>(&worker, &library, &chosen, &items, &budget, tracker)?;
+        if let Some(why) = came.failing {
+            return Err(why);
+        }
         // proposing anew: the new round's proposals are shown once they are kept, and the old ones until then (a
         // job refused, stopped or failed leaves them shown)
         let new_kept =
@@ -1016,7 +1112,7 @@ pub(super) mod tests {
     use crate::library::Known;
     use crate::library::papers::tests::paper;
     use crate::model::language::fake::{message, ok};
-    use crate::model::language::{ApiKey, Endpoint, KEY_VARIABLE, Reply, Transport, TransportError};
+    use crate::model::language::{ApiKey, Reply, Transport, TransportError};
     use crate::settings::Choices;
 
     const AT: &str = "127.0.0.1:8765";
@@ -1113,7 +1209,7 @@ pub(super) mod tests {
         let mut engine = Engine::new(data.path().to_path_buf(), choices());
         engine.transport = std::sync::Arc::new(Answering);
         if key {
-            engine.language = Endpoint::from_lookup(|name| (name == KEY_VARIABLE).then(|| "test-key-not-real".into()));
+            engine.set_claude_key("test-key-not-real", None);
         }
         let (router, _) = served(&listen, AT, engine);
         (router, data)
@@ -1256,16 +1352,18 @@ pub(super) mod tests {
         assert_eq!(call(&router, "POST", &format!("{C0}/ask"), Some(other)).await.0, StatusCode::BAD_REQUEST);
         let cheap =
             json!({"question": QUESTION, "part": "sample", "model": "claude-opus-5-5", "approved_usd": 0.000_001});
-        assert_eq!(call(&router, "POST", &format!("{C0}/ask"), Some(cheap)).await.0, StatusCode::OK);
-        let refused = finished(&router).await;
-        assert_eq!(refused["state"], "failed");
+        let (status, refused) = call(&router, "POST", &format!("{C0}/ask"), Some(cheap)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "a budget refused is the request's answer, not a failed job");
         assert!(refused["error"].as_str().unwrap().contains("changed since it was shown"), "{refused}");
         assert_eq!(posts(), before, "nothing was sent past what was approved");
+        let (_, listing) = call(&router, "GET", C0, None).await;
+        assert!(listing["questions"].as_array().unwrap().is_empty(), "a refused question is not listed: {listing}");
 
         let ask =
             json!({"question": QUESTION, "part": "sample", "model": "claude-opus-5-5", "approved_usd": sample_most});
         let (status, started) = call(&router, "POST", &format!("{C0}/ask"), Some(ask.clone())).await;
         assert_eq!((status, started["id"].as_str()), (StatusCode::OK, Some(id.as_str())));
+        crate::api::contract::assert_fits("StanceStarted", &started, &[]);
         let done = finished(&router).await;
         let made = json!({"kind": "feature", "feature": "stances", "subject": {"community": {"run": "r1", "community": "c0"}}});
         assert_eq!(
@@ -1319,10 +1417,47 @@ pub(super) mod tests {
         let (status, _) = call(&router, "POST", &format!("{C0}/ask"), Some(ask.clone())).await;
         assert_eq!(status, StatusCode::OK);
         let (status, busy) = call(&router, "POST", &format!("{C0}/ask"), Some(ask)).await;
+        // another question, refused while busy: not listed as if it had been asked
+        let other = json!({"question": "Does synthetic data hurt accuracy?", "part": "sample",
+            "model": "claude-opus-5-5", "approved_usd": 100.0});
+        let (refused, _) = call(&router, "POST", &format!("{C0}/ask"), Some(other)).await;
+        let (_, listing) = call(&router, "GET", C0, None).await;
         gate(true);
         assert_eq!(status, StatusCode::CONFLICT, "{busy}");
+        assert_eq!(refused, StatusCode::CONFLICT);
+        assert_eq!(listing["questions"].as_array().unwrap().len(), 1, "only the question asked: {listing}");
         finished(&router).await;
         assert_eq!(posts() - before, 4);
+    }
+
+    #[test]
+    fn past_the_most_questions_the_oldest_without_answers_make_room_and_answered_ones_never_do() {
+        let asked = |id: usize| Asked {
+            id: format!("q{id}"),
+            question: format!("question {id}"),
+            round: 0,
+            include_unrelated: false,
+            papers: Vec::new(),
+            asked_at: String::new(),
+        };
+        // newest first, as kept: q0 is the oldest
+        let mut kept = Questions {
+            questions: (0..=MOST_QUESTIONS).rev().map(asked).collect(),
+            proposal_round: 0,
+            unanswered: vec!["q3".to_owned(), "q7".to_owned(), format!("q{MOST_QUESTIONS}")],
+        };
+        assert_eq!(make_room(&mut kept), Some(1));
+        assert_eq!(kept.questions.len(), MOST_QUESTIONS);
+        assert!(!kept.questions.iter().any(|asked| asked.id == "q3"), "the oldest without an answer went");
+        assert!(kept.questions.iter().any(|asked| asked.id == "q0"), "an older one with answers stays");
+        assert_eq!(kept.unanswered, ["q7".to_owned(), format!("q{MOST_QUESTIONS}")]);
+        // every older one answered: no room is made, and the newest is never the one taken off
+        let mut full = Questions {
+            questions: (0..=MOST_QUESTIONS).rev().map(asked).collect(),
+            proposal_round: 0,
+            unanswered: vec![format!("q{MOST_QUESTIONS}")],
+        };
+        assert_eq!(make_room(&mut full), None);
     }
 
     #[tokio::test]
@@ -1355,12 +1490,10 @@ pub(super) mod tests {
         assert_eq!(listing["proposals"]["questions"][0]["statement"], QUESTION, "{listing}");
         crate::api::contract::assert_fits("StanceListing", &listing, &[]);
 
-        // proposing anew, on terms the estimate no longer matches: the job is refused and keeps nothing
+        // proposing anew, on terms the estimate no longer matches: refused before any job, and nothing kept
         let fresh = json!({"fresh": true, "model": "claude-opus-5-5", "approved_usd": 0.000_001});
-        let (status, started) = call(&router, "POST", &format!("{C0}/proposals"), Some(fresh)).await;
-        assert_eq!(status, StatusCode::OK, "{started}");
-        crate::api::contract::assert_fits("StanceStarted", &started, &[]);
-        assert_eq!(finished(&router).await["state"], "failed");
+        let (status, refused) = call(&router, "POST", &format!("{C0}/proposals"), Some(fresh)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
         let (_, listing) = call(&router, "GET", C0, None).await;
         assert_eq!(listing["proposals"]["questions"][0]["statement"], QUESTION, "still shown: {listing}");
     }

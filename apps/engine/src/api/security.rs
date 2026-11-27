@@ -93,6 +93,8 @@ struct Rules {
     strikes: Option<Strikes>,
     /// On this computer: the name a forwarding server says the browser used must be this computer's too.
     local: bool,
+    /// The reverse proxies whose `X-Forwarded-For` names the client ([`client_of`]); none unless configured.
+    proxies: Vec<IpAddr>,
 }
 
 /// A token's SHA-256: digests of the same length are compared, so the comparison takes the same time whatever
@@ -168,7 +170,8 @@ impl Guard {
         };
         let strikes = (listen.mode() == Mode::Network).then(|| Strikes::new(WRONG_TOKENS));
         let local = listen.mode() == Mode::Local;
-        Guard(Arc::new(Rules { door: admission.0, authorities, pages, hsts, strikes, local }))
+        let proxies = listen.trusted_proxies().to_vec();
+        Guard(Arc::new(Rules { door: admission.0, authorities, pages, hsts, strikes, local, proxies }))
     }
 }
 
@@ -343,14 +346,60 @@ impl Strikes {
     }
 }
 
-/// The address a request came from, when the server recorded it (tests may not).
+/// The client a request is counted against, decided once by [`check`] ([`client_of`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Client(IpAddr);
+
+/// The address a request is counted against (for the limits on wrong tokens and on sign-in attempts): the client
+/// behind a trusted proxy ([`client_of`]), else the address the connection came from, when the server recorded it
+/// (tests may not).
 pub(crate) fn sender(extensions: &axum::http::Extensions) -> Option<IpAddr> {
+    if let Some(Client(client)) = extensions.get::<Client>() {
+        return Some(*client);
+    }
     extensions.get::<ConnectInfo<SocketAddr>>().map(|ConnectInfo(remote)| remote.ip())
 }
 
+/// Who a request from `peer` comes from. From a trusted proxy (`proxies`), the right-most address of
+/// `X-Forwarded-For` (all its values, in order) that is not itself a trusted proxy: each proxy appends the address
+/// it was reached from, so the hops to the left of the first untrusted one could have been written by anyone, and
+/// only that one was written by a proxy that is believed. A hop that is not an address, or a header that names
+/// only trusted proxies or nothing, leaves the proxy's own address: a client cannot make itself uncounted. From any
+/// other peer the header is not looked at.
+fn client_of(peer: IpAddr, headers: &HeaderMap, proxies: &[IpAddr]) -> IpAddr {
+    let peer = peer.to_canonical();
+    if !proxies.contains(&peer) {
+        return peer;
+    }
+    let hops: Vec<&str> = headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .flat_map(|value| value.to_str().unwrap_or("").split(','))
+        .map(str::trim)
+        .collect();
+    for hop in hops.iter().rev() {
+        let address = hop
+            .parse::<IpAddr>()
+            .or_else(|_| hop.parse::<SocketAddr>().map(|socket| socket.ip()))
+            .map(|ip| ip.to_canonical());
+        match address {
+            Ok(address) if proxies.contains(&address) => {}
+            Ok(address) => return address,
+            Err(_) => return peer,
+        }
+    }
+    peer
+}
+
 /// The checks, as middleware: every request passes them in this order, before any route.
-pub async fn check(State(guard): State<Guard>, request: Request, next: Next) -> Response {
+pub async fn check(State(guard): State<Guard>, mut request: Request, next: Next) -> Response {
     let rules = &guard.0;
+    if !rules.proxies.is_empty()
+        && let Some(peer) = request.extensions().get::<ConnectInfo<SocketAddr>>().map(|ConnectInfo(peer)| peer.ip())
+    {
+        let client = client_of(peer, request.headers(), &rules.proxies);
+        request.extensions_mut().insert(Client(client));
+    }
     let refusal = refusal(rules, &request);
     let mut response = match refusal {
         // a person who opened a page of the engine without being signed in is shown where to sign in
@@ -501,6 +550,33 @@ fn protect(headers: &mut HeaderMap, hsts: bool) {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    fn forwarded(values: &[&str]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for value in values {
+            headers.append("x-forwarded-for", HeaderValue::from_str(value).unwrap());
+        }
+        headers
+    }
+
+    #[test]
+    fn the_client_behind_a_trusted_proxy_is_the_right_most_untrusted_hop_and_no_one_else_is_believed() {
+        let ip = |text: &str| text.parse::<IpAddr>().unwrap();
+        let proxies = [ip("10.0.0.5"), ip("10.0.0.6")];
+        let proxy = ip("10.0.0.5");
+        // the client wrote a hop of its own on the left: only what the trusted proxy appended is believed
+        let headers = forwarded(&["198.51.100.1, 203.0.113.7", "10.0.0.6"]);
+        assert_eq!(client_of(proxy, &headers, &proxies), ip("203.0.113.7"));
+        assert_eq!(client_of(proxy, &forwarded(&["[2001:db8::1]:4711"]), &proxies), ip("2001:db8::1"));
+        assert_eq!(client_of(ip("::ffff:10.0.0.5"), &forwarded(&["203.0.113.9"]), &proxies), ip("203.0.113.9"));
+        // from anyone else the header is not looked at
+        assert_eq!(client_of(ip("192.0.2.44"), &headers, &proxies), ip("192.0.2.44"));
+        assert_eq!(client_of(proxy, &headers, &[]), proxy, "no proxy configured: as before");
+        // nothing usable said: counted against the proxy, never against no one
+        for odd in [&[][..], &["not an address"][..], &["10.0.0.6"][..], &["203.0.113.7, junk"][..]] {
+            assert_eq!(client_of(proxy, &forwarded(odd), &proxies), proxy, "{odd:?}");
+        }
+    }
 
     #[test]
     fn a_guesser_on_an_ipv6_network_does_not_lock_out_its_neighbours_unless_the_network_keeps_guessing() {

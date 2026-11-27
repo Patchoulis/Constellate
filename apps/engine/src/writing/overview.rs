@@ -816,6 +816,7 @@ mod tests {
             total: 1,
             progress: None,
             papers: None,
+            about: None,
         }
     }
 

@@ -110,12 +110,18 @@ pub struct Unplaced {
     pub why: NotPlaced,
 }
 
-/// What was answered that is not about any point sent, or placed one point twice: counted, not shown.
+/// What was answered that is not about any point sent, or placed one point twice, or came past the most read
+/// ([`PLACEMENTS_PER_POINT`] for each point sent): counted, not shown.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Ignored {
     pub unknown_points: usize,
     pub repeated: usize,
+    pub past_most: usize,
 }
+
+/// Placements read for each point sent: the answer is bounded by the points, not only by `max_tokens`, so an
+/// answer that places points again and again (or makes them up) is not checked placement by placement for ever.
+pub const PLACEMENTS_PER_POINT: usize = 2;
 
 /// Every point, placed or not.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -130,7 +136,9 @@ pub struct Mapping {
 pub fn place(said: &SaidMapping, tree: &Tree, points: &[Point]) -> Mapping {
     let mut ignored = Ignored::default();
     let mut outcome: Vec<Option<Result<Placement, NotPlaced>>> = vec![None; points.len()];
-    for placement in &said.placements {
+    let most = points.len().saturating_mul(PLACEMENTS_PER_POINT).max(PLACEMENTS_PER_POINT);
+    ignored.past_most = said.placements.len().saturating_sub(most);
+    for placement in said.placements.iter().take(most) {
         let Some(at) = points.iter().position(|point| point.id == placement.point) else {
             ignored.unknown_points += 1;
             continue;
@@ -280,6 +288,18 @@ mod tests {
     }
 
     #[test]
+    fn placements_past_two_per_point_are_counted_not_read() {
+        let tree = build(&said(), "p", &text()).unwrap();
+        let mut placements = vec![placement("p1", "n1", Stance::Challenges, "the compute comparison is unfair")];
+        placements.extend((0..10_000).map(|n| placement(&format!("made-up {n}"), "n1", Stance::Supports, "x")));
+        let mapping = place(&SaidMapping { placements }, &tree, &points());
+        assert_eq!(mapping.placed.len(), 1);
+        let most = points().len() * PLACEMENTS_PER_POINT;
+        assert_eq!(mapping.ignored, Ignored { unknown_points: most - 1, repeated: 0, past_most: 10_001 - most });
+        assert_eq!(mapping.placed.len() + mapping.unplaced.len(), points().len(), "every point is still told");
+    }
+
+    #[test]
     fn words_not_in_the_point_an_unknown_node_or_too_few_words_leave_the_point_unplaced() {
         let tree = build(&said(), "p", &text()).unwrap();
         let said = SaidMapping {
@@ -296,7 +316,7 @@ mod tests {
         assert!(mapping.placed.is_empty());
         let why: Vec<NotPlaced> = mapping.unplaced.iter().map(|unplaced| unplaced.why).collect();
         assert_eq!(why, [NotPlaced::NotInPoint, NotPlaced::UnknownNode, NotPlaced::TooShort, NotPlaced::NotInPoint]);
-        assert_eq!(mapping.ignored, Ignored { unknown_points: 1, repeated: 0 });
+        assert_eq!(mapping.ignored, Ignored { unknown_points: 1, repeated: 0, past_most: 0 });
     }
 
     #[test]

@@ -249,7 +249,7 @@ mod tests {
         let listen = Listen::from_environment(&Environment::from_pairs([("CONSTELLATE_TOKEN", STRONG)])).unwrap();
         let mut engine = Engine::new(data.to_path_buf(), choices());
         if let Some(key) = key {
-            engine.language = Environment::from_pairs([("ANTHROPIC_API_KEY", key)]).language_endpoint();
+            engine.set_claude_key(key, None);
         }
         served(&listen, AT, engine).0
     }

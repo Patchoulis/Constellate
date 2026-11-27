@@ -200,7 +200,7 @@ pub(super) fn failure(reply: &Reply, model: &str) -> AskError {
         429 => NoAnswer::RateLimited { retry_after: retry_info(&error).or_else(|| retry_after_header(reply)) }.into(),
         503 => NoAnswer::Overloaded.into(),
         code if code >= 500 => NoAnswer::ServerError(code).into(),
-        _ => NoAnswer::Rejected(message.chars().take(300).collect()).into(),
+        _ => NoAnswer::Rejected(message.chars().take(super::RAW_MESSAGE_CHARS).collect()).into(),
     }
 }
 

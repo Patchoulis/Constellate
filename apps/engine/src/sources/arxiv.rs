@@ -3,7 +3,8 @@
 //! arXiv asks programs for one request every three seconds (kept by the network for every request to arXiv:
 //! [`super::polite::ARXIV_PACE`]), and a query is read in pages of [`PAGE`], oldest
 //! first. The API sometimes answers with an error or with an empty page that is not the end, so a page is asked
-//! for again, each time after a longer pause, before the query is given up on.
+//! for again, each time after a longer pause (or as long as a refusal's `Retry-After` asks, when that is longer),
+//! before the query is given up on.
 
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -20,6 +21,9 @@ pub const PAGE: usize = 500;
 /// The pause before a page is asked for again, times the attempts so far: beyond arXiv's pace between requests.
 pub const DELAY: Duration = Duration::from_millis(3100);
 const ATTEMPTS: u32 = 6;
+/// A refusal's `Retry-After` is waited for, up to this long: arXiv asks for minutes at most, and an absurd value is
+/// not waited for for hours.
+const LONGEST_ASKED: Duration = Duration::from_secs(5 * 60);
 const LIMITS: Limits = Limits { max_bytes: 64 << 20, time: Duration::from_secs(90) };
 
 const ATOM: &str = "http://www.w3.org/2005/Atom";
@@ -153,15 +157,22 @@ fn page(
     log: &dyn Fn(&str),
 ) -> Result<Page, ArxivError> {
     let mut last = String::new();
+    // how long the last refusal asked to be left alone (`Retry-After`), when it said
+    let mut asked: Option<Duration> = None;
     for attempt in 1..=ATTEMPTS {
         // the pace between requests is arXiv's one pace, which the network keeps; this is the patience after a
-        // failure, growing with each
+        // failure, growing with each, and at least what a refusal asked for
         if attempt > 1 {
-            pause(DELAY * (attempt - 1));
+            pause((DELAY * (attempt - 1)).max(asked.take().unwrap_or_default().min(LONGEST_ASKED)));
         }
         let answer = match get_following(fetch, &page_url(search, start), LIMITS, &any_https) {
             Ok((_, response)) if response.status == 200 => parse(&response.text()).map_err(|error| error.to_string()),
-            Ok((_, response)) => Err(format!("HTTP {}", response.status)),
+            Ok((_, response)) => {
+                if matches!(response.status, 429 | 503) {
+                    asked = response.retry_after;
+                }
+                Err(format!("HTTP {}", response.status))
+            }
             Err(error) => Err(error.to_string()),
         };
         match answer {
@@ -314,6 +325,20 @@ pub(crate) mod tests {
         );
         assert_eq!(*pauses.borrow(), (1..ATTEMPTS).map(|attempt| DELAY * attempt).collect::<Vec<_>>());
         assert_eq!(lines.borrow()[0], "    retry 1 at offset 0: HTTP 503");
+    }
+
+    #[test]
+    fn a_refusal_is_waited_out_as_long_as_its_retry_after_asks_before_the_page_is_asked_again() {
+        let refused = super::super::Response { retry_after: Some(Duration::from_secs(40)), ..status(429) };
+        let absurd = super::super::Response { retry_after: Some(Duration::from_secs(86_400)), ..status(503) };
+        let url = page_url("q", 0);
+        let fake = Fake::new().first(&url, refused).first(&url, absurd).with(&url, status(500));
+        let pauses = RefCell::new(Vec::new());
+        let _ = query(&fake, &|pause| pauses.borrow_mut().push(pause), "q", &quiet);
+        let pauses = pauses.borrow();
+        // no pause before the first ask (arXiv's one pace, kept by the network, spaces it); before each retry, the
+        // patience of that attempt or what the refusal asked for, whichever is longer
+        assert_eq!(pauses[..4], [Duration::from_secs(40), LONGEST_ASKED, DELAY * 3, DELAY * 4], "{pauses:?}");
     }
 
     #[test]

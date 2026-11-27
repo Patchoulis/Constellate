@@ -564,6 +564,7 @@ async fn start(
         let columns = columns_of(&library, &run)?;
         let transport = engine.transport.clone();
         let subject = scope.subject(&run);
+        let about = crate::jobs::About { feature: Feature::Extraction, subject: subject.clone(), item: None };
         let work = move |tracker: &Tracker<'_>| {
             let ids = borrowed(&papers);
             let readings = library.paper_texts(&ids).map_err(|error| error.to_string())?;
@@ -587,16 +588,25 @@ async fn start(
             if let Some(why) = ran.stopped {
                 return Err(format!("{why}: {} of {} papers were not asked", ran.not_started, ran.papers));
             }
+            // nothing came of it at all: a failure, never a finished table with nothing in it
+            if ran.papers > 0 && ran.answered + ran.kept == 0 {
+                return Err(format!(
+                    "no paper was answered: the model gave no usable answer for any of the {} papers (they are asked \
+                     again next time)",
+                    ran.papers
+                ));
+            }
             Ok(Finished::Feature { feature: Feature::Extraction, subject })
         };
-        Ok(engine.job.start_tracked("the extraction table", work)?)
+        Ok(engine.job.start_about("the extraction table", about, work)?)
     })
     .await?;
     Ok(Json(Begun { ok: true, id }))
 }
 
-/// How many kept answers were forgotten: the papers' cells and the whole answers they came from, of every model
-/// and provider and in every run's table (a paper's cells are its own, not a run's), as the interface warns.
+/// How many cells were forgotten: those of the run's columns that the chosen model answered for the papers (from
+/// the PDF or the abstract). A cell is the paper's, so another run's table with the same column shows it
+/// forgotten too, as the interface warns; another model's cells, and other columns', stay.
 #[derive(Serialize)]
 pub struct Forgotten {
     pub forgotten: usize,
@@ -611,8 +621,11 @@ async fn forget(
     let forgotten = on_the_side(move || {
         // the run's own papers only, as for a scope
         papers_of(&engine, &run, &Scope::Papers(papers.clone()))?;
-        let subjects: Vec<Subject> = papers.into_iter().map(Subject::Paper).collect();
-        Ok(engine.library()?.forget(Feature::Extraction, &subjects)?)
+        let library = engine.library()?;
+        let columns = columns_of(&library, &run)?;
+        let chosen = engine.chosen()?;
+        let ids = borrowed(&papers);
+        Ok(extraction::forget_cells(&library, &chosen, &columns, &ids)?)
     })
     .await?;
     Ok(Json(Forgotten { forgotten }))
@@ -695,8 +708,7 @@ mod tests {
         .unwrap();
         let mut engine = Engine::new(data.path().to_path_buf(), choices());
         if key {
-            engine.language =
-                Environment::from_pairs([("ANTHROPIC_API_KEY", "test-key-not-real-0123")]).language_endpoint();
+            engine.set_claude_key("test-key-not-real-0123", None);
         }
         let job = engine.job.clone();
         let (router, _) = served(&listen, AT, engine);
@@ -819,6 +831,29 @@ mod tests {
             assert_eq!(finished(&router, &begun["id"]).await["state"], "done");
             assert_eq!(transport.sent().len(), sent, "kept: not asked again");
         }
+    }
+
+    #[tokio::test]
+    async fn a_run_in_which_no_paper_was_answered_fails_rather_than_finishing_an_empty_table() {
+        use super::super::other_providers::{
+            BUDGET, Chosen as Asked, Scripted, accepting, call, choose, finished, router,
+        };
+
+        let data = data();
+        let transport = Scripted::new(|_| "this is not the JSON asked for".to_owned());
+        let router = router(data.path(), Asked::OpenAi, &transport);
+        choose(data.path(), Asked::OpenAi);
+        let scope = json!({"community": "c0.0"});
+        let estimate = json!({"scope": scope, "part": "sample"});
+        let (_, cost) = call(&router, "POST", "/api/runs/r1/extraction/estimate", Some(estimate)).await;
+        let mut started = accepting(&cost, BUDGET);
+        started["scope"] = scope;
+        started["part"] = json!("sample");
+        let (status, begun) = call(&router, "POST", "/api/runs/r1/extraction/run", Some(started)).await;
+        assert_eq!(status, StatusCode::OK, "{begun}");
+        let done = finished(&router, &begun["id"]).await;
+        assert_eq!(done["state"], "failed", "{done}");
+        assert!(done["error"].as_str().unwrap().contains("no paper was answered"), "{done}");
     }
 
     #[tokio::test]
@@ -1051,8 +1086,16 @@ mod tests {
             "task",
             stated("task", "Image classification", "We study image classification with sparse mixtures"),
         );
+        // another model's cell of the same paper: not the one the table shows, and not forgotten with it
+        let library = Library::open(&data.path().join("library")).unwrap();
+        let column = default_columns().into_iter().find(|one| one.id == "task").unwrap();
+        let other = cell_key(&crate::model::chosen::Chosen::claude("claude-sonnet-5-5"), "p01", Read::Pdf, &column);
+        let slot = Slot { feature: Feature::Extraction, key: other.clone(), subject: Subject::Paper("p01".to_owned()) };
+        let said = stated("task", "Image classification", "We study image classification with sparse mixtures");
+        library.keep(&slot, "claude-sonnet-5-5", super::extraction::PROMPT, &said).unwrap();
         let (status, told) = post(&router, "/api/runs/r1/extraction/forget", json!({"papers": ["p01"]})).await;
-        assert_eq!((status, told), (StatusCode::OK, json!({"forgotten": 1})));
+        assert_eq!((status, told), (StatusCode::OK, json!({"forgotten": 1})), "the chosen model's one cell");
+        assert!(library.kept::<SaidCell>(Feature::Extraction, &other).unwrap().is_some(), "another model's stays");
         let (_, table) = post(&router, "/api/runs/r1/extraction/table", json!({"scope": {"papers": ["p01"]}})).await;
         assert_eq!(table["rows"][0]["cells"][0]["kind"], "not_asked");
         assert_eq!(

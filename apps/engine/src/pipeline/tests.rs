@@ -829,12 +829,30 @@ fn a_budget_reached_part_way_stops_the_naming_and_the_run_is_made_with_the_names
     let (fetch, words) = (conference_fetch(90), Words { asked: Mutex::new(0) });
     let transport = crate::writing::describe::tests::scripted();
     let chosen = crate::writing::describe::tests::chosen("claude-opus-5-5");
-    // room for the worst case of one call about one community, not of two
-    let one = crate::writing::describe::estimate_before_run(
-        &chosen,
-        &Settings { max_communities: 1, sub_levels: 0, ..naming_settings() },
-    );
-    let budget = Budget::new(Limit::Dollars(one.cost.most_usd.unwrap()));
+    // the run made once without names, so that the worst case of each of its calls is known from its own prompts
+    let (name, _) =
+        make_run(data.path(), &library, &selection, naming_settings(), &fetch, &words, Redo::new()).unwrap();
+    let folder = data.path().join("runs").join(&name);
+    let tree = crate::writing::read_tree(&folder).unwrap().unwrap();
+    let groups = crate::writing::describe::Group::from_stored(&tree.communities);
+    let ids = files::paper_ids(&folder).unwrap();
+    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let papers: Vec<Paper> = library.papers(&ids).unwrap().into_iter().map(Option::unwrap).collect();
+    let embeddings = library.vectors(&naming_settings().embedding_model, &papers).unwrap();
+    let made = crate::writing::describe::Run {
+        name: &name,
+        folder: None,
+        papers: &papers,
+        embeddings: Some(embeddings.view()),
+        communities: &groups,
+        redo: false,
+    };
+    let estimate = crate::writing::describe::estimate_run(&library, &made, &chosen).unwrap();
+    let worst = estimate.cost.most_tokens / u64::try_from(estimate.to_ask).unwrap();
+    assert!(estimate.to_ask >= 2);
+    // room for the worst case of one call and a little more, not for a second once the first has taken what it
+    // took (the scripted provider bills 2,300 tokens a call): what is held, then what is spent
+    let budget = Budget::new(Limit::Tokens(worst + 1_000));
     let naming = seams::Naming::Within { chosen, budget };
     let (name, log) = make_named(
         data.path(),

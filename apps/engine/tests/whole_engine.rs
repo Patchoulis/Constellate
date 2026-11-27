@@ -104,8 +104,7 @@ impl Engine {
                 command.env(kept, value);
             }
         }
-        let mut child =
-            command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
+        let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
         let mut line = String::new();
         BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
         let said: Value = serde_json::from_str(&line).unwrap_or_else(|_| panic!("the startup line: {line:?}"));
@@ -211,7 +210,10 @@ fn the_engine_serves_the_app_from_an_earlier_versions_data_folder_without_the_ne
     let library = engine.get("/api/library");
     assert_eq!(library["papers"], PAPERS);
     assert_eq!(library["embeddings"]["Qwen/Qwen3-Embedding-0.6B"], PAPERS);
-    assert_eq!((library["ai_detector"]["state"].clone(), library["import_problems"].clone()), (json!("untrained"), json!([])));
+    assert_eq!(
+        (library["ai_detector"]["state"].clone(), library["import_problems"].clone()),
+        (json!("untrained"), json!([]))
+    );
     assert!(library["machine"]["embedding"].is_string(), "{library}");
     let usage = engine.get("/api/usage");
     assert_eq!((usage["calls"].clone(), usage["usd"].clone()), (json!(3), json!(0.04)), "{usage}");
@@ -223,13 +225,19 @@ fn the_engine_serves_the_app_from_an_earlier_versions_data_folder_without_the_ne
     assert_eq!(engine.get(&format!("/api/runs/{RUN}"))["communities"][0]["name"], "A name the Python gave");
     let (code, refused, _) = engine.ask("POST", "/api/runs", Some(json!({"rerun": RUN})));
     assert_eq!(code, 409, "{refused}");
-    assert_eq!((refused["replaces"]["named"].clone(), refused["replaces"]["communities_will"].clone()), (json!(1), json!("change")));
+    assert_eq!(
+        (refused["replaces"]["named"].clone(), refused["replaces"]["communities_will"].clone()),
+        (json!(1), json!("change"))
+    );
     let (code, started, _) = engine.ask("POST", "/api/runs", Some(json!({"rerun": RUN, "replace": true})));
     assert_eq!((code, started), (200, json!({"ok": true})));
     let done = engine.settled();
     assert_eq!((done["state"].clone(), done["result"].clone()), (json!("done"), json!(RUN)), "{done}");
     let log = done["log"].to_string();
-    assert!(log.contains("already downloaded") && log.contains("were embedded before"), "nothing fetched or embedded: {log}");
+    assert!(
+        log.contains("already downloaded") && log.contains("were embedded before"),
+        "nothing fetched or embedded: {log}"
+    );
     assert!(log.contains("skipped: no cost was accepted"), "nothing asked of a model: {log}");
     let result = engine.get(&format!("/api/runs/{RUN}"));
     assert_eq!(result["papers"], PAPERS);
@@ -241,7 +249,10 @@ fn the_engine_serves_the_app_from_an_earlier_versions_data_folder_without_the_ne
 
     // a paper: its record, and its PDF, which cannot be had (published nowhere a program may fetch from)
     let paper = engine.get("/api/papers/iclr-2026-1");
-    assert_eq!((paper["acceptance"].clone(), paper["ai"].clone(), paper["readable"].clone()), (json!("oral"), Value::Null, json!(false)));
+    assert_eq!(
+        (paper["acceptance"].clone(), paper["ai"].clone(), paper["readable"].clone()),
+        (json!("oral"), Value::Null, json!(false))
+    );
     let (code, _, _) = engine.ask("GET", "/api/papers/iclr-2026-1/pdf", None);
     assert!((400..500).contains(&code), "a PDF that cannot be had is refused, not fetched: {code}");
     assert_eq!(engine.ask("GET", "/api/papers/nowhere", None).0, 404);
@@ -256,9 +267,19 @@ fn the_engine_serves_the_app_from_an_earlier_versions_data_folder_without_the_ne
         ("GET", at("/describe/estimate"), None),
         ("GET", at(&format!("/overview/{community}")), None),
         ("GET", "/api/detector/estimate".to_owned(), None),
-        ("POST", at(&format!("/communities/{community}/stances/estimate")), Some(json!({"question": "Does it scale?", "include_unrelated": false, "papers": []}))),
+        (
+            "POST",
+            at(&format!("/communities/{community}/stances/estimate")),
+            Some(json!({"question": "Does it scale?", "include_unrelated": false, "papers": []})),
+        ),
         ("POST", at(&format!("/communities/{community}/stances/proposals/estimate")), Some(json!({"fresh": false}))),
-        ("POST", at("/marked/stances/estimate"), Some(json!({"question": "Does it scale?", "include_unrelated": false, "papers": ["iclr-2026-1", "iclr-2026-2"]}))),
+        (
+            "POST",
+            at("/marked/stances/estimate"),
+            Some(
+                json!({"question": "Does it scale?", "include_unrelated": false, "papers": ["iclr-2026-1", "iclr-2026-2"]}),
+            ),
+        ),
         ("POST", at("/extraction/estimate"), Some(json!({"scope": {"community": community}, "part": "sample"}))),
         ("GET", at("/citation-kinds/estimate?scope=sample"), None),
         ("GET", at("/answers/estimate?q=Does%20it%20scale%3F"), None),

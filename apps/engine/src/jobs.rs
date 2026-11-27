@@ -44,6 +44,17 @@ pub enum Finished {
     Nothing,
 }
 
+/// What a feature's job is about, set as it starts ([`Job::start_about`]) and kept with it until the next one: so
+/// that whoever looks, from any window and at any moment of the job, can tell which section of the interface a
+/// running job belongs to, without waiting for the job to say so in its log.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct About {
+    pub feature: Feature,
+    pub subject: Subject,
+    /// The one item of the subject the job asks about, when it is one (a question's id among a run's questions).
+    pub item: Option<String>,
+}
+
 /// How far a job that does many things has got.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct Progress {
@@ -165,6 +176,8 @@ struct Inner<T> {
     /// Counts the jobs started; 0 until the first.
     id: u64,
     kind: String,
+    /// What a feature's job is about ([`Job::start_about`]); none for other jobs.
+    about: Option<About>,
     state: State<T>,
     /// The log's last [`LOG_LINES`] lines.
     log: VecDeque<String>,
@@ -190,6 +203,8 @@ impl<T> Inner<T> {
 pub struct Snapshot<T> {
     pub id: u64,
     pub kind: String,
+    /// What a feature's job is (or was) about, when it was started with it.
+    pub about: Option<About>,
     pub state: Phase,
     pub result: Option<T>,
     pub error: Option<String>,
@@ -226,6 +241,7 @@ impl<T> Default for Job<T> {
             inner: Arc::new(Mutex::new(Inner {
                 id: 0,
                 kind: String::new(),
+                about: None,
                 state: State::Idle,
                 log: VecDeque::new(),
                 dropped: 0,
@@ -267,7 +283,7 @@ impl<T: Clone + Send + 'static> Job<T> {
     {
         let counted = Arc::new(Counter::new());
         let lent = Arc::clone(&counted);
-        self.launch(kind, Measure::Counted(counted), move |tracker| work(&|line: &str| tracker.log(line), &lent))
+        self.launch(kind, None, Measure::Counted(counted), move |tracker| work(&|line: &str| tracker.log(line), &lent))
     }
 
     /// [`Job::start`] for work that reports its progress and can be asked to stop: `work` is given a [`Tracker`].
@@ -275,11 +291,21 @@ impl<T: Clone + Send + 'static> Job<T> {
     where
         F: FnOnce(&Tracker<'_>) -> Result<T, String> + Send + 'static,
     {
-        self.launch(kind, Measure::Tracked(None), work)
+        self.launch(kind, None, Measure::Tracked(None), work)
     }
 
-    /// Begin `work` as the one running job, saying how far it has got by `measure`.
-    fn launch<F>(&self, kind: &str, measure: Measure, work: F) -> Result<u64, Busy>
+    /// [`Job::start_tracked`] for a feature's work, with what it is about set as it starts ([`About`]): a snapshot
+    /// taken at any moment of the job says so.
+    pub fn start_about<F>(&self, kind: &str, about: About, work: F) -> Result<u64, Busy>
+    where
+        F: FnOnce(&Tracker<'_>) -> Result<T, String> + Send + 'static,
+    {
+        self.launch(kind, Some(about), Measure::Tracked(None), work)
+    }
+
+    /// Begin `work` as the one running job, saying how far it has got by `measure`. A thread that cannot be
+    /// started for it (the system has none left) makes the job failed at once, never running for ever.
+    fn launch<F>(&self, kind: &str, about: Option<About>, measure: Measure, work: F) -> Result<u64, Busy>
     where
         F: FnOnce(&Tracker<'_>) -> Result<T, String> + Send + 'static,
     {
@@ -290,6 +316,7 @@ impl<T: Clone + Send + 'static> Job<T> {
             }
             job.id += 1;
             job.kind = kind.to_owned();
+            job.about = about;
             job.state = State::Running;
             job.log.clear();
             job.dropped = 0;
@@ -298,7 +325,7 @@ impl<T: Clone + Send + 'static> Job<T> {
             (job.id, job.cancel.clone())
         };
         let inner = Arc::clone(&self.inner);
-        thread::spawn(move || {
+        let spawned = thread::Builder::new().name("job".to_owned()).spawn(move || {
             let log = |line: &str| open(&inner).log(line.to_owned());
             let progress = |progress: Progress| {
                 if let Measure::Tracked(last) = &mut open(&inner).measure {
@@ -321,6 +348,12 @@ impl<T: Clone + Send + 'static> Job<T> {
                 }
             };
         });
+        if spawned.is_err() {
+            let mut job = open(&self.inner);
+            let said = "no thread could be started for the job".to_owned();
+            job.log(format!("ERROR: {said}"));
+            job.state = State::Failed(said);
+        }
         Ok(id)
     }
 
@@ -341,6 +374,7 @@ impl<T: Clone + Send + 'static> Job<T> {
         Snapshot {
             id: job.id,
             kind: job.kind.clone(),
+            about: job.about.clone(),
             state: job.state.phase(),
             result,
             error,
@@ -387,6 +421,29 @@ mod tests {
             assert!(Instant::now() < deadline, "the job never finished");
             thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    #[test]
+    fn a_feature_s_job_says_what_it_is_about_from_the_moment_it_starts_until_the_next_one() {
+        let job: Job<String> = Job::new();
+        let (go, wait) = mpsc::channel::<()>();
+        let about = About {
+            feature: Feature::Answers,
+            subject: Subject::Run("r1".to_owned()),
+            item: Some("question".to_owned()),
+        };
+        job.start_about("answering a question", about.clone(), move |_| {
+            wait.recv().ok();
+            Ok(String::new())
+        })
+        .unwrap();
+        // before the work has run a single line
+        let now = job.snapshot(0);
+        assert_eq!((now.state, now.about.as_ref(), now.log.len()), (Phase::Running, Some(&about), 0));
+        go.send(()).unwrap();
+        assert_eq!(finished(&job).about, Some(about), "still said once it is done");
+        job.start("a run", |_| Ok(String::new())).unwrap();
+        assert_eq!(job.snapshot(0).about, None, "another job is about nothing it did not say");
     }
 
     #[test]

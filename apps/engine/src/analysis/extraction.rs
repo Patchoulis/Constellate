@@ -475,6 +475,33 @@ pub fn cell_key(chosen: &Chosen, paper: &str, read: Read, column: &Column) -> An
     chosen.key(Feature::Extraction, PROMPT, &[paper], &asked)
 }
 
+/// Forget what `chosen` answered for `papers` in `columns` (a redo of their rows), so that the next run asks them
+/// again: each cell, read from the PDF or from the abstract, and the whole answer for every one of the columns
+/// that the next run would otherwise find kept and read the cells from again. Another model's answers stay, and
+/// so do the cells of other columns; a cell is the paper's, so a table of another run with the same column shows
+/// it forgotten too. How many cells were forgotten.
+pub fn forget_cells(
+    library: &Library,
+    chosen: &Chosen,
+    columns: &[Column],
+    papers: &[&str],
+) -> Result<usize, LibraryError> {
+    let all: Vec<&Column> = columns.iter().collect();
+    let row = question(&all);
+    let mut cells = Vec::new();
+    let mut rows = Vec::new();
+    for paper in papers {
+        for read in [Read::Pdf, Read::Abstract] {
+            cells.extend(columns.iter().map(|column| cell_key(chosen, paper, read, column)));
+            let asked = format!("row {row}\nread from {}", read.name());
+            rows.push(chosen.key(Feature::Extraction, PROMPT, &[paper], &asked));
+        }
+    }
+    let forgotten = library.forget_keys(Feature::Extraction, &cells)?;
+    library.forget_keys(Feature::Extraction, &rows)?;
+    Ok(forgotten)
+}
+
 fn cell_slot(chosen: &Chosen, paper: &str, read: Read, column: &Column) -> Slot {
     Slot {
         feature: Feature::Extraction,
@@ -1293,10 +1320,10 @@ mod tests {
         let (plan, _) = plan(&library, &columns);
         // room for one paper's worst case, not for all three: an estimate that was too low
         let most = plan.estimate(&library).unwrap().cost.most_tokens;
-        let budget = Budget::new(Limit::Tokens(most / 2));
+        let budget = Budget::new(Limit::Tokens(most / 3 + 500));
         let model = model();
         let ran = ask(&library, &model, &plan, &budget);
-        assert!(budget.spent().0 <= most / 2, "the budget is never passed");
+        assert!(budget.spent().0 <= most / 3 + 500, "the budget is never passed");
         assert!(ran.answered >= 1 && ran.not_started >= 1, "{ran:?}");
         assert_eq!(ran.answered + ran.kept + ran.failed + ran.not_started, ran.papers);
         assert!(ran.stopped.as_deref().is_some_and(|why| why.contains("allowed")), "{ran:?}");

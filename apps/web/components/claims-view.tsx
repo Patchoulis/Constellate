@@ -634,7 +634,7 @@ export function ClaimsView({ id, onOpenReviews }: { id: string; onOpenReviews?: 
 				</p>
 			)}
 			{tree.state === "made" && <Gaps view={view} nodes={nodes} />}
-			{(tree.state === "made" || tree.state === "malformed") && (
+			{(tree.state === "made" || tree.state === "malformed" || tree.state === "all_left_out") && (
 				<div className="flex items-center gap-2 font-ui text-xs text-muted-foreground">
 					<span title={MODEL_NOTE}>
 						Read by {tree.state === "made" ? tree.model : "the model"} from{" "}

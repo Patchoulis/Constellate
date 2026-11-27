@@ -137,7 +137,8 @@ function Reviewer({ reviewer, readings }: { reviewer: CritiqueReviewer; readings
 					</button>
 					{reply === one.note && (
 						<p className="mt-1 max-h-64 overflow-y-auto rounded-md border bg-background/40 p-2 font-sans whitespace-pre-line">
-							{one.text}
+							{one.text ??
+								"The reviews page is not kept, so the reply's words cannot be shown: open the paper's Reviews tab to read the page again."}
 							{one.cut && " …"}
 						</p>
 					)}

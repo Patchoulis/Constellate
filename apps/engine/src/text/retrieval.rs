@@ -199,17 +199,34 @@ impl Index {
     }
 
     /// The units that match `query` best, best first, as the module says. No words, no hits.
+    ///
+    /// The order is total and the same whatever order the papers were handed over in (and whatever the number of
+    /// threads): terms are summed in the order of their words, not of their ids (which follow the order the papers
+    /// came in), and ties are broken by paper id and then by the unit's place in it. Callers key on it: a cited
+    /// answer is kept under the hits it was given, in order (`model::answers::key_of`), so another order of equal
+    /// hits would be another key, and the question would be paid for again.
     pub fn search(&self, query: &str, ranking: Ranking<'_>) -> Vec<Hit> {
-        let mut wanted: Vec<u32> = words(query).iter().filter_map(|word| self.terms.get(word).copied()).collect();
+        let mut wanted: Vec<(String, u32)> =
+            words(query).into_iter().filter_map(|word| self.terms.get(&word).map(|id| (word, *id))).collect();
         wanted.sort_unstable();
         wanted.dedup();
         if wanted.is_empty() || self.entries.is_empty() {
             return Vec::new();
         }
+        // where a unit is, for breaking ties: its paper's id and its place in the paper, then the entry itself (a
+        // paper handed over twice)
+        let address = |entry: u32| {
+            let unit = &self.entries[entry as usize];
+            (self.papers[unit.paper as usize].as_str(), unit.unit, entry)
+        };
         let candidates: Option<Vec<usize>> = match ranking {
             Ranking::Embedded { similarity } if similarity.len() == self.papers.len() => {
                 let mut order: Vec<usize> = (0..self.papers.len()).collect();
-                order.sort_by(|a, b| similarity[*b].total_cmp(&similarity[*a]).then(a.cmp(b)));
+                order.sort_by(|a, b| {
+                    similarity[*b]
+                        .total_cmp(&similarity[*a])
+                        .then_with(|| (&self.papers[*a], a).cmp(&(&self.papers[*b], b)))
+                });
                 order.truncate(CANDIDATE_PAPERS);
                 // a paper's rank among the candidates, by its place in the index
                 let mut rank = vec![usize::MAX; self.papers.len()];
@@ -224,7 +241,7 @@ impl Index {
         let average = (self.words as f64 / units).max(1.0);
         // summed term by term in a fixed order, so the same query gives the same scores to the last bit
         let mut scores: HashMap<u32, f64> = HashMap::new();
-        for term in wanted {
+        for (_, term) in wanted {
             let postings = &self.postings[term as usize];
             let found = postings.len() as f64;
             let idf = (1.0 + (units - found + 0.5) / (found + 0.5)).ln();
@@ -242,14 +259,16 @@ impl Index {
             }
         }
         let mut ranked: Vec<(u32, f64)> = scores.into_iter().collect();
-        ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        let best_first =
+            |a: &(u32, f64), b: &(u32, f64)| b.1.total_cmp(&a.1).then_with(|| address(a.0).cmp(&address(b.0)));
+        ranked.sort_by(best_first);
         if let Some(rank) = &candidates {
             let fused = |(place, (entry, _)): (usize, &(u32, f64))| {
                 let paper = rank[self.entries[*entry as usize].paper as usize];
                 (*entry, 1.0 / (FUSION + place as f64 + 1.0) + 1.0 / (FUSION + paper as f64 + 1.0))
             };
             ranked = ranked.iter().enumerate().map(fused).collect();
-            ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+            ranked.sort_by(best_first);
         }
         let mut per_paper: HashMap<u32, usize> = HashMap::new();
         let mut hits = Vec::new();
@@ -528,6 +547,32 @@ impl Shelf {
     }
 }
 
+/// Put what came of building `scope` on the shelf (the index, evicting others to make room; or, on failure, the
+/// claim taken off), if the claim is still `building`'s; then tell whoever waits.
+fn finish(shelf: &Mutex<Shelf>, scope: &str, building: &Building, budget: usize, outcome: Result<Arc<Index>, String>) {
+    {
+        let mut shelf = locked(shelf);
+        let ours = matches!(
+            shelf.scopes.get(scope),
+            Some(Shelved::Building(claim)) if std::ptr::eq(Arc::as_ptr(claim), building)
+        );
+        if ours {
+            match &outcome {
+                Ok(index) => {
+                    shelf.tick += 1;
+                    let used = shelf.tick;
+                    shelf.scopes.insert(scope.to_owned(), Shelved::Ready { index: Arc::clone(index), used });
+                    shelf.evict(budget, scope);
+                }
+                Err(_) => {
+                    shelf.scopes.remove(scope);
+                }
+            }
+        }
+    }
+    building.publish(outcome);
+}
+
 /// What [`Indexes::get`] found.
 #[derive(Clone, Debug)]
 pub enum Got {
@@ -577,6 +622,15 @@ impl Indexes {
     where
         F: FnOnce(&Progress) -> Result<Index, String> + Send + 'static,
     {
+        self.get_on(scope, wait, build, |work| thread::Builder::new().name("index".to_owned()).spawn(work).map(drop))
+    }
+
+    /// [`Indexes::get`], a thread started by `spawn` if one is needed.
+    fn get_on<F, S>(&self, scope: &str, wait: Wait, build: F, spawn: S) -> Result<Got, String>
+    where
+        F: FnOnce(&Progress) -> Result<Index, String> + Send + 'static,
+        S: FnOnce(Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
+    {
         let building = {
             let mut shelf = locked(&self.shelf);
             shelf.tick += 1;
@@ -591,7 +645,7 @@ impl Indexes {
                     let building = Arc::new(Building::default());
                     shelf.scopes.insert(scope.to_owned(), Shelved::Building(Arc::clone(&building)));
                     drop(shelf);
-                    self.start(scope.to_owned(), Arc::clone(&building), build);
+                    self.start_on(scope.to_owned(), Arc::clone(&building), build, spawn);
                     building
                 }
             }
@@ -610,42 +664,30 @@ impl Indexes {
         }
     }
 
-    /// Build on a thread of its own; put the index on the shelf (evicting others to make room), or take the claim
-    /// off it on failure; then tell whoever waits.
-    fn start<F>(&self, scope: String, building: Arc<Building>, build: F)
+    /// Build on a thread of its own, started by `spawn`; put the index on the shelf (evicting others to make room),
+    /// or take the claim off it on failure; then tell whoever waits ([`finish`]). A thread that cannot be started
+    /// (the system has none left) is a failed build, told and taken off the shelf like any other: never a claim
+    /// that stays "being built" for ever.
+    fn start_on<F, S>(&self, scope: String, building: Arc<Building>, build: F, spawn: S)
     where
         F: FnOnce(&Progress) -> Result<Index, String> + Send + 'static,
+        S: FnOnce(Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
     {
         let shelf = Arc::clone(&self.shelf);
         let budget = self.budget;
-        thread::spawn(move || {
+        let (claim, told) = (Arc::clone(&building), scope.clone());
+        let work = Box::new(move || {
             let outcome = match catch_unwind(AssertUnwindSafe(|| build(&building.progress))) {
                 Ok(Ok(index)) => Ok(Arc::new(index)),
                 Ok(Err(why)) => Err(why),
                 Err(_) => Err("the index could not be built".to_owned()),
             };
-            {
-                let mut shelf = locked(&shelf);
-                let ours = matches!(
-                    shelf.scopes.get(&scope),
-                    Some(Shelved::Building(claim)) if Arc::ptr_eq(claim, &building)
-                );
-                if ours {
-                    match &outcome {
-                        Ok(index) => {
-                            shelf.tick += 1;
-                            let used = shelf.tick;
-                            shelf.scopes.insert(scope.clone(), Shelved::Ready { index: Arc::clone(index), used });
-                            shelf.evict(budget, &scope);
-                        }
-                        Err(_) => {
-                            shelf.scopes.remove(&scope);
-                        }
-                    }
-                }
-            }
-            building.publish(outcome);
+            finish(&shelf, &scope, &building, budget, outcome);
         });
+        if spawn(work).is_err() {
+            let why = "the index could not be built: no thread could be started for it".to_owned();
+            finish(&self.shelf, &told, &claim, self.budget, Err(why));
+        }
     }
 
     /// Drop the built index of `scope`, if any (its papers' texts changed since: a PDF was read since it was
@@ -902,6 +944,46 @@ mod tests {
                 assert_eq!(other.search(query, Ranking::Lexical), one.search(query, Ranking::Lexical));
             }
         }
+    }
+
+    #[test]
+    fn equal_hits_come_in_the_same_order_whatever_order_the_papers_were_handed_over_in() {
+        let mut papers = library();
+        // papers that say the same thing, so that their passages score the same: the order between them is a tie
+        for id in ["2603.00009", "2603.00001", "2603.00005"] {
+            let pages = ["1. Introduction\n\nMerging task vectors counts shared directions twice.\n".to_owned()];
+            papers.push((id.to_owned(), Some(read_passages(&pages)), (String::new(), String::new())));
+        }
+        let forwards = index(&papers);
+        let mut reversed = papers.clone();
+        reversed.reverse();
+        let backwards = index(&reversed);
+        let similarity = |index: &Index| -> Vec<f32> {
+            index.papers().iter().map(|paper| if paper.starts_with("2603") { 0.5 } else { 0.25 }).collect()
+        };
+        for query in ["merging task vectors twice", "shared directions", "distillation students"] {
+            let one = forwards.search(query, Ranking::Lexical);
+            assert_eq!(backwards.search(query, Ranking::Lexical), one, "{query}");
+            let ties: Vec<&str> =
+                one.iter().filter(|hit| hit.paper.starts_with("2603")).map(|hit| hit.paper.as_str()).collect();
+            let mut sorted = ties.clone();
+            sorted.sort_unstable();
+            assert_eq!(ties, sorted, "ties by paper id: {query}");
+            let embedded = |index: &Index| index.search(query, Ranking::Embedded { similarity: &similarity(index) });
+            assert_eq!(embedded(&backwards), embedded(&forwards), "{query}, with embeddings");
+        }
+    }
+
+    #[test]
+    fn a_build_whose_thread_cannot_be_started_is_told_as_failed_and_tried_again_next_time() {
+        let indexes = Indexes::default();
+        let no_thread = |_work: Box<dyn FnOnce() + Send>| Err(std::io::Error::other("no threads left"));
+        let failed = indexes.get_on("r", Wait::Forever, |_| Ok(index(&library())), no_thread);
+        assert!(failed.unwrap_err().contains("no thread could be started"), "told, not waited for for ever");
+        assert!(indexes.kept().is_empty());
+        let again = indexes.get_on("r", Wait::AtMost(Duration::from_secs(5)), |_| Ok(index(&library())), no_thread);
+        assert!(again.is_err(), "the claim was taken off the shelf: asked again, it is tried again");
+        assert!(matches!(indexes.get("r", Wait::Forever, |_| Ok(index(&library()))).unwrap(), Got::Ready(_)));
     }
 
     #[test]

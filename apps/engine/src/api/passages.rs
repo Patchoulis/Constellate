@@ -195,7 +195,7 @@ mod tests {
         let (router, _) = served(&listen, AT, Engine::new(data.path().to_path_buf(), choices()));
         assert_eq!(ask(&router, "GET", "/api/status", None).await.1["api_key_set"], false);
         let key = "test-key-not-real-0123456789";
-        engine.language = Environment::from_pairs([("ANTHROPIC_API_KEY", key)]).language_endpoint();
+        engine.set_claude_key(key, None);
         let (router, _) = served(&listen, AT, engine);
         let (_, told) = ask(&router, "GET", "/api/status", None).await;
         assert_eq!(told["api_key_set"], true);

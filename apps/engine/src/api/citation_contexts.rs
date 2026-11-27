@@ -13,7 +13,7 @@
 //!                                                       what reading those kinds would cost; nothing is sent
 //! POST   /api/runs/{run}/citation-kinds                 {community, scope, provider, model, to_ask, budget_usd |
 //!                                                       budget_tokens}: read them, a job
-//! DELETE /api/runs/{run}/citation-kinds[?community=c]   forget the kinds read for the papers the community cites
+//! DELETE /api/runs/{run}/citation-kinds[?community=c]   forget the chosen model's readings of the community's citing sentences: how many
 //! ```
 //!
 //! The first part needs no key and costs nothing: the sentences are the paper's own, each sent as evidence made
@@ -41,7 +41,7 @@ use crate::analysis::citations::Linker;
 use crate::evidence::Evidence;
 use crate::jobs::{Finished, Progress};
 use crate::library::citation_contexts::{ContextsReading, Entries};
-use crate::library::{Feature, Library, PaperReading, Subject};
+use crate::library::{AnswerKey, Feature, Library, PaperReading, Subject};
 use crate::model::batch::{Asking, BatchEstimate, IN_FLIGHT, estimate_batch};
 use crate::model::chosen::{Accepted, Chosen, Refused, Terms, budget};
 use crate::model::language::Provider;
@@ -653,7 +653,8 @@ async fn classify_run(
             Some(community) => Subject::Community { run: run.clone(), community: community.clone() },
             None => Subject::Run(run.clone()),
         };
-        let id = engine.job.start_tracked("reading citation kinds", move |tracker| {
+        let about = crate::jobs::About { feature: Feature::CitationKinds, subject: subject.clone(), item: None };
+        let id = engine.job.start_about("reading citation kinds", about, move |tracker| {
             let plan = plan_of(&shared, &library, &run, community.as_deref(), request.scope)
                 .map_err(|error| error.to_string())?;
             if plan.chosen.as_shown(request.provider, &request.model).is_err() || plan.to_ask() > request.to_ask {
@@ -695,12 +696,16 @@ async fn redo(
     let Query(InCommunity { community }) = query?;
     let forgotten = on_the_side(move || {
         let library = engine.library()?;
+        let chosen = engine.chosen()?;
         let found = citations_of(&engine, &library, &run, community.as_deref())?;
-        let mut cited: Vec<&str> = found.cases.iter().map(|case| case.cited.as_str()).collect();
-        cited.sort_unstable();
-        cited.dedup();
-        let subjects: Vec<Subject> = cited.into_iter().map(|id| Subject::Paper(id.to_owned())).collect();
-        Ok(library.forget(Feature::CitationKinds, &subjects)?)
+        // the chosen model's readings of the scope's own citing sentences, and the calls the next run would make
+        // for them (whose kept answers it would otherwise read them from again): not another model's, nor those
+        // of sentences of other communities that cite the same papers
+        let plan = Plan::new(&chosen, found.cases, &found.records, |_, _| Ok(false))?;
+        let calls: Vec<AnswerKey> = plan.calls.iter().map(|call| call.key.clone()).collect();
+        let forgotten = library.forget_keys(Feature::CitationKinds, &plan.keys)?;
+        library.forget_keys(Feature::CitationKinds, &calls)?;
+        Ok(forgotten)
     })
     .await?;
     Ok(Json(json!({ "ok": true, "forgotten": forgotten })))
@@ -789,8 +794,7 @@ mod tests {
         .unwrap();
         let mut engine = Engine::new(data.path().to_path_buf(), choices());
         if key {
-            engine.language =
-                Environment::from_pairs([("ANTHROPIC_API_KEY", "test-key-not-real-0123456789")]).language_endpoint();
+            engine.set_claude_key("test-key-not-real-0123456789", None);
         }
         let provider = std::sync::Arc::new(super::super::login::oidc::tests::Fake::new(&[]));
         let (router, engine, _) = super::super::application(
@@ -933,9 +937,18 @@ mod tests {
         assert_eq!(summary["titles"]["ties"], "Resolving interference when merging models");
         assert!(summary["contrasts"].as_array().unwrap().is_empty(), "a reading not justified ranks nothing");
 
-        // the redo forgets them
+        // another model's reading of the same sentence: not the one shown, and not forgotten with it
+        let context = linked.iter().find(|(paper, _)| paper == "ties").unwrap().1[0];
+        let other =
+            sentence_key(&crate::model::chosen::Chosen::claude("claude-sonnet-5-5"), "seed", "ties", &context.address);
+        let slot =
+            Slot { feature: Feature::CitationKinds, key: other.clone(), subject: Subject::Paper("ties".to_owned()) };
+        let reading = Classified { kind: CitationKind::Baseline, quote: "x".to_owned(), sentence: None };
+        library.keep(&slot, "claude-sonnet-5-5", PROMPT, &reading).unwrap();
+        // the redo forgets the chosen model's two readings, and counts those
         let (_, forgot) = ask(&router, "DELETE", "/api/runs/r1/citation-kinds?community=c0", None).await;
         assert_eq!(forgot["forgotten"], 2);
+        assert!(library.kept::<Classified>(Feature::CitationKinds, &other).unwrap().is_some(), "another model's stays");
     }
 
     #[tokio::test]
