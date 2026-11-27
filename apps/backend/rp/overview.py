@@ -183,9 +183,18 @@ class Overviews:
         key = hashlib.sha1((model + "|" + ",".join(ids)).encode()).hexdigest()
         return folder, roots, community, papers, key
 
+    def key(self, run: str, path: str, model: str) -> str:
+        """What the overview `model` writes of a community is kept under: the model and the exact set of papers.
+        LookupError if the run has no such community."""
+        return self._load(run, path, model)[-1]
+
+    def written(self, key: str) -> dict | None:
+        """The overview kept under `key`, if it has been written."""
+        return self._stored().get(key)
+
     def get(self, run: str, path: str, model: str) -> dict | None:
         """The overview `model` wrote of a community, if it has."""
-        return self._stored().get(self._load(run, path, model)[-1])
+        return self.written(self.key(run, path, model))
 
     def write(self, run: str, path: str, model: str, log=print) -> dict:
         """Write (or fetch) the overview of the community at `path`.  Raises claude.Unavailable / NoAnswer."""
