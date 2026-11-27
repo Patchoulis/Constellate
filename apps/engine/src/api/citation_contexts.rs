@@ -1,9 +1,10 @@
 //! Where papers of the library cite one another, sentence by sentence, and what kind of citation each is.
 //!
 //! ```text
-//! GET    /api/papers/{id}/citation-contexts[?run=R]     the sentences where this paper cites papers of the
-//!                                                       library, and where they (of run R) cite it
-//!                                                       ([`PaperCitationContexts`])
+//! GET    /api/papers/{id}/citation-contexts[?run=R[&community=c]]
+//!                                                       the sentences where this paper cites papers of the
+//!                                                       library, and where they (of run R, of its community c)
+//!                                                       cite it ([`PaperCitationContexts`])
 //! POST   /api/runs/{run}/citation-contexts              read the citing sentences of every paper of the run: a
 //!                                                       job, free (no model)
 //! GET    /api/runs/{run}/citation-kinds[?community=c]   what the kinds of the community's citations come to
@@ -139,6 +140,8 @@ pub struct PaperCitationContexts {
 #[derive(Deserialize)]
 struct InRun {
     run: Option<String>,
+    /// With a run: only the papers of this community of it are looked at as citing papers.
+    community: Option<String>,
 }
 
 /// The sentences of `contexts` (all `citing` citing `cited`) as shown, with their kinds; those whose place is no
@@ -196,11 +199,21 @@ fn coverage(library: &Library, ids: &[String]) -> Result<Coverage, ApiError> {
     Ok(Coverage { papers: ids.len(), read, without_pdf })
 }
 
-fn contexts_of_paper(engine: &Shared, paper: &str, run: Option<&str>) -> Result<PaperCitationContexts, ApiError> {
+fn contexts_of_paper(
+    engine: &Shared,
+    paper: &str,
+    run: Option<&str>,
+    community: Option<&str>,
+) -> Result<PaperCitationContexts, ApiError> {
     let library = engine.library()?;
     library.paper(paper)?.ok_or(ApiError::NotFound)?;
     let model = chosen_model(engine)?;
     let run_ids = run.map(|run| papers_of(engine, run, None)).transpose()?;
+    let citing_ids = match (run, tree_path(community)?) {
+        (Some(run), Some(community)) => Some(papers_of(engine, run, Some(community))?),
+        (_, None) => run_ids.clone(),
+        (None, Some(_)) => return Err(ApiError::Invalid("a community is one of a run: name the run".to_owned())),
+    };
     let mut left_out = 0;
 
     // what it cites: read now if it was not (one PDF), kept for next time
@@ -238,7 +251,7 @@ fn contexts_of_paper(engine: &Shared, paper: &str, run: Option<&str>) -> Result<
     };
 
     // who cites it, among the papers whose sentences were read (of the run, when one was named)
-    let in_run: Option<HashSet<&str>> = run_ids.as_ref().map(|ids| ids.iter().map(String::as_str).collect());
+    let in_run: Option<HashSet<&str>> = citing_ids.as_ref().map(|ids| ids.iter().map(String::as_str).collect());
     let citing: Vec<String> = library
         .citing_papers(paper)?
         .into_iter()
@@ -284,8 +297,8 @@ async fn paper_contexts(
     Path(paper): Path<String>,
     query: Result<Query<InRun>, QueryRejection>,
 ) -> Result<Json<PaperCitationContexts>, ApiError> {
-    let Query(InRun { run }) = query?;
-    let answer = on_the_side(move || contexts_of_paper(&engine, &paper, run.as_deref())).await?;
+    let Query(InRun { run, community }) = query?;
+    let answer = on_the_side(move || contexts_of_paper(&engine, &paper, run.as_deref(), community.as_deref())).await?;
     Ok(Json(answer))
 }
 
@@ -774,6 +787,15 @@ mod tests {
             "We compare against the merging of [2] as a baseline."
         );
         assert_eq!(ties["cited_by_total"], 1);
+        // of one community: its papers only are looked at as citing papers
+        let (_, other) = ask(&router, "GET", "/api/papers/ties/citation-contexts?run=r1&community=c1", None).await;
+        assert_eq!(other["cited_by_total"], 0);
+        let (_, own) = ask(&router, "GET", "/api/papers/ties/citation-contexts?run=r1&community=c0", None).await;
+        assert_eq!(own["cited_by_total"], 1);
+        assert_eq!(
+            ask(&router, "GET", "/api/papers/ties/citation-contexts?community=c0", None).await.0,
+            StatusCode::BAD_REQUEST
+        );
 
         assert_eq!(ask(&router, "GET", "/api/papers/nowhere/citation-contexts", None).await.0, StatusCode::NOT_FOUND);
         assert_eq!(
