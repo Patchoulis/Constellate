@@ -134,7 +134,6 @@ text. A tag means "written the way these models write". It is not evidence about
 - **Chips above the graph** show or dim papers by kind (orals, spotlights, posters, AI detected, not AI detected) without redoing the run.
 - **Filters** (Settings, "Which papers"): leave out AI-detected papers, keep only orals or orals + spotlights, leave out papers carrying chosen flags. A flag filter only acts on papers whose PDF has been read.
 - **The reader** opens inside the window with tabs: Abstract, Paper (the PDF), and Reviews (the paper's OpenReview page, desktop app only).
-- **Reviewers' ratings** (Rating, Quality, Clarity, Significance, Originality, Soundness, ...) are read from the Reviews page when you open it, since OpenReview does not allow programs to fetch reviews; they are kept and then shown on the paper and in the graph's hover labels. Scores are shown per field on the conference's own scale, never merged.
 - **Tags explain themselves**: hover Oral / Spotlight, AI detected, a declaration flag or a rating to see what it means and where it came from.
 - **Cost**: the bottom of the sidebar shows the model and provider in use and what the Claude API has cost (total, and since the app was started); hover it for the breakdown by purpose and model. Counting starts when this was added.
 
