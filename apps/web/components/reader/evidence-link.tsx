@@ -5,7 +5,7 @@ import { Crosshair } from "lucide-react";
 import type { Evidence, ReaderTarget } from "@rp/contracts";
 import { api } from "@/lib/api";
 import { withSignal } from "@/lib/request";
-import { evidenceTitle, readerTarget, shortLabel } from "@/lib/evidence";
+import { evidenceTitle, readerTarget, shortLabel } from "@/lib/reader/evidence";
 import { ready, useAsync } from "@/lib/use-async";
 import { cn } from "@/lib/utils";
 

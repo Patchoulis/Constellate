@@ -8,7 +8,7 @@
  * What a frame costs in the browser (drawing, React) is not here: that needs the app open, see the numbers in the
  * commit that added the glow layer.
  */
-import { communityTree, groupsAt } from "@/lib/community";
+import { communityTree, groupsAt } from "@/lib/community/community";
 import { glowLayerGeometry } from "@/lib/graph/glow-layer";
 import { canvasColouring, MOST_GROUPS, spreadHues } from "@/lib/graph/graph-colouring";
 import { pickMarkedLabels, placeLabels, type LabelBox, type MarkedPlace } from "@/lib/graph/labels";

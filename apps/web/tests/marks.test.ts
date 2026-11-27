@@ -12,7 +12,7 @@ import {
 	serialiseMarks,
 	toggleMark,
 	type Marks,
-} from "@/lib/marks";
+} from "@/lib/community/marks";
 
 test("a marked paper is listed newest first, and only once", () => {
 	let marks: Marks = [];

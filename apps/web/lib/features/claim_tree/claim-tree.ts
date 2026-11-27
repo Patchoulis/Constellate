@@ -16,7 +16,7 @@ import type {
 	ReviewStance,
 	UnplacedPoint,
 } from "@rp/contracts";
-import { codePoints } from "@/lib/evidence";
+import { codePoints } from "@/lib/reader/evidence";
 import { centBudget, costWords } from "@/lib/cost";
 import { count, onScale, scaleName } from "@/lib/units";
 

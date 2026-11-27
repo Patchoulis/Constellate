@@ -26,7 +26,7 @@
  * Nothing in this file needs Electron: reader-guard.cjs applies it.
  */
 
-/** The embedded reader's storage partition (set by the interface: apps/web/components/paper-reader.tsx). */
+/** The embedded reader's storage partition (set by the interface: apps/web/components/reader/paper-reader.tsx). */
 const READER = "reader";
 
 /** The sites the reader opens pages of: where papers and their reviews live. Their sub-domains count. */

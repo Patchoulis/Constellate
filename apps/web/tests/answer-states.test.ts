@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { ExtractionRow, StanceFilter } from "@rp/contracts";
 import { stateNote } from "@/lib/features/answers/answers";
 import { allLeftOutLine, ignoredLine } from "@/lib/features/claim_tree/claim-tree";
-import { lookupsStoppedLine } from "@/lib/citations";
+import { lookupsStoppedLine } from "@/lib/reader/citations";
 import { leftOutLines } from "@/lib/features/critique/critique";
 import { abstractOnlyNote, readFromLine } from "@/lib/features/extraction/extraction";
 import { notInLibraryLine, quotesNotFoundLine } from "@/lib/features/stances/stances";

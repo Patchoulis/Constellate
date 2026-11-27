@@ -18,7 +18,7 @@ import type {
 	StanceScope,
 } from "@rp/contracts";
 import { AcceptanceTag } from "@/components/brand";
-import { EvidenceLinks } from "@/components/evidence-link";
+import { EvidenceLinks } from "@/components/reader/evidence-link";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton } from "@/components/ui/button";
 import { Input } from "@/components/ui/field";

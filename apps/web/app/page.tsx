@@ -9,7 +9,7 @@ import { ActivityLog, Notice, Workspace } from "@/components/workspace";
 import { api } from "@/lib/api";
 import { ChosenModelContext, chosenModelOf } from "@/lib/chosen-model";
 import { serverOwned } from "@/lib/engine";
-import { forgetMarks } from "@/lib/marks";
+import { forgetMarks } from "@/lib/community/marks";
 import { choosableOf } from "@/lib/models";
 import { namingRequest } from "@/lib/features/writing/naming";
 import { NO_SAVES, saveStep, type SaveEvent, type Saves } from "@/lib/settings-saves";

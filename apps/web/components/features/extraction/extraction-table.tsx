@@ -18,7 +18,7 @@ import type {
 	ExtractionTable as Table,
 } from "@rp/contracts";
 import { AcceptanceTag } from "@/components/brand";
-import { EvidenceLinks } from "@/components/evidence-link";
+import { EvidenceLinks } from "@/components/reader/evidence-link";
 import { MathText } from "@/components/math-text";
 import { Button, Heading } from "@/components/ui/button";
 import { api } from "@/lib/api";

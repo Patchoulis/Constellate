@@ -22,7 +22,7 @@ import {
 	shownWorks,
 	type PlacedWork,
 	type WorkOrder,
-} from "@/lib/citations";
+} from "@/lib/reader/citations";
 import { placeLabels } from "@/lib/graph/labels";
 import { count } from "@/lib/units";
 import { ready, useAsync } from "@/lib/use-async";

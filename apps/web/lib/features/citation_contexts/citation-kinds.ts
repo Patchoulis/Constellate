@@ -158,7 +158,7 @@ export function edgeKinds(contexts: PaperCitationContexts): Map<string, Citation
 const paperOf = (key: string) => (key.startsWith("paper:") ? key.slice("paper:".length) : null);
 
 /**
- * The kind of a line of the citation network's picture (lib/citations.ts `layoutNetwork`), when one is known: a
+ * The kind of a line of the citation network's picture (lib/reader/citations.ts `layoutNetwork`), when one is known: a
  * line from the seed to a work it cites, from a work citing it to the seed, or between two works (from cites to).
  */
 export function lineKind(

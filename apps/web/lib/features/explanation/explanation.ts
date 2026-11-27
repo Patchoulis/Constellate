@@ -13,7 +13,7 @@ import type {
 	PassageAddress,
 	PassageKind,
 } from "@rp/contracts";
-import { passageAt } from "@/lib/evidence";
+import { passageAt } from "@/lib/reader/evidence";
 import { costWords } from "@/lib/cost";
 import { count, tokens } from "@/lib/units";
 

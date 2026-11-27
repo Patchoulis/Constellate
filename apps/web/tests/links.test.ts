@@ -1,10 +1,10 @@
 /** Addresses from records before they are opened (lib/links.ts), and what the reader shows when a page fails
- *  (lib/pdf-frame.ts). */
+ *  (lib/reader/pdf-frame.ts). */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { isOpenReviewPage, safeLink } from "@/lib/links";
-import { framedPdf, pageFailed } from "@/lib/pdf-frame";
-import { outsideLink } from "@/lib/citations";
+import { framedPdf, pageFailed } from "@/lib/reader/pdf-frame";
+import { outsideLink } from "@/lib/reader/citations";
 
 test("only https addresses from a record are opened; plain http only to this computer and only when asked", () => {
 	assert.equal(safeLink("https://arxiv.org/abs/2401.00001")?.href, "https://arxiv.org/abs/2401.00001");

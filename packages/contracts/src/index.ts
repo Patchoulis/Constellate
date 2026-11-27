@@ -819,7 +819,7 @@ export interface UsageEntry {
  * Where something is in a paper (engine text/passages.rs). `page` and `end_page` are the PDF's own page numbers
  * from 1 (what `#page=N` opens), not those the paper prints. `start` counts characters into the text of `page`,
  * `end` into the text of `end_page` (the same page unless a quote runs on to the next). Characters are Unicode
- * code points, not UTF-16 units: slice with `Array.from(text)` (lib/evidence.ts `codePoints`), not `slice`.
+ * code points, not UTF-16 units: slice with `Array.from(text)` (lib/reader/evidence.ts `codePoints`), not `slice`.
  */
 export interface PassageAddress {
 	page: number;
@@ -875,7 +875,7 @@ export type Established =
 	/** found in the title or abstract only, at `start..end` (code points) of it: the PDF has not been read */
 	| { kind: "abstract"; field: "title" | "abstract"; start: number; end: number; matched: QuoteMatch };
 
-/** "This statement rests on that place in that paper" (engine evidence.rs); shown with components/evidence-link.tsx. */
+/** "This statement rests on that place in that paper" (engine evidence.rs); shown with components/reader/evidence-link.tsx. */
 export interface Evidence {
 	paper: string;
 	/** the paper's own words at that place, which is what is shown (never the model's copy) */

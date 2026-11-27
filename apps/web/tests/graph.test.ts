@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Community, GraphData } from "@rp/contracts";
 import { wrapLabel } from "@/components/graph/graph-canvas";
-import { communityLabel, communityTree, groupsAt, treeDepth } from "@/lib/community";
+import { communityLabel, communityTree, groupsAt, treeDepth } from "@/lib/community/community";
 import { pickMarkedLabels, placeLabels, type LabelBox, type MarkedPlace } from "@/lib/graph/labels";
 import { countKinds, shownPapers } from "@/lib/graph/paper-filter";
 import { layoutGraph } from "@/lib/graph/layout";

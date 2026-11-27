@@ -17,7 +17,7 @@ import type {
 	ReviewConcern,
 	WeaknessKind,
 } from "@rp/contracts";
-import { codePoints } from "@/lib/evidence";
+import { codePoints } from "@/lib/reader/evidence";
 import { costTitle, costWords } from "@/lib/cost";
 import { count, onScale } from "@/lib/units";
 

@@ -5,12 +5,12 @@ exact place in the original paper. Three engine modules and one interface compon
 every feature that asks a language model about papers goes through them instead of inventing its own, whichever
 provider the model is from.
 
-| piece                                                       | what it does                                                                                      |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `apps/engine/src/text/pdf/passages.rs`                      | a paper's PDF as addressable text; where a quote is in it; the sentences citing a reference       |
-| `apps/engine/src/evidence.rs`                               | `Evidence`, `Claim`, `Cited`, and `check`, which keeps only statements whose quotes were found    |
-| `apps/engine/src/model/language/`                           | the language model, of any provider: JSON answers, prompt caching, budgets, estimates, the ledger |
-| `apps/web/components/evidence-link.tsx` (`lib/evidence.ts`) | `EvidenceLink`: a citation that opens the reader at the place, with the words marked              |
+| piece                                                                     | what it does                                                                                      |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `apps/engine/src/text/pdf/passages.rs`                                    | a paper's PDF as addressable text; where a quote is in it; the sentences citing a reference       |
+| `apps/engine/src/evidence.rs`                                             | `Evidence`, `Claim`, `Cited`, and `check`, which keeps only statements whose quotes were found    |
+| `apps/engine/src/model/language/`                                         | the language model, of any provider: JSON answers, prompt caching, budgets, estimates, the ledger |
+| `apps/web/components/reader/evidence-link.tsx` (`lib/reader/evidence.ts`) | `EvidenceLink`: a citation that opens the reader at the place, with the words marked              |
 
 ## The path
 

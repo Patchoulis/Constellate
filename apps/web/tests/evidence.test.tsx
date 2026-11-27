@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Evidence, PaperPassages, PassageAddress } from "@rp/contracts";
-import { EvidenceLink, EvidenceProvider } from "@/components/evidence-link";
-import { codePoints, evidenceTitle, highlighted, passageAt, pdfAt, placeName, readerTarget, shortLabel } from "@/lib/evidence";
+import { EvidenceLink, EvidenceProvider } from "@/components/reader/evidence-link";
+import { codePoints, evidenceTitle, highlighted, passageAt, pdfAt, placeName, readerTarget, shortLabel } from "@/lib/reader/evidence";
 
 const address = (page: number, start: number, end: number, section = "2. Method"): PassageAddress => ({
 	page,

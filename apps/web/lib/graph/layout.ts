@@ -16,7 +16,7 @@
  */
 import { forceCollide, forceLink, forceSimulation, forceX, forceY, type SimulationLinkDatum, type SimulationNodeDatum } from "d3-force";
 import type { GraphData } from "@rp/contracts";
-import type { CommunityNode } from "@/lib/community";
+import type { CommunityNode } from "@/lib/community/community";
 
 export interface Point {
 	x: number;

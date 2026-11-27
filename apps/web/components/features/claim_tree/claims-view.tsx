@@ -19,8 +19,8 @@ import type {
 	PointPlacement,
 	ReviewPoint,
 } from "@rp/contracts";
-import { EvidenceLink, EvidenceLinks } from "@/components/evidence-link";
-import { REVIEWS_NOTE } from "@/components/review-summary";
+import { EvidenceLink, EvidenceLinks } from "@/components/reader/evidence-link";
+import { REVIEWS_NOTE } from "@/components/community/review-summary";
 import { Button, Heading, Segmented } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm";
 import { api } from "@/lib/api";

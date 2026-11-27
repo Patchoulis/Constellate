@@ -6,9 +6,9 @@ import type { Passage, PassageAddress, PassageKind } from "@rp/contracts";
 import { PassageExplainer, type AskedOnce, type ExplainMode } from "@/components/features/explanation/passage-explainer";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
-import { highlighted, pages, passageAt } from "@/lib/evidence";
+import { highlighted, pages, passageAt } from "@/lib/reader/evidence";
 import { explainable, placeKey, resolveSelection, selectionQuote } from "@/lib/features/explanation/explanation";
-import { noReadablePdf } from "@/lib/no-pdf";
+import { noReadablePdf } from "@/lib/reader/no-pdf";
 import { ready, useAsync } from "@/lib/use-async";
 import { cn } from "@/lib/utils";
 

@@ -4,13 +4,13 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "rea
 import { LocateFixed, Star, X } from "lucide-react";
 import type { GraphData, Ratings } from "@rp/contracts";
 import { AcceptanceTag, AiTag, RatingTags } from "@/components/brand";
-import { CommunityDot, MARK_HINT } from "@/components/community-panel";
+import { CommunityDot, MARK_HINT } from "@/components/community/community-panel";
 import { GraphCanvasRenderer, type CanvasData, type CanvasLevel } from "@/components/graph/graph-canvas";
 import { MathText } from "@/components/math-text";
 import { Button } from "@/components/ui/button";
-import { communityLabel, groupsAt, treeDepth, type CommunityNode } from "@/lib/community";
+import { communityLabel, groupsAt, treeDepth, type CommunityNode } from "@/lib/community/community";
 import { pickMarkedLabels, placeLabels, type MarkedPlace, type PaperPlace } from "@/lib/graph/labels";
-import type { Marks } from "@/lib/marks";
+import type { Marks } from "@/lib/community/marks";
 import { panelSize } from "@/lib/use-resizable";
 import { count } from "@/lib/units";
 import { countKinds, kindNotes, PAPER_KINDS, shownPapers, type PaperKind } from "@/lib/graph/paper-filter";

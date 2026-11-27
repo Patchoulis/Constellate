@@ -4,22 +4,22 @@ import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { AlignLeft, ExternalLink, FileSearch, FileText, ListTree, Loader2, MessagesSquare, Network, X } from "lucide-react";
 import type { Catalog, CatalogItem, Declarations, Paper, Ratings, ReaderTarget } from "@rp/contracts";
 import { AcceptanceTag, AiTag, FlagTag, RatingTags } from "@/components/brand";
-import { Citations } from "@/components/citation-network";
+import { Citations } from "@/components/reader/citation-network";
 import { ClaimsView } from "@/components/features/claim_tree/claims-view";
 import { CitationSentences } from "@/components/features/citation_contexts/citation-contexts";
-import { CommunityDot, MarkButton } from "@/components/community-panel";
+import { CommunityDot, MarkButton } from "@/components/community/community-panel";
 import { Weaknesses } from "@/components/features/critique/critique";
 import { MathText } from "@/components/math-text";
-import { PaperText } from "@/components/paper-text";
+import { PaperText } from "@/components/reader/paper-text";
 import { ExplainFromText } from "@/components/features/explanation/passage-explainer";
-import { PaperReviewFigures } from "@/components/review-summary";
+import { PaperReviewFigures } from "@/components/community/review-summary";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
-import { communityLabel, type CommunityNode } from "@/lib/community";
-import { pdfAt } from "@/lib/evidence";
+import { communityLabel, type CommunityNode } from "@/lib/community/community";
+import { pdfAt } from "@/lib/reader/evidence";
 import { isOpenReviewPage, openOutside, safeLink } from "@/lib/links";
-import { framedPdf, pageFailed, type FailedLoad, type FramedPdf } from "@/lib/pdf-frame";
+import { framedPdf, pageFailed, type FailedLoad, type FramedPdf } from "@/lib/reader/pdf-frame";
 import { ready, useAsync, type Async } from "@/lib/use-async";
 import { useFocusReturn } from "@/lib/use-focus-return";
 import { useResizable } from "@/lib/use-resizable";
@@ -56,7 +56,7 @@ const EMBEDS = typeof navigator !== "undefined" && /Electron/.test(navigator.use
  *            otherwise the paper's own PDF address, which only the desktop app's embedded view can show
  *   reviews  the paper's OpenReview page, where its reviews and discussion are
  * A tab with no source is not offered. The Citations tab is always offered: it is built from the reference lists
- * Constellate has read (components/citation-network.tsx).
+ * Constellate has read (components/reader/citation-network.tsx).
  */
 function sources(paper: Paper): { paper?: { url: string; embedded: boolean }; reviews?: { url: string; embedded: boolean } } {
 	// the record's addresses are shown only when they are https (lib/links.ts)

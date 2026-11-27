@@ -13,7 +13,7 @@ import {
 	showing,
 	shownWorks,
 	workRadius,
-} from "@/lib/citations";
+} from "@/lib/reader/citations";
 
 function work(key: string, year: number | null, citedBy: number, rest: Partial<CitationNeighbour> = {}): CitationNeighbour {
 	return {

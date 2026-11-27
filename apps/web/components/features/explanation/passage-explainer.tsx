@@ -10,12 +10,12 @@
 import { useEffect, useRef, useState } from "react";
 import { AlignLeft, Loader2, RotateCcw, Sparkles, Square, X } from "lucide-react";
 import type { DefinedTerm, Evidence, Explanation, ExplanationStatement, JobProgress, Passage } from "@rp/contracts";
-import { EvidenceLink } from "@/components/evidence-link";
+import { EvidenceLink } from "@/components/reader/evidence-link";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, Segmented } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm";
 import { api } from "@/lib/api";
-import { pages } from "@/lib/evidence";
+import { pages } from "@/lib/reader/evidence";
 import {
 	ASK_BELOW_KEY,
 	BACKGROUND_NOTE,

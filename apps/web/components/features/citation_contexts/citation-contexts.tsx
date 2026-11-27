@@ -9,7 +9,7 @@
 import { useState } from "react";
 import { BookOpenText, Loader2, Square } from "lucide-react";
 import type { CitationContextsOf, CitationKind, CitingSentenceShown, PaperCitationContexts } from "@rp/contracts";
-import { EvidenceLink } from "@/components/evidence-link";
+import { EvidenceLink } from "@/components/reader/evidence-link";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton } from "@/components/ui/button";
 import { api } from "@/lib/api";

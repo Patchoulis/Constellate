@@ -9,7 +9,7 @@
 import { useState } from "react";
 import { Loader2, RotateCcw, Sparkles, Square } from "lucide-react";
 import type { Critique, CritiqueModelPart, CritiqueReviewer, CritiqueReviewers, ModelWeakness, PointReading } from "@rp/contracts";
-import { EvidenceLink, EvidenceLinks } from "@/components/evidence-link";
+import { EvidenceLink, EvidenceLinks } from "@/components/reader/evidence-link";
 import { Button, Heading } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm";
 import { api } from "@/lib/api";

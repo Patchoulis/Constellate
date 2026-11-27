@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { Loader2, MessageCircleQuestion, RotateCcw, Search, Square, Trash2, X } from "lucide-react";
 import type { AnswerView, PassageFound } from "@rp/contracts";
-import { EvidenceLink, EvidenceLinks } from "@/components/evidence-link";
+import { EvidenceLink, EvidenceLinks } from "@/components/reader/evidence-link";
 import { Button, Heading, RowButton } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm";
 import { Input } from "@/components/ui/field";

@@ -1,7 +1,7 @@
 /**
  * What the interface needs to show evidence and land on it: a paper's short label, what hovering a citation
  * says, where in the reader a citation opens, and the passage and characters to highlight there. Plain functions,
- * so that they are tested (tests/evidence.test.ts); components/evidence-link.tsx draws them.
+ * so that they are tested (tests/evidence.test.ts); components/reader/evidence-link.tsx draws them.
  */
 import type { Evidence, PaperPassages, PassageAddress, QuoteMatch } from "@rp/contracts";
 import { count } from "@/lib/units";

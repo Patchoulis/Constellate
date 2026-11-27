@@ -3,13 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, PenLine, X } from "lucide-react";
 import type { OverviewPoint, OverviewRequest, OverviewStatus } from "@rp/contracts";
-import { CommunityDot } from "@/components/community-panel";
-import { EvidenceLink } from "@/components/evidence-link";
+import { CommunityDot } from "@/components/community/community-panel";
+import { EvidenceLink } from "@/components/reader/evidence-link";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton } from "@/components/ui/button";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
-import { communityLabel, type CommunityNode } from "@/lib/community";
+import { communityLabel, type CommunityNode } from "@/lib/community/community";
 import { accepting, costTitle, costWords, shownModel } from "@/lib/cost";
 import { useFocusReturn } from "@/lib/use-focus-return";
 import { useResizable } from "@/lib/use-resizable";
