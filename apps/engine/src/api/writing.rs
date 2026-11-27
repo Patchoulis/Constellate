@@ -18,8 +18,9 @@
 //! estimate, and which carry the most the user was shown: if that has grown since (the papers or the model
 //! changed), or the request names another model than the one chosen, nothing is asked. The Python wrote an overview
 //! at a click that showed no cost, and named a run's communities as part of making it without asking: here the run
-//! form shows `GET /api/describe/estimate` and the pipeline names a new run only within the budget accepted there
-//! ([`crate::writing::describe::budget_before_run`]).
+//! form shows `GET /api/describe/estimate` and sends what was accepted as the run request's `describe`. The
+//! pipeline (ported on its own) is to name a new run only with that: [`crate::writing::describe::budget_before_run`]
+//! on it, then [`crate::writing::describe::describe_run`]; with no `describe`, the run is made without names.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -388,7 +389,14 @@ fn prepared(
     let records = records_of(library, &light.members)?;
     let community = light.tree.find(path).ok_or(ApiError::NotFound)?;
     let about = Community { run, tree: &light.tree, community, graph: &graph, records: &records };
-    Ok((overview::prepare(chosen, &about), records))
+    let prepared = overview::prepare(chosen, &about);
+    // the graph's papers and run.json's must be the same, or what is kept would be looked for under another key
+    if prepared.members != light.members {
+        return Err(ApiError::Invalid(
+            "This run's files disagree about its papers. Run it again (everything is reused) and ask then.".to_owned(),
+        ));
+    }
+    Ok((prepared, records))
 }
 
 fn status(engine: &Shared, run: &str, path: &str) -> Result<Status, ApiError> {
@@ -467,8 +475,13 @@ async fn write_overview(
         let endpoint = chosen.endpoint().map_err(invalid)?;
         let light = light(&engine, &run, &path)?;
         let (prepared, _) = prepared(&library, &chosen, &run, &path, &light)?;
-        if prepared.given.is_empty() {
-            return Err(ApiError::Invalid("the library has none of this community's papers".to_owned()));
+        // no point can be shown with quotes of fewer papers: nothing is paid for that could show nothing
+        if prepared.given.len() < overview::MIN_CITED {
+            return Err(ApiError::Invalid(format!(
+                "an overview needs at least {} papers the library has; this community has {}",
+                overview::MIN_CITED,
+                prepared.given.len()
+            )));
         }
         let estimate = prepared.estimate(&library)?;
         let accepted = Accepted::of(request.accepted_usd, request.accepted_tokens).map_err(invalid)?;

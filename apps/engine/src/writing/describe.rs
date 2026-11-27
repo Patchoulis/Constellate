@@ -44,7 +44,7 @@ use crate::analysis::cluster;
 use crate::analysis::graph::{cosine, mean_of};
 use crate::jobs::{Progress, Tracker};
 use crate::library::store::{self, StoreError};
-use crate::library::{AnswerKey, Feature, Library, LibraryError, Paper, Slot, Subject, community_key};
+use crate::library::{AnswerKey, Feature, Kept, Library, LibraryError, Paper, Slot, Subject, community_key};
 use crate::model::batch::{self, Asking, BatchEstimate, Failure, IN_FLIGHT, Item, Outcome as Asked, Stopped};
 use crate::model::chosen::{Accepted, Chosen, Refused, Terms, budget};
 use crate::model::language::{
@@ -506,12 +506,25 @@ fn to_ask<'g>(
     Ok((asked, kept))
 }
 
-/// Walk the tree level by level, answering each level with `answer`, and name what was answered.
+/// Keep again the answers `set_aside` for the items `again` says (those that brought no new answer). A failure is
+/// told, never fatal: the run's files still hold the names.
+fn put_back(library: &Library, items: &[Item<'_>], set_aside: Vec<Option<Kept<Said>>>, again: impl Fn(usize) -> bool) {
+    for (index, (item, kept)) in items.iter().zip(set_aside).enumerate() {
+        let Some(kept) = kept.filter(|_| again(index)) else { continue };
+        if let Err(error) = library.keep(&item.slot, &kept.model, kept.prompt, &kept.answer) {
+            eprintln!("describing: a description set aside could not be kept again: {error}");
+        }
+    }
+}
+
+/// Walk the tree level by level, answering each level with `answer`, and name what was answered. `redo`: ask
+/// again what was kept (only when the model can be asked).
 fn walk(
     library: &Library,
     run: &Run<'_>,
     chosen: &Chosen,
     tracker: &Tracker<'_>,
+    redo: bool,
     answer: &mut Answer<'_>,
 ) -> Result<(Names, Tally), LibraryError> {
     let mut names = Names::new();
@@ -530,8 +543,12 @@ fn walk(
         done += u64::try_from(level.len() - asked.len()).unwrap_or(0);
         let prepared = Prepared::new(run, chosen, asked);
         let items = prepared.items(run.name, chosen);
-        if run.redo {
+        // describing again: what was kept is set aside so that it is asked again, and put back for every call
+        // that brings no new answer (stopped, failed), so that nothing paid for is lost
+        let mut set_aside: Vec<Option<Kept<Said>>> = Vec::new();
+        if redo {
             for item in &items {
+                set_aside.push(library.kept::<Said>(Feature::Describing, &item.slot.key)?);
                 library.forget_key(Feature::Describing, &item.slot.key)?;
             }
         }
@@ -541,7 +558,15 @@ fn walk(
             tracker.progress(Progress { done: before + progress.done, of: total, usd: progress.usd });
         };
         let level_tracker = Tracker::new(&log, &progress, tracker.cancel());
-        let outcomes = answer(&items, &level_tracker)?;
+        let outcomes = match answer(&items, &level_tracker) {
+            Ok(outcomes) => outcomes,
+            Err(error) => {
+                put_back(library, &items, set_aside, |_| true);
+                return Err(error);
+            }
+        };
+        let answered: Vec<bool> = outcomes.iter().map(|outcome| matches!(outcome, Asked::Answered(_))).collect();
+        put_back(library, &items, set_aside, |index| !answered[index]);
         done += u64::try_from(items.len()).unwrap_or(0);
         for (call, outcome) in prepared.calls.iter().zip(outcomes) {
             let size = call.groups.len();
@@ -682,7 +707,8 @@ pub fn describe_with(
                 let asking = Asking { library, transport, endpoint: endpoint.clone(), recorder: library, in_flight };
                 batch::ask_all::<Said>(asking, items, budget, level)
             };
-            walk(library, run, chosen, tracker, &mut answer).map(|(names, tally)| (names, outcome_of(tally, None)))
+            walk(library, run, chosen, tracker, run.redo, &mut answer)
+                .map(|(names, tally)| (names, outcome_of(tally, None)))
         }
         Err(why) => {
             let missing = why.clone();
@@ -697,7 +723,8 @@ pub fn describe_with(
                     })
                     .collect()
             };
-            walk(library, run, chosen, tracker, &mut answer).map(|(names, tally)| (names, outcome_of(tally, Some(why))))
+            walk(library, run, chosen, tracker, false, &mut answer)
+                .map(|(names, tally)| (names, outcome_of(tally, Some(why))))
         }
     };
     let (names, mut outcome) = match walked {
@@ -1248,6 +1275,24 @@ pub(crate) mod tests {
         assert_eq!(done.outcome, Outcome::Described { written: 2, kept: 0 });
         assert_eq!(done.names["c0"].name, "Topic tc0");
         assert_eq!(transport.sent().len(), 3);
+    }
+
+    #[test]
+    fn describing_again_that_is_stopped_or_has_no_key_loses_nothing_kept() {
+        let made = made(2, 1, 3, 100);
+        let (data, library) = library(&made);
+        let transport = scripted();
+        let run = made.run(data.path(), false);
+        described(&library, &*transport, &run, &chosen(MODEL), &plenty(), &Cancel::new(), 4);
+        let again = made.run(data.path(), true);
+        let tight = Budget::new(Limit::Tokens(10));
+        let (done, _) = described(&library, &*transport, &again, &chosen(MODEL), &tight, &Cancel::new(), 4);
+        assert!(matches!(done.outcome, Outcome::Stopped { .. }), "{:?}", done.outcome);
+        let unkeyed = Chosen::of(Provider::Anthropic, MODEL, Effort::Medium, Err(Unavailable::NoKey));
+        described(&library, &*transport, &again, &unkeyed, &plenty(), &Cancel::new(), 4);
+        let estimate = estimate_run(&library, &run, &chosen(MODEL)).unwrap();
+        assert_eq!((estimate.kept, estimate.to_ask), (4, 0), "every answer paid for is still kept");
+        assert_eq!(transport.sent().len(), 4);
     }
 
     #[test]
