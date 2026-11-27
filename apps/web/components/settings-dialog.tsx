@@ -58,8 +58,10 @@ function LanguageModels({ choosable }: { choosable: Choosable }) {
 	return (
 		<>
 			<p className="text-xs text-muted-foreground">
-				Keys and addresses are not entered here: set the variable named below in the engine&apos;s environment or its .env file, and start
-				the engine again. A key is never shown, only whether it is set.
+				Keys and addresses are not entered here. In the desktop app, write the variable named below, as NAME=value, in a file named .env in
+				Constellate&apos;s data folder (Windows: %LOCALAPPDATA%\Constellate\data; Linux: ~/.local/share/constellate/data), then close
+				Constellate and open it again. On a server, set it in the engine&apos;s environment or its .env. A key is never shown, only whether
+				it is set.
 			</p>
 			<ul className="flex flex-col gap-2">
 				{groupsOf(choosable.catalog).map(({ provider, why }) => (
@@ -171,7 +173,7 @@ const GROUPS: { title: string; note?: string; columns?: number; fields: Field[] 
 				kind: "switch",
 				key: "describe",
 				label: "Describe communities with a language model",
-				hint: "Needs the chosen provider's key in the backend's environment (see Language model below)",
+				hint: "Needs the chosen provider's key (see Language model below)",
 			},
 			{ kind: "model", key: "describe_model", label: "Language model" },
 		],
