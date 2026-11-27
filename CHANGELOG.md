@@ -109,6 +109,17 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A setting the backend refuses (a number of communities out of range, say) now says why, in the backend's
+  words, under the list of runs until that setting is saved, instead of quietly going back; a failed rename or
+  delete of a run says why too.
+- "Try again" after reading a paper's declarations or its reference list failed now reads it again.
+- An open overview is asked for again when the language model is changed in Settings, so the previous model's
+  overview is no longer shown under the new one.
+- A community's reviews and other sections no longer show the previous community's figures while their own load,
+  and a reload that fails keeps what was shown beside the error.
+- Without the engine, the reader's Text and Citations tabs say that nothing is available instead of "not found".
+- The graph stays sharp and correctly placed when the window moves to a screen with another pixel density, and a
+  run with no papers says so instead of drawing nothing.
 - The installed app's first start no longer stops with "Missing expected target directory for Python minor version
   link" when Constellate is opened from inside another packaged Windows app (from a terminal in one, say).
 - Marked papers and panel sizes are kept between launches: the interface is served on the same port each time. Ending
