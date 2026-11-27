@@ -11,7 +11,7 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- The backend is being rewritten in Rust (`apps/server`), organised by subject; the Python backend stays until the
+- The backend is being rewritten in Rust (`apps/engine`), organised by subject; the Python backend stays until the
   Rust one does everything it does.
 
 ## [0.1.0] - 2026-11-26
@@ -62,5 +62,5 @@ The first release.
   limited to the sites papers are published on.
 - PDFs are fetched only from the publishers' hosts, with a size and time limit.
 
-[Unreleased]: https://github.com/Patchoulis/constellate/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/Patchoulis/constellate/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Patchoulis/Constellate/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Patchoulis/Constellate/releases/tag/v0.1.0

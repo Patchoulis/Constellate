@@ -43,7 +43,7 @@ or your library is sent anywhere.
 (Rust through rustup, the formatter and linter, the npm packages, the git hooks):
 
 ```
-git clone https://github.com/Patchoulis/constellate && cd constellate
+git clone https://github.com/Patchoulis/Constellate && cd Constellate
 npm run setup
 npm run app
 ```

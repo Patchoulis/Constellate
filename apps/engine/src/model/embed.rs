@@ -1,9 +1,11 @@
 //! Embedding: one unit-length vector per text, from a model run by ONNX Runtime.
 //!
-//! The model runs on whatever the computer has. On Windows that is DirectML, which uses any DirectX 12 graphics
-//! card (NVIDIA, AMD or Intel, built-in ones included) with nothing for the user to install; where there is no
-//! such card, or it cannot be used, the processor does the work, about ten times slower. Nothing here is tied to
-//! one maker's cards.
+//! The model runs on whatever the computer has, with nothing for the user to install and nothing tied to one
+//! maker's cards:
+//!
+//! * **Windows**: DirectML, which uses any DirectX 12 graphics card (NVIDIA, AMD or Intel, built-in ones too).
+//! * **Linux**: WebGPU, which reaches any card through Vulkan.
+//! * **Anywhere there is no usable card** (or on a system not listed): the processor, about ten times slower.
 //!
 //! The model is `Qwen3-Embedding-0.6B` in the ONNX form its publisher's community exports
 //! (`onnx-community/Qwen3-Embedding-0.6B-ONNX`). Its vectors agree with the ones the PyTorch model gives to four
@@ -31,7 +33,7 @@ const HEAD_WIDTH: usize = 128;
 /// What runs the model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Device {
-    /// Any DirectX 12 graphics card, through DirectML.
+    /// Whatever graphics card the computer has: through DirectML on Windows, WebGPU (Vulkan) on Linux.
     GraphicsCard,
     Processor,
 }
@@ -101,6 +103,23 @@ pub fn last_token_vectors(
         .collect())
 }
 
+/// This system's way to run the model on any graphics card; an error where it has none, so that the processor
+/// is used.
+#[cfg(windows)]
+fn graphics_card() -> Result<ep::ExecutionProviderDispatch, ort::Error> {
+    Ok(ep::DirectML::default().build().error_on_failure())
+}
+
+#[cfg(target_os = "linux")]
+fn graphics_card() -> Result<ep::ExecutionProviderDispatch, ort::Error> {
+    Ok(ep::WebGPU::default().build().error_on_failure())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn graphics_card() -> Result<ep::ExecutionProviderDispatch, ort::Error> {
+    Err(ort::Error::new("no graphics-card support is built in for this system"))
+}
+
 pub struct Encoder {
     tokenizer: Tokenizer,
     session: Session,
@@ -130,11 +149,11 @@ impl Encoder {
 
     fn session(model: &Path, device: Device) -> Result<Session, ort::Error> {
         let providers = match device {
-            Device::GraphicsCard => vec![ep::DirectML::default().build().error_on_failure()],
+            Device::GraphicsCard => vec![graphics_card()?],
             Device::Processor => vec![],
         };
         let environment = ort::init().with_execution_providers(providers).build()?;
-        // DirectML needs memory patterns off and one operator at a time; the processor does not mind
+        // DirectML needs memory patterns off and one operator at a time; the others do not mind
         Session::builder(&environment)?
             .with_memory_pattern(false)?
             .with_parallel_execution(false)?

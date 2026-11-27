@@ -1,6 +1,7 @@
-# The Rust side of Constellate: the backend that gathers, embeds and clusters papers and serves the interface.
+# The Rust side of Constellate: the engine that gathers, embeds and clusters papers. It runs on the user's own
+# computer as part of the desktop app; it is not a server anyone else can reach.
 [workspace]
-members = ["apps/server"]
+members = ["apps/engine"]
 resolver = "3"
 
 [workspace.package]
@@ -9,7 +10,8 @@ edition = "2024"
 rust-version = "1.85"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# deny, not forbid: a macro of the matrix library carries its own allowance, which forbid rejects outright
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 # warnings are errors in CI (`npm run pr` runs clippy with -D warnings); these are the extra ones asked for

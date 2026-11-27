@@ -1,6 +1,6 @@
 [package]
 name = "constellate"
-description = "Constellate's backend: papers gathered, embedded, clustered into communities, and served to the interface."
+description = "Constellate's engine: papers gathered, embedded and clustered into communities, on the user's own computer."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,14 +12,25 @@ workspace = true
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 half = "2"
-# ONNX Runtime with DirectML: any DirectX 12 graphics card on Windows (NVIDIA, AMD, Intel), else the processor
-ort = { version = "=2.0.0-rc.15", features = ["directml", "half"] }
+# matrix products through matrixmultiply on every core: the similarity matrix is one n x n product
+ndarray = { version = "0.17", features = ["matrixmultiply-threading"] }
+ort = { version = "=2.0.0-rc.15", features = ["half"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10"
 thiserror = "2"
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+
+# The embedding model runs under ONNX Runtime on whatever graphics card the computer has, of any maker, and on the
+# processor where there is none. Each system has its own way to reach any card:
+#   Windows   DirectML (DirectX 12)
+#   Linux     WebGPU, which goes through Vulkan
+[target.'cfg(windows)'.dependencies]
+ort = { version = "=2.0.0-rc.15", features = ["directml"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ort = { version = "=2.0.0-rc.15", features = ["webgpu"] }
 
 [dev-dependencies]
 tempfile = "3"
