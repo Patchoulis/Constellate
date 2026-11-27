@@ -73,6 +73,7 @@
 //!   lock), and reads that span tables would run REPEATABLE READ.
 
 pub mod answers;
+pub mod citation_contexts;
 pub mod embeddings;
 pub mod extraction;
 pub mod import;

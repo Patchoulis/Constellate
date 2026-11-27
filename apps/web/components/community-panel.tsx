@@ -8,6 +8,7 @@ import { MathText } from "@/components/math-text";
 import { CommunityReviews } from "@/components/review-summary";
 import { CommunityStances } from "@/components/stances";
 import { ExtractionTable } from "@/components/extraction-table";
+import { CommunityCitationKinds } from "@/components/citation-kinds";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { CITATIONS_NOTE, citationsNote, citedByFigure, citedByOf, citesFigure, citesOf } from "@/lib/citations";
@@ -464,6 +465,7 @@ function Communities({
 						onOpenPaper={onOpenPaper}
 					/>
 					<ExtractionTable run={result.name} scope={{ community: selected.community.tree_path }} onOpenPaper={onOpenPaper} />
+					<CommunityCitationKinds run={result.name} treePath={selected.community.tree_path} onOpenPaper={onOpenPaper} />
 				</div>
 			) : (
 				<>

@@ -28,6 +28,11 @@ import type {
 	ExplanationStarted,
 	PassageAddress,
 	RelatedPassages,
+	CitationKindsEstimate,
+	CitationKindsScope,
+	CitationKindsSummary,
+	ClassifyCitationsRequest,
+	PaperCitationContexts,
 } from "@rp/contracts";
 import { changesSomething, csrfOf, signInRedirect, withCsrf } from "@/lib/engine";
 
@@ -209,6 +214,32 @@ export const api = {
 	/** per paper of a community whose reviews were mapped, its contested claims */
 	contestedClaims: (name: string, treePath: string) =>
 		call<ContestedClaims>(`${run(name)}/communities/${encodeURIComponent(treePath)}/claims/contested`),
+	/** the sentences where this paper cites papers of the library, and where (the run's, or one of its
+	 *  communities') papers cite it */
+	citationContexts: (id: string, inRun?: string, treePath?: string) =>
+		call<PaperCitationContexts>(
+			`/api/papers/${encodeURIComponent(id)}/citation-contexts${inRun ? `?run=${encodeURIComponent(inRun)}` : ""}${
+				inRun && treePath ? `&community=${encodeURIComponent(treePath)}` : ""
+			}`,
+		),
+	/** start the job that reads the citing sentences of every paper of a run (free: no model) */
+	readCitationContexts: (name: string) => call<{ ok: true; id: number }>(`${run(name)}/citation-contexts`, { method: "POST" }),
+	/** what the kinds of a community's (or the run's) citations come to */
+	citationKinds: (name: string, treePath?: string) =>
+		call<CitationKindsSummary>(`${run(name)}/citation-kinds${treePath ? `?community=${encodeURIComponent(treePath)}` : ""}`),
+	/** what reading those kinds would cost; nothing is sent */
+	citationKindsEstimate: (name: string, scope: CitationKindsScope, treePath?: string) =>
+		call<CitationKindsEstimate>(
+			`${run(name)}/citation-kinds/estimate?scope=${scope}${treePath ? `&community=${encodeURIComponent(treePath)}` : ""}`,
+		),
+	/** start the job that asks the model for those kinds, within the budget */
+	classifyCitations: (name: string, request: ClassifyCitationsRequest) =>
+		call<{ ok: true; id: number }>(`${run(name)}/citation-kinds`, send("POST", request)),
+	/** forget the kinds read for the papers a community cites, so that they are read again */
+	forgetCitationKinds: (name: string, treePath?: string) =>
+		call<{ ok: true; forgotten: number }>(`${run(name)}/citation-kinds${treePath ? `?community=${encodeURIComponent(treePath)}` : ""}`, {
+			method: "DELETE",
+		}),
 };
 
 type StanceScope = import("@rp/contracts").StanceScope;

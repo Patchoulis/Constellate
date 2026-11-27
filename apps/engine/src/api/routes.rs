@@ -281,6 +281,7 @@ pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
     table.extend(super::extraction::table());
     table.extend(super::explanation::table());
     table.extend(super::claim_tree::table());
+    table.extend(super::citation_contexts::table());
     table
 }
 

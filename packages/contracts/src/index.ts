@@ -1384,3 +1384,151 @@ export interface ContestedClaims {
 	papers_mapped: number;
 	counts: { paper_id: string; contested: number; nodes: number; reviewers: number }[];
 }
+
+// ---- citation contexts and kinds ----
+
+/** The part of a paper a citation is in, normalised from its section's heading (engine analysis/citation_contexts.rs). */
+export type CitationSection =
+	| { kind: "abstract" | "introduction" | "related_work" | "background" | "method" | "experiments" | "discussion" | "appendix" }
+	/** a heading none of those words name, as the paper writes it */
+	| { kind: "other"; title: string };
+
+/** Whether the cited work is named alone or in a group ("[3, 7-9]": a grouped citation says less about each work). */
+export type CitationGrouping = { kind: "alone" } | { kind: "grouped"; with: number };
+
+/** What a citation does, as the model reads it (engine analysis/citation_kinds.rs). */
+export type CitationKind = "uses" | "uses_data" | "baseline" | "extends" | "supports" | "contrasts" | "mention";
+
+/** The model's reading of one citing sentence, shown only beside the sentence. A kind other than mention counts
+ *  only when the words that show it (`because`, the citing paper's own) were found in the sentence or its
+ *  neighbours; otherwise it is `not_justified`, counted as a mention. */
+export type CitationJudgement =
+	| { state: "justified"; kind: CitationKind; because: Evidence }
+	| { state: "mention" }
+	| { state: "not_justified"; claimed: CitationKind }
+	| { state: "not_classified" };
+
+/** How a paper is cited, in citing sentences: every count is out of `sentences`, and they add up to it. */
+export interface CitationTally {
+	sentences: number;
+	/** distinct citing papers those sentences are in */
+	papers: number;
+	/** justified kinds other than mention */
+	kinds: Partial<Record<CitationKind, number>>;
+	mentions: number;
+	not_justified: number;
+	not_classified: number;
+}
+
+/** One citing sentence: the sentence itself as evidence of the citing paper, its neighbours and what it is. */
+export interface CitingSentenceShown {
+	evidence: Evidence;
+	/** the sentences on either side, also evidence of the citing paper (null when there is none or it was not found) */
+	before: Evidence | null;
+	after: Evidence | null;
+	section: CitationSection;
+	grouping: CitationGrouping;
+	/** the citation as the sentence writes it: "[3, 7-9]", "Vaswani et al., 2017" */
+	written: string;
+	judgement: CitationJudgement;
+}
+
+/** A paper cited by (in `cites`) or citing (in `cited_by`) the paper asked about, with the sentences. */
+export interface CitationContextsOf {
+	paper: string;
+	title: string;
+	tally: CitationTally;
+	sentences: CitingSentenceShown[];
+}
+
+/** `GET /api/papers/<id>/citation-contexts?run=<name>`: the sentences between this paper and the library's. */
+export interface PaperCitationContexts {
+	paper: string;
+	/** what came of reading this paper: with no PDF, only who cites it is known */
+	state: "read" | "no_pdf" | "unreadable";
+	/** entries of its reference list; 0 when none was found */
+	references_listed: number;
+	cites: CitationContextsOf[];
+	/** papers whose citing sentences were read that cite it, the most sentences first */
+	cited_by: CitationContextsOf[];
+	cited_by_total: number;
+	/** how many of the run's papers have had their citing sentences read (null without a run) */
+	coverage: { papers: number; read: number; without_pdf: number } | null;
+	/** sentences whose place could no longer be found in their paper's text: not shown */
+	left_out: number;
+	/** the model whose readings are shown */
+	model: string;
+}
+
+/** A cited paper ranked by how often it is cited one way. */
+export interface RankedCitation {
+	paper: string;
+	/** citing sentences read as the kind ranked by */
+	count: number;
+	tally: CitationTally;
+}
+
+/** `GET /api/runs/<name>/citation-kinds?community=<tree path>`: what the community's citations come to. */
+export interface CitationKindsSummary {
+	papers: number;
+	/** of its papers, whose citing sentences were read */
+	papers_read: number;
+	without_pdf: number;
+	/** papers of the library its papers cite */
+	cited_papers: number;
+	tally: CitationTally;
+	baseline: RankedCitation[];
+	contrasts: RankedCitation[];
+	/** their dataset or benchmark used */
+	data: RankedCitation[];
+	/** their method used or extended */
+	used: RankedCitation[];
+	supports: RankedCitation[];
+	/** the papers a sample run reads first: the most cited by the community */
+	sample: string[];
+	titles: Record<string, string>;
+	model: string;
+}
+
+export type CitationKindsScope = "sample" | "rest";
+
+/** `GET /api/runs/<name>/citation-kinds/estimate`: what reading a scope's kinds would cost; nothing is sent. */
+export interface CitationKindsEstimate {
+	scope: CitationKindsScope;
+	model: string;
+	sentences: number;
+	/** read already: they cost nothing */
+	kept: number;
+	to_ask: number;
+	estimate: {
+		items: number;
+		kept: number;
+		to_ask: number;
+		by_model: {
+			model: string;
+			calls: number;
+			tokens: { input: number; output: number; cache_read: number; cache_write_5m: number; cache_write_1h: number };
+			usd: number | null;
+			most_usd: number | null;
+			/** how prompt tokens were reckoned: an estimate either way */
+			counting: { kind: "assumed" | "measured"; chars_per_token: number };
+		}[];
+		/** likely cost in US dollars; null when a model's price is not known */
+		usd: number | null;
+		/** if every answer took its most and nothing was read from the cache */
+		most_usd: number | null;
+	};
+	/** a key is set, so the model can be asked (never the key) */
+	can_ask: boolean;
+}
+
+/** `POST /api/runs/<name>/citation-kinds`. */
+export interface ClassifyCitationsRequest {
+	community?: string | null;
+	scope: CitationKindsScope;
+	/** the most the job may spend, in US dollars */
+	budget_usd: number;
+	/** the model and the sentences to ask of the estimate shown: anything else is refused (estimate again) */
+	model: string;
+	to_ask: number;
+}

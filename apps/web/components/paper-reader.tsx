@@ -6,6 +6,7 @@ import type { Catalog, CatalogItem, Declarations, Paper, Ratings, ReaderTarget }
 import { AcceptanceTag, AiTag, FlagTag, RatingTags } from "@/components/brand";
 import { Citations } from "@/components/citation-network";
 import { ClaimsView } from "@/components/claims-view";
+import { CitationSentences } from "@/components/citation-contexts";
 import { CommunityDot, MarkButton } from "@/components/community-panel";
 import { Weaknesses } from "@/components/critique";
 import { MathText } from "@/components/math-text";
@@ -438,6 +439,7 @@ export function PaperReader({
 					{found && view === "claims" && (
 						<ClaimsView key={found.id} id={found.id} onOpenReviews={from.reviews && EMBEDS ? () => setView("reviews") : undefined} />
 					)}
+					{found && view === "citations" && <CitationSentences paper={found.id} run={run} onOpen={onOpen} />}
 					{found && view === "text" && (
 						// a new citation starts afresh: nothing of the last one may stay highlighted while this one is found
 						<PaperText key={JSON.stringify(at ?? null)} id={found.id} at={at} onOpenPdf={from.paper ? openPdf : undefined} run={run} />
