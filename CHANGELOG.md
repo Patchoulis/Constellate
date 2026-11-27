@@ -5,6 +5,11 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Known issues
+
+- The clustering method "spectral-knn" can give different communities on different computers when its neighbour
+  graph is in several pieces. The default method and the other two are not affected. A fix is in progress.
+
 ### Added
 
 - A run whose communities have no names has a "Name the communities" button over its list: it shows how many are
