@@ -1012,9 +1012,8 @@ pub(crate) mod tests {
             assert!(listed.contains(variable), "{variable} is read but not in .env.example");
             assert!(readme.contains(&format!("`{variable}`")), "{variable} is read but not in apps/engine/README.md");
         }
-        // read elsewhere, from the process environment only: the citation look-up's address, and the Python
-        // backend's model download
-        let elsewhere = [crate::sources::citations::ARXIV_API_VARIABLE, "HF_ENDPOINT"];
+        // read elsewhere, from the process environment only: the Python backend's model download
+        let elsewhere = ["HF_ENDPOINT"];
         for variable in listed {
             assert!(
                 read.contains(&variable) || elsewhere.contains(&variable),
