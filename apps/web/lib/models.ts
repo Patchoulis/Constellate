@@ -94,6 +94,18 @@ export function isPlainId(id: string): boolean {
 	return id.length > 0 && id.length <= 200 && !/^[./]/.test(id) && !id.includes("..") && /^[A-Za-z0-9._/:-]+$/.test(id);
 }
 
+/**
+ * The model ids an OpenAI-compatible server says it has (`GET /api/models/endpoint`), as far as they can be used:
+ * ids that are not plain (not text, too long, a path) are dropped and counted. Null when the answer is not a list
+ * of models at all (a server that answers something else on that address).
+ */
+export function endpointIds(answer: unknown): { ids: string[]; dropped: number } | null {
+	const models = (answer as { models?: unknown } | null)?.models;
+	if (!Array.isArray(models)) return null;
+	const ids = [...new Set(models.filter((id): id is string => typeof id === "string" && isPlainId(id)))];
+	return { ids, dropped: models.length - ids.length };
+}
+
 /** The chosen provider and model as the settings name them, with the provider's row and the model's when listed. */
 export interface Chosen {
 	providerId: ProviderId;
