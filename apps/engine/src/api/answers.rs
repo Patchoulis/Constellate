@@ -749,11 +749,7 @@ mod tests {
 
     /// A key, and an address where nothing listens: should anything be sent, it reaches no one.
     fn with_key(mut engine: Engine) -> Engine {
-        engine.language = Environment::from_pairs([
-            ("ANTHROPIC_API_KEY", "test-key-not-real-0123456789"),
-            ("ANTHROPIC_BASE_URL", "http://127.0.0.1:1"),
-        ])
-        .language_endpoint();
+        engine.set_claude_key("test-key-not-real-0123456789", Some("http://127.0.0.1:1"));
         engine
     }
 

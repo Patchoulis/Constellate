@@ -1112,7 +1112,7 @@ pub(super) mod tests {
     use crate::library::Known;
     use crate::library::papers::tests::paper;
     use crate::model::language::fake::{message, ok};
-    use crate::model::language::{ApiKey, Endpoint, KEY_VARIABLE, Reply, Transport, TransportError};
+    use crate::model::language::{ApiKey, Reply, Transport, TransportError};
     use crate::settings::Choices;
 
     const AT: &str = "127.0.0.1:8765";
@@ -1209,7 +1209,7 @@ pub(super) mod tests {
         let mut engine = Engine::new(data.path().to_path_buf(), choices());
         engine.transport = std::sync::Arc::new(Answering);
         if key {
-            engine.language = Endpoint::from_lookup(|name| (name == KEY_VARIABLE).then(|| "test-key-not-real".into()));
+            engine.set_claude_key("test-key-not-real", None);
         }
         let (router, _) = served(&listen, AT, engine);
         (router, data)

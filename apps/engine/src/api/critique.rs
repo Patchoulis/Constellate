@@ -354,12 +354,8 @@ mod tests {
     /// sent by mistake, it reaches no provider.
     fn with_key(data: &tempfile::TempDir) -> Engine {
         let mut engine = Engine::new(data.path().to_path_buf(), choices());
-        engine.language = Environment::from_pairs([
-            ("ANTHROPIC_API_KEY", "test-key-not-real-0123456789"),
-            ("ANTHROPIC_BASE_URL", "http://127.0.0.1:9"),
-        ])
-        .language_endpoint();
-        assert!(engine.language.is_ok());
+        engine.set_claude_key("test-key-not-real-0123456789", Some("http://127.0.0.1:9"));
+        assert!(engine.endpoint().is_ok());
         engine
     }
 
@@ -623,7 +619,7 @@ mod tests {
         let library = Library::open(&data.path().join("library")).unwrap();
         let Some(PaperReading::Read(passages)) = library.paper_texts(&["2601.00002"]).unwrap().pop() else { panic!() };
         let plan = Plan::new("2601.00002", &Chosen::claude("claude-opus-5-5"), &passages, None);
-        let endpoint = || with_key(&data).language.unwrap();
+        let endpoint = || with_key(&data).endpoint().unwrap();
         let budget = || {
             let estimate = plan.estimate(&library).unwrap();
             let accepted_usd = estimate.cost.most_usd.map(crate::usage::Usd::dollars);

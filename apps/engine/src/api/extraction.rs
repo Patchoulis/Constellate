@@ -708,8 +708,7 @@ mod tests {
         .unwrap();
         let mut engine = Engine::new(data.path().to_path_buf(), choices());
         if key {
-            engine.language =
-                Environment::from_pairs([("ANTHROPIC_API_KEY", "test-key-not-real-0123")]).language_endpoint();
+            engine.set_claude_key("test-key-not-real-0123", None);
         }
         let job = engine.job.clone();
         let (router, _) = served(&listen, AT, engine);

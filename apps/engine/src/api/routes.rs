@@ -58,11 +58,9 @@ pub struct Engine {
     pub warnings: Vec<String>,
     /// This computer only, or a network: set by the server from how it listens.
     pub mode: Mode,
-    /// The language model's providers, as their variables were read at start ([`super::models`]).
+    /// The language model's providers, as their variables were read at start ([`super::models`]): the one place a
+    /// feature's endpoint comes from, in the program and in the tests alike.
     pub providers: crate::model::language::Providers,
-    /// One endpoint to ask whatever the settings say, when there is one: a test's. The program leaves it unset,
-    /// and the provider chosen in the settings is asked ([`Engine::endpoint`]).
-    pub language: Result<Endpoint, Unavailable>,
     /// How the language model's requests reach its provider: the network, or a test's fake (which reaches nothing,
     /// so that no test of a route can ever call a real provider).
     pub transport: Arc<dyn Transport>,
@@ -82,7 +80,6 @@ impl Engine {
             warnings: Vec::new(),
             mode: Mode::Local,
             providers,
-            language: Err(Unavailable::NoKey),
             // in the tests, a transport that reaches nothing: a test that gives a key and starts a job must
             // never call a real provider, even one it did not mean to start
             #[cfg(not(test))]
@@ -136,10 +133,19 @@ impl Engine {
     }
 
     fn endpoint_for(&self, provider: Provider) -> Result<Endpoint, Unavailable> {
-        match &self.language {
-            Ok(fixed) => Ok(fixed.clone()),
-            Err(_) => self.providers.endpoint(provider),
-        }
+        self.providers.endpoint(provider)
+    }
+
+    /// For the tests: the Claude API with a made-up `key`, at `base` when one is given (an address where nothing
+    /// listens). Whatever is sent goes through the tests' transport, which reaches nothing.
+    #[cfg(test)]
+    pub fn set_claude_key(&mut self, key: &str, base: Option<&str>) {
+        let (key, base) = (key.to_owned(), base.map(str::to_owned));
+        self.providers = crate::model::language::Providers::from_lookup(|name| match name {
+            crate::model::language::KEY_VARIABLE => Some(key.clone()),
+            crate::model::language::BASE_VARIABLE => base.clone(),
+            _ => None,
+        });
     }
 
     /// The provider, model and effort every feature asks with, and the endpoint it asks at, read together from

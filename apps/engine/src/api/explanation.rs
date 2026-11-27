@@ -832,11 +832,7 @@ mod tests {
 
         // a key, to an address nothing listens on; another job running: nothing is started, nothing sent
         let busy = serve(&data, |engine| {
-            engine.language = Environment::from_pairs([
-                ("ANTHROPIC_API_KEY", "test-key-not-real-0123456789"),
-                ("ANTHROPIC_BASE_URL", "http://127.0.0.1:9"),
-            ])
-            .language_endpoint();
+            engine.set_claude_key("test-key-not-real-0123456789", Some("http://127.0.0.1:9"));
             engine
                 .job
                 .start_tracked("a run", |tracker| {

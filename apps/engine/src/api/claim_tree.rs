@@ -241,7 +241,6 @@ mod tests {
     use crate::library::passages::fixtures::pdf_with;
     use crate::library::{Known, Library};
     use crate::model::language::fake::Fake;
-    use crate::model::language::{BASE_VARIABLE, Endpoint, KEY_VARIABLE};
     use crate::settings::Choices;
 
     const AT: &str = "127.0.0.1:8765";
@@ -255,16 +254,6 @@ mod tests {
             flags: one("llm_declared"),
             describe_models: one("claude-opus-5-5"),
         }
-    }
-
-    /// An endpoint on this computer that nothing listens on: no request can reach any provider from a test.
-    fn nowhere() -> Endpoint {
-        Endpoint::from_lookup(|name| match name {
-            KEY_VARIABLE => Some("test-key-not-real".to_owned()),
-            BASE_VARIABLE => Some("http://127.0.0.1:9".to_owned()),
-            _ => None,
-        })
-        .unwrap()
     }
 
     /// The engine with a library of a paper with a PDF and reviews, one without a PDF, and a run of both.
@@ -299,7 +288,7 @@ mod tests {
         .unwrap();
         let mut engine = Engine::new(data.path().to_path_buf(), choices());
         if language {
-            engine.language = Ok(nowhere());
+            engine.set_claude_key("test-key-not-real", Some("http://127.0.0.1:9"));
         }
         (engine, data)
     }
