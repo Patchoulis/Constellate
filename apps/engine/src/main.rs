@@ -112,7 +112,8 @@ fn main() -> ExitCode {
         }
     };
     let served = runtime.block_on(async {
-        let server = Server::bind(listen, Engine::new(data, choices()), routes())?;
+        let mut server = Server::bind(listen, Engine::new(data, choices()), routes())?;
+        server.announce_setup_code();
         let mut out = io::stdout().lock();
         writeln!(out, "{}", server.startup_line())?;
         out.flush()?;

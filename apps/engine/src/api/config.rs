@@ -7,14 +7,18 @@
 //!   still required, because other programs and web pages on the same computer can reach a loopback port too;
 //!   if none is given, one is made from the operating system's random source and handed to the parent process.
 //! * **Network**: any other address. The engine is then reachable from other machines, so it needs HTTPS with a
-//!   certificate and key, and a token of at least 32 characters given by whoever starts it. Plain HTTP is
-//!   possible only as an explicit opt-out (`CONSTELLATE_USE_HTTPS=false`), which is warned about loudly at start
-//!   and told to the interface ([`Listen::warnings`]). A missing certificate is a refusal to start, never a quiet
-//!   fall back to plain HTTP.
+//!   certificate and key, and its one owner signs in ([`super::login`]): with Google (OpenID Connect), with a
+//!   password, or either. The interface's origin must be given, since it is where the owner signs in and the
+//!   only page whose requests are answered. A token for programs (`CONSTELLATE_TOKEN`, 32+ characters) is
+//!   accepted only when the owner asks for it (`CONSTELLATE_ALLOW_TOKEN=true`). Plain HTTP is possible only as an
+//!   explicit opt-out (`CONSTELLATE_USE_HTTPS=false`), which is warned about loudly at start and told to the
+//!   interface ([`Listen::warnings`]). A missing certificate is a refusal to start, never a quiet fall back to
+//!   plain HTTP.
 //!
 //! The outcome is a [`Listen`]: it can only be made by [`Listen::from_environment`], which refuses every insecure
-//! combination, and the plain-HTTP transports carry a proof ([`Loopback`], [`OptOut`]) that only this module can
-//! make. No value read here is ever written to a log or an error message: a `.env` file holds the token.
+//! combination, and the plain-HTTP transports and the cookie without `Secure` carry a proof ([`Loopback`],
+//! [`OptOut`]) that only this module can make. No value read here is ever written to a log or an error message:
+//! a `.env` file holds the token and the sign-in secrets.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -28,11 +32,31 @@ use rustls::ServerConfig;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
+use super::login::{self, SignIn};
+
 /// The variables this engine reads; nothing else is taken from the environment or from `.env`.
-pub const VARIABLES: [&str; 9] = [BIND, PORT, TOKEN, USE_HTTPS, TLS_CERT, TLS_KEY, ORIGIN, HOST, DATA];
+pub const VARIABLES: [&str; 15] = [
+    BIND,
+    PORT,
+    TOKEN,
+    ALLOW_TOKEN,
+    USE_HTTPS,
+    TLS_CERT,
+    TLS_KEY,
+    ORIGIN,
+    HOST,
+    DATA,
+    login::OIDC_ISSUER,
+    login::OIDC_CLIENT_ID,
+    login::OIDC_CLIENT_SECRET,
+    login::OWNER_EMAIL,
+    login::ALLOW_PASSWORD,
+];
 const BIND: &str = "CONSTELLATE_BIND";
 const PORT: &str = "CONSTELLATE_PORT";
 const TOKEN: &str = "CONSTELLATE_TOKEN";
+/// Network mode only: whether programs may use [`TOKEN`] instead of signing in.
+const ALLOW_TOKEN: &str = "CONSTELLATE_ALLOW_TOKEN";
 const USE_HTTPS: &str = "CONSTELLATE_USE_HTTPS";
 const TLS_CERT: &str = "CONSTELLATE_TLS_CERT";
 const TLS_KEY: &str = "CONSTELLATE_TLS_KEY";
@@ -58,14 +82,30 @@ pub enum ConfigError {
     NotAnAddress,
     #[error("{PORT} must be a port number from 0 to 65535 (0: any free port)")]
     NotAPort,
-    #[error("{USE_HTTPS} must be true or false")]
-    NotASwitch,
+    #[error("{variable} must be true or false")]
+    NotASwitch { variable: &'static str },
     #[error(
-        "{TOKEN} must be set when the engine listens on a network ({BIND} is not a loopback address): every \
-         request must carry it. Use a random string of at least {SHORTEST_TOKEN} characters, for example the \
-         output of `openssl rand -hex 32`"
+        "{ALLOW_TOKEN}=true lets programs use {TOKEN} instead of signing in, but {TOKEN} is not set. Use a random \
+         string of at least {SHORTEST_TOKEN} characters, for example the output of `openssl rand -hex 32`"
     )]
     TokenMissing,
+    #[error(
+        "{TOKEN} is set, but across a network the owner signs in and programs may use the token only if \
+         {ALLOW_TOKEN}=true is set too. Set it, or remove {TOKEN}"
+    )]
+    TokenNotAllowed,
+    #[error(
+        "{ORIGIN} must be set when the engine listens on a network: it is the address people open in the browser \
+         (the interface, or the engine itself), where the owner signs in, for example https://papers.example.org"
+    )]
+    OriginNeeded,
+    #[error(
+        "{ORIGIN} must be an https address while HTTPS is on: the sign-in cookie must never travel unencrypted. \
+         Behind something else that does TLS, set {USE_HTTPS}=false and keep {ORIGIN} https"
+    )]
+    OriginNotHttps,
+    #[error(transparent)]
+    SignIn(#[from] login::ConfigError),
     #[error("{TOKEN} must be at least {SHORTEST_TOKEN} characters long")]
     TokenTooShort,
     #[error("{TOKEN} may contain only letters, digits and - . _ ~ + / =")]
@@ -151,6 +191,33 @@ pub enum TokenSource {
     Generated,
 }
 
+/// What lets a request in. Which one is decided by the mode, and only here.
+#[derive(Clone, Debug)]
+pub enum Access {
+    /// On this computer: the token handed to the desktop shell. Nobody signs in.
+    Token { token: Token, source: TokenSource },
+    /// Across a network: the owner signs in; programs may also carry the token if the owner allowed it.
+    SignIn { sign_in: SignIn, programs: Programs },
+}
+
+/// Across a network, whether a program may skip signing in by carrying the token.
+#[derive(Clone, Debug)]
+pub enum Programs {
+    /// The default: every request needs the owner's session.
+    Refused,
+    /// `CONSTELLATE_ALLOW_TOKEN=true`: this token is accepted too.
+    Token(Token),
+}
+
+/// How the sign-in cookie is sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cookie {
+    /// `__Host-` prefixed and `Secure`: the browser sends it over HTTPS only, to this exact host.
+    Secure,
+    /// Over plain HTTP, which the person asked for ([`OptOut`]) and is warned about: no prefix, no `Secure`.
+    Plain(OptOut),
+}
+
 /// The interface's origin, `scheme://host[:port]` in lower case: what a browser sends in `Origin`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Origin(String);
@@ -166,6 +233,10 @@ impl Origin {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    pub fn is_https(&self) -> bool {
+        self.0.starts_with("https://")
     }
 }
 
@@ -236,8 +307,7 @@ pub enum Transport {
 #[derive(Clone, Debug)]
 pub struct Listen {
     address: SocketAddr,
-    token: Token,
-    token_source: TokenSource,
+    access: Access,
     transport: Transport,
     origin: Option<Origin>,
     names: Vec<String>,
@@ -316,11 +386,19 @@ fn parse_env_file(text: &str) -> Result<Environment, ConfigError> {
 }
 
 /// `true`, `false` and their usual spellings.
-fn switch(value: &str) -> Result<bool, ConfigError> {
+pub(crate) fn switch(value: &str) -> Option<bool> {
     match value.to_ascii_lowercase().as_str() {
-        "true" | "1" | "yes" | "on" => Ok(true),
-        "false" | "0" | "no" | "off" => Ok(false),
-        _ => Err(ConfigError::NotASwitch),
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// The switch `variable`, `default` when it is not set.
+fn switched(environment: &Environment, variable: &'static str, default: bool) -> Result<bool, ConfigError> {
+    match environment.get(variable) {
+        Some(text) => switch(text).ok_or(ConfigError::NotASwitch { variable }),
+        None => Ok(default),
     }
 }
 
@@ -345,7 +423,7 @@ impl Listen {
             Some(text) => text.parse().map_err(|_| ConfigError::NotAPort)?,
             None => 0,
         };
-        let use_https = environment.get(USE_HTTPS).map(switch).transpose()?.unwrap_or(true);
+        let use_https = switched(environment, USE_HTTPS, true)?;
         let origin =
             environment.get(ORIGIN).map(|text| Origin::parse(text).ok_or(ConfigError::NotAnOrigin)).transpose()?;
         let names = match environment.get(HOST) {
@@ -364,11 +442,6 @@ impl Listen {
         };
 
         let mode = Mode::of(ip);
-        let (token, token_source) = match (mode, given_token) {
-            (_, Some(token)) => (token, TokenSource::Given),
-            (Mode::Local, None) => (Token::generate()?, TokenSource::Generated),
-            (Mode::Network, None) => return Err(ConfigError::TokenMissing),
-        };
         let transport = match (mode, use_https, certificate) {
             (_, true, Some((certificate, key))) => Transport::Https(Tls::load(&certificate, &key)?),
             (Mode::Local, _, _) => Transport::Loopback(Loopback(())),
@@ -378,7 +451,31 @@ impl Listen {
         if mode == Mode::Network && ip.is_unspecified() && names.is_empty() {
             return Err(ConfigError::NamesNeeded);
         }
-        Ok(Listen { address: SocketAddr::new(ip, port), token, token_source, transport, origin, names })
+        let access = match mode {
+            Mode::Local => match given_token {
+                Some(token) => Access::Token { token, source: TokenSource::Given },
+                None => Access::Token { token: Token::generate()?, source: TokenSource::Generated },
+            },
+            Mode::Network => {
+                let allow_token = switched(environment, ALLOW_TOKEN, false)?;
+                let programs = match (allow_token, given_token) {
+                    (true, Some(token)) => Programs::Token(token),
+                    (true, None) => return Err(ConfigError::TokenMissing),
+                    (false, Some(_)) => return Err(ConfigError::TokenNotAllowed),
+                    (false, None) => Programs::Refused,
+                };
+                let origin = origin.as_ref().ok_or(ConfigError::OriginNeeded)?;
+                // The browser decides whether it keeps a Secure cookie from the scheme it sees: an https origin
+                // gets one even when the engine itself is plain behind something that does TLS.
+                let cookie = match (&transport, origin.is_https()) {
+                    (_, true) => Cookie::Secure,
+                    (Transport::PlainByChoice(proof), false) => Cookie::Plain(*proof),
+                    (Transport::Https(_) | Transport::Loopback(_), false) => return Err(ConfigError::OriginNotHttps),
+                };
+                Access::SignIn { sign_in: SignIn::from_environment(environment, origin, cookie)?, programs }
+            }
+        };
+        Ok(Listen { address: SocketAddr::new(ip, port), access, transport, origin, names })
     }
 
     /// The address to bind; its port is 0 when any free port will do.
@@ -390,12 +487,16 @@ impl Listen {
         Mode::of(self.address.ip())
     }
 
-    pub fn token(&self) -> &Token {
-        &self.token
+    pub fn access(&self) -> &Access {
+        &self.access
     }
 
-    pub fn token_source(&self) -> TokenSource {
-        self.token_source
+    /// The token, when the engine made it up itself and must hand it to whoever started it.
+    pub fn generated_token(&self) -> Option<&Token> {
+        match &self.access {
+            Access::Token { token, source: TokenSource::Generated } => Some(token),
+            Access::Token { source: TokenSource::Given, .. } | Access::SignIn { .. } => None,
+        }
     }
 
     pub fn transport(&self) -> &Transport {
@@ -426,19 +527,31 @@ impl Listen {
     /// What is unsafe about this way of listening, for stderr at start and for the interface to show. Empty
     /// unless the person opted out of HTTPS across a network.
     pub fn warnings(&self) -> Vec<String> {
-        match self.transport {
+        let mut warnings = match self.transport {
             Transport::PlainByChoice(_) => vec![
                 format!(
                     "HTTPS is off ({USE_HTTPS}=false) although the engine listens on a network ({})",
                     self.address.ip()
                 ),
-                "The access token and everything the engine answers cross the network unencrypted: anyone who can see \
-                 the traffic can read them and then act as the app."
+                "Passwords, the sign-in cookie, the access token and everything the engine answers cross the \
+                 network unencrypted unless something in front of the engine does TLS: anyone who can see the \
+                 traffic can read them and then act as the owner."
                     .to_owned(),
                 format!("Set {TLS_CERT} and {TLS_KEY} and remove {USE_HTTPS}=false, or bind to 127.0.0.1."),
             ],
             Transport::Https(_) | Transport::Loopback(_) => Vec::new(),
+        };
+        let plain_cookie = match &self.access {
+            Access::SignIn { sign_in, .. } => matches!(sign_in.cookie(), Cookie::Plain(_)),
+            Access::Token { .. } => false,
+        };
+        if plain_cookie {
+            warnings.push(format!(
+                "The sign-in cookie is sent without Secure (and without the __Host- prefix), because {ORIGIN} is \
+                 plain http: a browser will send it over unencrypted connections."
+            ));
         }
+        warnings
     }
 }
 
@@ -472,23 +585,91 @@ pub(crate) mod tests {
         }
     }
 
+    /// What is needed besides an address across a network: the interface's origin and a way to sign in.
+    pub(crate) const SIGNING_IN: [(&str, &str); 2] = [(ORIGIN, "https://papers.test"), (login::ALLOW_PASSWORD, "true")];
+
+    fn with_sign_in<'a>(pairs: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
+        SIGNING_IN.iter().copied().chain(pairs.iter().copied()).collect()
+    }
+
+    /// The token of local mode, and where it came from.
+    fn token_of(listen: &Listen) -> (&str, TokenSource) {
+        match listen.access() {
+            Access::Token { token, source } => (token.expose(), *source),
+            Access::SignIn { .. } => panic!("not local mode"),
+        }
+    }
+
     #[test]
     fn nothing_set_listens_on_this_computer_on_any_port_with_a_generated_token_and_plain_http() {
         let listen = listen(&[]).unwrap();
         assert_eq!(listen.address(), "127.0.0.1:0".parse().unwrap());
         assert_eq!(
-            (listen.mode(), listen.token_source(), listen.scheme()),
+            (listen.mode(), token_of(&listen).1, listen.scheme()),
             (Mode::Local, TokenSource::Generated, "http")
         );
-        assert_eq!(listen.token().expose().len(), 64);
+        assert_eq!(token_of(&listen).0.len(), 64);
+        assert_eq!(listen.generated_token().map(Token::expose), Some(token_of(&listen).0));
         assert!(listen.warnings().is_empty());
-        assert_ne!(listen.token(), self::listen(&[]).unwrap().token()); // a new one each time
+        let again = self::listen(&[]).unwrap();
+        assert_ne!(token_of(&listen).0, token_of(&again).0); // a new one each time
     }
 
     #[test]
-    fn a_token_is_never_shown_by_debug() {
-        let listen = listen(&[(TOKEN, STRONG)]).unwrap();
-        assert!(!format!("{listen:?}").contains(STRONG));
+    fn local_mode_ignores_the_sign_in_settings() {
+        let listen = listen(&[(login::OIDC_CLIENT_ID, "x"), (login::ALLOW_PASSWORD, "true"), (TOKEN, STRONG)]).unwrap();
+        assert!(matches!(listen.access(), Access::Token { source: TokenSource::Given, .. }));
+        assert!(listen.generated_token().is_none());
+    }
+
+    #[test]
+    fn a_token_and_the_sign_in_secrets_are_never_shown_by_debug() {
+        let local = listen(&[(TOKEN, STRONG)]).unwrap();
+        assert!(!format!("{local:?}").contains(STRONG));
+        let network = listen(&with_sign_in(&[
+            (BIND, "192.168.1.20"),
+            (USE_HTTPS, "false"),
+            (TOKEN, STRONG),
+            (ALLOW_TOKEN, "true"),
+            (login::OIDC_CLIENT_ID, "client.test"),
+            (login::OIDC_CLIENT_SECRET, "secret-of-the-client"),
+            (login::OWNER_EMAIL, "owner@example.org"),
+        ]))
+        .unwrap();
+        let shown = format!("{network:?}");
+        for hidden in [STRONG, "secret-of-the-client", "owner@example.org"] {
+            assert!(!shown.contains(hidden), "{hidden} in {shown}");
+        }
+    }
+
+    #[test]
+    fn a_provider_needs_its_client_id_secret_and_the_owners_address() {
+        let base = with_sign_in(&[(BIND, "192.168.1.20"), (USE_HTTPS, "false")]);
+        let with = |extra: &[(&'static str, &'static str)]| {
+            let pairs: Vec<_> = base.iter().copied().chain(extra.iter().copied()).collect();
+            listen(&pairs)
+        };
+        let half = with(&[(login::OIDC_CLIENT_ID, "client.test")]).unwrap_err();
+        assert!(matches!(half, ConfigError::SignIn(login::ConfigError::HalfClient { .. })));
+        let half = with(&[(login::OIDC_CLIENT_SECRET, "s")]).unwrap_err();
+        assert!(matches!(half, ConfigError::SignIn(login::ConfigError::HalfClient { .. })));
+        let client = [(login::OIDC_CLIENT_ID, "client.test"), (login::OIDC_CLIENT_SECRET, "s")];
+        assert_eq!(with(&client).unwrap_err(), ConfigError::SignIn(login::ConfigError::OwnerNeeded));
+        let bad_owner = [client[0], client[1], (login::OWNER_EMAIL, "not an address")];
+        assert_eq!(with(&bad_owner).unwrap_err(), ConfigError::SignIn(login::ConfigError::NotAnEmail));
+        let owner = (login::OWNER_EMAIL, "owner@example.org");
+        let both = with(&[client[0], client[1], owner]).unwrap();
+        let Access::SignIn { sign_in, .. } = both.access() else { panic!("network mode") };
+        assert!(matches!(sign_in.methods(), login::Methods::Both(_)));
+        for issuer in ["http://accounts.example.org", "https://x.test/?a=1", "not a url"] {
+            let pairs = [client[0], client[1], owner, (login::OIDC_ISSUER, issuer)];
+            assert_eq!(with(&pairs).unwrap_err(), ConfigError::SignIn(login::ConfigError::NotAnIssuer), "{issuer}");
+        }
+        // Google only: password sign-in is off unless asked for
+        let only = [(BIND, "192.168.1.20"), (USE_HTTPS, "false"), SIGNING_IN[0], client[0], client[1], owner];
+        let only = listen(&only).unwrap();
+        let Access::SignIn { sign_in, .. } = only.access() else { panic!("network mode") };
+        assert!(matches!(sign_in.methods(), login::Methods::Provider(_)));
     }
 
     #[test]
@@ -499,7 +680,7 @@ pub(crate) mod tests {
         let broken = format!("{STRONG}\r\nX-Injected: 1");
         assert_eq!(listen(&[(TOKEN, &broken)]).unwrap_err(), ConfigError::TokenCharacters);
         let given = listen(&[(TOKEN, STRONG)]).unwrap();
-        assert_eq!((given.token().expose(), given.token_source()), (STRONG, TokenSource::Given));
+        assert_eq!(token_of(&given), (STRONG, TokenSource::Given));
     }
 
     #[test]
@@ -523,13 +704,65 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn network_mode_needs_a_token_of_its_own() {
-        let refused = listen(&[(BIND, "192.168.1.20"), (USE_HTTPS, "false")]).unwrap_err();
-        assert_eq!(refused, ConfigError::TokenMissing);
-        assert_eq!(
-            listen(&[(BIND, "192.168.1.20"), (TOKEN, "short"), (USE_HTTPS, "false")]).unwrap_err(),
-            ConfigError::TokenTooShort
-        );
+    fn across_a_network_the_owner_signs_in_and_the_token_is_for_programs_only_when_allowed() {
+        let network = [(BIND, "192.168.1.20"), (USE_HTTPS, "false")];
+        let signed = listen(&with_sign_in(&network)).unwrap();
+        assert!(matches!(signed.access(), Access::SignIn { programs: Programs::Refused, .. }));
+        assert!(signed.generated_token().is_none());
+
+        let token = [network[0], network[1], (TOKEN, STRONG)];
+        assert_eq!(listen(&with_sign_in(&token)).unwrap_err(), ConfigError::TokenNotAllowed);
+        let allowed = [token[0], token[1], token[2], (ALLOW_TOKEN, "true")];
+        let allowed = listen(&with_sign_in(&allowed)).unwrap();
+        assert!(matches!(allowed.access(), Access::SignIn { programs: Programs::Token(_), .. }));
+        let without = [network[0], network[1], (ALLOW_TOKEN, "true")];
+        assert_eq!(listen(&with_sign_in(&without)).unwrap_err(), ConfigError::TokenMissing);
+        let short = [network[0], network[1], (ALLOW_TOKEN, "true"), (TOKEN, "short")];
+        assert_eq!(listen(&with_sign_in(&short)).unwrap_err(), ConfigError::TokenTooShort);
+        let unclear = [network[0], network[1], (ALLOW_TOKEN, "perhaps")];
+        assert_eq!(listen(&with_sign_in(&unclear)).unwrap_err(), ConfigError::NotASwitch { variable: ALLOW_TOKEN });
+    }
+
+    #[test]
+    fn across_a_network_the_interfaces_origin_and_a_way_to_sign_in_are_required() {
+        let network = [(BIND, "192.168.1.20"), (USE_HTTPS, "false")];
+        assert_eq!(listen(&[network[0], network[1], SIGNING_IN[1]]).unwrap_err(), ConfigError::OriginNeeded);
+        let refused = listen(&[network[0], network[1], SIGNING_IN[0]]).unwrap_err();
+        assert_eq!(refused, ConfigError::SignIn(login::ConfigError::NoMethod));
+        let said = refused.to_string();
+        assert!(said.contains(login::OIDC_CLIENT_ID) && said.contains(login::ALLOW_PASSWORD), "{said}");
+    }
+
+    #[test]
+    fn with_https_on_the_origin_must_be_https_and_the_cookie_is_secure() {
+        let folder = tempfile::tempdir().unwrap();
+        let (certificate, key) = certificate_in(folder.path());
+        let secure = [
+            (BIND, "192.168.1.20"),
+            (TLS_CERT, certificate.to_str().unwrap()),
+            (TLS_KEY, key.to_str().unwrap()),
+            (login::ALLOW_PASSWORD, "true"),
+        ];
+        let plain_origin = [secure[0], secure[1], secure[2], secure[3], (ORIGIN, "http://papers.test")];
+        assert_eq!(listen(&plain_origin).unwrap_err(), ConfigError::OriginNotHttps);
+        let listen = listen(&with_sign_in(&secure)).unwrap();
+        let Access::SignIn { sign_in, .. } = listen.access() else { panic!("network mode") };
+        assert_eq!(sign_in.cookie(), Cookie::Secure);
+        assert!(listen.warnings().is_empty());
+    }
+
+    #[test]
+    fn behind_something_that_does_tls_the_cookie_stays_secure_and_over_plain_http_it_is_warned_about() {
+        let opted_out = [(BIND, "192.168.1.20"), (USE_HTTPS, "false"), (login::ALLOW_PASSWORD, "true")];
+        let proxied = listen(&[opted_out[0], opted_out[1], opted_out[2], (ORIGIN, "https://papers.test")]).unwrap();
+        let Access::SignIn { sign_in, .. } = proxied.access() else { panic!("network mode") };
+        assert_eq!(sign_in.cookie(), Cookie::Secure);
+        assert!(!proxied.warnings().join(" ").contains("cookie is sent without Secure"));
+
+        let plain = listen(&[opted_out[0], opted_out[1], opted_out[2], (ORIGIN, "http://papers.test")]).unwrap();
+        let Access::SignIn { sign_in, .. } = plain.access() else { panic!("network mode") };
+        assert!(matches!(sign_in.cookie(), Cookie::Plain(_)));
+        assert!(plain.warnings().join(" ").contains("cookie is sent without Secure"));
     }
 
     #[test]
@@ -550,13 +783,12 @@ pub(crate) mod tests {
     fn network_mode_with_a_certificate_serves_https_without_warnings() {
         let folder = tempfile::tempdir().unwrap();
         let (certificate, key) = certificate_in(folder.path());
-        let listen = listen(&[
+        let listen = listen(&with_sign_in(&[
             (BIND, "192.168.1.20"),
             (PORT, "8443"),
-            (TOKEN, STRONG),
             (TLS_CERT, certificate.to_str().unwrap()),
             (TLS_KEY, key.to_str().unwrap()),
-        ])
+        ]))
         .unwrap();
         assert_eq!((listen.mode(), listen.scheme(), listen.address().port()), (Mode::Network, "https", 8443));
         assert!(listen.warnings().is_empty());
@@ -565,7 +797,8 @@ pub(crate) mod tests {
 
     #[test]
     fn plain_http_across_a_network_is_allowed_only_when_asked_for_and_is_warned_about() {
-        let listen = listen(&[(BIND, "192.168.1.20"), (TOKEN, STRONG), (USE_HTTPS, "False")]).unwrap();
+        let pairs = [(BIND, "192.168.1.20"), (TOKEN, STRONG), (ALLOW_TOKEN, "on"), (USE_HTTPS, "False")];
+        let listen = listen(&with_sign_in(&pairs)).unwrap();
         assert!(matches!(listen.transport(), Transport::PlainByChoice(_)));
         let warned = listen.warnings().join("\n");
         assert!(warned.contains("HTTPS is off") && warned.contains("unencrypted"));
@@ -600,7 +833,8 @@ pub(crate) mod tests {
     fn every_address_needs_names_when_it_is_every_network() {
         let base = [(BIND, "0.0.0.0"), (TOKEN, STRONG), (USE_HTTPS, "false")];
         assert_eq!(listen(&base).unwrap_err(), ConfigError::NamesNeeded);
-        let named = listen(&[base[0], base[1], base[2], (HOST, "Engine.Example.org, 192.168.1.20")]).unwrap();
+        let named = [base[0], base[1], base[2], (ALLOW_TOKEN, "true"), (HOST, "Engine.Example.org, 192.168.1.20")];
+        let named = listen(&with_sign_in(&named)).unwrap();
         assert_eq!(named.names(), ["engine.example.org", "192.168.1.20"]);
         for bad in ["bad name", "engine.example.org:8443", "::1", "[nonsense]"] {
             assert_eq!(listen(&[(HOST, bad)]).unwrap_err(), ConfigError::NamesNeeded, "{bad}");
@@ -613,7 +847,7 @@ pub(crate) mod tests {
         for (pairs, expected) in [
             ([(BIND, "localhost-ish")], ConfigError::NotAnAddress),
             ([(PORT, "70000")], ConfigError::NotAPort),
-            ([(USE_HTTPS, "maybe")], ConfigError::NotASwitch),
+            ([(USE_HTTPS, "maybe")], ConfigError::NotASwitch { variable: USE_HTTPS }),
             ([(ORIGIN, "null")], ConfigError::NotAnOrigin),
         ] {
             let refused = listen(&pairs).unwrap_err();

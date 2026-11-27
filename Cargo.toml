@@ -19,6 +19,16 @@ unwrap_used = "warn"
 dbg_macro = "warn"
 todo = "warn"
 
+# Tests make RSA keys and Argon2 hashes, which take seconds each without optimisation.
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+[profile.dev.package.rsa]
+opt-level = 3
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

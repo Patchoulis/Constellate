@@ -6,6 +6,7 @@ import { REDO_STEPS, type Catalog, type Library, type RedoStep, type Settings } 
 import { Button, Heading } from "@/components/ui/button";
 import { Input, Label, SwitchRow } from "@/components/ui/field";
 import { Choice, GroupedPicker } from "@/components/ui/picker";
+import { splitByOwner } from "@/lib/engine";
 import { cn } from "@/lib/utils";
 
 /** The whole dialog as data: every setting appears once here, with how it is edited. */
@@ -165,6 +166,7 @@ export function SettingsDialog({
 	validation,
 	detector,
 	machine,
+	serverOwned = new Set<keyof Settings>(),
 	onOpenChange,
 	onChange,
 	onRedo,
@@ -179,6 +181,8 @@ export function SettingsDialog({
 	detector: Library["ai_detector"] | undefined;
 	/** what this computer can do, and what that means for embedding */
 	machine: Library["machine"] | undefined;
+	/** the settings the server this window is connected to decides (none on the user's own computer) */
+	serverOwned?: ReadonlySet<keyof Settings>;
 	onOpenChange: (open: boolean) => void;
 	onChange: (changes: Partial<Settings>) => void;
 	/** Run the open run again with these steps redone; undefined when there is no run to redo, or one is running. */
@@ -219,7 +223,7 @@ export function SettingsDialog({
 									</div>
 								))}
 							</section>
-							{GROUPS.map((group) => (
+							{GROUPS.map((group) => ({ group, ...splitByOwner(group.fields, serverOwned) })).map(({ group, shown, decided }) => (
 								<section key={group.title} className="flex flex-col gap-2">
 									<Heading>{group.title}</Heading>
 									{group.note && <p className="text-xs text-muted-foreground">{group.note}</p>}
@@ -235,9 +239,14 @@ export function SettingsDialog({
 											</Button>
 										</div>
 									)}
-									{group.title === "Embeddings" && machine && (
+									{group.title === "Embeddings" && machine && decided.length === 0 && (
 										<p className={cn("text-xs", machine.gpu ? "text-muted-foreground" : "text-warning")}>{machine.embedding}</p>
 									)}
+									{decided.map((field) => (
+										<p key={field.key} className="text-xs text-muted-foreground">
+											{field.label}: decided by the server this window is connected to.
+										</p>
+									))}
 									{group.title === AI_GROUP && detector && (
 										<p className={cn("text-xs", detector.state === "ready" ? "text-muted-foreground" : "text-warning")}>{detector.why}</p>
 									)}
@@ -261,7 +270,7 @@ export function SettingsDialog({
 										</p>
 									)}
 									<div className={group.columns ? "grid grid-cols-2 gap-2" : "flex flex-col gap-2"}>
-										{group.fields.map((field) => (
+										{shown.map((field) => (
 											<Editor key={field.key} field={field} settings={settings} catalog={catalog} onChange={onChange} />
 										))}
 									</div>

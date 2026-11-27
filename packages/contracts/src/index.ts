@@ -47,6 +47,30 @@ export interface Status {
 	/** log lines after the `since` the request asked for */
 	log: string[];
 	total: number;
+	/** what is unsafe about how the engine listens (apps/engine); absent from the Python backend */
+	warnings?: string[];
+	/** what kind of engine this is; absent from the Python backend, which is always local */
+	mode?: EngineMode;
+	/** the settings the server decides, which the interface does not offer to change */
+	server_owned?: (keyof Settings)[];
+}
+
+/** On the user's own computer, or one person's server reached across a network (apps/engine/src/api/config.rs). */
+export type EngineMode = "local" | "network";
+
+/** What `GET /auth/session` says on a server (apps/engine/src/api/login). */
+export interface SignInSession {
+	signed_in: boolean;
+	/** the ways in this server offers */
+	methods: ("provider" | "password")[];
+	/** the provider's name for its button ("Google"), when it is offered */
+	provider: string | null;
+	/** a password is still to be set with the setup code the server printed */
+	setup: boolean;
+	/** to the owner only: their address */
+	email?: string | null;
+	/** to the owner only: the session's token, sent back in X-Constellate-Csrf with every change */
+	csrf?: string;
 }
 
 export interface RunSummary {
