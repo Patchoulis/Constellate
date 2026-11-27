@@ -15,3 +15,12 @@ if [ -n "$found" ]; then
 	echo "Remove it, and revoke the key if it was real." >&2
 	exit 1
 fi
+# The prices and exchange rates compiled into the engine: a file the engine would refuse is not committed.
+# The staged content is checked, not the working copy. Without node (a machine that never builds), skipped.
+prices=apps/engine/data/prices.json
+if git diff --cached --name-only --diff-filter=ACMR | grep -qx "$prices" && command -v node >/dev/null 2>&1 && [ -f scripts/update-prices.mjs ]; then
+	if ! git show ":$prices" | node scripts/update-prices.mjs --validate -; then
+		echo "pre-commit: the staged $prices is not valid (above). scripts/update-prices.mjs writes it correctly." >&2
+		exit 1
+	fi
+fi

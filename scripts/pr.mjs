@@ -4,7 +4,7 @@
  *   format   cargo fmt (Rust), prettier (TypeScript, JSON, Markdown, YAML) and ruff format (Python)
  *   lint     clippy with warnings denied (Rust), ruff check (Python), and the naming rule below
  *   types    tsc
- *   tests    pytest, the interface's tests, and the desktop app's first-start setup
+ *   tests    pytest, the interface's tests, the desktop app's first-start setup, and the prices updater
  *
  * The naming rule: a caught error is called `error`, in both languages: `except X as error`, `catch (error)`.
  * One name everywhere means a reader never has to look up what `e`, `err`, `ex` or `problem` is this time.
@@ -64,6 +64,7 @@ const steps = [
 	["tests (backend)", () => run(python, ["-W", "ignore", "-m", "pytest", "-q"], backend)],
 	["tests (interface)", () => run("npx", ["turbo", "run", "test", "--filter=@rp/web"], root)],
 	["tests (desktop)", () => run("node", ["--test", "setup.test.cjs", "lifecycle.test.cjs"], join(root, "apps", "desktop"))],
+	["tests (prices)", () => run("node", ["--test", "scripts/update-prices.test.mjs"], root)],
 ];
 
 const env = { ...process.env, PATH: `${join(homedir(), ".cargo", "bin")}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}` };
