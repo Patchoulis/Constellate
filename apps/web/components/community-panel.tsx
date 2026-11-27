@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronLeft, Star, Telescope, Trash2, X } from "lucide-react";
 import type { Community, GraphNode, RunResult } from "@rp/contracts";
+import { CommunityAsk } from "@/components/ask";
 import { AcceptanceTag, AiTag } from "@/components/brand";
 import { MathText } from "@/components/math-text";
 import { CommunityReviews } from "@/components/review-summary";
@@ -466,6 +467,7 @@ function Communities({
 					/>
 					<ExtractionTable run={result.name} scope={{ community: selected.community.tree_path }} onOpenPaper={onOpenPaper} />
 					<CommunityCitationKinds run={result.name} treePath={selected.community.tree_path} onOpenPaper={onOpenPaper} />
+					<CommunityAsk run={result.name} treePath={selected.community.tree_path} papers={selected.community.size} />
 				</div>
 			) : (
 				<>

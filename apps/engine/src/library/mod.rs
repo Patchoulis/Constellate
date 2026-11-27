@@ -82,6 +82,7 @@ pub mod papers;
 pub mod passages;
 pub mod place;
 pub mod preferences;
+pub mod questions;
 pub mod readings;
 pub mod reviews;
 pub mod schema;
