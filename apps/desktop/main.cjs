@@ -17,7 +17,7 @@
  * Where the app is between opening and closing is one explicit state machine, lifecycle.cjs: every decision
  * below that depends on it (may a process start, does a window closing mean stop) asks it rather than a flag.
  */
-const { app, BrowserWindow, dialog, session, shell } = require("electron");
+const { app, BrowserWindow, dialog, nativeImage, session, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -65,6 +65,31 @@ function localData() {
 		return path.join(shared && path.isAbsolute(shared) ? shared : path.join(app.getPath("home"), ".local", "share"), "constellate");
 	}
 	return app.getPath("userData");
+}
+
+/** The app's name, as everything it shows says it: never "Electron", whatever program runs it. */
+const NAME = "Constellate";
+/** The app's identity to Windows (electron-builder.yml appId): what the taskbar and the system's own prompts group
+ *  and name its windows by. Without it, a copy run from the repository is shown as "Electron". */
+const APP_ID = "app.constellate.desktop";
+app.setName(NAME);
+if (process.platform === "win32") app.setAppUserModelId(APP_ID);
+
+const ICON_FILE = path.join(__dirname, "icon.png");
+/** The app's icon for a window or a dialog; nothing when it has not been drawn yet (npm run build draws it). */
+function appIcon() {
+	if (!fs.existsSync(ICON_FILE)) return undefined;
+	const icon = nativeImage.createFromPath(ICON_FILE);
+	return icon.isEmpty() ? undefined : icon;
+}
+
+/**
+ * Ask or tell the user something in a dialog of the app's own: its title is the app's name and its picture the
+ * app's icon, so that it is plain which program is asking. `kind` is the system's picture when there is no icon.
+ */
+function appDialog(kind, options) {
+	const icon = appIcon();
+	return { type: icon ? "none" : kind, icon, title: NAME, noLink: true, ...options };
 }
 
 const life = new Lifecycle();
@@ -146,8 +171,8 @@ async function backendPython() {
 				backgroundColor: "#141414",
 				autoHideMenuBar: true,
 				resizable: false,
-				title: `${app.getName()} Installation Wizard`,
-				icon: path.join(__dirname, "icon.png"),
+				title: `${NAME} Installation Wizard`,
+				icon: appIcon(),
 			});
 			void wizard.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(WIZARD_PAGE)}`);
 			// The user closing it means "not now": stop the download and quit; the next start carries on from there.
@@ -228,8 +253,8 @@ function openWindow(url) {
 		minHeight: 640,
 		backgroundColor: "#141414",
 		autoHideMenuBar: true,
-		title: app.getName(),
-		icon: path.join(__dirname, "icon.png"),
+		title: NAME,
+		icon: appIcon(),
 		// the reader shows a paper's own page (and its reviews) inside the window, in an embedded view; the
 		// app's own page needs nothing of this computer either: no Node, a sandboxed process
 		webPreferences: { webviewTag: true, sandbox: true, contextIsolation: true, nodeIntegration: false },
@@ -257,16 +282,13 @@ const reader = readerGuard({
 	ask: async (host) => {
 		const asked = question(host);
 		const [window] = BrowserWindow.getAllWindows();
-		const options = {
-			type: "warning",
-			title: "Not a paper site",
+		const options = appDialog("warning", {
 			message: asked.message,
 			detail: asked.detail,
 			buttons: asked.buttons,
 			defaultId: 0,
 			cancelId: 0,
-			noLink: true,
-		};
+		});
 		const { response } = window ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options);
 		return asked.answers[response] ?? "no";
 	},
@@ -301,7 +323,7 @@ function stopEverything() {
 /** Something went wrong that the user has to know about: say it once, then close. */
 function fail(error) {
 	if (!life.move("failed")) return; // already failing or quitting: one message is enough, and a quit needs none
-	dialog.showErrorBox(app.getName(), error.message);
+	dialog.showMessageBoxSync(appDialog("error", { message: `${NAME} could not start.`, detail: error.message, buttons: ["Close"] }));
 	app.quit();
 }
 

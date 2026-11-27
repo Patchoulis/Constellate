@@ -84,3 +84,18 @@ test("the shell's tests are not packaged", () => {
 		[],
 	);
 });
+
+test("every dialog and window the shell shows carries the app's own name and icon", () => {
+	const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+	assert.match(main, /app\.setName\(NAME\)/, "the app is named before anything is shown");
+	assert.match(main, /app\.setAppUserModelId\(APP_ID\)/, "Windows is told whose windows these are");
+	assert.doesNotMatch(main, /showErrorBox/, "an error box has no icon and names the program that runs the app");
+	assert.doesNotMatch(main, /app\.getName\(\)/, "the name shown is the app's, not the running program's");
+	// each dialog is made by appDialog, which sets the title and the icon
+	const shown = main.match(/dialog\.showMessageBox(Sync)?\(/g) ?? [];
+	const made = main.match(/appDialog\("/g) ?? [];
+	assert.ok(shown.length > 0);
+	assert.ok(made.length >= 2, "the question about a site and the failure to start both use appDialog");
+	const appId = /^appId: (.+)$/m.exec(fs.readFileSync(path.join(__dirname, "electron-builder.yml"), "utf8"))[1];
+	assert.ok(main.includes(`const APP_ID = "${appId}"`), "the identity given to Windows is the installed app's");
+});
