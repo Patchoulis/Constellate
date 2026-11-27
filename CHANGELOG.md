@@ -26,6 +26,8 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The redo buttons say what they cover ("Embed all again"), a fourth redoes all of it, and every run in the sidebar
+  has its own button to redo all of that run.
 - The installed app keeps its library in the system's folder for local, unsynced data (the local application-data
   folder on Windows, `~/.local/share` on Linux): a library in a synced folder can be corrupted while the app is open.
 - The backend is being rewritten in Rust (`apps/engine`), organised by subject; the Python backend stays until the

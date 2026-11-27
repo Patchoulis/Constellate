@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Settings } from "@rp/contracts";
+import { REDO_STEPS, type Settings } from "@rp/contracts";
 import { SettingsDialog } from "@/components/settings-dialog";
 import { Sidebar } from "@/components/sidebar";
 import { ActivityLog, Notice, Workspace } from "@/components/workspace";
@@ -58,6 +58,7 @@ export default function Home() {
 					})
 				}
 				onStart={start}
+				onRedoAll={(name) => void start({ rerun: name, redo: REDO_STEPS })}
 				onOpenSettings={() => setSettingsOpen(true)}
 			/>
 			{current ? (
@@ -91,9 +92,9 @@ export default function Home() {
 				}
 				onRedo={
 					current && !running
-						? (step) => {
+						? (steps) => {
 								setSettingsOpen(false); // the run's log, behind the dialog, is what to watch now
-								void start({ rerun: current, redo: [step] });
+								void start({ rerun: current, redo: steps });
 							}
 						: undefined
 				}

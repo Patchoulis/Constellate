@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2, Pencil, Play, Settings as SettingsIcon, Trash2 } from "lucide-react";
+import { Loader2, Pencil, Play, RotateCcw, Settings as SettingsIcon, Trash2 } from "lucide-react";
 import type { Catalog, CatalogItem, Library, RunRequest, RunSummary, UsageEntry } from "@rp/contracts";
 import { Logo } from "@/components/brand";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
@@ -137,16 +137,20 @@ function RunForm({
 	);
 }
 
-/** One run in the list. Its title can be edited in place (pencil, or double-click); the bin removes the run. */
+/** One run in the list. Its title can be edited in place (pencil, or double-click); the arrow does the whole run
+ *  again from scratch; the bin removes the run. */
 function RunRow({
 	run,
 	active,
 	onSelect,
 	onRename,
+	onRedoAll,
 	onDelete,
 }: {
 	run: RunSummary;
 	active: boolean;
+	/** do this run again with everything redone; undefined while a run is in progress */
+	onRedoAll?: () => void;
 	onSelect: () => void;
 	onRename: (title: string) => void;
 	onDelete: () => void;
@@ -179,12 +183,30 @@ function RunRow({
 	return (
 		<div className="group relative">
 			<RowButton active={active} className="flex-col gap-0.5" onClick={onSelect} onDoubleClick={() => setDraft(run.title)}>
-				<span className="w-full truncate text-sm text-foreground group-hover:pr-12">{run.title}</span>
+				<span className="w-full truncate text-sm text-foreground group-hover:pr-20">{run.title}</span>
 				<span className="text-xs text-muted-foreground tabular-nums">{details}</span>
 			</RowButton>
 			<div className="absolute top-1 right-1 hidden gap-0.5 group-hover:flex">
 				<Button variant="ghost" size="icon" className="size-6" title="Rename" onClick={() => setDraft(run.title)}>
 					<Pencil />
+				</Button>
+				<Button
+					variant="ghost"
+					size="icon"
+					className="size-6"
+					disabled={!onRedoAll}
+					title={
+						onRedoAll
+							? "Redo all of this run: download, embed and describe everything again from scratch"
+							: "A run is in progress: wait for it to finish"
+					}
+					onClick={() =>
+						window.confirm(
+							`Redo all of "${run.title}"?\n\nIts ${count(run.papers, "paper")} are downloaded, embedded and described again from scratch. This takes a while and, with a Claude API key set, the descriptions cost money again.`,
+						) && onRedoAll?.()
+					}
+				>
+					<RotateCcw />
 				</Button>
 				<Button
 					variant="ghost"
@@ -265,6 +287,7 @@ export function Sidebar({
 	error,
 	onSelect,
 	onRename,
+	onRedoAll,
 	onDelete,
 	onStart,
 	onOpenSettings,
@@ -280,6 +303,8 @@ export function Sidebar({
 	error: string | null;
 	onSelect: (name: string) => void;
 	onRename: (name: string, title: string) => void;
+	/** do a run again with every step redone */
+	onRedoAll: (name: string) => void;
 	onDelete: (name: string) => void;
 	onStart: (request: RunRequest) => void;
 	onOpenSettings: () => void;
@@ -312,6 +337,7 @@ export function Sidebar({
 							active={current === run.name}
 							onSelect={() => onSelect(run.name)}
 							onRename={(title) => onRename(run.name, title)}
+							onRedoAll={running ? undefined : () => onRedoAll(run.name)}
 							onDelete={() => onDelete(run.name)}
 						/>
 					))}

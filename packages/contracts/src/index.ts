@@ -27,6 +27,9 @@ export interface Settings {
 /** A step whose stored results a run can be told to ignore and produce again (rp/pipeline.py REDO). */
 export type RedoStep = "download" | "embeddings" | "descriptions";
 
+/** Every step that can be done again, in the order a run does them. */
+export const REDO_STEPS: RedoStep[] = ["download", "embeddings", "descriptions"];
+
 /** Conferences, or a submission-date range with optional categories (rp/selection.py checks it); or an earlier
  *  run to do again. Either way `redo` lists the steps to do again despite what is stored. */
 export type RunRequest = (

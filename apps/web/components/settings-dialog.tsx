@@ -2,7 +2,7 @@
 
 import { Dialog } from "radix-ui";
 import { FileSearch, RotateCcw, X } from "lucide-react";
-import type { Catalog, Library, RedoStep, Settings } from "@rp/contracts";
+import { REDO_STEPS, type Catalog, type Library, type RedoStep, type Settings } from "@rp/contracts";
 import { Button, Heading } from "@/components/ui/button";
 import { Input, Label, SwitchRow } from "@/components/ui/field";
 import { Choice, GroupedPicker } from "@/components/ui/picker";
@@ -18,11 +18,13 @@ type Field = { key: keyof Settings; label: string; hint?: string } & (
 	| { kind: "several"; from: "flags"; placeholder: string }
 );
 
-/** Steps whose stored results can be thrown away and produced again, each as a button that does it now. */
-const REDO: { step: RedoStep; label: string; hint: string }[] = [
-	{ step: "download", label: "Download again", hint: "Fetch the paper list again and overwrite the stored records" },
-	{ step: "embeddings", label: "Embed again", hint: "Recompute the embedding of every paper in the run" },
-	{ step: "descriptions", label: "Describe again", hint: "Ask Claude for new names and descriptions" },
+/** Stored results that can be thrown away and produced again, each as a button that does it now: one step for
+ *  all of the open run's papers, or every step. */
+const REDO: { steps: RedoStep[]; label: string; hint: string }[] = [
+	{ steps: ["download"], label: "Download all again", hint: "Fetch the run's whole paper list again and overwrite the stored records" },
+	{ steps: ["embeddings"], label: "Embed all again", hint: "Recompute the embedding of every paper in the run" },
+	{ steps: ["descriptions"], label: "Describe all again", hint: "Ask Claude for new names and descriptions of every community" },
+	{ steps: REDO_STEPS, label: "Redo all of it", hint: "All three: download, embed and describe everything in the run from scratch" },
 ];
 
 const AI_GROUP = "AI-written papers";
@@ -179,8 +181,8 @@ export function SettingsDialog({
 	machine: Library["machine"] | undefined;
 	onOpenChange: (open: boolean) => void;
 	onChange: (changes: Partial<Settings>) => void;
-	/** Run the open run again with one step redone; undefined when there is no run to redo, or one is running. */
-	onRedo?: (step: RedoStep) => void;
+	/** Run the open run again with these steps redone; undefined when there is no run to redo, or one is running. */
+	onRedo?: (steps: RedoStep[]) => void;
 	/** Read the declarations of every paper of the open run; undefined when that cannot be started now. */
 	onReadDeclarations?: () => void;
 }) {
@@ -204,12 +206,13 @@ export function SettingsDialog({
 								<Heading>Redo</Heading>
 								<p className="text-xs text-muted-foreground">
 									Anything already stored is reused: a known paper is not downloaded again, an unchanged one is not embedded again, a
-									described group is not described again. A button here runs the open run again with that step done from scratch.
+									described group is not described again. A button here runs the open run again with that step done from scratch, for all of
+									its papers. Each run in the sidebar also has its own button to redo all of it.
 								</p>
-								{REDO.map(({ step, label, hint }) => (
-									<div key={step} className="flex items-center justify-between gap-4 py-1">
+								{REDO.map(({ steps, label, hint }) => (
+									<div key={label} className="flex items-center justify-between gap-4 py-1">
 										<span className="text-xs text-muted-foreground">{hint}</span>
-										<Button variant="outline" className="w-36" disabled={!onRedo} onClick={() => onRedo?.(step)}>
+										<Button variant="outline" className="w-44" disabled={!onRedo} onClick={() => onRedo?.(steps)}>
 											<RotateCcw />
 											{label}
 										</Button>
