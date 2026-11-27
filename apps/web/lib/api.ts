@@ -47,7 +47,8 @@ export const api = {
 	settings: () => call<Settings>("/api/settings"),
 	saveSettings: (changes: Partial<Settings>) => call<Settings>("/api/settings", send("PUT", changes)),
 	library: () => call<Library>("/api/library"),
-	usage: () => call<Usage>("/api/usage"),
+	/** what was spent, with the worth of a US dollar in `currency` (a three-letter code) */
+	usage: (currency: string) => call<Usage>(`/api/usage?currency=${encodeURIComponent(currency)}`),
 	catalog: () => call<Catalog>("/api/catalog"),
 	paper: (id: string) => call<Paper>(`/api/papers/${id}`),
 	pdfUrl: (id: string) => `/api/pdf/${id}`,

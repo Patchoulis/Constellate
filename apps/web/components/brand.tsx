@@ -60,8 +60,8 @@ export function FlagTag({ note, children }: { note?: string; children: React.Rea
 
 const SMALL = "px-1 text-[0.65rem] leading-tight";
 
-/** One score with its mean to one decimal: "Quality 2.3". */
-const score = (field: string, mean: number) => `${field} ${Number.isInteger(mean) ? mean : mean.toFixed(1)}`;
+/** One field's mean score, said as what it is: "Quality: mean score 2.3". */
+const score = (field: string, mean: number) => `${field}: mean score ${Number.isInteger(mean) ? mean : mean.toFixed(1)}`;
 
 /**
  * The scores a paper's reviewers gave, as tags: the mean per field, and on hover every reviewer's score with
@@ -106,7 +106,7 @@ export function AiTag({
 	className?: string;
 }) {
 	const title = verdict
-		? `An estimate from word choice, not proof. Score ${verdict.score.toFixed(2)}; scores above ${verdict.threshold.toFixed(2)} are tagged, ` +
+		? `An estimate from word choice, not proof. Detector score ${verdict.score.toFixed(2)}; detector scores above ${verdict.threshold.toFixed(2)} are tagged, ` +
 			`which about ${Math.round(verdict.false_alarms * 100)} in 100 human-written abstracts also reach. ` +
 			`What raised it most: ${verdict.markers.join(", ")}.`
 		: "An estimate from word choice, not proof: this abstract's wording is of the kind language models produce.";

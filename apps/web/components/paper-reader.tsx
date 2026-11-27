@@ -10,6 +10,7 @@ import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { communityLabel, type CommunityNode } from "@/lib/community";
 import { ready, useAsync, type Async } from "@/lib/use-async";
+import { count, similarity, SIMILARITY_NOTE } from "@/lib/units";
 import { cn } from "@/lib/utils";
 
 /** A paper the open one is linked to in the graph. */
@@ -238,7 +239,7 @@ function Abstract({
 						}
 					>
 						{ratings.exact ? "" : "about "}
-						{ratings.reviews} review{ratings.reviews === 1 ? "" : "s"}
+						{count(ratings.reviews, "review")}
 					</span>
 					<RatingTags ratings={ratings} />
 				</div>
@@ -276,7 +277,9 @@ function Abstract({
 							<span className="flex-1 text-base leading-snug">
 								<MathText>{other.title}</MathText>
 							</span>
-							<span className="font-ui text-xs text-muted-foreground tabular-nums">{other.similarity.toFixed(2)}</span>
+							<span className="shrink-0 font-ui text-xs text-muted-foreground tabular-nums" title={SIMILARITY_NOTE}>
+								{similarity(other.similarity)}
+							</span>
 						</RowButton>
 					))}
 				</section>

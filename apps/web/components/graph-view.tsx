@@ -10,6 +10,7 @@ import { MathText } from "@/components/math-text";
 import { Button } from "@/components/ui/button";
 import { communityLabel, groupsAt, treeDepth, type CommunityNode } from "@/lib/community";
 import { placeLabels } from "@/lib/labels";
+import { count } from "@/lib/units";
 import { countKinds, PAPER_KINDS, shownPapers, type PaperKind } from "@/lib/paper-filter";
 import { cn } from "@/lib/utils";
 import { boxOf, layoutGraph, type Layout } from "@/lib/layout";
@@ -164,7 +165,7 @@ export function GraphView({
 							hidden.has(kind) ? "text-muted-foreground/50 line-through" : "text-foreground",
 						)}
 					>
-						{label} <span className="text-muted-foreground">{counts[kind].toLocaleString()}</span>
+						{label} <span className="text-muted-foreground">{count(counts[kind], "paper")}</span>
 					</button>
 				))}
 			</div>

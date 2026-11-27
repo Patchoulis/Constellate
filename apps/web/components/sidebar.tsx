@@ -9,6 +9,7 @@ import { Input, Label, SwitchRow } from "@/components/ui/field";
 import { Choice, GroupedPicker } from "@/components/ui/picker";
 import { api } from "@/lib/api";
 import { ready, useAsync } from "@/lib/use-async";
+import { count, currencyOf, money, tokens } from "@/lib/units";
 import { APP_NAME } from "@/lib/utils";
 
 const MODES = [
@@ -151,7 +152,7 @@ function RunRow({
 	onDelete: () => void;
 }) {
 	const [draft, setDraft] = useState<string | null>(null); // the title being typed; null = not renaming
-	const details = `${run.papers.toLocaleString()} papers · ${run.communities} communities`;
+	const details = `${count(run.papers, "paper")} · ${count(run.communities, "community", "communities")}`;
 	if (draft !== null) {
 		const finish = (save: boolean) => {
 			if (save && draft.trim() !== run.title) onRename(draft);
@@ -203,16 +204,12 @@ function RunRow({
 	);
 }
 
-/** Cent-scale money: two decimals from a dollar up, four below. */
-const usd = (amount: number) => (amount >= 1 ? `$${amount.toFixed(2)}` : `$${amount.toFixed(4)}`);
-
-const tokens = (count: number) =>
-	count >= 1e6 ? `${+(count / 1e6).toFixed(1)}M` : count >= 1e3 ? `${+(count / 1e3).toFixed(1)}k` : String(count);
-
 /** The model that writes names and overviews (a menu to change it), who provides it, and what it has cost so
  *  far; the breakdown on hover. */
 function CostLine({ models, model, onModel }: { models: CatalogItem[]; model?: string; onModel: (model: string) => void }) {
-	const usage = useAsync(api.usage, []);
+	const locale = typeof navigator === "undefined" ? undefined : navigator.language;
+	const wanted = currencyOf(locale); // the currency of the user's region; the bills themselves are in US dollars
+	const usage = useAsync(() => api.usage(wanted), [wanted]);
 	const { reload } = usage;
 	useEffect(() => {
 		const timer = setInterval(reload, 15_000); // names and overviews are written in the background
@@ -220,18 +217,24 @@ function CostLine({ models, model, onModel }: { models: CatalogItem[]; model?: s
 	}, [reload]);
 	const spent = ready(usage);
 	if (!spent) return null;
+	const cost = (usd: number) => money(usd, spent.currency, locale);
 	const lines = (table: Record<string, UsageEntry>) =>
 		Object.entries(table).map(
 			([name, entry]) =>
-				`  ${name}: ${usd(entry.usd)} (${entry.calls} calls, ${tokens(entry.input_tokens)} in, ${tokens(entry.output_tokens)} out)`,
+				`  ${name}: ${cost(entry.usd)} (${count(entry.calls, "call")}, ${tokens(entry.input_tokens)} sent, ${tokens(entry.output_tokens)} received)`,
 		);
 	const detail = [
 		spent.since ? `Counted since ${spent.since}; calls made before that were not recorded.` : "Nothing spent yet.",
 		...(spent.calls ? ["By purpose:", ...lines(spent.purposes), "By model:", ...lines(spent.models)] : []),
 		...(spent.unpriced_calls
-			? [`${spent.unpriced_calls} calls went to a model whose price is not known here and are not in the total.`]
+			? [`${count(spent.unpriced_calls, "call")} went to a model whose price is not known here and are not in the total.`]
 			: []),
-		"Prices are the published list prices per million tokens.",
+		"Prices are the published list prices in US dollars per million tokens.",
+		...(spent.currency.code === "USD"
+			? []
+			: [
+					`Billed in US dollars; shown in ${spent.currency.code} at the European Central Bank's rate of ${spent.currency.date} (USD 1 = ${spent.currency.code} ${spent.currency.rate}).`,
+				]),
 	].join("\n");
 	return (
 		<div className="flex items-center justify-between gap-2">
@@ -244,8 +247,8 @@ function CostLine({ models, model, onModel }: { models: CatalogItem[]; model?: s
 				{!spent.provider.ready && <span className="shrink-0 text-warning">· no key set</span>}
 			</span>
 			<span className="shrink-0 text-foreground/80" title={detail}>
-				{usd(spent.usd)}
-				{spent.session_calls > 0 && <span className="text-muted-foreground"> · {usd(spent.session_usd)} now</span>}
+				{cost(spent.usd)} spent
+				{spent.session_calls > 0 && <span className="text-muted-foreground"> · {cost(spent.session_usd)} this session</span>}
 			</span>
 		</div>
 	);
@@ -316,7 +319,7 @@ export function Sidebar({
 			</div>
 			<div className="flex flex-col gap-1 border-t px-4 py-2.5 text-xs text-muted-foreground tabular-nums">
 				<div>
-					Library: {library ? library.papers.toLocaleString() : "–"} papers · {embedded.toLocaleString()} embedded
+					Library: {library ? count(library.papers, "paper") : "–"} · {count(embedded, "embedding")}
 				</div>
 				<CostLine models={catalog?.describe_models ?? []} model={model} onModel={onModel} />
 			</div>

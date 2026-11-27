@@ -233,6 +233,9 @@ export interface Usage {
 	model: { name: string; label: string };
 	/** the day the ledger starts, or null if nothing has been spent */
 	since: string | null;
+	/** the currency asked for and what a US dollar is worth in it; the dollar itself when no rate could be had */
+	currency: { code: string; rate: number; date: string | null };
+	/** everything below is in US dollars, the currency the API bills in */
 	usd: number;
 	calls: number;
 	/** calls to a model whose price is not known: counted in tokens only, so `usd` is short by them */

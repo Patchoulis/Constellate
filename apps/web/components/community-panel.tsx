@@ -7,6 +7,7 @@ import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { communityLabel, type CommunityNode } from "@/lib/community";
 import { hsl } from "@/lib/utils";
+import { count, percent, similarity, SIMILARITY_NOTE } from "@/lib/units";
 
 /** What a list of communities can be ordered by. */
 const SORTS = [
@@ -15,28 +16,28 @@ const SORTS = [
 		label: "Papers",
 		title: "Number of papers",
 		of: (c: Community) => c.size,
-		show: (c: Community) => String(c.size),
+		show: (c: Community) => count(c.size, "paper"),
 	},
 	{
 		value: "saturation",
 		label: "Saturation",
-		title: "How densely packed it is: the mean similarity between two of its papers",
+		title: `How densely packed it is: the mean cosine similarity between two of its papers. ${SIMILARITY_NOTE}`,
 		of: (c: Community) => c.mean_inner_similarity,
-		show: (c: Community) => c.mean_inner_similarity.toFixed(3),
+		show: (c: Community) => similarity(c.mean_inner_similarity, 3),
 	},
 	{
 		value: "tightness",
 		label: "Tightness",
-		title: "Mean similarity of its papers to its mean embedding",
+		title: `Mean cosine similarity of its papers to its mean embedding. ${SIMILARITY_NOTE}`,
 		of: (c: Community) => c.similarity_to_mean,
-		show: (c: Community) => c.similarity_to_mean.toFixed(3),
+		show: (c: Community) => similarity(c.similarity_to_mean, 3),
 	},
 	{
 		value: "highlights",
 		label: "Highlights",
 		title: "Share of its papers accepted as orals or spotlights",
 		of: (c: Community) => ((c.acceptance.oral ?? 0) + (c.acceptance.spotlight ?? 0)) / c.size,
-		show: (c: Community) => `${Math.round((100 * ((c.acceptance.oral ?? 0) + (c.acceptance.spotlight ?? 0))) / c.size)}%`,
+		show: (c: Community) => `${percent(((c.acceptance.oral ?? 0) + (c.acceptance.spotlight ?? 0)) / c.size)} of its papers`,
 	},
 ] as const;
 type Sort = { by: (typeof SORTS)[number]; descending: boolean };
@@ -53,7 +54,7 @@ function Line({ node, figure, onClick }: { node: CommunityNode; figure: string; 
 		<RowButton className="items-center gap-2" onClick={onClick}>
 			<CommunityDot hue={node.hue} />
 			<span className="min-w-0 flex-1 truncate text-sm">{communityLabel(node.community)}</span>
-			<span className="text-xs text-muted-foreground tabular-nums">{figure}</span>
+			<span className="shrink-0 text-xs text-muted-foreground tabular-nums">{figure}</span>
 		</RowButton>
 	);
 }
@@ -101,9 +102,9 @@ function Detail({
 				))}
 			</div>
 			<dl className="flex flex-col gap-1 text-xs tabular-nums">
-				{Object.entries(community.mix).map(([tag, count]) => (
+				{Object.entries(community.mix).map(([tag, papers]) => (
 					<Stat key={tag} label={tag}>
-						{count}
+						{count(papers, "paper")}
 					</Stat>
 				))}
 				{SORTS.slice(1, 3).map((sort) => (
@@ -115,26 +116,26 @@ function Detail({
 					(tier) =>
 						community.acceptance[tier] !== undefined && (
 							<Stat key={tier} label={tier === "oral" ? "Orals" : "Spotlights"}>
-								{community.acceptance[tier]}
+								{count(community.acceptance[tier] ?? 0, "paper")}
 							</Stat>
 						),
 				)}
 				<Stat label="Tagged AI detected" title="Papers the statistical AI-text detector flagged: an estimate">
-					{community.ai_flagged}
+					{count(community.ai_flagged, "paper")}
 				</Stat>
 			</dl>
 			{children.length > 0 && (
 				<section>
 					<Heading className="mb-1.5">Sub-communities</Heading>
 					{children.map((child) => (
-						<Line key={child.community.id} node={child} figure={String(child.community.size)} onClick={() => onSelect(child)} />
+						<Line key={child.community.id} node={child} figure={count(child.community.size, "paper")} onClick={() => onSelect(child)} />
 					))}
 				</section>
 			)}
 			<section>
 				<Heading className="mb-1.5">Closest {node.depth ? "sibling" : "communities"}</Heading>
 				{community.closest_communities.map((other) => (
-					<Line key={other.id} node={siblings[other.id]} figure={other.cosine.toFixed(2)} onClick={() => onSelect(siblings[other.id])} />
+					<Line key={other.id} node={siblings[other.id]} figure={similarity(other.cosine)} onClick={() => onSelect(siblings[other.id])} />
 				))}
 			</section>
 			<section>
@@ -144,7 +145,9 @@ function Detail({
 						<span className="flex-1 font-sans text-base leading-snug">
 							<MathText>{paper.title}</MathText>
 						</span>
-						<span className="text-xs text-muted-foreground tabular-nums">{paper.cosine.toFixed(2)}</span>
+						<span className="shrink-0 text-xs text-muted-foreground tabular-nums" title={SIMILARITY_NOTE}>
+							{similarity(paper.cosine)}
+						</span>
 					</RowButton>
 				))}
 			</section>
@@ -216,13 +219,13 @@ export function CommunityPanel({
 						</Button>
 						<CommunityDot hue={selected.hue} />
 						<span className="min-w-0 flex-1 truncate text-sm font-semibold">{communityLabel(selected.community)}</span>
-						<span className="text-xs text-muted-foreground tabular-nums">{selected.community.size}</span>
+						<span className="shrink-0 text-xs text-muted-foreground tabular-nums">{count(selected.community.size, "paper")}</span>
 					</>
 				) : (
 					<>
 						<span className="flex-1 px-1 text-sm font-semibold">Communities</span>
 						<span className="text-xs text-muted-foreground tabular-nums">
-							{roots.length} · modularity {result.modularity.toFixed(2)}
+							{count(roots.length, "community", "communities")} · modularity {result.modularity.toFixed(2)} of 1
 						</span>
 					</>
 				)}

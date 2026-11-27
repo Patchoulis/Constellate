@@ -35,7 +35,9 @@ The first release.
 - **Show or dim by kind** on the graph: chips for orals, spotlights, posters, AI detected and not, with counts.
 - **Filters**: leave out AI-detected papers, keep only orals or orals and spotlights, leave out papers by
   declaration flag.
-- **Cost**: the sidebar shows the model and provider in use and what the Claude API has cost.
+- **Cost**: the sidebar shows the model (a menu to change it) and provider in use and what the Claude API has
+  cost, in the currency of your region at the European Central Bank's rate.
+- **Every number says what it is**: "0.45 cosine similarity", "523 papers", "CAD 2.13", "38k tokens".
 - **Runs** can be renamed, deleted and redone.
 - **Desktop app** (Electron) with a single build script; tests for the backend and the interface.
 - **Windows installer**, built for every release. It needs nothing preinstalled: the first start sets up the

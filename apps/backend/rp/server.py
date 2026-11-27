@@ -17,7 +17,7 @@ import shutil
 
 from flask import Flask, jsonify, request, send_file
 
-from . import LIBRARY, RUNS, catalog, claude, detect, pipeline, proceedings, reviews, settings, store, usage
+from . import LIBRARY, RUNS, catalog, claude, currency, detect, pipeline, proceedings, reviews, settings, store, usage
 from .jobs import Busy, Job, State
 from .library import Papers, acceptance
 from .overview import Overviews
@@ -273,9 +273,16 @@ def user_settings():
 
 @app.get("/api/usage")
 def spent():
-    """What the Claude API has cost so far, who provides it, and the model that writes names and overviews."""
+    """What the Claude API has cost so far, who provides it, and the model that writes names and overviews.
+    `?currency=CAD` adds what a US dollar is worth in that currency, so the amounts can be shown in it."""
     model = settings.load()["describe_model"]
-    return jsonify(usage.summary() | {"model": {"name": model, "label": claude.MODELS.get(model, (model,))[0]}})
+    return jsonify(
+        usage.summary()
+        | {
+            "model": {"name": model, "label": claude.MODELS.get(model, (model,))[0]},
+            "currency": currency.of(request.args.get("currency")),
+        }
+    )
 
 
 @app.get("/api/library")
