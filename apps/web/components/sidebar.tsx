@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { Loader2, Pencil, Play, RotateCcw, Settings as SettingsIcon, Trash2 } from "lucide-react";
-import type { Catalog, Library, RunRequest, RunSummary, Settings, UsageEntry } from "@rp/contracts";
+import type { Catalog, Library, RunPage, RunRequest, RunSummary, Settings, UsageEntry } from "@rp/contracts";
 import { Logo } from "@/components/brand";
 import { ModelChoice, chosenPrice } from "@/components/model-choice";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
@@ -12,6 +12,19 @@ import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
 import { accepting, costWords, shownModel } from "@/lib/cost";
 import { chosenLabel, chosenOf, unavailableBecause, type Choosable } from "@/lib/models";
+import { withSignal } from "@/lib/request";
+import {
+	FIRST,
+	RUNS_PAGE,
+	SEARCH_DEBOUNCE_MS,
+	listedOfSummary,
+	offsetAsked,
+	pageOf,
+	runsListStep,
+	shownLine,
+	withOpenRun,
+	type ListedRun,
+} from "@/lib/runs-list";
 import { ready, useAsync } from "@/lib/use-async";
 import { useResizable } from "@/lib/use-resizable";
 import { count, currencyOf, money, tokens } from "@/lib/units";
@@ -164,7 +177,7 @@ function RunRow({
 	onRedoAll,
 	onDelete,
 }: {
-	run: RunSummary;
+	run: ListedRun;
 	active: boolean;
 	/** do this run again with everything redone; undefined while a run is in progress */
 	onRedoAll?: () => void;
@@ -173,7 +186,8 @@ function RunRow({
 	onDelete: () => void;
 }) {
 	const [draft, setDraft] = useState<string | null>(null); // the title being typed; null = not renaming
-	const details = `${count(run.papers, "paper")} · ${count(run.communities, "community", "communities")}`;
+	const details = run.problem ?? run.details ?? "Not read yet";
+	const papers = run.papers === null ? "papers" : count(run.papers, "paper");
 	if (draft !== null) {
 		const finish = (save: boolean) => {
 			if (save && draft.trim() !== run.title) onRename(draft);
@@ -201,7 +215,7 @@ function RunRow({
 		<div className="group relative">
 			<RowButton active={active} className="flex-col gap-0.5" onClick={onSelect} onDoubleClick={() => setDraft(run.title)}>
 				<span className="w-full truncate text-sm text-foreground group-hover:pr-20">{run.title}</span>
-				<span className="text-xs text-muted-foreground tabular-nums">{details}</span>
+				<span className={run.problem ? "text-xs text-warning" : "text-xs text-muted-foreground tabular-nums"}>{details}</span>
 			</RowButton>
 			<div className="absolute top-1 right-1 hidden gap-0.5 group-hover:flex">
 				<Button variant="ghost" size="icon" className="size-6" title="Rename" onClick={() => setDraft(run.title)}>
@@ -219,7 +233,7 @@ function RunRow({
 					}
 					onClick={() =>
 						window.confirm(
-							`Redo all of "${run.title}"?\n\nIts ${count(run.papers, "paper")} are downloaded, embedded and described again from scratch. This takes a while and, with a language model's API key set, the descriptions cost money again.`,
+							`Redo all of "${run.title}"?\n\nIts ${papers} are downloaded, embedded and described again from scratch. This takes a while and, with a language model's API key set, the descriptions cost money again.`,
 						) && onRedoAll?.()
 					}
 				>
@@ -240,6 +254,121 @@ function RunRow({
 				</Button>
 			</div>
 		</div>
+	);
+}
+
+/**
+ * The runs, a page at a time and searched as the user types (lib/runs-list.ts): the engine's paged list, or the
+ * Python backend's whole one searched and paged here. The open run stays in sight, first, when it is not among
+ * the rows shown. `plain` is the whole list the page holds: it says when the list changed (a run made, renamed or
+ * deleted) and what is known of the open run.
+ */
+function RunsSection({
+	plain,
+	current,
+	running,
+	onSelect,
+	onRename,
+	onRedoAll,
+	onDelete,
+}: {
+	plain: RunSummary[];
+	current: string | null;
+	running: boolean;
+	onSelect: (name: string) => void;
+	onRename: (name: string, title: string) => void;
+	onRedoAll: (name: string) => void;
+	onDelete: (name: string) => void;
+}) {
+	const [typed, setTyped] = useState("");
+	const [list, dispatch] = useReducer(runsListStep, FIRST);
+	const searched = useRef(list.search);
+	searched.current = list.search;
+
+	// searched once typing pauses
+	useEffect(() => {
+		if (typed.trim() === searched.current) return;
+		const timer = setTimeout(() => dispatch({ kind: "search", search: typed.trim() }), SEARCH_DEBOUNCE_MS);
+		return () => clearTimeout(timer);
+	}, [typed]);
+
+	// the list changed (a run made, renamed or deleted, or made again): asked again, the rows in view until then
+	const changed = plain.map((run) => `${run.name}\t${run.title}\t${run.papers}\t${run.communities}`).join("\n");
+	const firstLook = useRef(true);
+	useEffect(() => {
+		if (firstLook.current) {
+			firstLook.current = false;
+			return;
+		}
+		dispatch({ kind: "search", search: searched.current });
+	}, [changed]);
+
+	// the page the list asks for now; called off when another is asked for
+	const offset = offsetAsked(list);
+	const { search } = list;
+	useEffect(() => {
+		if (offset === null) return;
+		const controller = new AbortController();
+		withSignal(controller.signal, () => api.runsPage({ offset, limit: RUNS_PAGE, sort: "created", search: search || undefined })).then(
+			(answer) => dispatch({ kind: "page", search, offset, ...pageOf(answer as RunPage | RunSummary[], search, offset) }),
+			(error: Error) => controller.signal.aborted || dispatch({ kind: "refused", search, error: error.message }),
+		);
+		return () => controller.abort();
+	}, [offset, search]);
+
+	// nothing could be listed at all: the whole list the page holds, searched here
+	const rows = list.state === "failed" && list.rows.length === 0 ? pageOf(plain, search, 0).rows : list.rows;
+	const known = plain.find((run) => run.name === current);
+	const shown = withOpenRun(rows, current, known && listedOfSummary(known));
+	const more = shownLine(list);
+	return (
+		<section>
+			<Heading className="mb-2">Runs</Heading>
+			{(plain.length > RUNS_PAGE || search !== "" || typed !== "" || (list.total ?? 0) > RUNS_PAGE) && (
+				<Input
+					className="mb-2 h-7"
+					type="search"
+					placeholder="Search the runs"
+					aria-label="Search the runs by title or name"
+					value={typed}
+					onChange={(event) => setTyped(event.target.value)}
+				/>
+			)}
+			{list.state === "loading" && list.rows.length === 0 && <p className="text-xs text-muted-foreground">Listing the runs…</p>}
+			{list.state !== "loading" && shown.rows.length === 0 && (
+				<p className="text-xs text-muted-foreground">{search ? `No run matches "${search}".` : "No runs yet. Start one above."}</p>
+			)}
+			{shown.rows.map((run) => (
+				<div key={run.name}>
+					{run.name === shown.pinned && <span className="px-2 text-[0.7rem] text-muted-foreground">Open now</span>}
+					<RunRow
+						run={run}
+						active={current === run.name}
+						onSelect={() => onSelect(run.name)}
+						onRename={(title) => onRename(run.name, title)}
+						onRedoAll={running || run.problem ? undefined : () => onRedoAll(run.name)}
+						onDelete={() => onDelete(run.name)}
+					/>
+				</div>
+			))}
+			{list.state === "failed" && (
+				<div className="mt-1 flex items-center gap-2 text-xs text-destructive">
+					<span>The runs could not be listed: {list.error}</span>
+					<Button variant="ghost" className="h-6 px-2" onClick={() => dispatch({ kind: "search", search })}>
+						Try again
+					</Button>
+				</div>
+			)}
+			{more && (
+				<div className="mt-1 flex items-center justify-between gap-2 px-2 text-xs text-muted-foreground tabular-nums">
+					<span>{more}</span>
+					<Button variant="ghost" className="h-6 px-2" disabled={list.state !== "shown"} onClick={() => dispatch({ kind: "more" })}>
+						{list.state === "more" ? <Loader2 className="animate-spin" /> : null}
+						Show more
+					</Button>
+				</div>
+			)}
+		</section>
 	);
 }
 
@@ -397,21 +526,15 @@ export function Sidebar({
 					<RunForm catalog={catalog} running={running} onStart={onStart} />
 					{error && <p className="mt-2 text-xs text-destructive">{error}</p>}
 				</section>
-				<section>
-					<Heading className="mb-2">Runs</Heading>
-					{runs.length === 0 && <p className="text-xs text-muted-foreground">No runs yet. Start one above.</p>}
-					{runs.map((run) => (
-						<RunRow
-							key={run.name}
-							run={run}
-							active={current === run.name}
-							onSelect={() => onSelect(run.name)}
-							onRename={(title) => onRename(run.name, title)}
-							onRedoAll={running ? undefined : () => onRedoAll(run.name)}
-							onDelete={() => onDelete(run.name)}
-						/>
-					))}
-				</section>
+				<RunsSection
+					plain={runs}
+					current={current}
+					running={running}
+					onSelect={onSelect}
+					onRename={onRename}
+					onRedoAll={onRedoAll}
+					onDelete={onDelete}
+				/>
 			</div>
 			<div className="flex flex-col gap-1 border-t px-4 py-2.5 text-xs text-muted-foreground tabular-nums">
 				<div>
