@@ -1057,6 +1057,22 @@ mod tests {
     }
 
     #[test]
+    fn two_questions_about_a_paper_send_the_same_system_and_shared_text() {
+        let prepared = vec![prepare("2601.00001", &pdf_paper()).unwrap()];
+        let (chosen, schema) = (Chosen::claude(MODEL), schema());
+        let ask = |question: &str| {
+            let prompt = question_prompt(question);
+            let key = key_question(question, 0);
+            let items = items(&prepared, &prompt, &key, &chosen, &schema);
+            (items[0].ask.system.to_owned(), items[0].ask.shared.map(str::to_owned), items[0].slot.key.clone())
+        };
+        let one = ask("Does pre-training on synthetic data help downstream accuracy?");
+        let two = ask("Does a smaller synthetic corpus remove the gain?");
+        assert_eq!((&one.0, &one.1), (&two.0, &two.1), "byte for byte, so the prompt cache is read");
+        assert_ne!(one.2, two.2, "each question's answer is kept apart");
+    }
+
+    #[test]
     fn a_quote_found_only_with_letters_changed_does_not_place_the_paper() {
         // "no gain" read as "a gain": a close match, which could turn a no into a yes
         let placed = place(
