@@ -209,8 +209,9 @@ impl Group {
 pub struct Run<'a> {
     /// The run's name: what its answers are about.
     pub name: &'a str,
-    /// Its folder: the names are written into its `communities.json` when there is one.
-    pub folder: &'a Path,
+    /// Its folder: the names are written into its `communities.json` when there is one. None while the pipeline
+    /// makes the run: it writes the names with the run's other files.
+    pub folder: Option<&'a Path>,
     /// Its papers; groups' members are indices into these.
     pub papers: &'a [Paper],
     /// One row per paper: which papers are nearest a community's mean embedding. Without it, each community's
@@ -396,6 +397,9 @@ pub enum Outcome {
     /// The chosen provider cannot be asked (its key is not set): the communities named before are named, the
     /// others are left without a name.
     NoKey { why: Unavailable, kept: usize },
+    /// Nothing was accepted to spend ([`kept_only`]): the communities named before are named, the others are left
+    /// without a name, and nothing was sent.
+    NotAsked { kept: usize },
     /// The budget was reached or a stop was asked for: those named so far are named, `not_asked` are not.
     Stopped { why: Stopped, written: usize, kept: usize, not_asked: usize },
     /// Some communities have no name because their answers failed; the others are named.
@@ -413,6 +417,10 @@ impl Outcome {
             Outcome::NoKey { why, kept } => format!(
                 "The language model cannot be asked ({why}): {kept} communities named before keep their names, the \
                  others are left unnamed. Name them from the run once a key is set; nothing else is done again."
+            ),
+            Outcome::NotAsked { kept } => format!(
+                "No cost was accepted for naming: {kept} communities named before keep their names, the others are \
+                 left unnamed and nothing was sent. Name them from the run; nothing else is done again."
             ),
             Outcome::Stopped { why, written, kept, not_asked } => {
                 format!("Stopped ({why}): {written} named now, {kept} kept from before, {not_asked} not asked.")
@@ -711,22 +719,43 @@ pub fn describe_with(
                 .map(|(names, tally)| (names, outcome_of(tally, None)))
         }
         Err(why) => {
-            let missing = why.clone();
-            let mut answer = |items: &[Item<'_>], _: &Tracker<'_>| {
-                items
-                    .iter()
-                    .map(|item| {
-                        Ok(match library.kept::<Said>(Feature::Describing, &item.slot.key)? {
-                            Some(kept) => Asked::Kept(kept),
-                            None => Asked::Failed(Failure::Unavailable(missing.clone())),
-                        })
-                    })
-                    .collect()
-            };
+            let mut answer = from_kept(library, why.clone());
             walk(library, run, chosen, tracker, false, &mut answer)
                 .map(|(names, tally)| (names, outcome_of(tally, Some(why))))
         }
     };
+    finish(run, walked, tracker)
+}
+
+/// Answers from what was kept only: nothing is sent, and what was not kept fails for `missing`.
+fn from_kept(
+    library: &Library,
+    missing: Unavailable,
+) -> impl FnMut(&[Item<'_>], &Tracker<'_>) -> Result<Vec<Asked<Said>>, LibraryError> + '_ {
+    move |items: &[Item<'_>], _: &Tracker<'_>| {
+        items
+            .iter()
+            .map(|item| {
+                Ok(match library.kept::<Said>(Feature::Describing, &item.slot.key)? {
+                    Some(kept) => Asked::Kept(kept),
+                    None => Asked::Failed(Failure::Unavailable(missing.clone())),
+                })
+            })
+            .collect()
+    }
+}
+
+/// Name the communities of `run` from what was kept only, for `chosen` (its answers, and the Python's names for
+/// its model): what a run is made with when nothing was accepted to spend. Nothing is sent, whatever the key.
+pub fn kept_only(library: &Library, run: &Run<'_>, chosen: &Chosen, tracker: &Tracker<'_>) -> Described {
+    let mut answer = from_kept(library, Unavailable::NoKey);
+    let walked = walk(library, run, chosen, tracker, false, &mut answer)
+        .map(|(names, tally)| (names, Outcome::NotAsked { kept: tally.kept }));
+    finish(run, walked, tracker)
+}
+
+/// The names walked, written into the run's files when it has some, and the outcome told.
+fn finish(run: &Run<'_>, walked: Result<(Names, Outcome), LibraryError>, tracker: &Tracker<'_>) -> Described {
     let (names, mut outcome) = match walked {
         Ok(walked) => walked,
         Err(error) => {
@@ -738,13 +767,13 @@ pub fn describe_with(
             };
         }
     };
-    if let Err(error) = write_names(run.folder, &names) {
+    if let Err(error) = run.folder.map_or(Ok(false), |folder| write_names(folder, &names)) {
         eprintln!("describing: the names could not be written into the run's files: {error}");
         let (written, kept) = match &outcome {
             Outcome::Described { written, kept }
             | Outcome::Stopped { written, kept, .. }
             | Outcome::Failed { written, kept, .. } => (*written, *kept),
-            Outcome::Kept { kept } | Outcome::NoKey { kept, .. } => (0, *kept),
+            Outcome::Kept { kept } | Outcome::NoKey { kept, .. } | Outcome::NotAsked { kept } => (0, *kept),
         };
         let reason = "the run's files could not be written".to_owned();
         outcome = Outcome::Failed { reason, written, kept, failed: names.len() };
@@ -971,7 +1000,7 @@ pub(crate) mod tests {
         fn run<'a>(&'a self, folder: &'a Path, redo: bool) -> Run<'a> {
             Run {
                 name: "r1",
-                folder,
+                folder: Some(folder),
                 papers: &self.papers,
                 embeddings: Some(self.embeddings.view()),
                 communities: &self.groups,

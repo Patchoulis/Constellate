@@ -66,9 +66,9 @@ struct Record {
     venues: Vec<String>,
     url: Option<String>,
     pdf_url: Option<String>,
-    /// The AI-text detector's verdict: given by the detector, which is not part of this module; null meanwhile,
-    /// as the contract says for a paper never scored.
-    ai: Option<Value>,
+    /// The AI-text detector's verdict (an estimate): null for a paper whose present text was never scored by the
+    /// present classifier, or too short to judge, as the Python's `Detector.verdict`.
+    ai: Option<crate::detector::AiVerdict>,
     acceptance: Acceptance,
     acceptance_term: Option<Term>,
     readable: bool,
@@ -85,6 +85,7 @@ fn record_of(engine: &Shared, id: &str) -> Result<Record, ApiError> {
         Some(Reading::NoPdf | Reading::Unreadable) | None => None,
     };
     let reviews = library.ratings(id)?;
+    let ai = crate::detector::verdict(&library, &paper)?;
     let told = accepted(&as_source(&paper));
     Ok(Record {
         id: paper.id,
@@ -98,7 +99,7 @@ fn record_of(engine: &Shared, id: &str) -> Result<Record, ApiError> {
         venues: paper.venues,
         url: paper.url,
         pdf_url: paper.pdf_url,
-        ai: None,
+        ai,
         acceptance: told.tier,
         acceptance_term: told.term,
         readable,
@@ -390,6 +391,32 @@ mod tests {
         for missing in ["/api/papers/nowhere", "/api/papers/hep-th/9901001"] {
             assert_eq!(ask(&router, "GET", missing, None).await.status(), StatusCode::NOT_FOUND, "{missing}");
         }
+    }
+
+    /// The Python's `test_a_paper_comes_with_its_detector_verdict`.
+    #[tokio::test]
+    async fn a_paper_comes_with_the_detectors_verdict_once_its_abstract_was_scored_and_null_before() {
+        let (router, data, _) = engine();
+        let library = Library::open(&data.path().join("library")).unwrap();
+        let long = Paper {
+            r#abstract: crate::detector::tests::text(crate::detector::tests::MACHINE, 7),
+            ..paper("2601.00777")
+        };
+        library.add_papers(std::slice::from_ref(&long), None, Known::Keep).unwrap();
+        let (_, told) = json_of(ask(&router, "GET", "/api/papers/2601.00777", None).await).await;
+        assert_eq!(told["ai"], Value::Null, "no detector: never scored");
+        crate::detector::tests::build_in(&library);
+        let (_, told) = json_of(ask(&router, "GET", "/api/papers/2601.00777", None).await).await;
+        assert_eq!(told["ai"], Value::Null, "trained, but this abstract not scored yet");
+        let settings = crate::settings::Settings { detect_ai: true, ..Default::default() };
+        let cancel = crate::jobs::Cancel::new();
+        let (log, progress) = (|_: &str| {}, |_: crate::jobs::Progress| {});
+        let tracker = crate::jobs::Tracker::new(&log, &progress, &cancel);
+        crate::detector::score_run(&library, &settings, std::slice::from_ref(&long.id), &tracker);
+        let (_, told) = json_of(ask(&router, "GET", "/api/papers/2601.00777", None).await).await;
+        let fields: BTreeSet<String> = told["ai"].as_object().unwrap().keys().cloned().collect();
+        assert_eq!(fields, contract_fields("AiVerdict"));
+        assert_eq!(told["ai"]["flagged"], true, "written the way the machine texts are: {told}");
     }
 
     #[tokio::test]

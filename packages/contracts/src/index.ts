@@ -180,6 +180,9 @@ export type RunRequest = (
 	/** name the run's communities within the most `GET /api/describe/estimate` showed (DescribeAccepted); absent: the
 	 *  run is made without names, which can be added from it later. The engine only; Python names without asking. */
 	describe?: DescribeAccepted;
+	/** make it again although a run of that name exists (a `rerun`, or the same selection anew): without it the
+	 *  engine answers 409 with `RunRefusedReplacing`, to be shown before the person confirms. Engine only */
+	replace?: boolean;
 };
 
 /** The backend's job state machine (rp/jobs.py). */
@@ -905,6 +908,9 @@ export interface Library {
 		/** share of arXiv abstracts flagged in a week of each year, if that check was run */
 		by_year: Record<string, { abstracts: number; flagged: number }> | null;
 	} | null;
+	/** what of the earlier version's data folder could not be moved in, in words (tried again at the next start);
+	 *  empty when everything was. Engine only */
+	import_problems?: string[];
 }
 
 // ---- Weaknesses (critique) ----
@@ -1978,4 +1984,35 @@ export interface DetectorEstimate {
 export interface DetectorStarted {
 	outcome: "started";
 	job: number;
+}
+
+// ---- Making a run again in place (engine api/runs.rs, pipeline/files.rs `Replaced`) ----
+
+/** A setting that decides a run's communities, as the run was made with it and as it is now (`was` is null when
+ *  the run did not record it). */
+export interface SettingChanged {
+	setting: keyof Settings;
+	was: unknown;
+	now: unknown;
+}
+
+/** The run a `POST /api/runs` would make again in its folder, told before anything is done. */
+export interface RunReplaced {
+	run: string;
+	title: string;
+	/** its communities and sub-communities now, and how many of them have a name */
+	communities: number;
+	named: number;
+	/** "change": they will be cut otherwise (a setting below differs, or the run was cut by another clustering:
+	 *  the earlier version's k-means); "may_change": the same settings and clustering, so they come out the same
+	 *  unless its papers changed. Either way, names and what was asked about a community that changes no longer
+	 *  apply to it */
+	communities_will: "change" | "may_change";
+	changed: SettingChanged[];
+}
+
+/** `POST /api/runs` answered 409: the run exists; sending the request again with `replace: true` makes it again. */
+export interface RunRefusedReplacing {
+	error: string;
+	replaces: RunReplaced;
 }

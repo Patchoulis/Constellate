@@ -22,14 +22,13 @@
 //! memory beside the ledger, and an engine that restarts starts its session again at nothing. The rows moved in from
 //! the Python's ledger are stamped with the day it started, long before.
 //!
-//! The Python's ledger (`usage.json` in the library folder) is moved into the database the first time this is
-//! asked for in a library ([`Library::import_ledger`]): once, recorded as moved, so a later import of the whole
-//! library does not count it again. A failure to move it is written to the engine's error output and the answer is
-//! given without it; the move is tried again when the engine next starts.
+//! The Python's ledger (`usage.json` in the library folder) is moved into the database when the library is first
+//! opened, as a part of moving the earlier version's data in ([`crate::library::Library::import_old`]): once, recorded as moved,
+//! and on its own, so that a damaged file elsewhere does not keep it out. A failure to move it is told in
+//! `/api/library` and `/api/status`; the answer is given without it, and the move is tried again at the next start.
 
-use std::collections::{BTreeMap, HashSet};
-use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::collections::BTreeMap;
+use std::sync::OnceLock;
 use std::time::SystemTime;
 
 use axum::Json;
@@ -40,7 +39,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::routes::{ApiError, Shared, on_the_side};
-use crate::library::{Library, Spending, Totals};
+use crate::library::{Spending, Totals};
 use crate::model::chosen::Chosen;
 use crate::usage::{Rate, rate};
 
@@ -49,9 +48,6 @@ const LONGEST_CODE: usize = 8;
 
 /// When the engine started: set when its routes are built, before the first request.
 static STARTED: OnceLock<DateTime<Utc>> = OnceLock::new();
-
-/// The library folders whose old ledger this engine has tried to move in: once each.
-static LEDGERS_MOVED: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
 
 /// The routes of this module, for [`super::routes::table`]. Building them is the engine starting: the session's
 /// totals count from here.
@@ -184,19 +180,6 @@ fn currency_of(asked: Option<&str>) -> Rate {
     }
 }
 
-/// Move the Python's ledger in, the first time this engine is asked about a library folder. Never fails: what went
-/// wrong is written to the error output, and the answer is given with what the database has.
-fn move_old_ledger(library: &Library, folder: PathBuf) {
-    let mut moved = LEDGERS_MOVED.lock().unwrap_or_else(PoisonError::into_inner);
-    // held while moving: a second request waits, then counts what was moved
-    if !moved.get_or_insert_with(HashSet::new).insert(folder.clone()) {
-        return;
-    }
-    if let Err(error) = library.import_ledger(&folder) {
-        eprintln!("usage: the old ledger in {} could not be moved in: {error}", folder.display());
-    }
-}
-
 async fn usage(
     State(engine): State<Shared>,
     asked: Result<Query<Asked>, QueryRejection>,
@@ -206,7 +189,6 @@ async fn usage(
     let answer = on_the_side(move || {
         let chosen = engine.chosen()?;
         let library = engine.library()?;
-        move_old_ledger(&library, engine.data.join("library"));
         let spending = library.spending()?;
         let session = library.spending_since(started())?;
         Ok(told(&spending, &session, &chosen, currency))
@@ -231,7 +213,7 @@ mod tests {
     use super::super::routes::Engine;
     use super::super::tests::served;
     use super::*;
-    use crate::library::Call;
+    use crate::library::{Call, Library};
     use crate::model::language::{Effort, Provider, Unavailable};
     use crate::settings::Choices;
     use crate::usage::bundled;

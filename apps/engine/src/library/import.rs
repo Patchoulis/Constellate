@@ -191,6 +191,115 @@ impl Library {
     }
 }
 
+/// How the move of the AI-text detector's files is recorded in `imported`.
+const DETECTOR: &str = "ai_detection";
+
+/// What became of one part of moving the old data folder in.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case", tag = "outcome")]
+pub enum Part<T> {
+    /// Moved in now, with what it added.
+    Moved { added: T },
+    /// Moved in at an earlier start, or nothing of it is there to move.
+    Already,
+    /// It could not be moved (a damaged file, the disk): nothing of this part was kept, and it is tried again at
+    /// the next start. Said for the person, with the file.
+    Failed { why: String },
+}
+
+impl<T> Part<T> {
+    fn of<E: std::fmt::Display>(result: Result<Option<T>, E>) -> Self {
+        match result {
+            Ok(Some(added)) => Part::Moved { added },
+            Ok(None) => Part::Already,
+            Err(error) => Part::Failed { why: error.to_string() },
+        }
+    }
+
+    fn failed(&self) -> Option<&str> {
+        match self {
+            Part::Failed { why } => Some(why),
+            Part::Moved { .. } | Part::Already => None,
+        }
+    }
+}
+
+/// The move of the Python's data folder in, part by part, in this order: the library's files (papers, slices,
+/// embeddings, readings, descriptions, overviews, rates, settings, and the ledger with them), the ledger alone
+/// (moved even when the files could not be), the AI-text detector's training set.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Moved {
+    pub files: Part<Imported>,
+    pub ledger: Part<usize>,
+    pub detector: Part<super::detector::ImportedDetector>,
+}
+
+impl Default for Moved {
+    /// Nothing to do: every part moved before, or none there.
+    fn default() -> Self {
+        Moved { files: Part::Already, ledger: Part::Already, detector: Part::Already }
+    }
+}
+
+impl Moved {
+    /// What could not be moved, in words for the person: empty when all went well.
+    pub fn problems(&self) -> Vec<String> {
+        let parts = [
+            ("the library's papers, embeddings and readings", self.files.failed()),
+            ("what was spent on the language model", self.ledger.failed()),
+            ("the AI-text detector's training set", self.detector.failed()),
+        ];
+        parts
+            .into_iter()
+            .filter_map(|(what, why)| {
+                why.map(|why| {
+                    format!(
+                        "The earlier version's data could not all be moved in: {what} ({why}). It is tried again at \
+                         the next start; until then it is not shown."
+                    )
+                })
+            })
+            .collect()
+    }
+}
+
+impl Library {
+    /// Move the Python's data folder (`folder` is its `library`) in: the one move, done at the first open of the
+    /// library, part by part ([`Moved`]). Each part is recorded in `imported` when it is done, so a part done is
+    /// never done again; a part stopped half way (the app closed, the computer off) left nothing it wrote, or only
+    /// what it writes again without doubling (the detector's texts, kept by id), and is done again at the next
+    /// start. A part that fails does not stop the others.
+    pub fn import_old(&self, folder: &Path) -> Moved {
+        let files = Part::of(self.import_once(folder));
+        let ledger = Part::of(self.import_ledger(folder).map(|rows| (rows > 0).then_some(rows)));
+        let detector = Part::of(self.import_detector_once(folder));
+        Moved { files, ledger, detector }
+    }
+
+    /// The detector's part of [`Library::import_old`]: moved and then recorded; moving it again before the record
+    /// (stopped between the two) adds nothing twice.
+    fn import_detector_once(&self, folder: &Path) -> Result<Option<super::detector::ImportedDetector>, ImportError> {
+        let recorded = |connection: &Connection| -> rusqlite::Result<bool> {
+            Ok(connection
+                .query_row("SELECT 1 FROM imported WHERE source = ?1", [DETECTOR], |_| Ok(()))
+                .optional()?
+                .is_some())
+        };
+        if self.read(|connection| Ok(recorded(connection)?))? || !folder.join(DETECTOR).exists() {
+            return Ok(None);
+        }
+        let moved = self.import_detector(folder)?;
+        self.write(|transaction| {
+            transaction.execute(
+                "INSERT INTO imported (source, at) VALUES (?1, ?2) ON CONFLICT (source) DO NOTHING",
+                params![DETECTOR, now()],
+            )?;
+            Ok(())
+        })?;
+        Ok(Some(moved))
+    }
+}
+
 /// One `embeddings/<folder>`: its index and its matrix.
 struct Vectors {
     model: String,
@@ -821,6 +930,73 @@ mod tests {
         assert_eq!(library.import_once(&folder).unwrap(), None);
         assert_eq!(library.paper_count().unwrap(), 3);
         assert_eq!(library.embedding_counts().unwrap()["Qwen/Qwen3-Embedding-0.6B"], 2);
+    }
+
+    /// The Python's detector files beside the fixture library (synthetic content): a pool of two, one mirror.
+    fn with_detector(folder: &Path) {
+        put(
+            &folder.join("ai_detection").join("training.json"),
+            &json!({
+                "pool": [{"id": "1906.00001", "title": "One", "abstract": "Abstract one."},
+                         {"id": "1906.00002", "title": "Two", "abstract": "Abstract two."}],
+                "machine": [{"id": "1906.00001", "kind": "written", "generator": "claude-sonnet-5-5", "text": "W."}],
+            }),
+        );
+    }
+
+    #[test]
+    fn the_old_data_folder_is_moved_in_part_by_part_in_order_and_never_again() {
+        let (_data, folder) = files_based_library();
+        with_detector(&folder);
+        let library = Library::open(&folder).unwrap();
+        let moved = library.import_old(&folder);
+        let Part::Moved { added: files } = &moved.files else { panic!("{moved:?}") };
+        assert_eq!((files.papers, files.ledger_rows), (3, 2), "the ledger goes with the files when they move");
+        assert_eq!(moved.ledger, Part::Already, "and is not moved again on its own");
+        let Part::Moved { added: detector } = &moved.detector else { panic!("{moved:?}") };
+        assert_eq!((detector.humans, detector.mirrors), (2, 1));
+        assert!(moved.problems().is_empty());
+        // the next start: every part is recorded as done, and no file is read again
+        fs::write(folder.join("papers.jsonl"), "not read again").unwrap();
+        fs::write(folder.join("ai_detection").join("training.json"), "not read again").unwrap();
+        assert_eq!(library.import_old(&folder), Moved::default());
+        assert_eq!(library.detector_counts(crate::library::detector::POOL).unwrap(), (2, 1), "nothing twice");
+        assert_eq!(library.spending().unwrap().total.calls, 5);
+    }
+
+    #[test]
+    fn a_part_that_cannot_be_moved_is_told_keeps_nothing_and_is_moved_at_the_next_start_while_the_others_are_kept() {
+        let (_data, folder) = files_based_library();
+        with_detector(&folder);
+        let papers = fs::read_to_string(folder.join("papers.jsonl")).unwrap();
+        fs::write(folder.join("papers.jsonl"), format!("{{\"id\": \"damaged\n{papers}")).unwrap();
+        let library = Library::open(&folder).unwrap();
+        let moved = library.import_old(&folder);
+        assert!(matches!(&moved.files, Part::Failed { why } if why.contains("papers.jsonl, line 1")), "{moved:?}");
+        assert_eq!(moved.ledger, Part::Moved { added: 2 }, "what was spent is moved without the papers");
+        assert!(matches!(moved.detector, Part::Moved { .. }));
+        let problems = moved.problems();
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("papers.jsonl") && problems[0].contains("next start"), "{problems:?}");
+        assert_eq!(library.paper_count().unwrap(), 0, "nothing of the failed part is kept");
+        // mended before the next start: that part is moved, whole, and only it
+        fs::write(folder.join("papers.jsonl"), papers).unwrap();
+        let again = library.import_old(&folder);
+        let Part::Moved { added: files } = &again.files else { panic!("{again:?}") };
+        assert_eq!((files.papers, files.ledger_rows), (3, 0), "the ledger is not counted twice");
+        assert_eq!((again.ledger, again.detector), (Part::Already, Part::Already));
+        assert_eq!(library.spending().unwrap().total.calls, 5);
+    }
+
+    #[test]
+    fn a_detector_move_stopped_before_its_record_is_done_again_without_doubling() {
+        let (_data, folder) = files_based_library();
+        with_detector(&folder);
+        let library = Library::open(&folder).unwrap();
+        library.import_detector(&folder).unwrap(); // moved, and then the app closed before it was recorded
+        let moved = library.import_old(&folder);
+        assert!(matches!(moved.detector, Part::Moved { .. }), "{moved:?}");
+        assert_eq!(library.detector_counts(crate::library::detector::POOL).unwrap(), (2, 1));
     }
 
     #[test]

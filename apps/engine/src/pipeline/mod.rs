@@ -8,12 +8,12 @@
 //!
 //! # The seam with the other modules
 //!
-//! Two steps are other people's modules: scoring abstracts with the AI-text detector ([`Step::Detect`]) and
-//! naming and describing the communities with the language model ([`Step::Describe`]). The run calls them through
-//! [`seams::detect`] and [`seams::describe`], each `fn(&Library, &mut Made, &Tracker) -> StepOutcome`, which in
-//! this build answer "skipped: not available in this build". Connecting a module is replacing the body of its
-//! function with a call into it; [`seams`] says what each is handed and must set. Both steps are optional: a
-//! failure is told in the log and the run is made without what it would have added.
+//! Two steps are other modules': scoring abstracts with the AI-text detector ([`Step::Detect`], [`crate::detector`])
+//! and naming and describing the communities with the language model ([`Step::Describe`],
+//! [`crate::writing::describe`]). The run calls them through [`seams::detect`] and [`seams::describe`]; [`seams`]
+//! says what each is handed and must set. The model is asked only within what the person accepted with the run's
+//! request ([`seams::Naming`]). Both steps are optional: a failure is told in the log and the run is made without
+//! what it would have added.
 //!
 //! # A run is a job
 //!
@@ -80,6 +80,13 @@ use embedding::Embedding;
 use gather::Sources;
 use steps::{Board, thousands};
 pub use steps::{Step, StepOutcome};
+
+/// The version of how communities are cut, kept in every run's `run.json`: raised whenever the same papers and
+/// settings would be cut otherwise, so that making a run again can say beforehand that its communities will
+/// change ([`files::replacing`]). Runs the Python made have none: its k-means started from one random start where
+/// the engine's keeps the best of several, so even with the same settings their communities are cut again.
+/// Nothing remakes a run because this changed: a run is made again only when the person asks.
+pub const CLUSTERING_VERSION: u32 = 1;
 
 /// A step whose kept results a run can be told to ignore and produce again (`RedoStep` in the contracts).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -171,6 +178,10 @@ pub struct Context<'a> {
     pub sources: Sources<'a>,
     pub embedding: &'a dyn Embedding,
     pub board: &'a Board,
+    /// How the language model's requests reach its provider (a test's fake reaches nothing).
+    pub transport: &'a dyn crate::model::language::Transport,
+    /// What the person accepted for naming the run's communities.
+    pub naming: &'a seams::Naming,
 }
 
 /// Fewer papers than this cannot be cut into communities that mean anything.
@@ -212,6 +223,8 @@ fn optional(
 ) -> Result<(), RunError> {
     step(which, tracker, board, || {
         let outcome = work();
+        // what came of it, on the board too: "skipped: the AI-text detector is not trained"
+        board.detail(outcome.to_string());
         if let StepOutcome::Failed(why) = &outcome {
             tracker.log(&format!("  {} failed ({why}): the run goes on without it", which.title()));
         }
@@ -346,7 +359,7 @@ pub fn make(context: &Context<'_>, request: &Request, tracker: &Tracker<'_>) -> 
         if !settings.describe {
             return StepOutcome::Skipped(steps::Skip::SwitchedOff);
         }
-        seams::describe(library, &mut made, tracker)
+        seams::describe(library, context.transport, context.naming, &mut made, tracker)
     })?;
 
     step(Step::Write, tracker, board, || {
@@ -396,6 +409,7 @@ pub fn make(context: &Context<'_>, request: &Request, tracker: &Tracker<'_>) -> 
             "selection": made.selection.to_json(),
             "settings": settings,
             "paper_ids": made.papers.iter().map(|paper| paper.id.as_str()).collect::<Vec<_>>(),
+            "clustering_version": CLUSTERING_VERSION,
         });
         let folder = files::runs_folder(context.data).join(&name);
         files::write(

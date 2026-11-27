@@ -135,7 +135,19 @@ fn library_of_fixture(data: &Path) -> (Library, Selection) {
     (library, selection)
 }
 
-/// Make the run with `settings`; answers its log.
+/// The model a test's runs are named with when nothing was accepted: the settings', which cannot be asked.
+fn kept_only(settings: &Settings) -> seams::Naming {
+    use crate::model::language::{Provider, Unavailable};
+    let chosen = crate::model::chosen::Chosen::of(
+        Provider::Anthropic,
+        &settings.describe_model,
+        settings.describe_effort,
+        Err(Unavailable::NoKey),
+    );
+    seams::Naming::KeptOnly(chosen)
+}
+
+/// Make the run with `settings`, nothing accepted for naming it; answers its log.
 fn make_run(
     data: &Path,
     library: &Library,
@@ -144,6 +156,24 @@ fn make_run(
     fetch: &(dyn Fetch + Sync),
     embedding: &dyn Embedding,
     redo: Redo,
+) -> Result<(String, Vec<String>), RunError> {
+    let naming = kept_only(&settings);
+    let transport = crate::model::language::fake::Fake::default();
+    make_named(data, library, selection, settings, fetch, embedding, redo, &naming, &transport)
+}
+
+/// Make the run with `settings`, naming its communities as `naming` allows through `transport`.
+#[allow(clippy::too_many_arguments)]
+fn make_named(
+    data: &Path,
+    library: &Library,
+    selection: &Selection,
+    settings: Settings,
+    fetch: &(dyn Fetch + Sync),
+    embedding: &dyn Embedding,
+    redo: Redo,
+    naming: &seams::Naming,
+    transport: &dyn crate::model::language::Transport,
 ) -> Result<(String, Vec<String>), RunError> {
     let board = Board::default();
     let log = Mutex::new(Vec::new());
@@ -158,6 +188,8 @@ fn make_run(
         sources: Sources { fetch, pause: &|_| {}, today: chrono::NaiveDate::from_ymd_opt(2026, 11, 27).unwrap() },
         embedding,
         board: &board,
+        transport,
+        naming,
     };
     let request = Request { selection: selection.clone(), redo };
     let name = make(&context, &request, &tracker)?;
@@ -626,7 +658,7 @@ fn a_run_gathers_embeds_and_writes_and_a_second_run_fetches_and_embeds_nothing_a
     for step in Step::ALL {
         assert!(log.iter().any(|line| line.ends_with(step.title())), "the log names {step:?}");
     }
-    assert!(log.iter().any(|line| line.contains("skipped: not available in this build") || line.contains("skipped: switched off")));
+    assert!(log.iter().any(|line| line.contains("skipped: switched off")), "{log:?}");
     let asked = fetch.asked().len();
     let folder = data.path().join("runs").join(&name);
     let first = std::fs::read(folder.join(files::COMMUNITIES)).unwrap();
@@ -673,12 +705,174 @@ fn a_community_described_before_gets_its_description_back_and_nothing_is_asked()
         (result["communities"][0]["name"].clone(), result["communities"][0]["description"].clone()),
         (Value::from("Made-up physics"), Value::from("About it."))
     );
-    assert!(log.iter().any(|line| line.contains("described before")), "{log:?}");
-    // redone: the kept description is not used
+    assert!(log.iter().any(|line| line.contains("kept from before: 1 of")), "{log:?}");
+    assert!(log.iter().any(|line| line.contains("No cost was accepted for naming")), "{log:?}");
+    // redone without anything accepted: nothing is asked, and the kept description is not used
     let redo: Redo = [RedoStep::Descriptions].into();
-    make_run(data.path(), &library, &selection, settings, &fetch, &words, redo).unwrap();
+    let (_, log) = make_run(data.path(), &library, &selection, settings, &fetch, &words, redo).unwrap();
     let result: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
     assert_eq!(result["communities"][0]["name"], Value::Null);
+    assert!(log.iter().any(|line| line.contains("skipped: no cost was accepted")), "{log:?}");
+}
+
+/// The names of a run's communities (and sub-communities), depth first: null for one not named.
+fn names_of(data: &Path, name: &str) -> Vec<Value> {
+    fn walk(communities: &Value, into: &mut Vec<Value>) {
+        for community in communities.as_array().unwrap() {
+            into.push(community["name"].clone());
+            walk(&community["children"], into);
+        }
+    }
+    let file = data.join("runs").join(name).join(files::COMMUNITIES);
+    let result: Value = serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+    let mut names = Vec::new();
+    walk(&result["communities"], &mut names);
+    names
+}
+
+fn naming_settings() -> Settings {
+    Settings { max_communities: 3, min_community_size: 5, describe: true, ..settings_for("spectral") }
+}
+
+/// Naming within what was accepted of the estimate before the run, as `POST /api/runs` builds it.
+fn accepted(settings: &Settings) -> (seams::Naming, f64) {
+    use crate::model::chosen::Accepted;
+    let chosen = crate::writing::describe::tests::chosen("claude-opus-5-5");
+    let shown = crate::writing::describe::estimate_before_run(&chosen, settings);
+    let most = shown.cost.most_usd.unwrap().dollars();
+    let budget = crate::writing::describe::budget_before_run(&chosen, settings, Accepted::Dollars(most)).unwrap();
+    (seams::Naming::Within { chosen, budget }, most)
+}
+
+#[test]
+fn a_run_named_within_what_was_accepted_carries_its_names_and_costs_the_estimate_at_most() {
+    let data = tempfile::tempdir().unwrap();
+    let library = Library::open(&data.path().join("library")).unwrap();
+    let selection = Selection::parse(&["NeurIPS 2025".into()], None, None, &[], false).unwrap();
+    let (fetch, words) = (conference_fetch(90), Words { asked: Mutex::new(0) });
+    let transport = crate::writing::describe::tests::scripted();
+    let (naming, most) = accepted(&naming_settings());
+    let (name, log) = make_named(
+        data.path(),
+        &library,
+        &selection,
+        naming_settings(),
+        &fetch,
+        &words,
+        Redo::new(),
+        &naming,
+        &*transport,
+    )
+    .unwrap();
+    let names = names_of(data.path(), &name);
+    assert!(names.iter().all(|name| name.as_str().is_some_and(|name| name.starts_with("Topic "))), "{names:?}");
+    let report = std::fs::read_to_string(data.path().join("runs").join(&name).join(files::REPORT)).unwrap();
+    assert!(report.contains(names[0].as_str().unwrap()), "the report carries the names:\n{report}");
+    let seams::Naming::Within { budget, .. } = &naming else { unreachable!() };
+    let spent = budget.spent().1.dollars();
+    assert!(spent > 0.0 && spent <= most, "spent {spent} of the {most} accepted");
+    assert!(log.iter().any(|line| line.contains("named now")), "{log:?}");
+    // the same run again: every name kept, nothing sent
+    let sent = transport.sent().len();
+    let (again, _) = accepted(&naming_settings());
+    make_named(data.path(), &library, &selection, naming_settings(), &fetch, &words, Redo::new(), &again, &*transport)
+        .unwrap();
+    assert_eq!(transport.sent().len(), sent, "a second identical run sends nothing");
+    assert_eq!(names_of(data.path(), &name), names);
+    // made again with nothing accepted: the kept names, and still nothing sent
+    make_named(
+        data.path(),
+        &library,
+        &selection,
+        naming_settings(),
+        &fetch,
+        &words,
+        Redo::new(),
+        &kept_only(&naming_settings()),
+        &*transport,
+    )
+    .unwrap();
+    assert_eq!((transport.sent().len(), names_of(data.path(), &name)), (sent, names));
+}
+
+#[test]
+fn a_run_with_nothing_accepted_is_made_without_names_and_sends_nothing() {
+    let data = tempfile::tempdir().unwrap();
+    let library = Library::open(&data.path().join("library")).unwrap();
+    let selection = Selection::parse(&["NeurIPS 2025".into()], None, None, &[], false).unwrap();
+    let (fetch, words) = (conference_fetch(90), Words { asked: Mutex::new(0) });
+    let transport = crate::writing::describe::tests::scripted();
+    let naming = kept_only(&naming_settings());
+    let (name, log) = make_named(
+        data.path(),
+        &library,
+        &selection,
+        naming_settings(),
+        &fetch,
+        &words,
+        Redo::new(),
+        &naming,
+        &*transport,
+    )
+    .unwrap();
+    assert!(names_of(data.path(), &name).iter().all(Value::is_null));
+    assert_eq!(transport.sent().len(), 0);
+    assert!(log.iter().any(|line| line.contains("skipped: no cost was accepted")), "{log:?}");
+}
+
+#[test]
+fn a_budget_reached_part_way_stops_the_naming_and_the_run_is_made_with_the_names_it_got() {
+    use crate::model::language::{Budget, Limit};
+    let data = tempfile::tempdir().unwrap();
+    let library = Library::open(&data.path().join("library")).unwrap();
+    let selection = Selection::parse(&["NeurIPS 2025".into()], None, None, &[], false).unwrap();
+    let (fetch, words) = (conference_fetch(90), Words { asked: Mutex::new(0) });
+    let transport = crate::writing::describe::tests::scripted();
+    let chosen = crate::writing::describe::tests::chosen("claude-opus-5-5");
+    // room for the worst case of one call about one community, not of two
+    let one = crate::writing::describe::estimate_before_run(
+        &chosen,
+        &Settings { max_communities: 1, sub_levels: 0, ..naming_settings() },
+    );
+    let budget = Budget::new(Limit::Dollars(one.cost.most_usd.unwrap()));
+    let naming = seams::Naming::Within { chosen, budget };
+    let (name, log) = make_named(
+        data.path(),
+        &library,
+        &selection,
+        naming_settings(),
+        &fetch,
+        &words,
+        Redo::new(),
+        &naming,
+        &*transport,
+    )
+    .unwrap();
+    let names = names_of(data.path(), &name);
+    let named = names.iter().filter(|name| !name.is_null()).count();
+    assert!(named >= 1 && named < names.len(), "{names:?}");
+    assert!(log.iter().any(|line| line.contains("stopped (")), "{log:?}");
+    assert!(log.iter().any(|line| line.contains("modularity")), "the run is written: {log:?}");
+}
+
+#[test]
+fn a_run_scores_its_abstracts_with_the_trained_detector_once_and_reuses_the_scores_when_made_again() {
+    let data = tempfile::tempdir().unwrap();
+    let library = Library::open(&data.path().join("library")).unwrap();
+    crate::detector::tests::build_in(&library);
+    let selection = Selection::parse(&["NeurIPS 2025".into()], None, None, &[], false).unwrap();
+    let (fetch, words) = (conference_fetch(90), Words { asked: Mutex::new(0) });
+    let settings = Settings { detect_ai: true, ..naming_settings() };
+    let (_, log) = make_run(data.path(), &library, &selection, settings.clone(), &fetch, &words, Redo::new()).unwrap();
+    assert!(log.iter().any(|line| line.contains("done: 90 scored now, 0 kept from before")), "{log:?}");
+    let (_, again) = make_run(data.path(), &library, &selection, settings, &fetch, &words, Redo::new()).unwrap();
+    assert!(again.iter().any(|line| line.contains("kept from before: every score")), "{again:?}");
+    // untrained, or switched off: skipped, each with its own reason
+    let fresh = tempfile::tempdir().unwrap();
+    let untrained = Library::open(&fresh.path().join("library")).unwrap();
+    let settings = Settings { detect_ai: true, ..naming_settings() };
+    let (_, log) = make_run(fresh.path(), &untrained, &selection, settings, &fetch, &words, Redo::new()).unwrap();
+    assert!(log.iter().any(|line| line.contains("skipped: the AI-text detector is not trained")), "{log:?}");
 }
 
 #[test]
@@ -781,6 +975,8 @@ fn a_cancelled_run_stops_between_batches_keeps_what_it_embedded_and_goes_on_from
         },
         embedding: &embedding,
         board: &board,
+        transport: &crate::model::language::fake::Fake::default(),
+        naming: &kept_only(&settings_for("spectral")),
     };
     let request = Request { selection: selection.clone(), redo: Redo::new() };
     let error = make(&context, &request, &tracker).unwrap_err();

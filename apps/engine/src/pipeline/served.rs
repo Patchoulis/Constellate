@@ -399,6 +399,13 @@ impl Runs {
         Ok(())
     }
 
+    /// A run's files were written again in place (its communities named): the copy in memory is dropped, so that
+    /// the next read is of the files as they are now. The time a file was written is known to the second only, so
+    /// a change within the second it was opened would otherwise go unseen.
+    pub fn changed(&self, name: &str) {
+        self.cache.invalidate(name);
+    }
+
     /// A run was just made (or made again): its summary written, the old one dropped from memory.
     pub fn saved(&self, data: &Path, library: &Library, name: &str) -> Result<(), ServeError> {
         let facts = summarise(data, name)?;

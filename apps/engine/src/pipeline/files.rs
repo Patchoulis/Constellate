@@ -130,6 +130,99 @@ pub fn paper_ids(folder: &Path) -> Result<Vec<String>, RunFileError> {
     Ok(ids.iter().filter_map(Value::as_str).map(str::to_owned).collect())
 }
 
+/// The settings that decide a run's communities: which papers go in and how they are cut. The others (how many
+/// links are drawn, which model names the communities) leave the communities as they are.
+pub const SHAPING: [&str; 11] = [
+    "embedding_model",
+    "center_embeddings",
+    "clustering",
+    "max_communities",
+    "min_community_size",
+    "min_split_modularity",
+    "sub_levels",
+    "detect_ai",
+    "include_ai_papers",
+    "acceptance_filter",
+    "exclude_flags",
+];
+
+/// What making a run again in its folder would do to its communities, said before it is made again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Remade {
+    /// They are cut again otherwise: a setting that shapes them differs from the one the run was made with, or the
+    /// run was made by another clustering (the Python's k-means, or an earlier version of the engine's).
+    Change,
+    /// The same settings and the same clustering: they come out the same, unless the papers have changed (more of
+    /// them listed since, or downloaded or embedded again).
+    MayChange,
+}
+
+/// A setting that shapes the communities, as the run was made with it and as it is now. `was` is null when the
+/// run did not record it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Differs {
+    pub setting: &'static str,
+    pub was: Value,
+    pub now: Value,
+}
+
+/// The run a request would make again in place (`RunReplaced` in the contracts): what the person loses.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Replaced {
+    pub run: String,
+    pub title: String,
+    /// Its communities and sub-communities now, and how many of them have a name.
+    pub communities: usize,
+    pub named: usize,
+    pub communities_will: Remade,
+    pub changed: Vec<Differs>,
+}
+
+/// What making the run in `folder` again with `settings` would replace. The run's `run.json` says what it was
+/// made with; `clustering_version` (absent in runs the Python made) says by which clustering.
+pub fn replacing(folder: &Path, name: &str, settings: &Value, clustering: u32) -> Result<Replaced, RunFileError> {
+    let path = folder.join(RUN);
+    let stored: Value = store::read_json(&path)?.ok_or(RunFileError::NotFound)?;
+    let changed: Vec<Differs> = SHAPING
+        .iter()
+        .filter_map(|setting| {
+            let was = stored["settings"].get(*setting).cloned().unwrap_or(Value::Null);
+            let now = settings.get(*setting).cloned().unwrap_or(Value::Null);
+            (was != now).then_some(Differs { setting, was, now })
+        })
+        .collect();
+    // the Python's bisection has no random start, and the engine's cuts the same papers the same way (measured on
+    // a run of 12,487 papers: the same 24 communities); its k-means did not
+    let same_clustering = match stored.get("clustering_version").and_then(Value::as_u64) {
+        Some(version) => version == u64::from(clustering),
+        None => stored["settings"]["clustering"] == "fiedler",
+    };
+    let (communities, named) = match crate::writing::read_tree(folder)? {
+        Some(tree) => {
+            fn named(stored: &[crate::writing::Stored]) -> usize {
+                stored
+                    .iter()
+                    .map(|community| {
+                        usize::from(community.name.as_deref().is_some_and(|name| !name.trim().is_empty()))
+                            + named(&community.children)
+                    })
+                    .sum()
+            }
+            (tree.paths().len(), named(&tree.communities))
+        }
+        None => (0, 0),
+    };
+    Ok(Replaced {
+        run: name.to_owned(),
+        title: title(folder, name),
+        communities,
+        named,
+        communities_will: if changed.is_empty() && same_clustering { Remade::MayChange } else { Remade::Change },
+        changed,
+    })
+}
+
 /// A float32 matrix as NumPy's `.npy` (version 1, little-endian, C order), which the Python wrote and read.
 pub fn npy(matrix: ArrayView2<f32>) -> Vec<u8> {
     let (rows, columns) = matrix.dim();
