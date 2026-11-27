@@ -6,7 +6,7 @@
 //! | module      | what lives there                                                              |
 //! |-------------|-------------------------------------------------------------------------------|
 //! | [`analysis`] | the similarity graph over papers and what is worked out from it                |
-//! | [`library`] | what is kept on disk: the file store everything is written through             |
+//! | [`library`] | what is kept on disk: the SQLite library, and the file store for a run's results |
 //! | [`jobs`]    | the one background job at a time, as an explicit state machine                  |
 //! | [`model`]   | the embedding model, on any graphics card or the processor                     |
 //! | [`selection`] | which papers a run is about: conferences, or a date range                     |

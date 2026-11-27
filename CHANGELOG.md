@@ -12,6 +12,11 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The engine uses any maker's graphics card: through DirectML on Windows and through Vulkan (WebGPU) on Linux, with
   the processor as the fallback. It is built and tested on Linux as well as Windows.
 
+- The engine keeps the library in one small database on your computer instead of many loose files, so an
+  interrupted write can no longer leave it half-saved, and an existing library is moved in without losing anything.
+  A conference whose site did not answer is now fetched again later instead of being counted as downloaded, and
+  papers whose PDF could not be had or read are remembered as such.
+
 ### Changed
 
 - The backend is being rewritten in Rust (`apps/engine`), organised by subject; the Python backend stays until the
