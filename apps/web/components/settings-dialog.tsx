@@ -361,25 +361,29 @@ export function SettingsDialog({
 									{group.title === AI_GROUP && detector && (
 										<p className={cn("text-xs", detector.state === "ready" ? "text-muted-foreground" : "text-warning")}>{detector.why}</p>
 									)}
-									{group.title === AI_GROUP && validation && (detector?.state === "ready" || detector?.state === "stale") && (
-										<p className="text-xs text-warning">
-											Measured on {validation.held_out} abstracts it was not trained on: it catches{" "}
-											{Math.round(100 * validation.written_caught)}% of abstracts a model wrote from the title and{" "}
-											{Math.round(100 * validation.polished_caught)}% of human abstracts a model polished, while tagging{" "}
-											{Math.round(100 * validation.false_alarms)}% of human ones. Trained on text from {validation.generators.join(" and ")}{" "}
-											only.
-											{validation.by_year && (
-												<>
-													{" "}
-													Of a week of arXiv abstracts in each year it tags:{" "}
-													{Object.entries(validation.by_year)
-														.map(([year, found]) => `${year} ${Math.round(100 * found.flagged)}%`)
-														.join(", ")}
-													. ChatGPT appeared at the end of 2022.
-												</>
-											)}
-										</p>
-									)}
+									{group.title === AI_GROUP &&
+										validation &&
+										validation.written_caught !== null &&
+										validation.polished_caught !== null &&
+										(detector?.state === "ready" || detector?.state === "stale") && (
+											<p className="text-xs text-warning">
+												Measured on {validation.held_out} abstracts it was not trained on: it catches{" "}
+												{Math.round(100 * validation.written_caught)}% of abstracts a model wrote from the title and{" "}
+												{Math.round(100 * validation.polished_caught)}% of human abstracts a model polished, while tagging{" "}
+												{Math.round(100 * validation.false_alarms)}% of human ones. Trained on text from{" "}
+												{validation.generators.join(" and ")} only.
+												{validation.by_year && (
+													<>
+														{" "}
+														Of a week of arXiv abstracts in each year it tags:{" "}
+														{Object.entries(validation.by_year)
+															.map(([year, found]) => `${year} ${Math.round(100 * found.flagged)}%`)
+															.join(", ")}
+														. ChatGPT appeared at the end of 2022.
+													</>
+												)}
+											</p>
+										)}
 									<div className={group.columns ? "grid grid-cols-2 gap-2" : "flex flex-col gap-2"}>
 										{shown.map((field) => {
 											const why = refusalOf(field, refused);

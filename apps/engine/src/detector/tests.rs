@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use super::*;
 use crate::jobs::{Cancel, Progress as JobProgress};
-use crate::library::detector::{Generator, Human, Kind, Mirror};
+use crate::library::detector::{Generator, Human, Kind, Mirror, POOL};
 use crate::library::{Known, papers::tests::paper as record};
 use crate::model::language::Provider;
 
@@ -108,6 +108,27 @@ fn exactly_one_state_holds_and_each_says_why() {
         assert!(!state.why(None).is_empty(), "{state:?}");
     }
     assert!(!Availability::Untrained.scores() && !Availability::Off.scores());
+}
+
+#[test]
+fn a_kept_classifier_from_a_newer_version_or_one_that_does_not_read_is_not_used_nor_overwritten() {
+    for (features, content) in [(features::FEATURES + 1, "{}"), (features::FEATURES, "not a classifier")] {
+        let (_folder, library) = trained_library();
+        library.keep_detector_model(features, logistic::TRAINING, content).unwrap();
+        assert_eq!(model(&library).unwrap(), None, "untrained rather than an error");
+        assert_eq!(library.detector_model().unwrap().unwrap().content, content, "left as it was");
+        let ids = papers(&library);
+        let scores = Quiet::new().score(&library, &on(), &ids);
+        assert_eq!(scores.outcome, Scoring::Skipped { why: Skipped::Untrained });
+    }
+}
+
+#[test]
+fn the_pool_trained_on_is_its_first_abstracts_however_many_days_kept() {
+    let (_folder, library) = trained_library();
+    let small = training::Sizes { pool: 300, ..training::Sizes::RECIPE };
+    assert_eq!(training::pool(&library, small).unwrap().len(), 300);
+    assert_eq!(training::pool(&library, training::Sizes::RECIPE).unwrap().len(), 400);
 }
 
 #[test]

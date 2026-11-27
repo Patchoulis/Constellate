@@ -213,12 +213,8 @@ fn plan(library: &Library, sizes: Sizes) -> Result<Plan, DetectorError> {
     let have = have(&mirrors);
     let (built, _) = library.detector_built()?;
     let mut papers: Vec<Human> = Vec::new();
-    if let Some(built) = &built {
-        // built: only the mirrors of its papers that are missing (none, unless some answer was unusable)
-        let train: HashSet<&str> = built.train.iter().map(String::as_str).collect();
-        let held: Vec<&Human> = pool.iter().filter(|human| held_out(&human.id)).take(sizes.held_out_mirrors).collect();
-        papers.extend(held.into_iter().cloned());
-        papers.extend(pool.iter().filter(|human| train.contains(human.id.as_str())).cloned());
+    if built.is_some() {
+        // built: building again fits the classifier again on what is kept, and asks nothing
     } else if pool.len() >= sizes.pool {
         let held = pool.iter().filter(|human| held_out(&human.id)).take(sizes.held_out_mirrors);
         // the first START to train on, then the next ones as stand-ins for those mining will pick
@@ -246,6 +242,12 @@ pub fn estimate(library: &Library, chosen: &Chosen, sizes: Sizes) -> Result<Esti
     let cost = batch::estimate_batch::<Written>(library, &items, chosen)?;
     let pool = sizes.pool;
     Ok(Estimate { pool_kept: pool_kept.min(pool), pool, mirrors_kept, to_generate: cost.to_ask, built, cost })
+}
+
+/// The pool a classifier is trained and measured on: the first [`Sizes::pool`] abstracts kept (a day is kept
+/// whole, so more may be kept), as the Python's pool was exactly that many.
+pub fn pool(library: &Library, sizes: Sizes) -> Result<Vec<Human>, crate::library::LibraryError> {
+    Ok(first(library.detector_humans(POOL_SAMPLE)?, sizes))
 }
 
 /// The pool as used: its first [`Sizes::pool`] abstracts.
@@ -317,7 +319,7 @@ pub fn build(building: &Building<'_>, tracker: &Tracker<'_>) -> Result<Built, Bu
     if let (Some(built), _) = library.detector_built()? {
         // built before: nothing to ask; the classifier is fitted again on what is kept (a stale one asked for this)
         tracker.log("The training set was built before: fitting the classifier again on the texts kept.");
-        let trained_on = refit(library, &built)?;
+        let trained_on = refit(library, &built, building.sizes)?;
         return Ok(Built::Trained { generated: 0, trained_on });
     }
     let sizes = building.sizes;
@@ -385,7 +387,7 @@ pub fn build(building: &Building<'_>, tracker: &Tracker<'_>) -> Result<Built, Bu
     }
     library.keep_detector_built(&train, &rounds)?;
     let (Some(built), _) = library.detector_built()? else { return Err(BuildError::TooFew(0)) };
-    let trained_on = refit(library, &built)?;
+    let trained_on = refit(library, &built, sizes)?;
     tracker.log(&format!("Trained on {trained_on} abstracts from 2019 and their mirrors."));
     Ok(Built::Trained { generated: counter.generated, trained_on })
 }
@@ -403,8 +405,8 @@ fn said(headline: f64) -> String {
 
 /// Fit the classifier of the built training set and keep it, with the year check measured again when its abstracts
 /// are kept. Answers how many abstracts it was trained on.
-fn refit(library: &Library, built: &crate::library::detector::Built) -> Result<usize, BuildError> {
-    let pool = library.detector_humans(POOL_SAMPLE)?;
+fn refit(library: &Library, built: &crate::library::detector::Built, sizes: Sizes) -> Result<usize, BuildError> {
+    let pool = pool(library, sizes)?;
     let mirrors = library.detector_mirrors()?;
     let Some((classifier, report)) = classifier::trained(&pool, &mirrors, built) else {
         return Err(BuildError::TooFew(pool.len()));
@@ -471,7 +473,10 @@ fn mirror(building: &Building<'_>, counter: &mut Counter<'_>, papers: &[&Human])
     }
     library.keep_detector_mirrors(&made)?;
     if failed > 0 {
-        tracker.log(&format!("  {failed} could not be written: they are asked for again next time"));
+        tracker.log(&format!(
+            "  {failed} could not be written: they are left out, and asked for again only if this build stops and is \
+             started again before it finishes"
+        ));
     }
     Ok(stopped.map_or(Step::Going, Step::Stopped))
 }

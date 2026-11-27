@@ -888,10 +888,10 @@ export interface Library {
 		held_out: number;
 		/** share of human abstracts flagged, by construction of the threshold */
 		false_alarms: number;
-		/** share caught of abstracts a model wrote from the title */
-		written_caught: number;
-		/** share caught of human abstracts a model polished */
-		polished_caught: number;
+		/** share caught of abstracts a model wrote from the title; null when none was held out */
+		written_caught: number | null;
+		/** share caught of human abstracts a model polished; null when none was held out */
+		polished_caught: number | null;
 		/** the words that most point to a model */
 		machine_words: string[];
 		/** share of arXiv abstracts flagged in a week of each year, if that check was run */
@@ -1854,6 +1854,7 @@ export type DescribeRequest = ShownModel & AcceptedCost & { redo?: boolean };
 export interface DescribeStarted {
 	ok: true;
 	id: number;
+}
 
 // ---- AI-text detector (engine detector/, api/detector.rs) ----
 

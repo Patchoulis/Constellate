@@ -208,6 +208,11 @@ pub enum Started {
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Start {
+    /// The estimate's worst case as shown, in US dollars (or, for a model with no price, in tokens): refused when
+    /// building would now cost more.
+    accepted_usd: Option<f64>,
+    accepted_tokens: Option<u64>,
+    /// A budget of the user's own instead, up to [`MOST_USD`] (or [`MOST_TOKENS`]).
     budget_usd: Option<f64>,
     budget_tokens: Option<u64>,
     /// The model whose estimate the user saw, and its provider.
@@ -226,6 +231,26 @@ fn body_of(body: &Bytes) -> Result<Start, ApiError> {
     }
 }
 
+/// The budget a build runs under: the worst case shown and accepted, or a budget of the user's own. Nothing named is
+/// refused, as on every route that asks a model: a budget the user never saw is never assumed.
+fn budget_of(asked: &Start, estimate: &Estimate) -> Result<crate::model::language::Budget, ApiError> {
+    let invalid = |why: crate::model::chosen::Refused| ApiError::Invalid(why.to_string());
+    let accepted = (asked.accepted_usd, asked.accepted_tokens);
+    let own = (asked.budget_usd, asked.budget_tokens);
+    let (amount, terms) = match (accepted, own) {
+        ((None, None), (None, None)) => {
+            return Err(ApiError::Invalid(
+                "say what was accepted of the estimate shown (accepted_usd or accepted_tokens), or a budget".to_owned(),
+            ));
+        }
+        ((None, None), (usd, tokens)) => ((usd, tokens), Terms::AtMost { usd: MOST_USD, tokens: MOST_TOKENS }),
+        ((usd, tokens), (None, None)) => ((usd, tokens), Terms::AsShown),
+        _ => return Err(ApiError::Invalid("an accepted cost or a budget, not both".to_owned())),
+    };
+    let accepted = Accepted::of(amount.0, amount.1).map_err(invalid)?;
+    budget(&estimate.cost.cost, accepted, terms).map_err(invalid)
+}
+
 /// arXiv's pace: a real wait.
 fn sleep(duration: Duration) {
     std::thread::sleep(duration);
@@ -237,18 +262,21 @@ async fn build(State(engine): State<Shared>, body: Bytes) -> Result<Json<Started
         let library = engine.library()?;
         let chosen = engine.chosen()?;
         let estimate = training::estimate(&library, &chosen, Sizes::RECIPE)?;
-        // the model is asked only when there is something to ask: a built set is fitted again, with no key needed
+        // the model is asked only when there is something to ask: a built set is fitted again, free, with no key,
+        // model or budget needed
         let endpoint = chosen.endpoint();
-        if let (Err(why), true) = (&endpoint, estimate.to_generate > 0) {
-            return Err(ApiError::Invalid(format!("the model cannot be asked: {why}")));
-        }
-        if let Some(model) = &asked.model {
+        let budget = if estimate.to_generate == 0 {
+            Budget::new(Limit::Tokens(0))
+        } else {
+            if let Err(why) = &endpoint {
+                return Err(ApiError::Invalid(format!("the model cannot be asked: {why}")));
+            }
+            let model = asked.model.as_deref().ok_or_else(|| {
+                ApiError::Invalid("say which model's estimate was shown (provider and model)".to_owned())
+            })?;
             chosen.as_shown(asked.provider, model).map_err(|why| ApiError::Invalid(why.to_string()))?;
-        }
-        let invalid = |why: crate::model::chosen::Refused| ApiError::Invalid(why.to_string());
-        let accepted = Accepted::of(asked.budget_usd, asked.budget_tokens).map_err(invalid)?;
-        let budget = budget(&estimate.cost.cost, accepted, Terms::AtMost { usd: MOST_USD, tokens: MOST_TOKENS })
-            .map_err(invalid)?;
+            budget_of(&asked, &estimate)?
+        };
         let transport = engine.transport.clone();
         let job = engine.job.start_tracked(KIND, move |tracker| {
             let fetch = Http::new();
@@ -526,6 +554,9 @@ mod tests {
         let router = router(data.path(), Asked::OpenAi, &transport);
         for body in [
             json!({"provider": "openai", "model": "another-model"}),
+            json!({"provider": "openai", "model": MODEL}),
+            json!({"provider": "openai", "model": MODEL, "accepted_usd": 1.0, "budget_usd": 1.0}),
+            json!({"accepted_usd": 1.0}),
             json!({"budget_usd": MOST_USD + 1.0}),
             json!({"budget_usd": 0}),
             json!({"budget_usd": 1, "budget_tokens": 5}),

@@ -33,6 +33,19 @@
 //! run's papers afterwards is local and takes seconds ([`score_run`]). Until a training set is built, nothing is
 //! flagged.
 //!
+//! Where this differs from the Python, on purpose:
+//!
+//! * the regression is solved to its exact minimum, where scikit-learn stopped at a gradient of 1e-4: scores move
+//!   by about 1e-3, and on the user's training set of 2026 one polished mirror of 78 crossed the threshold;
+//! * a paper is flagged when its score is above the threshold; the Python compared the score rounded to three
+//!   decimals (as it kept it), so a paper within 0.0005 of the threshold may be told apart differently;
+//! * the mirrors are written by the model chosen in Settings, one at a time through the batch, answering in JSON;
+//!   the Python wrote with two fixed Claude models in turn, as plain text;
+//! * the year check scores the first 1,000 abstracts of at least [`MIN_WORDS`] words of each week; the Python took
+//!   the first 1,000 and then dropped the short ones;
+//! * a classifier is fitted once and kept, not again whenever the training file changed; one fitted by an older
+//!   version of the code is stale and fitted again only on request.
+//!
 //! | file            | what                                                                         |
 //! |-----------------|------------------------------------------------------------------------------|
 //! | [`features`]    | words and word pairs, weighted as scikit-learn's TF-IDF                      |
@@ -53,7 +66,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use serde::{Deserialize, Serialize};
 
 use crate::jobs::Tracker;
-use crate::library::detector::{ByYear, POOL};
+use crate::library::detector::ByYear;
 use crate::library::{AiScore, Library, LibraryError, Paper};
 use crate::settings::Settings;
 use crate::threads::{self, Progress};
@@ -116,8 +129,11 @@ pub fn model(library: &Library) -> Result<Option<Arc<Trained>>, DetectorError> {
     if let Some(found) = kept(library)? {
         return Ok(Some(found)); // fitted by whoever held the lock before
     }
+    if library.detector_model_stamp()?.is_some() {
+        return Ok(None); // kept, but not one this version can use: never overwritten by guessing
+    }
     let (Some(built), _) = library.detector_built()? else { return Ok(None) };
-    let pool = library.detector_humans(POOL)?;
+    let pool = training::pool(library, training::Sizes::RECIPE)?;
     let mirrors = library.detector_mirrors()?;
     let Some((classifier, report)) = classifier::trained(&pool, &mirrors, &built) else { return Ok(None) };
     keep(library, classifier, report)?;
@@ -132,19 +148,30 @@ pub fn keep(library: &Library, classifier: Classifier, report: Report) -> Result
     Ok(())
 }
 
+/// The classifier kept, when this version can use it. One written by a newer version of the features or the
+/// training, or one that does not read, is not used (and said so on the engine's error output): the detector is
+/// then untrained until it is trained again, rather than failing every request or scoring with code it was not
+/// fitted for.
 fn kept(library: &Library) -> Result<Option<Arc<Trained>>, DetectorError> {
-    let Some(row) = library.detector_model()? else { return Ok(None) };
-    // when it was fitted (to the second) and its length: a classifier fitted again in the same second from other
-    // texts has other numbers in it, and so another length
-    let stamp = format!("{} {}", row.trained_at, row.content.len());
+    let Some(stamp) = library.detector_model_stamp()? else { return Ok(None) };
+    if stamp.features > features::FEATURES || stamp.training > logistic::TRAINING {
+        eprintln!("detector: the classifier kept was fitted by a newer version of the app; it is not used");
+        return Ok(None);
+    }
+    // read whole only when it is not the one already loaded: when it was fitted (to the second), its length and
+    // its versions; one fitted again in the same second from other texts has other numbers, and another length
+    let stamp = format!("{} {} {} {}", stamp.trained_at, stamp.length, stamp.features, stamp.training);
     let mut loaded = LOADED.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some((path, at, trained)) = loaded.as_ref() {
         if path == library.path() && *at == stamp {
             return Ok(Some(Arc::clone(trained)));
         }
     }
-    let Kept { classifier, report } =
-        serde_json::from_str(&row.content).map_err(|error| DetectorError::Unreadable(error.to_string()))?;
+    let Some(row) = library.detector_model()? else { return Ok(None) };
+    let Ok(Kept { classifier, report }) = serde_json::from_str(&row.content) else {
+        eprintln!("detector: the classifier kept cannot be read; it is not used until it is trained again");
+        return Ok(None);
+    };
     let trained = Arc::new(Trained { classifier: classifier.ready(), report, trained_at: row.trained_at.clone() });
     *loaded = Some((library.path().to_path_buf(), stamp, Arc::clone(&trained)));
     Ok(Some(trained))
@@ -194,7 +221,8 @@ impl Availability {
         }
     }
 
-    /// Does a run score abstracts in this state? (While building, the classifier kept before, if any, scores.)
+    /// Is a classifier known to be there to score with? While building, one kept before still scores a run (the
+    /// pipeline scores with whatever classifier is kept), but this state does not say whether there is one.
     pub fn scores(&self) -> bool {
         matches!(self, Availability::Ready { .. } | Availability::Stale { .. })
     }
@@ -215,8 +243,14 @@ impl Availability {
                      {cost} It does not need a graphics card."
                 )
             }
+            Availability::Building { of: 0, .. } => {
+                "Being trained again on the texts kept: nothing is asked of a model. \
+                                                    Until it is done, the detector kept before scores, if there is one."
+                    .to_owned()
+            }
             Availability::Building { done, of } => format!(
-                "Being trained: {done} of {of} abstracts written so far. Until it is done, no paper is newly tagged."
+                "Being trained: {done} of {of} abstracts written so far, at most. Until it is done, the detector kept \
+                 before scores, if there is one; with none, no paper is tagged."
             ),
             Availability::Ready { .. } => "On: every abstract is scored once (a fraction of a second per thousand, \
                                            on the processor: no graphics card needed) and papers above the \
@@ -418,7 +452,7 @@ fn scored(library: &Library, ids: &[String], tracker: &Tracker<'_>) -> Result<Op
     library.keep_ai_scores(&key, &new)?;
     if stopped {
         // what was scored is kept; the run flags nothing rather than half its papers
-        let why = "asked to stop before every paper was scored".to_owned();
+        let why = "not every paper was scored (asked to stop, or one could not be)".to_owned();
         return Ok(Some(RunScores::nothing(Scoring::Failed { why }, ids)));
     }
     let by_id: std::collections::HashMap<&str, Option<f64>> = known

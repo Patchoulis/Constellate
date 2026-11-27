@@ -117,6 +117,15 @@ pub struct KeptModel {
     pub trained_at: String,
 }
 
+/// The classifier kept, told apart without reading it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelStamp {
+    pub features: u32,
+    pub training: u32,
+    pub trained_at: String,
+    pub length: usize,
+}
+
 /// What was moved in from the Python's files.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ImportedDetector {
@@ -299,6 +308,26 @@ impl Library {
                         training: u32::try_from(training).unwrap_or(0),
                         content: row.get(2)?,
                         trained_at: row.get(3)?,
+                    })
+                })
+                .optional()?)
+        })
+    }
+
+    /// What tells the classifier kept apart without reading it: its versions, when it was fitted and its length.
+    pub fn detector_model_stamp(&self) -> Result<Option<ModelStamp>, LibraryError> {
+        self.read(|connection| {
+            Ok(connection
+                .prepare_cached(
+                    "SELECT features, training, trained_at, length(content) FROM detector_model WHERE id = 1",
+                )?
+                .query_row([], |row| {
+                    let (features, training, length): (i64, i64, i64) = (row.get(0)?, row.get(1)?, row.get(3)?);
+                    Ok(ModelStamp {
+                        features: u32::try_from(features).unwrap_or(u32::MAX),
+                        training: u32::try_from(training).unwrap_or(u32::MAX),
+                        trained_at: row.get(2)?,
+                        length: count(length),
                     })
                 })
                 .optional()?)
