@@ -1,17 +1,19 @@
 "use client";
 
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
-import { ExternalLink, FileSearch, FileText, Loader2, MessagesSquare, Network, X } from "lucide-react";
-import type { Catalog, CatalogItem, Declarations, Paper, Ratings } from "@rp/contracts";
+import { AlignLeft, ExternalLink, FileSearch, FileText, Loader2, MessagesSquare, Network, X } from "lucide-react";
+import type { Catalog, CatalogItem, Declarations, Paper, Ratings, ReaderTarget } from "@rp/contracts";
 import { AcceptanceTag, AiTag, FlagTag, RatingTags } from "@/components/brand";
 import { Citations } from "@/components/citation-network";
 import { CommunityDot, MarkButton } from "@/components/community-panel";
 import { MathText } from "@/components/math-text";
+import { PaperText } from "@/components/paper-text";
 import { PaperReviewFigures } from "@/components/review-summary";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
 import { communityLabel, type CommunityNode } from "@/lib/community";
+import { pdfAt } from "@/lib/evidence";
 import { ready, useAsync, type Async } from "@/lib/use-async";
 import { useResizable } from "@/lib/use-resizable";
 import { count, similarity, SIMILARITY_NOTE } from "@/lib/units";
@@ -25,7 +27,18 @@ export interface Related {
 	community: CommunityNode;
 }
 
-type View = "abstract" | "paper" | "reviews" | "citations";
+type View = "abstract" | "paper" | "text" | "reviews" | "citations";
+
+/**
+ * Which tab a citation opens on. A place in the text lands on the Text tab, where the words are highlighted
+ * (the browser's PDF viewer can only be opened at a page); a paper whose PDF the engine cannot read opens its PDF
+ * at the page; evidence from the abstract opens the abstract.
+ */
+function viewFor(at: ReaderTarget | null | undefined, readable: boolean, hasPdf: boolean): View {
+	if (!at || (!at.address && !at.quote)) return "abstract";
+	if (readable) return "text";
+	return at.address && hasPdf ? "paper" : "abstract";
+}
 
 /** The desktop app can show another site's page inside the window; a browser tab cannot (sites refuse frames). */
 const EMBEDS = typeof navigator !== "undefined" && /Electron/.test(navigator.userAgent);
@@ -303,11 +316,14 @@ export function PaperReader({
 	marked,
 	onToggleMark,
 	run,
+	at,
 	onRatings,
 	onOpen,
 	onClose,
 }: {
 	id: string;
+	/** a place in the paper to open at and the words to highlight there: where a citation (EvidenceLink) leads */
+	at?: ReaderTarget | null;
 	community?: CommunityNode;
 	related: Related[];
 	catalog: Catalog | undefined;
@@ -339,14 +355,32 @@ export function PaperReader({
 	const [view, setView] = useState<View>("abstract");
 	const found = ready(paper);
 	const from = found ? sources(found) : {};
+	// the page the PDF is opened at: the cited place's, or one the Text tab asked for
+	const [pdfPage, setPdfPage] = useState<number | undefined>(at?.address?.page);
+	// a citation opens its tab once the paper is known, and again whenever it leads elsewhere in the same paper
+	const readable = found?.readable ?? false;
+	const hasPdf = Boolean(from.paper);
+	useEffect(() => {
+		if (!found) return;
+		setView(viewFor(at, readable, hasPdf));
+		setPdfPage(at?.address?.page);
+	}, [at, found, readable, hasPdf]);
 	const tabs = [
 		{ value: "abstract" as const, label: "Abstract" },
 		...(from.paper ? [{ value: "paper" as const, label: "Paper", icon: <FileText /> }] : []),
+		...(found?.readable
+			? [{ value: "text" as const, label: "Text", icon: <AlignLeft />, title: "The paper's text as read from its PDF, by section" }]
+			: []),
 		...(from.reviews ? [{ value: "reviews" as const, label: "Reviews", icon: <MessagesSquare /> }] : []),
 		...(found ? [{ value: "citations" as const, label: "Citations", icon: <Network /> }] : []),
 	];
 	const flagNames = Object.fromEntries((catalog?.flags ?? []).flatMap((group) => group.items).map((item) => [item.name, item]));
-	const shown = view === "paper" ? from.paper : view === "reviews" ? from.reviews : undefined;
+	const pdf = from.paper && { ...from.paper, url: pdfAt(from.paper.url, pdfPage) };
+	const shown = view === "paper" ? pdf : view === "reviews" ? from.reviews : undefined;
+	const openPdf = (page: number) => {
+		setPdfPage(page);
+		setView("paper");
+	};
 
 	// it lies over the right of the graph, which moves a paper into the rest (graph-view reads its width)
 	const resizable = useResizable<HTMLDivElement>("reader");
@@ -384,13 +418,22 @@ export function PaperReader({
 			</div>
 			{view === "reviews" && <PaperReviewFigures id={id} version={read} />}
 			{shown && found ? (
-				<Page key={view} source={shown} title={`${found.title}: ${view}`} onText={view === "reviews" ? readRatings : undefined} />
+				<Page
+					key={`${view}:${shown.url}`}
+					source={shown}
+					title={`${found.title}: ${view}`}
+					onText={view === "reviews" ? readRatings : undefined}
+				/>
 			) : (
 				<div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
 					{paper.status === "failed" && <p className="text-sm text-destructive">{paper.error}</p>}
 					{paper.status === "loading" && <p className="text-sm text-muted-foreground">Loading…</p>}
 					{found && view === "citations" && <Citations paper={found} run={run} onOpen={onOpen} />}
-					{found && view !== "citations" && (
+					{found && view === "text" && (
+						// a new citation starts afresh: nothing of the last one may stay highlighted while this one is found
+						<PaperText key={JSON.stringify(at ?? null)} id={found.id} at={at} onOpenPdf={from.paper ? openPdf : undefined} />
+					)}
+					{found && view !== "citations" && view !== "text" && (
 						<Abstract
 							paper={found}
 							community={community}
@@ -399,7 +442,7 @@ export function PaperReader({
 							ratings={read ?? found.reviews}
 							onReviews={from.reviews && EMBEDS ? () => setView("reviews") : undefined}
 							onOpen={onOpen}
-							onRead={from.paper ? () => setView("paper") : undefined}
+							onRead={from.paper ? () => openPdf(1) : undefined}
 						/>
 					)}
 				</div>

@@ -4,7 +4,8 @@
 //! | module           | what it reads                                                                  |
 //! |------------------|--------------------------------------------------------------------------------|
 //! | [`declarations`] | what authors declare in a paper: the NeurIPS checklist, statements, flags      |
-//! | [`pdf`]          | the text of a paper's PDF, in reading order                                    |
+//! | [`passages`]     | a paper's text made addressable; where a quote is in it; the sentences citing a reference |
+//! | [`pdf`]          | the text of a paper's PDF, in reading order, whole or page by page             |
 //! | [`references`]   | the works a paper cites, from its reference list                               |
 //! | [`reviews`]      | the scores reviewers gave, from the text of a reviews page                     |
 //! | [`discussion`]   | the whole thread of a reviews page: reviews by section, replies, the decision  |
@@ -14,6 +15,7 @@
 
 pub mod declarations;
 pub mod discussion;
+pub mod passages;
 pub mod pdf;
 pub mod references;
 pub mod reviews;

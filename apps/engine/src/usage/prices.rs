@@ -66,17 +66,82 @@ impl Serialize for Usd {
     }
 }
 
+/// The tokens of one call, by how they are billed. `input` is the prompt read at the full rate: the API's
+/// `input_tokens`, which leaves out what was read from or written to the prompt cache.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize)]
+pub struct Tokens {
+    pub input: u64,
+    pub output: u64,
+    /// Read from the prompt cache (`cache_read_input_tokens`).
+    pub cache_read: u64,
+    /// Written to the prompt cache to live five minutes, or an hour (`cache_creation`, by lifetime).
+    pub cache_write_5m: u64,
+    pub cache_write_1h: u64,
+}
+
+impl Tokens {
+    /// The whole prompt, however it was billed: what a long-prompt rate is chosen by.
+    pub fn prompt(&self) -> u64 {
+        self.input.saturating_add(self.cache_read).saturating_add(self.cache_written())
+    }
+
+    /// Tokens written to the cache, either lifetime.
+    pub fn cache_written(&self) -> u64 {
+        self.cache_write_5m.saturating_add(self.cache_write_1h)
+    }
+
+    /// Every token of the call, prompt and answer: what a budget in tokens counts.
+    pub fn all(&self) -> u64 {
+        self.prompt().saturating_add(self.output)
+    }
+
+    fn cached(&self) -> bool {
+        self.cache_read > 0 || self.cache_written() > 0
+    }
+}
+
+impl Add for Tokens {
+    type Output = Self;
+    fn add(self, other: Self) -> Self {
+        Self {
+            input: self.input.saturating_add(other.input),
+            output: self.output.saturating_add(other.output),
+            cache_read: self.cache_read.saturating_add(other.cache_read),
+            cache_write_5m: self.cache_write_5m.saturating_add(other.cache_write_5m),
+            cache_write_1h: self.cache_write_1h.saturating_add(other.cache_write_1h),
+        }
+    }
+}
+
+/// What the prompt cache costs per token, in picodollars, as published beside a model's other prices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CacheRates {
+    pub read: u64,
+    pub write_5m: u64,
+    pub write_1h: u64,
+}
+
 /// What a model's tokens cost, in picodollars per token (the same number as micro-dollars per million tokens).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PerToken {
     pub input: u64,
     pub output: u64,
+    /// `None` for a model whose cache prices are not known here: a call that used the cache is then unpriced.
+    pub cache: Option<CacheRates>,
 }
 
 impl PerToken {
-    fn of(self, input_tokens: u64, output_tokens: u64) -> Usd {
-        let input = input_tokens.saturating_mul(self.input);
-        Usd(input.saturating_add(output_tokens.saturating_mul(self.output)))
+    fn of(self, tokens: &Tokens) -> Option<Usd> {
+        let times = |count: u64, rate: u64| count.saturating_mul(rate);
+        let plain = times(tokens.input, self.input).saturating_add(times(tokens.output, self.output));
+        let cache = match self.cache {
+            Some(cache) => times(tokens.cache_read, cache.read)
+                .saturating_add(times(tokens.cache_write_5m, cache.write_5m))
+                .saturating_add(times(tokens.cache_write_1h, cache.write_1h)),
+            None if tokens.cached() => return None,
+            None => 0,
+        };
+        Some(Usd(plain.saturating_add(cache)))
     }
 }
 
@@ -95,20 +160,41 @@ pub struct LongPrompt {
 }
 
 impl ModelPrice {
-    pub fn of(&self, input_tokens: u64, output_tokens: u64) -> Usd {
-        let rate = match self.long_prompt {
-            Some(long) if input_tokens > long.above => long.rate,
+    /// The rate a call is billed at: the long-prompt one when its whole prompt, cached or not, is past the limit.
+    pub fn rate_for(&self, tokens: &Tokens) -> PerToken {
+        match self.long_prompt {
+            Some(long) if tokens.prompt() > long.above => long.rate,
             _ => self.rate,
-        };
-        rate.of(input_tokens, output_tokens)
+        }
+    }
+
+    /// What `tokens` cost; `None` when they used the prompt cache and its prices are not known.
+    pub fn cost(&self, tokens: &Tokens) -> Option<Usd> {
+        self.rate_for(tokens).of(tokens)
+    }
+
+    /// What a call that did not use the prompt cache cost.
+    pub fn of(&self, input_tokens: u64, output_tokens: u64) -> Usd {
+        let tokens = Tokens { input: input_tokens, output: output_tokens, ..Tokens::default() };
+        self.cost(&tokens).unwrap_or(Usd::ZERO) // no cache tokens, so always priced
     }
 }
 
 /// What a call cost, or `None` for a model whose price is not known here: unpriced, which is not the same as
 /// free. The API may answer with a dated id (`claude-opus-5-5-20261101`); it has the price of the model it names.
 pub fn price(model: &str, input_tokens: u64, output_tokens: u64) -> Option<Usd> {
-    let models = &bundled().ok()?.models;
-    Some(models.get(undated(model))?.of(input_tokens, output_tokens))
+    price_of(model, &Tokens { input: input_tokens, output: output_tokens, ..Tokens::default() })
+}
+
+/// What a call cost, cache reads and writes each at their own price; `None` for a model whose price, or whose
+/// cache prices when the call used the cache, are not known here.
+pub fn price_of(model: &str, tokens: &Tokens) -> Option<Usd> {
+    model_price(model)?.cost(tokens)
+}
+
+/// A model's prices, whatever date its id carries.
+pub fn model_price(model: &str) -> Option<&'static ModelPrice> {
+    bundled().ok()?.models.get(undated(model))
 }
 
 /// `claude-opus-5-5-20261101` -> `claude-opus-5-5`; any other id as it is.
@@ -125,6 +211,7 @@ fn undated(model: &str) -> &str {
 pub(super) struct Written {
     input: f64,
     output: f64,
+    cache: Option<WrittenCache>,
     long_prompt: Option<WrittenLongPrompt>,
 }
 
@@ -134,6 +221,26 @@ struct WrittenLongPrompt {
     above: u64,
     input: f64,
     output: f64,
+    cache: Option<WrittenCache>,
+}
+
+/// The prompt cache's prices as written: reading from it, and writing to it for five minutes or for an hour.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WrittenCache {
+    read: f64,
+    write_5m: f64,
+    write_1h: f64,
+}
+
+impl WrittenCache {
+    fn checked(&self, model: &str) -> Result<CacheRates, Invalid> {
+        Ok(CacheRates {
+            read: per_token(self.read, model)?,
+            write_5m: per_token(self.write_5m, model)?,
+            write_1h: per_token(self.write_1h, model)?,
+        })
+    }
 }
 
 /// Dollars per million tokens -> picodollars per token, refusing what is not a price or cannot be held exactly.
@@ -154,13 +261,22 @@ fn per_token(dollars_per_million: f64, model: &str) -> Result<u64, Invalid> {
 
 impl Written {
     pub(super) fn checked(self, model: &str) -> Result<ModelPrice, Invalid> {
-        let rate = PerToken { input: per_token(self.input, model)?, output: per_token(self.output, model)? };
+        let cache = |written: &Option<WrittenCache>| written.as_ref().map(|cache| cache.checked(model)).transpose();
+        let rate = PerToken {
+            input: per_token(self.input, model)?,
+            output: per_token(self.output, model)?,
+            cache: cache(&self.cache)?,
+        };
         let long_prompt = match self.long_prompt {
             None => None,
             Some(long) if long.above == 0 => return Err(Invalid::LongPrompt(model.to_owned())),
             Some(long) => Some(LongPrompt {
                 above: long.above,
-                rate: PerToken { input: per_token(long.input, model)?, output: per_token(long.output, model)? },
+                rate: PerToken {
+                    input: per_token(long.input, model)?,
+                    output: per_token(long.output, model)?,
+                    cache: cache(&long.cache)?,
+                },
             }),
         };
         Ok(ModelPrice { rate, long_prompt })
@@ -221,19 +337,55 @@ mod tests {
     #[test]
     fn the_prices_are_the_published_ones() {
         let models = &bundled().unwrap().models;
-        let rate = |model: &str| models[model].rate;
-        assert_eq!(rate("claude-opus-5-5"), PerToken { input: 4_000_000, output: 20_000_000 });
-        assert_eq!(rate("claude-sonnet-5-5"), PerToken { input: 2_000_000, output: 10_000_000 });
-        assert_eq!(rate("claude-haiku-5-5"), PerToken { input: 100_000, output: 500_000 });
-        assert_eq!(rate("claude-fable-5-2"), PerToken { input: 8_000_000, output: 40_000_000 });
-        assert_eq!(rate("claude-opus-5"), PerToken { input: 5_000_000, output: 25_000_000 });
-        assert_eq!(rate("claude-opus-4-8"), PerToken { input: 5_000_000, output: 25_000_000 });
-        assert_eq!(rate("claude-sonnet-5"), PerToken { input: 2_000_000, output: 10_000_000 });
-        assert_eq!(
-            models["claude-haiku-5-5"].long_prompt,
-            Some(LongPrompt { above: 100_000, rate: PerToken { input: 500_000, output: 2_500_000 } })
-        );
+        let rate = |model: &str| (models[model].rate.input, models[model].rate.output);
+        assert_eq!(rate("claude-opus-5-5"), (4_000_000, 20_000_000));
+        assert_eq!(rate("claude-sonnet-5-5"), (2_000_000, 10_000_000));
+        assert_eq!(rate("claude-haiku-5-5"), (100_000, 500_000));
+        assert_eq!(rate("claude-fable-5-2"), (8_000_000, 40_000_000));
+        assert_eq!(rate("claude-opus-5"), (5_000_000, 25_000_000));
+        assert_eq!(rate("claude-opus-4-8"), (5_000_000, 25_000_000));
+        assert_eq!(rate("claude-sonnet-5"), (2_000_000, 10_000_000));
+        let long = models["claude-haiku-5-5"].long_prompt.unwrap();
+        assert_eq!((long.above, long.rate.input, long.rate.output), (100_000, 500_000, 2_500_000));
         assert_eq!(models.values().filter(|model| model.long_prompt.is_some()).count(), 1);
+    }
+
+    #[test]
+    fn the_cache_prices_are_the_published_ones() {
+        let cache = |model: &str| model_price(model).unwrap().rate.cache.unwrap();
+        // Claude Opus 5.5: reads $0.20, five-minute writes $5, one-hour writes $8 per million tokens
+        assert_eq!(cache("claude-opus-5-5"), CacheRates { read: 200_000, write_5m: 5_000_000, write_1h: 8_000_000 });
+        assert_eq!(cache("claude-sonnet-5-5"), CacheRates { read: 100_000, write_5m: 2_500_000, write_1h: 4_000_000 });
+        assert_eq!(cache("claude-fable-5-2"), CacheRates { read: 200_000, write_5m: 10_000_000, write_1h: 16_000_000 });
+        // Claude Haiku 5.5: 0.1x, 1.25x and 2x the input rate, on each of its two rate cards
+        assert_eq!(cache("claude-haiku-5-5"), CacheRates { read: 10_000, write_5m: 125_000, write_1h: 200_000 });
+        let long = model_price("claude-haiku-5-5").unwrap().long_prompt.unwrap().rate.cache.unwrap();
+        assert_eq!(long, CacheRates { read: 50_000, write_5m: 625_000, write_1h: 1_000_000 });
+        for model in ["claude-opus-5", "claude-opus-4-8", "claude-sonnet-5"] {
+            assert!(model_price(model).unwrap().rate.cache.is_some(), "{model}");
+        }
+    }
+
+    #[test]
+    fn cache_reads_and_writes_are_priced_at_their_own_rates() {
+        let tokens =
+            Tokens { input: 1_000, output: 500, cache_read: 100_000, cache_write_5m: 20_000, cache_write_1h: 0 };
+        // 1000 * 4 + 500 * 20 + 100000 * 0.2 + 20000 * 5 micro-dollars
+        assert_eq!(price_of("claude-opus-5-5", &tokens), Some(micro(4_000.0 + 10_000.0 + 20_000.0 + 100_000.0)));
+        let hour = Tokens { cache_write_1h: 1_000, ..Tokens::default() };
+        assert_eq!(price_of("claude-opus-5-5", &hour), Some(micro(8_000.0)));
+        // the long-prompt rate is chosen by the whole prompt, cached or not
+        let long = Tokens { input: 10, cache_read: 200_000, ..Tokens::default() };
+        assert_eq!(price_of("claude-haiku-5-5", &long), Some(micro(10.0 * 0.5 + 200_000.0 * 0.05)));
+        assert_eq!((long.prompt(), long.all()), (200_010, 200_010));
+    }
+
+    #[test]
+    fn a_call_that_used_the_cache_of_a_model_without_cache_prices_is_unpriced() {
+        let mut model = *model_price("claude-opus-5-5").unwrap();
+        model.rate.cache = None;
+        assert_eq!(model.cost(&Tokens { input: 10, cache_read: 10, ..Tokens::default() }), None);
+        assert_eq!(model.cost(&Tokens { input: 10, ..Tokens::default() }), Some(micro(40.0)));
     }
 
     #[test]

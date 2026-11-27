@@ -434,6 +434,8 @@ impl Files {
                 purpose: "imported",
                 input_tokens,
                 output_tokens,
+                cache_read_tokens: 0, // the old ledger did not count them
+                cache_write_tokens: 0,
                 price_micros,
             };
             // tokens go with the priced calls when there are any: the old ledger did not split them
@@ -706,7 +708,15 @@ mod tests {
         // the engine goes on working: a newer reading and a newer setting than the files have
         library.change_settings(json!({"max_links": 30}).as_object().unwrap()).unwrap();
         library
-            .record_call(&Call { model: "m", purpose: "p", input_tokens: 1, output_tokens: 1, price_micros: Some(1) })
+            .record_call(&Call {
+                model: "m",
+                purpose: "p",
+                input_tokens: 1,
+                output_tokens: 1,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                price_micros: Some(1),
+            })
             .unwrap();
         // NeurIPS 2025 is fetched again and its official list replaces the arXiv papers that stood in for it
         let official = serde_json::from_value::<Paper>(record("neurips-2025-1", &[])).unwrap();

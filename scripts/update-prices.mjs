@@ -83,6 +83,18 @@ function unknownFields(object, known, where) {
 }
 
 /**
+ * What is wrong with a model's prompt-cache prices, when it has them: reading from the cache, and writing to it
+ * for five minutes or for an hour, each in dollars per million tokens.
+ */
+function cacheProblems(cache, where) {
+	if (cache === undefined) return [];
+	if (!isObject(cache) || !["read", "write_5m", "write_1h"].every((side) => isPrice(cache[side]))) {
+		return [`${where}: cache is not {"read": price, "write_5m": price, "write_1h": price}`];
+	}
+	return unknownFields(cache, ["read", "write_5m", "write_1h"], `${where}: cache`);
+}
+
+/**
  * What is wrong with a prices file, one line per problem; none for a good one. At least as strict as the engine
  * (`Bundled::parse` in apps/engine/src/usage/mod.rs), so that a file this accepts is one the engine reads: the
  * engine does not fail on a bad file, it counts every call as unpriced, which nobody would notice. `text`, when
@@ -106,15 +118,17 @@ export function problemsOf(file, text) {
 				problems.push(`model ${id}: ${side} is not a price (dollars per million tokens, 0 to 1000000, to the millionth)`);
 			}
 		}
+		problems.push(...cacheProblems(model.cache, `model ${id}`));
 		const long = model.long_prompt;
 		if (long !== undefined) {
 			if (!isObject(long) || !Number.isSafeInteger(long.above) || long.above <= 0 || !isPrice(long.input) || !isPrice(long.output)) {
 				problems.push(`model ${id}: long_prompt is not {"above": tokens, "input": price, "output": price}`);
 			} else {
-				problems.push(...unknownFields(long, ["above", "input", "output"], `model ${id}: long_prompt`));
+				problems.push(...cacheProblems(long.cache, `model ${id}: long_prompt`));
+				problems.push(...unknownFields(long, ["above", "input", "output", "cache"], `model ${id}: long_prompt`));
 			}
 		}
-		problems.push(...unknownFields(model, ["input", "output", "long_prompt"], `model ${id}`));
+		problems.push(...unknownFields(model, ["input", "output", "cache", "long_prompt"], `model ${id}`));
 	}
 	const rates = file.rates;
 	if (!isObject(rates)) return [...problems, `"rates" is missing`];
@@ -228,8 +242,9 @@ export function withModel(file, id, input, output) {
 	if (!prices.every(isPrice) || [input, output].some((text) => !/^\d+(\.\d+)?$/.test(String(text)))) {
 		throw new Error(`the prices must be US dollars per million tokens, 0 or more: ${input} ${output}`);
 	}
-	const kept = file.models[id]?.long_prompt;
-	return { ...file, models: { ...file.models, [id]: { input: prices[0], output: prices[1], ...(kept ? { long_prompt: kept } : {}) } } };
+	const { cache, long_prompt: kept } = file.models[id] ?? {};
+	const model = { input: prices[0], output: prices[1], ...(cache ? { cache } : {}), ...(kept ? { long_prompt: kept } : {}) };
+	return { ...file, models: { ...file.models, [id]: model } };
 }
 
 /** The prices file as the formatter would lay it out (tabs; Prettier accepts JSON.stringify's layout). */
@@ -309,6 +324,8 @@ async function main(args) {
 			return 0;
 		}
 		console.log(`${id}: ${model.input} per million input tokens, ${model.output} per million output tokens (US dollars).`);
+		if (model.cache)
+			console.log(`  Its cache prices are kept as they were: ${JSON.stringify(model.cache)}. Edit the file if they changed too.`);
 		if (model.long_prompt)
 			console.log(`  Its long-prompt rate is kept as it was: ${JSON.stringify(model.long_prompt)}. Edit the file if it changed too.`);
 		if (check) return 1;

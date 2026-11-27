@@ -244,17 +244,18 @@ static EXCEPT: LazyLock<Regex> = LazyLock::new(|| {
     pattern(r"(?i)\b(?:except|other than|apart from|aside from|beyond|limited to|(?:only|solely) (?:for|to|as))\b")
 });
 /// Lines a PDF repeats on every page, which are not part of what the authors say.
-static FURNITURE: LazyLock<Regex> = LazyLock::new(|| {
+pub(super) static FURNITURE: LazyLock<Regex> = LazyLock::new(|| {
     pattern(
         r"(?i)\A(?:\d{1,3}|Published as a conference paper at .*|Under review as .*|Preprint\b.*|Proceedings of the .*|\d+(?:st|nd|rd|th) (?:International )?Conference on .*)\z",
     )
 });
 
 /// Words a heading does not contain: "3 We then use".
-const RUNNING: [&str; 15] =
+pub(super) const RUNNING: [&str; 15] =
     ["we", "then", "our", "is", "are", "was", "were", "this", "that", "which", "it", "use", "used", "show", "shows"];
 /// Words a heading does not end on: "A Large fraction of".
-const DANGLING: [&str; 13] = ["of", "the", "a", "an", "in", "to", "and", "for", "with", "on", "by", "from", "as"];
+pub(super) const DANGLING: [&str; 13] =
+    ["of", "the", "a", "an", "in", "to", "and", "for", "with", "on", "by", "from", "as"];
 
 /// What the authors declare in a paper's text.
 pub fn read_declarations(text: &str) -> Declarations {

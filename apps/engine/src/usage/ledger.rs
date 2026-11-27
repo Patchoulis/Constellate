@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use super::{Rate, Usd, price};
+use super::{Rate, Tokens, Usd, price_of};
 
 /// One call to the API, as recorded.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,16 +17,32 @@ pub struct Call {
     pub model: String,
     /// What the call was for, in the interface's words: "naming communities".
     pub purpose: String,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
+    /// Its tokens by how they are billed: full-rate prompt, answer, cache reads and cache writes.
+    pub tokens: Tokens,
+}
+
+impl Call {
+    /// A call that did not use the prompt cache.
+    pub fn plain(model: &str, purpose: &str, input_tokens: u64, output_tokens: u64) -> Self {
+        let tokens = Tokens { input: input_tokens, output: output_tokens, ..Tokens::default() };
+        Self { model: model.to_owned(), purpose: purpose.to_owned(), tokens }
+    }
+
+    /// What it cost; `None` when its model's prices (or cache prices) are not known.
+    pub fn cost(&self) -> Option<Usd> {
+        price_of(&self.model, &self.tokens)
+    }
 }
 
 /// Calls added up: `UsageEntry` in the contracts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Tally {
     pub calls: u64,
+    /// Read at the full rate.
     pub input_tokens: u64,
     pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
     /// Of the priced calls only: unpriced ones are counted in tokens and in `unpriced_calls`.
     pub usd: Usd,
     pub unpriced_calls: u64,
@@ -35,8 +51,10 @@ pub struct Tally {
 impl Tally {
     fn add(&mut self, call: &Call, cost: Option<Usd>) {
         self.calls += 1;
-        self.input_tokens = self.input_tokens.saturating_add(call.input_tokens);
-        self.output_tokens = self.output_tokens.saturating_add(call.output_tokens);
+        self.input_tokens = self.input_tokens.saturating_add(call.tokens.input);
+        self.output_tokens = self.output_tokens.saturating_add(call.tokens.output);
+        self.cache_read_tokens = self.cache_read_tokens.saturating_add(call.tokens.cache_read);
+        self.cache_write_tokens = self.cache_write_tokens.saturating_add(call.tokens.cache_written());
         match cost {
             Some(cost) => self.usd += cost,
             None => self.unpriced_calls += 1,
@@ -66,7 +84,7 @@ impl Summary {
         let mut models: BTreeMap<String, Tally> = BTreeMap::new();
         let mut purposes: BTreeMap<String, Tally> = BTreeMap::new();
         for call in calls {
-            let cost = price(&call.model, call.input_tokens, call.output_tokens);
+            let cost = call.cost();
             models.entry(call.model.clone()).or_default().add(call, cost);
             purposes.entry(call.purpose.clone()).or_default().add(call, cost);
         }
@@ -90,7 +108,19 @@ mod tests {
     use serde_json::json;
 
     fn call(model: &str, purpose: &str, input_tokens: u64, output_tokens: u64) -> Call {
-        Call { model: model.to_owned(), purpose: purpose.to_owned(), input_tokens, output_tokens }
+        Call::plain(model, purpose, input_tokens, output_tokens)
+    }
+
+    #[test]
+    fn cache_reads_and_writes_are_counted_and_priced_apart() {
+        let mut cached = call("claude-opus-5-5", "questions about a paper", 1_000, 0);
+        cached.tokens.cache_read = 100_000;
+        cached.tokens.cache_write_5m = 10_000;
+        let told = Summary::of(&[cached], Rate::dollar());
+        let tally = told.models["claude-opus-5-5"];
+        assert_eq!((tally.input_tokens, tally.cache_read_tokens, tally.cache_write_tokens), (1_000, 100_000, 10_000));
+        // 1000 * $4 + 100000 * $0.20 + 10000 * $5 per million tokens
+        assert_eq!(told.usd, Usd::from_picodollars((4_000 + 20_000 + 50_000) * 1_000_000));
     }
 
     #[test]
@@ -142,7 +172,7 @@ mod tests {
         assert_eq!(told["currency"]["date"], json!(euro.date.unwrap().to_string()));
         assert_eq!(
             told["models"]["claude-opus-5-5"],
-            json!({"calls": 1, "input_tokens": 1_000_000, "output_tokens": 0, "usd": 4.0, "unpriced_calls": 0})
+            json!({"calls": 1, "input_tokens": 1_000_000, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0, "usd": 4.0, "unpriced_calls": 0})
         );
         assert_eq!(told["purposes"]["other"]["calls"], json!(1));
     }

@@ -1,4 +1,4 @@
-/** The shapes the backend's HTTP API returns (apps/backend/rp/server.py) and the web app reads. */
+/** The shapes the backend's HTTP API returns (apps/backend/rp/server.py, apps/engine) and the web app reads. */
 
 export interface Settings {
 	embedding_model: string;
@@ -578,10 +578,96 @@ export interface Usage {
 
 export interface UsageEntry {
 	calls: number;
+	/** the prompt read at the full rate */
 	input_tokens: number;
 	output_tokens: number;
+	/** read from and written to the prompt cache, each billed at its own rate (absent from older backends) */
+	cache_read_tokens?: number;
+	cache_write_tokens?: number;
 	usd: number;
 	unpriced_calls: number;
+}
+
+/**
+ * Where something is in a paper (engine text/passages.rs). `page` and `end_page` are the PDF's own page numbers
+ * from 1 (what `#page=N` opens), not those the paper prints. `start` counts characters into the text of `page`,
+ * `end` into the text of `end_page` (the same page unless a quote runs on to the next). Characters are Unicode
+ * code points, not UTF-16 units: slice with `Array.from(text)` (lib/evidence.ts `codePoints`), not `slice`.
+ */
+export interface PassageAddress {
+	page: number;
+	/** the section's heading as the paper writes it ("3.2. Results"); "" before the first heading */
+	section: string;
+	/** within the section, from 0 (the heading itself is 0 when there is one) */
+	paragraph: number;
+	start: number;
+	end_page: number;
+	end: number;
+}
+
+export type PassageKind = "title" | "heading" | "text" | "figure_caption" | "table_caption" | "equation" | "footnote" | "fragment";
+
+export type PassagePart = "front" | "body" | "appendix" | "checklist";
+
+/** One paragraph (or heading, caption, equation) of a page. */
+export interface Passage {
+	kind: PassageKind;
+	part: PassagePart;
+	/** "continues" when it carries on a paragraph from the page before */
+	flow: "starts" | "continues";
+	address: PassageAddress;
+	text: string;
+	/** its sentences, as places in its page's text (characters, like `address.start`) */
+	sentences: { start: number; end: number }[];
+}
+
+/**
+ * A paper's text made addressable, from its PDF: `GET /api/papers/<id>/passages`. The reference list is in the
+ * pages' text but not among the passages. Addresses are stable for one `reader` version.
+ */
+export interface PaperPassages {
+	reader: number;
+	pages: { number: number; text: string }[];
+	passages: Passage[];
+}
+
+/** How a quote was found: letter for letter (spacing, hyphens, ligatures, quote marks and case aside), or with a
+ *  few letters different. */
+export type QuoteMatch = { kind: "exact" } | { kind: "close"; differences: number };
+
+/** `POST /api/papers/<id>/locate` with `{ quote }`: where the quote is in the paper's text, in its own words. */
+export interface LocateRequest {
+	quote: string;
+}
+
+export type LocateAnswer = { found: true; address: PassageAddress; wording: string; matched: QuoteMatch } | { found: false };
+
+/** How a piece of evidence was established. There is no variant for an unchecked quote: none is ever sent. */
+export type Established =
+	| { kind: "verified"; address: PassageAddress; matched: QuoteMatch }
+	/** found in the title or abstract only, at `start..end` (code points) of it: the PDF has not been read */
+	| { kind: "abstract"; field: "title" | "abstract"; start: number; end: number; matched: QuoteMatch };
+
+/** "This statement rests on that place in that paper" (engine evidence.rs); shown with components/evidence-link.tsx. */
+export interface Evidence {
+	paper: string;
+	/** the paper's own words at that place, which is what is shown (never the model's copy) */
+	quote: string;
+	established: Established;
+}
+
+/** A statement a feature shows, with the evidence it rests on: every piece of it was found in its paper. */
+export interface Cited<T> {
+	statement: T;
+	evidence: Evidence[];
+}
+
+/** Where the reader is asked to open a paper: at a place in it, with the words to highlight. */
+export interface ReaderTarget {
+	paper: string;
+	address?: PassageAddress | null;
+	/** the words to highlight, as the paper has them */
+	quote?: string | null;
 }
 
 export interface Library {
