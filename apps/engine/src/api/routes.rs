@@ -1,13 +1,16 @@
 //! What the interface can ask, and how the engine's errors are told to it.
 //!
 //! ```text
-//! GET /api/status?since=N   the job (jobs.rs) with its log from line N on, the warnings about how it listens,
-//!                           the mode (local or network) and the settings the server owns
+//! GET /api/status?since=N   the job (jobs.rs) with its log from line N on and its progress, the warnings about
+//!                           how it listens, the mode (local or network), the settings the server owns, and
+//!                           whether a key for the Claude API is set (never the key)
+//! POST /api/job/cancel      {id}: ask the running job to stop (it finishes what is under way)
 //! GET /api/settings         the settings
 //! PUT /api/settings         change some of them: a JSON object of the ones to change
 //! ```
 //!
-//! and a paper's reviews, read from the page the user opened ([`super::reviews`]).
+//! and a paper's reviews, read from the page the user opened ([`super::reviews`]), and a paper's text and where a
+//! quote is in it ([`super::passages`]).
 //!
 //! Across a network the owner's sign-in routes are served too (`/auth/...`, [`super::login`]).
 //!
@@ -24,7 +27,7 @@ use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{DefaultBodyLimit, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{MethodRouter, get};
+use axum::routing::{MethodRouter, get, post};
 use axum::{Json, middleware};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -35,6 +38,7 @@ use super::config::Mode;
 use super::security::{self, Guard, LARGEST_BODY};
 use crate::jobs::{Busy, Job, Snapshot};
 use crate::library::{Library, LibraryError};
+use crate::model::language::{Endpoint, Unavailable};
 use crate::settings::{self, Choices, Settings, SettingsError};
 
 /// How long a request may take from its first byte to its answer: a client that sends its body slowly (to hold
@@ -53,6 +57,9 @@ pub struct Engine {
     pub warnings: Vec<String>,
     /// This computer only, or a network: set by the server from how it listens.
     pub mode: Mode,
+    /// The Claude API's key and address, as read where the engine's other variables are
+    /// ([`super::config::Environment::language_endpoint`]), or why there are none: set by the program at start.
+    pub language: Result<Endpoint, Unavailable>,
     /// The library, opened when a route first needs it (and tried again after a failure to open).
     library: Mutex<Option<Arc<Library>>>,
 }
@@ -61,7 +68,15 @@ pub type Shared = Arc<Engine>;
 
 impl Engine {
     pub fn new(data: PathBuf, choices: Choices) -> Engine {
-        Engine { job: Job::new(), data, choices, warnings: Vec::new(), mode: Mode::Local, library: Mutex::new(None) }
+        Engine {
+            job: Job::new(),
+            data,
+            choices,
+            warnings: Vec::new(),
+            mode: Mode::Local,
+            language: Err(Unavailable::NoKey),
+            library: Mutex::new(None),
+        }
     }
 
     /// The library in the data folder, opened once and shared by every request.
@@ -254,8 +269,13 @@ pub(super) async fn on_the_side<T: Send + 'static>(
 /// Every route the engine has, by path. A test walks this list to see that each one is refused to whoever has
 /// not signed in, so a route is added here and nowhere else.
 pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
-    let mut table = vec![("/api/status", get(status)), ("/api/settings", get(read_settings).put(change_settings))];
+    let mut table = vec![
+        ("/api/status", get(status)),
+        ("/api/job/cancel", post(cancel_job)),
+        ("/api/settings", get(read_settings).put(change_settings)),
+    ];
     table.extend(super::reviews::table());
+    table.extend(super::passages::table());
     table
 }
 
@@ -300,6 +320,8 @@ struct Status<'a> {
     mode: &'static str,
     /// The settings the interface may not change ([`server_owned`]).
     server_owned: &'static [&'static str],
+    /// Whether the Claude API can be asked: a key is set (and its address is usable). Only that, never the key.
+    api_key_set: bool,
 }
 
 async fn status(
@@ -316,8 +338,23 @@ async fn status(
         warnings: &engine.warnings,
         mode,
         server_owned: server_owned(engine.mode),
+        api_key_set: engine.language.is_ok(),
     };
     Ok(Json(serde_json::to_value(told).map_err(|_| ApiError::Internal)?))
+}
+
+#[derive(Deserialize)]
+struct Cancelling {
+    id: u64,
+}
+
+async fn cancel_job(
+    State(engine): State<Shared>,
+    body: Result<Json<Cancelling>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let Json(Cancelling { id }) = body?;
+    engine.job.cancel(id).map_err(|error| ApiError::Invalid(error.to_string()))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn read_settings(State(engine): State<Shared>) -> Result<Json<Settings>, ApiError> {

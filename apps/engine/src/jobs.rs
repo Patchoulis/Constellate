@@ -13,12 +13,85 @@
 //! Every job that starts gets a number and says what kind of work it is. Whoever follows a job can therefore tell
 //! "the job I was following finished" from "some other job finished", and "a run finished" from "reading the
 //! declarations finished".
+//!
+//! A job that does many things of one kind (asking the model about 739 papers) says how far it has got
+//! ([`Progress`]: n of m done, so many dollars spent), and can be asked to stop ([`Job::cancel`]). Stopping is
+//! the work's to do: it is told through [`Tracker::cancelled`], starts nothing new, and returns what it has. The
+//! job stays `running` until then, so whoever follows it waits for what was done, not for a guess.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 
 use serde::Serialize;
+
+use crate::usage::Usd;
+
+/// How far a job that does many things has got.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Progress {
+    pub done: u64,
+    pub of: u64,
+    /// What it has spent so far (on the Claude API), in US dollars as the interface is told them.
+    pub usd: Usd,
+}
+
+/// A request to stop, shared by the work and whoever may ask for it. Once asked, it stays asked.
+#[derive(Clone, Debug, Default)]
+pub struct Cancel(Arc<AtomicBool>);
+
+impl Cancel {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// What the work of a job is handed: where its log lines and its progress go, and whether it was asked to stop.
+/// `Sync`, so that the threads a job runs on can all report through it.
+pub struct Tracker<'a> {
+    log: &'a (dyn Fn(&str) + Sync),
+    progress: &'a (dyn Fn(Progress) + Sync),
+    cancel: &'a Cancel,
+}
+
+impl<'a> Tracker<'a> {
+    /// A tracker of one's own, for work that is not run as a job (a test, a command-line tool).
+    pub fn new(log: &'a (dyn Fn(&str) + Sync), progress: &'a (dyn Fn(Progress) + Sync), cancel: &'a Cancel) -> Self {
+        Self { log, progress, cancel }
+    }
+
+    pub fn log(&self, line: &str) {
+        (self.log)(line);
+    }
+
+    pub fn progress(&self, progress: Progress) {
+        (self.progress)(progress);
+    }
+
+    pub fn cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+
+    pub fn cancel(&self) -> &Cancel {
+        self.cancel
+    }
+}
+
+/// [`Job::cancel`] refused: the job named is not the one running (it finished, or another started since).
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("job {id} is not running")]
+pub struct NotRunning {
+    pub id: u64,
+}
 
 /// Where a job is, with what belongs to that state.
 #[derive(Clone, Debug, PartialEq)]
@@ -64,6 +137,10 @@ struct Inner<T> {
     kind: String,
     state: State<T>,
     log: Vec<String>,
+    /// The last progress the work reported; none for work that does not report any.
+    progress: Option<Progress>,
+    /// The running job's request to stop; a new one for every job.
+    cancel: Cancel,
 }
 
 /// What a job looks like at one moment.
@@ -78,6 +155,7 @@ pub struct Snapshot<T> {
     pub log: Vec<String>,
     /// How many lines the log has in all.
     pub total: usize,
+    pub progress: Option<Progress>,
 }
 
 pub struct Job<T> {
@@ -92,7 +170,16 @@ impl<T> Clone for Job<T> {
 
 impl<T> Default for Job<T> {
     fn default() -> Self {
-        Self { inner: Arc::new(Mutex::new(Inner { id: 0, kind: String::new(), state: State::Idle, log: Vec::new() })) }
+        Self {
+            inner: Arc::new(Mutex::new(Inner {
+                id: 0,
+                kind: String::new(),
+                state: State::Idle,
+                log: Vec::new(),
+                progress: None,
+                cancel: Cancel::new(),
+            })),
+        }
     }
 }
 
@@ -114,7 +201,15 @@ impl<T: Clone + Send + 'static> Job<T> {
     where
         F: FnOnce(&dyn Fn(&str)) -> Result<T, String> + Send + 'static,
     {
-        let id = {
+        self.start_tracked(kind, move |tracker| work(&|line: &str| tracker.log(line)))
+    }
+
+    /// [`Job::start`] for work that reports its progress and can be asked to stop: `work` is given a [`Tracker`].
+    pub fn start_tracked<F>(&self, kind: &str, work: F) -> Result<u64, Busy>
+    where
+        F: FnOnce(&Tracker<'_>) -> Result<T, String> + Send + 'static,
+    {
+        let (id, cancel) = {
             let mut job = open(&self.inner);
             if job.state.phase() == Phase::Running {
                 return Err(Busy { kind: job.kind.clone() });
@@ -123,12 +218,16 @@ impl<T: Clone + Send + 'static> Job<T> {
             job.kind = kind.to_owned();
             job.state = State::Running;
             job.log.clear();
-            job.id
+            job.progress = None;
+            job.cancel = Cancel::new();
+            (job.id, job.cancel.clone())
         };
         let inner = Arc::clone(&self.inner);
         thread::spawn(move || {
             let log = |line: &str| open(&inner).log.push(line.to_owned());
-            let outcome = catch_unwind(AssertUnwindSafe(|| work(&log)));
+            let progress = |progress: Progress| open(&inner).progress = Some(progress);
+            let tracker = Tracker::new(&log, &progress, &cancel);
+            let outcome = catch_unwind(AssertUnwindSafe(|| work(&tracker)));
             let mut job = open(&inner);
             job.state = match outcome {
                 Ok(Ok(result)) => State::Done(result),
@@ -166,7 +265,22 @@ impl<T: Clone + Send + 'static> Job<T> {
             error,
             log: job.log.iter().skip(since).cloned().collect(),
             total: job.log.len(),
+            progress: job.progress,
         }
+    }
+
+    /// Ask job `id` to stop, if it is the one running. The work stops starting new things and returns what it
+    /// has; until then the job is still running. Work that never looks ([`Job::start`]) runs to its end.
+    pub fn cancel(&self, id: u64) -> Result<(), NotRunning> {
+        let mut job = open(&self.inner);
+        if job.id != id || job.state.phase() != Phase::Running {
+            return Err(NotRunning { id });
+        }
+        if !job.cancel.is_cancelled() {
+            job.cancel.cancel();
+            job.log.push("Asked to stop.".to_owned());
+        }
+        Ok(())
     }
 }
 
@@ -280,6 +394,46 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_tracked_job_reports_its_progress_and_stops_when_asked_with_what_it_has() {
+        let job: Job<u64> = Job::new();
+        let (reported, wait) = mpsc::channel::<()>();
+        let id = job
+            .start_tracked("asking about papers", move |tracker| {
+                let mut done = 0;
+                for paper in 0..1_000 {
+                    if tracker.cancelled() {
+                        break;
+                    }
+                    tracker.progress(Progress { done: paper, of: 1_000, usd: Usd::from_picodollars(paper) });
+                    done = paper;
+                    if paper == 2 {
+                        reported.send(()).map_err(|error| error.to_string())?;
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Ok(done)
+            })
+            .unwrap();
+        wait.recv().unwrap();
+        assert!(job.snapshot(0).progress.is_some_and(|progress| progress.of == 1_000 && progress.done >= 2));
+        assert_eq!(job.cancel(id + 1), Err(NotRunning { id: id + 1 }), "only the job named is asked");
+        job.cancel(id).unwrap();
+        job.cancel(id).unwrap(); // asking twice is asking once
+        let now = finished(&job);
+        assert_eq!(now.state, Phase::Done);
+        assert!(now.result.unwrap() < 999, "it stopped early");
+        assert_eq!(now.log.iter().filter(|line| line.starts_with("Asked to stop")).count(), 1);
+        assert_eq!(job.cancel(id), Err(NotRunning { id }), "a finished job is not running");
+        let told = serde_json::to_value(now.progress).unwrap();
+        assert_eq!(told["of"], 1_000);
+
+        // the next job starts with no progress and is not asked to stop
+        job.start_tracked("again", |tracker| Ok(u64::from(tracker.cancelled()))).unwrap();
+        let next = finished(&job);
+        assert_eq!((next.result, next.progress), (Some(0), None));
     }
 
     #[test]

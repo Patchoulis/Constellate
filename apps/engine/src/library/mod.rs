@@ -17,6 +17,8 @@
 //! | [`embeddings`]  | one vector per model and paper, reused only for the same text             |
 //! | [`readings`]    | what was read from a paper: declarations, ratings, AI-text scores         |
 //! | [`reviews`]     | a paper's reviews page as the reader showed it, and its notes as read     |
+//! | [`passages`]    | a paper's PDF, and its passages as read once per version of the reader    |
+//! | [`answers`]     | what the language model answered for a feature, so none is paid twice    |
 //! | [`writings`]    | community descriptions and overviews, keyed by model and members          |
 //! | [`ledger`]      | one row per call to the Claude API; totals are queries                    |
 //! | [`preferences`] | settings and exchange rates                                               |
@@ -70,10 +72,12 @@
 //!   exist yet: writes would run SERIALIZABLE and be retried on a serialization failure (or take an advisory
 //!   lock), and reads that span tables would run REPEATABLE READ.
 
+pub mod answers;
 pub mod embeddings;
 pub mod import;
 pub mod ledger;
 pub mod papers;
+pub mod passages;
 pub mod place;
 pub mod preferences;
 pub mod readings;
@@ -91,10 +95,12 @@ use std::time::{Duration, SystemTime};
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{Connection, ErrorCode, Transaction, TransactionBehavior};
 
+pub use answers::{AnswerKey, Feature, Kept, Slot, Subject};
 pub use embeddings::NotEmbedded;
 pub use import::{ImportError, Imported, import_files};
 pub use ledger::{Call, Spending, Totals};
 pub use papers::{Added, Known, Origin, Paper, SliceOutcome, text_hash};
+pub use passages::PaperReading;
 pub use preferences::Rate;
 pub use readings::{AiScore, Answer, ChecklistItem, Declarations, FieldRatings, Ratings, Reading, Statement};
 pub use reviews::{Keeping, KeptReviews, ReviewPage};
@@ -141,6 +147,9 @@ pub enum LibraryError {
     /// Vectors handed over do not fit: a different count than papers, or a different length than the model's.
     #[error("{0}")]
     Shape(String),
+    /// A file kept beside the database (a paper's PDF) could not be written.
+    #[error(transparent)]
+    Store(#[from] store::StoreError),
 }
 
 /// The library: a handle on its database, shared by every thread of the engine (see the module's "Threads").
@@ -151,6 +160,8 @@ pub struct Library {
     connection: Mutex<Connection>,
     /// Connections that only read, idle; each is used by one read at a time, taken out of here for it.
     readers: Mutex<Vec<Connection>>,
+    /// The PDFs being read right now, so that two threads asking for the same paper read it once.
+    in_reading: passages::InReading,
 }
 
 impl Library {
@@ -160,7 +171,12 @@ impl Library {
         let path = folder.join(DATABASE);
         let connection = connect(&path)?;
         schema::migrate(&connection, schema::MIGRATIONS).map_err(|error| located(error, &path))?;
-        Ok(Self { path, connection: Mutex::new(connection), readers: Mutex::new(Vec::new()) })
+        Ok(Self {
+            path,
+            connection: Mutex::new(connection),
+            readers: Mutex::new(Vec::new()),
+            in_reading: passages::InReading::default(),
+        })
     }
 
     /// The database file.
