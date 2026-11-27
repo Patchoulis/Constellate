@@ -32,6 +32,7 @@ The first release.
 - **Reviewers' ratings**, read from a paper's reviews page when it is opened in the reader.
 - **"AI detected"** tag: a statistical estimate from word choice (a classifier trained on abstracts and
   model-written mirrors of them), with its measured error rates shown.
+- **Show or dim by kind** on the graph: chips for orals, spotlights, posters, AI detected and not, with counts.
 - **Filters**: leave out AI-detected papers, keep only orals or orals and spotlights, leave out papers by
   declaration flag.
 - **Cost**: the sidebar shows the model and provider in use and what the Claude API has cost.

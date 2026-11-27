@@ -5,6 +5,7 @@ import type { Community, GraphData } from "@rp/contracts";
 import { wrapLabel } from "@/components/graph-canvas";
 import { communityLabel, communityTree, groupsAt, treeDepth } from "@/lib/community";
 import { placeLabels, type LabelBox } from "@/lib/labels";
+import { countKinds, shownPapers } from "@/lib/paper-filter";
 import { layoutGraph } from "@/lib/layout";
 import { hsl, titleCase } from "@/lib/utils";
 
@@ -164,4 +165,20 @@ test("a lone label goes below and to the right of its point, and above when aske
 	const frame = { width: 1000, height: 700 };
 	assert.deepEqual(placeLabels(frame, [{ x: 100, y: 100, width: 200, height: 50, gap: 10 }]), [{ left: 110, top: 110 }]);
 	assert.deepEqual(placeLabels(frame, [{ x: 100, y: 100, width: 200, height: 50, gap: 10, above: true }]), [{ left: 110, top: 40 }]);
+});
+
+test("papers are shown or dimmed by kind, within the focused community", () => {
+	const nodes: GraphData["nodes"] = [
+		{ id: "a", title: "", community: 0, x: 0, y: 0, ai: false, acceptance: "oral" },
+		{ id: "b", title: "", community: 0, x: 0, y: 0, ai: true, acceptance: "poster" },
+		{ id: "c", title: "", community: 1, x: 0, y: 0, ai: false, acceptance: "spotlight" },
+		{ id: "d", title: "", community: 1, x: 0, y: 0, ai: true, acceptance: null },
+	];
+	assert.deepEqual(countKinds(nodes), { oral: 1, spotlight: 1, poster: 1, none: 1, ai: 2, human: 2 });
+	assert.equal(shownPapers(nodes, new Set(), null), null); // everything: nothing to dim
+	assert.deepEqual([...shownPapers(nodes, new Set(["poster", "none"] as const), null)!], [0, 2]);
+	assert.deepEqual([...shownPapers(nodes, new Set(["ai"] as const), null)!], [0, 2]);
+	assert.deepEqual([...shownPapers(nodes, new Set(), [2, 3])!], [2, 3]);
+	assert.deepEqual([...shownPapers(nodes, new Set(["human"] as const), [2, 3])!], [3]);
+	assert.deepEqual([...shownPapers(nodes, new Set(["oral", "spotlight", "poster", "none"] as const), null)!], []);
 });

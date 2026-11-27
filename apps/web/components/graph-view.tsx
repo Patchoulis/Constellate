@@ -10,6 +10,8 @@ import { MathText } from "@/components/math-text";
 import { Button } from "@/components/ui/button";
 import { communityLabel, groupsAt, treeDepth, type CommunityNode } from "@/lib/community";
 import { placeLabels } from "@/lib/labels";
+import { countKinds, PAPER_KINDS, shownPapers, type PaperKind } from "@/lib/paper-filter";
+import { cn } from "@/lib/utils";
 import { boxOf, layoutGraph, type Layout } from "@/lib/layout";
 
 /** A paper's halo shrinks with the level, so the glows of smaller groups stay separate. */
@@ -95,9 +97,21 @@ export function GraphView({
 	useEffect(() => {
 		const renderer = rendererRef.current;
 		if (!renderer) return;
-		renderer.setFocus(focus ? new Set(focus.community.members) : null);
 		renderer.fit(focus ? boxOf(layout.discs.get(focus)!) : layout.bounds);
 	}, [layout, focus]);
+
+	// What is shown in full: the focused community's papers (or all), minus the kinds switched off above the graph.
+	const [hidden, setHidden] = useState<ReadonlySet<PaperKind>>(new Set());
+	const counts = useMemo(() => countKinds(graph.nodes), [graph]);
+	useEffect(() => {
+		rendererRef.current?.setFocus(shownPapers(graph.nodes, hidden, focus ? focus.community.members : null));
+	}, [graph, layout, focus, hidden]);
+	const toggle = (kind: PaperKind) =>
+		setHidden((before) => {
+			const next = new Set(before);
+			if (!next.delete(kind)) next.add(kind);
+			return next;
+		});
 
 	useEffect(() => {
 		const index = selectedPaper === null ? -1 : graph.nodes.findIndex((node) => node.id === selectedPaper);
@@ -131,8 +145,26 @@ export function GraphView({
 	return (
 		<div ref={frameRef} className="relative size-full overflow-hidden">
 			<canvas ref={canvasRef} className="block size-full cursor-grab active:cursor-grabbing" />
-			<div className="pointer-events-none absolute top-3 left-3 rounded-md border bg-card/90 px-2.5 py-1 text-xs text-muted-foreground">
-				{LEVEL_NAMES[Math.min(level, LEVEL_NAMES.length - 1)]} · zoom in to go deeper
+			<div className="absolute top-3 right-3 left-3 flex flex-wrap items-center gap-1.5 text-xs">
+				<div className="pointer-events-none rounded-md border bg-card/90 px-2.5 py-1 text-muted-foreground">
+					{LEVEL_NAMES[Math.min(level, LEVEL_NAMES.length - 1)]} · zoom in to go deeper
+				</div>
+				{/* Which kinds of paper are shown in full: click one to dim it, again to bring it back. */}
+				{PAPER_KINDS.filter(({ kind }) => counts[kind] > 0).map(({ kind, label, note }) => (
+					<button
+						key={kind}
+						type="button"
+						aria-pressed={!hidden.has(kind)}
+						title={`${note}. Click to ${hidden.has(kind) ? "show" : "dim"} them.`}
+						onClick={() => toggle(kind)}
+						className={cn(
+							"rounded-md border bg-card/90 px-2 py-1 tabular-nums transition-colors hover:border-ring",
+							hidden.has(kind) ? "text-muted-foreground/50 line-through" : "text-foreground",
+						)}
+					>
+						{label} <span className="text-muted-foreground">{counts[kind].toLocaleString()}</span>
+					</button>
+				))}
 			</div>
 			<Button
 				variant="outline"
