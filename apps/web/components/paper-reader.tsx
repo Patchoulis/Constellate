@@ -7,9 +7,11 @@ import { AcceptanceTag, AiTag, FlagTag, RatingTags } from "@/components/brand";
 import { CommunityDot, MarkButton } from "@/components/community-panel";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
+import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
 import { communityLabel, type CommunityNode } from "@/lib/community";
 import { ready, useAsync, type Async } from "@/lib/use-async";
+import { useResizable } from "@/lib/use-resizable";
 import { count, similarity, SIMILARITY_NOTE } from "@/lib/units";
 import { cn } from "@/lib/utils";
 
@@ -22,9 +24,6 @@ export interface Related {
 }
 
 type View = "abstract" | "paper" | "reviews";
-
-/** How wide the reader is, at most: it lies over the right of the graph, which moves a paper into the rest. */
-export const READER_REM = 56;
 
 /** The desktop app can show another site's page inside the window; a browser tab cannot (sites refuse frames). */
 const EMBEDS = typeof navigator !== "undefined" && /Electron/.test(navigator.userAgent);
@@ -342,6 +341,9 @@ export function PaperReader({
 	const flagNames = Object.fromEntries((catalog?.flags ?? []).flatMap((group) => group.items).map((item) => [item.name, item]));
 	const shown = view === "paper" ? from.paper : view === "reviews" ? from.reviews : undefined;
 
+	// it lies over the right of the graph, which moves a paper into the rest (graph-view reads its width)
+	const resizable = useResizable<HTMLDivElement>("reader");
+
 	useEffect(() => {
 		const onKey = (event: KeyboardEvent) => event.key === "Escape" && onClose();
 		window.addEventListener("keydown", onKey);
@@ -350,9 +352,11 @@ export function PaperReader({
 
 	return (
 		<div
-			className="absolute inset-y-0 right-0 z-20 flex flex-col border-l bg-card shadow-2xl"
-			style={{ width: `min(${READER_REM}rem, 100%)` }}
+			ref={resizable.ref}
+			style={resizable.style}
+			className="absolute inset-y-0 right-0 z-20 flex w-[min(var(--panel-size),100%)] flex-col border-l bg-card shadow-2xl"
 		>
+			<ResizeHandle {...resizable.handle} />
 			<div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
 				{tabs.length > 1 && <Segmented options={tabs} value={view} onChange={setView} />}
 				<span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{found ? found.title : id}</span>

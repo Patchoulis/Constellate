@@ -7,6 +7,8 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The runs sidebar, the communities panel, the paper reader, the overview and the activity log can be resized by dragging their edge (or with the arrow keys once the edge is focused); double-click an edge to put it back, and the sizes are remembered.
+
 - `npm run setup` (or `make setup`) gets a fresh clone ready to work on in one command.
 
 - The engine uses any maker's graphics card: through DirectML on Windows and through Vulkan (WebGPU) on Linux, with

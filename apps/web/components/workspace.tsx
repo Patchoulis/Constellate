@@ -1,37 +1,44 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import type { Catalog, Ratings } from "@rp/contracts";
 import { CommunityPanel } from "@/components/community-panel";
 import { GraphView } from "@/components/graph-view";
 import { OverviewPanel } from "@/components/overview";
 import { PaperReader } from "@/components/paper-reader";
+import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
 import { communityTree, type CommunityNode } from "@/lib/community";
 import { useMarks } from "@/lib/marks";
 import type { Job } from "@/lib/use-job";
 import { useAsync } from "@/lib/use-async";
+import { useResizable } from "@/lib/use-resizable";
 
 /** The run's log, folded to its last line until opened. */
 export function ActivityLog({ job }: { job: Job }) {
 	const [open, setOpen] = useState(false);
-	const box = useRef<HTMLPreElement>(null);
+	const { ref: box, style, handle } = useResizable<HTMLPreElement>("log"); // the height of its text, when open
 	const running = job.state === "running";
 	useEffect(() => setOpen(running), [running]);
 	useEffect(() => {
 		if (box.current) box.current.scrollTop = box.current.scrollHeight;
-	}, [job.log, open]);
+	}, [box, job.log, open]);
 	if (job.log.length === 0) return null;
 	return (
 		<div className="absolute bottom-3 left-3 z-10 w-[min(34rem,calc(100%-4.5rem))] rounded-md border bg-card/95 shadow-lg">
+			{open && <ResizeHandle {...handle} />}
 			<button onClick={() => setOpen((value) => !value)} className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs">
 				<span className={running ? "size-1.5 animate-pulse rounded-full bg-success" : "size-1.5 rounded-full bg-muted-foreground"} />
 				<span className="flex-1 truncate text-muted-foreground">{job.log[job.log.length - 1].trim()}</span>
 				{open ? <ChevronDown className="size-3.5" /> : <ChevronUp className="size-3.5" />}
 			</button>
 			{open && (
-				<pre ref={box} className="max-h-56 overflow-auto border-t px-3 py-2 text-xs whitespace-pre-wrap text-muted-foreground">
+				<pre
+					ref={box}
+					style={style}
+					className="h-(--panel-size) overflow-auto border-t px-3 py-2 text-xs whitespace-pre-wrap text-muted-foreground"
+				>
 					{job.log.join("\n")}
 				</pre>
 			)}

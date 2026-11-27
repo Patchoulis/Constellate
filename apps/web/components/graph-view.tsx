@@ -7,11 +7,11 @@ import { AcceptanceTag, AiTag, RatingTags } from "@/components/brand";
 import { CommunityDot, MARK_HINT } from "@/components/community-panel";
 import { GraphCanvasRenderer, type CanvasData, type CanvasLevel } from "@/components/graph-canvas";
 import { MathText } from "@/components/math-text";
-import { READER_REM } from "@/components/paper-reader";
 import { Button } from "@/components/ui/button";
 import { communityLabel, groupsAt, treeDepth, type CommunityNode } from "@/lib/community";
 import { pickMarkedLabels, placeLabels, type MarkedPlace, type PaperPlace } from "@/lib/labels";
 import type { Marks } from "@/lib/marks";
+import { panelSize } from "@/lib/use-resizable";
 import { count } from "@/lib/units";
 import { countKinds, PAPER_KINDS, shownPapers, type PaperKind } from "@/lib/paper-filter";
 import { cn } from "@/lib/utils";
@@ -172,8 +172,7 @@ export function GraphView({
 	useEffect(() => {
 		const index = goTo ? indexRef.current.get(goTo.id) : undefined;
 		if (index === undefined) return;
-		const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-		rendererRef.current?.moveTo(index, READER_REM * rem);
+		rendererRef.current?.moveTo(index, panelSize("reader")); // as wide as the user has made it
 	}, [goTo]);
 
 	// Every label on the graph, most important first: the hovered paper and its linked papers, then the marked
