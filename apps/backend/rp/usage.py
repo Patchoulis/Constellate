@@ -65,7 +65,7 @@ def record(model: str, purpose: str, input_tokens: int, output_tokens: int):
 
     try:
         store.update_json(LEDGER, add)
-    except OSError as error:
+    except (OSError, ValueError) as error:  # ValueError: the file is there but is not JSON any more
         print(f"usage: could not write the ledger ({error}); this call is counted for this session only")
 
 
@@ -78,7 +78,10 @@ def provider() -> dict:
 
 
 def summary() -> dict:
-    ledger = store.read_json(LEDGER) or {}
+    try:
+        ledger = store.read_json(LEDGER) or {}
+    except ValueError:  # damaged (a sync program, an edit by hand): show nothing rather than fail
+        ledger = {}
     models = ledger.get("models", {})
     return {
         "provider": provider(),

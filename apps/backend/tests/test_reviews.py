@@ -138,3 +138,18 @@ def test_the_reader_hands_the_page_text_to_the_server(monkeypatch):
     assert client.post("/api/reviews/y-2026-5", json={"text": ICLR}).status_code == 400
     assert client.post("/api/reviews/y-2026-6", json={"text": "nothing yet", "url": FORUM}).get_json() is None
     assert client.post("/api/reviews/y-2026-7", json={"text": "x" * (5 * 1024 * 1024), "url": FORUM}).status_code == 413
+
+
+def test_a_sentence_that_starts_like_a_heading_does_not_end_a_review():
+    page = (
+        "Official Review of Submission1 by Reviewer A\nRating: 5: accept\n"
+        "Rebuttal acknowledged, I keep my concerns.\nDecision boundaries are poorly explained.\nConfidence: 4\n"
+        "Official Review of Submission1 by Reviewer B\nRating: 3: reject\nConfidence: 2\n"
+        "Official Comment by Authors\nRating: 9\n"
+        "Meta Review of Submission1 by Area Chair X\nConfidence: 5\n"
+        "Decision by Program Chairs\nRating: 8\n"
+    )
+    read = reviews.read_ratings(page)
+    assert read["reviews"] == 2 and read["exact"] is True
+    assert read["ratings"]["Rating"]["values"] == [5, 3]
+    assert read["ratings"]["Confidence"]["values"] == [4, 2]  # the first review's, after the sentences

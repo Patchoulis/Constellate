@@ -15,6 +15,7 @@ class _Answer:
 
 def test_a_rate_is_asked_for_once_a_day_and_kept(monkeypatch):
     store.write_json(currency.RATES, {})
+    monkeypatch.setattr(currency, "_failed", {})
     asked = []
 
     def get(url, params, timeout):
@@ -38,6 +39,7 @@ def test_without_a_connection_the_last_rate_is_used_or_else_the_dollar(monkeypat
         raise requests.ConnectionError("offline")
 
     monkeypatch.setattr(currency.requests, "get", offline)
+    monkeypatch.setattr(currency, "_failed", {})
     store.write_json(currency.RATES, {"EUR": {"rate": 0.91, "date": "2026-11-20", "asked": "2026-11-20"}})
     assert currency.of("EUR") == {"code": "EUR", "rate": 0.91, "date": "2026-11-20"}
     assert currency.of("GBP") == currency.DOLLAR
@@ -49,3 +51,18 @@ def test_the_interface_is_told_the_rate_with_what_was_spent(monkeypatch):
     monkeypatch.setattr(currency, "of", lambda code: {"code": code, "rate": 2.0, "date": "2026-11-26"})
     told = server.app.test_client().get("/api/usage?currency=CAD").get_json()
     assert told["currency"] == {"code": "CAD", "rate": 2.0, "date": "2026-11-26"}
+
+
+def test_a_rate_that_could_not_be_had_is_not_asked_for_again_at_once(monkeypatch):
+    store.write_json(currency.RATES, {})
+    monkeypatch.setattr(currency, "_failed", {})
+    asked = []
+
+    def offline(*a, **k):
+        asked.append(1)
+        raise requests.ConnectionError("offline")
+
+    monkeypatch.setattr(currency.requests, "get", offline)
+    for _ in range(5):  # the interface asks every few seconds
+        assert currency.of("SEK") == currency.DOLLAR
+    assert len(asked) == 1

@@ -51,7 +51,10 @@ _SCORE = re.compile(
 _INLINE = re.compile(r"(?i)(?<=\S)[^\S\n]+(?=" + _FIELD + r"[^\S\n]*:[^\S\n]*\d)")
 _NOTE = re.compile(
     r"(?mi)^[^\S\n]*(Official Review|Official Comment|Public Comment|Meta[- ]?Review|Author Rebuttal|"
-    r"Rebuttal|Paper Decision|Decision|Author[^\n]{0,30}Comment|Ethics Review|Withdrawal)\b[^\n]{0,160}$"
+    r"Rebuttal|Paper Decision|Decision|Author[^\n]{0,30}Comment|Ethics Review|Withdrawal)\b"
+    # ...and then what a heading goes on to say; a sentence that merely starts with one of those words is prose
+    r"(?:[^\n]{0,120}\b(?:by|of)\s+(?:Reviewer|Authors?|Area Chairs?|Senior Area Chairs?|Program Chairs?|"
+    r"Ethics Reviewer|Submission\s?\d+|Paper\s?\d+)\b[^\n]{0,60}|[ \t]*)$"
 )
 _NAMES = {field.lower(): field for field in FIELDS}
 

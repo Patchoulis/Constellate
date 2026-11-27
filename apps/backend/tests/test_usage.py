@@ -103,3 +103,15 @@ def test_an_answer_a_fallback_helped_with_is_priced_model_by_model(monkeypatch):
     usage_.iterations = None  # an ordinary answer: one entry
     claude.ask(client, "claude-opus-5-5", "system", "prompt")
     assert recorded == [("claude-opus-5", "other", 1500, 300)]
+
+
+def test_a_damaged_ledger_neither_loses_a_paid_answer_nor_breaks_the_summary(monkeypatch, capsys):
+    monkeypatch.setattr(usage, "_session", {"usd": 0.0, "calls": 0})
+    usage.LEDGER.parent.mkdir(parents=True, exist_ok=True)
+    usage.LEDGER.write_text("{ not json", encoding="utf-8")
+    usage.record("claude-opus-5-5", "naming communities", 1000, 100)  # does not raise
+    assert usage._session["calls"] == 1
+    assert "could not write the ledger" in capsys.readouterr().out
+    told = usage.summary()
+    assert told["usd"] == 0 and told["session_calls"] == 1
+    store.write_json(usage.LEDGER, {})

@@ -401,3 +401,20 @@ def test_opening_a_paper_works_when_its_proceedings_cannot_be_reached(monkeypatc
     monkeypatch.setattr(server.papers, "get", lambda paper_id: paper(paper_id, title="Anything"))
     answer = server.app.test_client().get("/api/papers/cvpr-2031-7")
     assert answer.status_code == 200 and answer.get_json()["readable"] is False
+
+
+@pytest.mark.parametrize(
+    "statement, declared",
+    [
+        ("LLMs were not involved in any part of this research, which is limited to classical methods.", False),
+        ("We do not use LLMs. Our analysis is limited to the datasets described in Section 4 of the paper.", False),
+        ("No language models were used. The code is released only for research purposes, under a licence.", False),
+        ("We used GPT-4 to polish the writing of this manuscript, not to generate any of its ideas.", True),
+        ("We used ChatGPT to polish writing and did not use it for research ideation or the experiments.", True),
+        ("LLMs were not used for writing, editing and proofreading of any part of this paper at all.", False),
+        ("No LLM was used at any point of this work, not even for editing the text of the manuscript.", False),
+        ("We did not use LLMs for ideation, but used them for polishing the final text of the paper.", True),
+    ],
+)
+def test_a_denial_in_one_half_of_a_sentence_does_not_cancel_a_use_in_the_other(statement, declared):
+    assert (flags(f"\nUse of LLMs\n{statement}\n\nReferences\n") == ["llm_declared"]) is declared

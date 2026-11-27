@@ -16,6 +16,8 @@ from . import LIBRARY, store
 RATES = LIBRARY / "rates.json"  # {currency code: {"rate", "date"}}
 SOURCE = "https://api.frankfurter.dev/v1/latest"
 DOLLAR = {"code": "USD", "rate": 1.0, "date": None}
+RETRY_SECONDS = 3600
+_failed = {}  # currency code -> when asking for it last failed: not asked again for RETRY_SECONDS
 
 
 def of(code: str | None) -> dict:
@@ -27,10 +29,13 @@ def of(code: str | None) -> dict:
     kept = (store.read_json(RATES) or {}).get(code)
     if kept and kept.get("asked") == today:
         return _shown(code, kept)
+    if time.time() - _failed.get(code, 0) < RETRY_SECONDS:
+        return _shown(code, kept) if kept else DOLLAR
     try:
         answer = requests.get(SOURCE, params={"base": "USD", "symbols": code}, timeout=8).json()
         found = {"rate": float(answer["rates"][code]), "date": answer["date"], "asked": today}
     except (requests.RequestException, KeyError, TypeError, ValueError):
+        _failed[code] = time.time()
         return _shown(code, kept) if kept else DOLLAR  # yesterday's rate is better than none
     try:
         store.update_json(RATES, lambda rates: rates.__setitem__(code, found))

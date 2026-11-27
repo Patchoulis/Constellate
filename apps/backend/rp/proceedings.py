@@ -280,7 +280,8 @@ _USED = re.compile(
     r"rel(?:y|ied)|generat(?:e|ed)|polish(?:ed)?|aid(?:ed)?)\b",
     re.I,
 )
-_CLAUSE = re.compile(r"[.;:]|,?\s+\b(?:but|however|although|though)\b")
+# where a sentence turns: "used it to polish, not to write", "used it for X and did not use it for Y"
+_CONTRAST = re.compile(r"(?=,\s*not\b|\band (?:\w+ )?not\b|\bbut\b|\bhowever\b|\balthough\b|\bthough\b)", re.I)
 # "not used, except for polishing", "no use beyond grammar": an exception to a denial is a declared use
 _EXCEPT = re.compile(
     r"\b(?:except|other than|apart from|aside from|beyond|limited to|(?:only|solely) (?:for|to|as))\b", re.I
@@ -402,14 +403,23 @@ def _statements(text: str) -> list:
 
 
 def _declares_use(statement: str) -> bool:
-    """Does a statement on language models say they were used?  "We used one only to polish the text; it was not
-    used for ideas" does; "No language models were used" does not.  Judged clause by clause: a clause that speaks
-    of use without negating it settles it, and so does an exception to a denial ("not used, except for
-    polishing").  A statement that says neither ("this section is left empty") declares nothing."""
-    said = statement[:700]
-    if _EXCEPT.search(said):
-        return True
-    return any(_USED.search(clause) and not _NEGATION.search(clause) for clause in _CLAUSE.split(said))
+    """Does a statement on language models say they were used?  Judged sentence by sentence:
+
+      "We used one to polish the text, not to write it."      a use that nothing before it negates: yes
+      "No language models were used."                          a use that is negated: no
+      "Not used, except for polishing the grammar."            an exception to a denial is a declared use: yes
+      "This section is left empty."                            says neither: declares nothing
+
+    A sentence is cut where it turns ("..., not ...", "... and did not ...", "but"), so that a denial in one half
+    does not cancel a use in the other."""
+    for sentence in re.split(r"[.;:]", statement[:700]):
+        if _NEGATION.search(sentence) and _USED.search(sentence) and _EXCEPT.search(sentence):
+            return True
+        for part in _CONTRAST.split(sentence):
+            used = _USED.search(part)
+            if used and not _NEGATION.search(part[: used.start()]):
+                return True
+    return False
 
 
 def read_declarations(text: str) -> dict:
