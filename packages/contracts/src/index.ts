@@ -1005,3 +1005,89 @@ export interface StanceStarted {
 	job: number;
 	id: string;
 }
+
+// ---- extraction table ----
+
+/** What kind of answer a column of an extraction table takes (engine analysis/extraction.rs). */
+export type ExtractionAnswerKind = "text" | "yes_no" | "number" | "list";
+
+/** A column of an extraction table: a question every paper is asked. */
+export interface ExtractionColumn {
+	/** stable within a run's table: lower-case letters, digits, "_" and "-" */
+	id: string;
+	label: string;
+	question: string;
+	kind: ExtractionAnswerKind;
+}
+
+/** `GET /api/runs/<run>/extraction/columns`: the run's columns (kept, or the defaults), and the defaults. */
+export interface ExtractionColumns {
+	columns: ExtractionColumn[];
+	defaults: ExtractionColumn[];
+}
+
+/** A stated answer, of its column's kind. A number's `written` is inside one of its cell's found quotes. */
+export type ExtractionValue =
+	| { kind: "text"; text: string }
+	| { kind: "yes_no"; answer: "yes" | "no" }
+	| { kind: "number"; written: string; value: number; unit: string; context: string }
+	| { kind: "list"; items: string[] };
+
+/** One cell. A value comes only with evidence found in the paper; one whose quotes were not found is
+ *  `not_verified` and carries no value. */
+export type ExtractionCell =
+	| { kind: "stated"; value: ExtractionValue; evidence: Evidence[] }
+	| { kind: "not_stated" }
+	| { kind: "not_verified"; why: "quotes_not_found" | "number_not_in_quote" | "value_not_in_quote" }
+	| { kind: "malformed"; why: "status" | "omitted" | "empty" | "not_yes_no" | "not_a_number" | "too_long" }
+	| { kind: "not_asked" };
+
+/** One paper of an extraction table. */
+export interface ExtractionRow {
+	paper: string;
+	title: string;
+	year: number | null;
+	acceptance: Acceptance | null;
+	acceptance_term: AcceptanceTerm | null;
+	/** how the paper is read: its PDF, or its title and abstract only */
+	text: "pdf" | "no_pdf" | "unreadable" | "not_in_library";
+	/** one of the sample's papers */
+	sample: boolean;
+	/** in the columns' order */
+	cells: ExtractionCell[];
+}
+
+/** `POST /api/runs/<run>/extraction/table` with `{ scope }`: what is kept, every quote checked again. */
+export interface ExtractionTable {
+	columns: ExtractionColumn[];
+	/** the model whose answers these are */
+	model: string;
+	/** most central first: the sample's papers come first */
+	rows: ExtractionRow[];
+	/** how many papers the sample has */
+	sample: number;
+	/** cells not shown as values, by why */
+	left_out: { quotes_not_found: number; value_not_in_quote: number; malformed: number };
+}
+
+/** Which papers a table is about: a community by its tree path, or papers of the run chosen by hand. */
+export type ExtractionScope = { community: string } | { papers: string[] };
+
+/** The sample (the most central papers) or the rest. */
+export type ExtractionPart = "sample" | "rest";
+
+/** `POST /api/runs/<run>/extraction/estimate`: what asking would cost, before anything is sent. An estimate. */
+export interface ExtractionEstimate {
+	part: ExtractionPart;
+	papers: number;
+	/** papers with a cell to ask; the others are kept */
+	to_ask: number;
+	model: string;
+	/** US dollars, likely and at most; null when the model's price is not known */
+	usd: number | null;
+	most_usd: number | null;
+	tokens: { input: number; output: number; cache_read: number; cache_write_5m: number; cache_write_1h: number };
+	counting: { kind: "assumed" | "measured"; chars_per_token: number };
+	/** what it was reckoned from: the papers' own texts, or (for the rest) the sample's */
+	basis: { kind: "texts" } | { kind: "sample_texts"; papers: number; characters: number } | { kind: "typical"; characters: number };
+}

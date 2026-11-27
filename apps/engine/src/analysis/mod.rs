@@ -17,6 +17,7 @@ pub mod citations;
 pub mod cluster;
 pub mod critique;
 pub mod eigen;
+pub mod extraction;
 pub mod graph;
 pub mod kmeans;
 pub mod links;

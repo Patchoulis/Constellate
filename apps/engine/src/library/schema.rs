@@ -202,6 +202,15 @@ pub const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX kept_answers_by_subject ON kept_answers (feature, subject);
     ",
+    // 6: the extraction table's columns of each run (feature: extraction table, library/extraction.rs)
+    r"
+    -- The columns a user chose or wrote for a run's extraction table, as JSON in their order.
+    CREATE TABLE extraction_columns (
+        run        TEXT PRIMARY KEY,
+        columns    TEXT NOT NULL,
+        changed_at TEXT NOT NULL
+    );
+    ",
 ];
 
 /// Bring `connection` to the last of `migrations`. Refuses a database newer than the list.

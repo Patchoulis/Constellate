@@ -157,6 +157,26 @@ export const api = {
 		propose: (name: string, community: string, fresh: boolean, approved: StanceApproved) =>
 			call<import("@rp/contracts").StanceStarted>(`${stancesAt(name, { community })}/proposals`, send("POST", { fresh, ...approved })),
 	},
+	/** the extraction table's columns of a run (kept, or the defaults) */
+	extractionColumns: (name: string) => call<import("@rp/contracts").ExtractionColumns>(`${run(name)}/extraction/columns`),
+	saveExtractionColumns: (name: string, columns: import("@rp/contracts").ExtractionColumn[]) =>
+		call<import("@rp/contracts").ExtractionColumns>(`${run(name)}/extraction/columns`, send("PUT", { columns })),
+	/** the table as kept, its quotes checked again; nothing is asked */
+	extractionTable: (name: string, scope: import("@rp/contracts").ExtractionScope) =>
+		call<import("@rp/contracts").ExtractionTable>(`${run(name)}/extraction/table`, send("POST", { scope })),
+	/** what asking the sample or the rest would cost; nothing is sent */
+	extractionEstimate: (name: string, scope: import("@rp/contracts").ExtractionScope, part: import("@rp/contracts").ExtractionPart) =>
+		call<import("@rp/contracts").ExtractionEstimate>(`${run(name)}/extraction/estimate`, send("POST", { scope, part })),
+	/** start asking, as a job, spending at most `budgetUsd` US dollars; answers the job's number */
+	runExtraction: (
+		name: string,
+		scope: import("@rp/contracts").ExtractionScope,
+		part: import("@rp/contracts").ExtractionPart,
+		budgetUsd: number,
+	) => call<{ ok: true; id: number }>(`${run(name)}/extraction/run`, send("POST", { scope, part, budget_usd: budgetUsd })),
+	/** forget these papers' cells, so that they are asked again at the next run */
+	forgetExtraction: (name: string, papers: string[]) =>
+		call<{ forgotten: number }>(`${run(name)}/extraction/forget`, send("POST", { papers })),
 };
 
 type StanceScope = import("@rp/contracts").StanceScope;

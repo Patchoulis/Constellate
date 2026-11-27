@@ -7,6 +7,7 @@ import { AcceptanceTag, AiTag } from "@/components/brand";
 import { MathText } from "@/components/math-text";
 import { CommunityReviews } from "@/components/review-summary";
 import { CommunityStances } from "@/components/stances";
+import { ExtractionTable } from "@/components/extraction-table";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { CITATIONS_NOTE, citationsNote, citedByFigure, citedByOf, citesFigure, citesOf } from "@/lib/citations";
@@ -374,7 +375,12 @@ export function CommunityPanel({
 			</div>
 			{tab === "marked" ? (
 				markedPapers.length > 0 ? (
-					<MarkedList papers={markedPapers} onOpen={onGoToPaper} onRemove={marks.remove} onClear={marks.clear} />
+					<>
+						<MarkedList papers={markedPapers} onOpen={onGoToPaper} onRemove={marks.remove} onClear={marks.clear} />
+						<div className="max-h-[60%] shrink-0 overflow-y-auto border-t pt-3">
+							<ExtractionTable run={result.name} scope={{ papers: markedPapers.map(({ node }) => node.id) }} onOpenPaper={onGoToPaper} />
+						</div>
+					</>
 				) : (
 					<p className="p-6 text-center text-xs leading-relaxed text-muted-foreground">
 						No marked papers in this run yet. {MARK_HINT} on the graph, or use the star beside a paper here and in the reader. Marked papers
@@ -457,6 +463,7 @@ function Communities({
 						scope={{ community: selected.community.tree_path }}
 						onOpenPaper={onOpenPaper}
 					/>
+					<ExtractionTable run={result.name} scope={{ community: selected.community.tree_path }} onOpenPaper={onOpenPaper} />
 				</div>
 			) : (
 				<>
