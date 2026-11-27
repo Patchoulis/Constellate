@@ -114,6 +114,8 @@ pub struct Coverage {
     pub papers: usize,
     pub read: usize,
     pub without_pdf: usize,
+    /// With a PDF that could not be read: their citing sentences cannot be read either.
+    pub unreadable: usize,
 }
 
 /// `PaperCitationContexts` in the contracts.
@@ -200,7 +202,8 @@ fn coverage(library: &Library, ids: &[String]) -> Result<Coverage, ApiError> {
     let wanted: Vec<&str> = ids.iter().map(String::as_str).collect();
     let read = library.contexts_kept_among(&wanted)?.len();
     let without_pdf = ids.iter().filter(|id| !library.pdf_file(id).is_file()).count();
-    Ok(Coverage { papers: ids.len(), read, without_pdf })
+    let unreadable = library.unreadable_among(&wanted)?.len();
+    Ok(Coverage { papers: ids.len(), read, without_pdf, unreadable })
 }
 
 fn contexts_of_paper(
@@ -362,6 +365,7 @@ struct Citations {
     papers: usize,
     papers_read: usize,
     without_pdf: usize,
+    unreadable: usize,
     cases: Vec<Case>,
     records: HashMap<String, CitedRecord>,
 }
@@ -393,7 +397,8 @@ fn citations_of(engine: &Shared, library: &Library, run: &str, community: Option
         })
         .collect();
     let without_pdf = ids.iter().filter(|id| !library.pdf_file(id).is_file()).count();
-    Ok(Citations { papers: ids.len(), papers_read: kept.len(), without_pdf, cases, records })
+    let unreadable = library.unreadable_among(&wanted)?.len();
+    Ok(Citations { papers: ids.len(), papers_read: kept.len(), without_pdf, unreadable, cases, records })
 }
 
 /// What the kinds of a community's citations come to: `CitationKindsSummary` in the contracts. Every figure is a
@@ -404,6 +409,8 @@ pub struct KindsSummary {
     /// Of its papers, whose citing sentences were read.
     pub papers_read: usize,
     pub without_pdf: usize,
+    /// Of its papers, those with a PDF that could not be read.
+    pub unreadable: usize,
     /// Papers of the library its papers cite.
     pub cited_papers: usize,
     /// All its citations of papers of the library taken together.
@@ -489,6 +496,7 @@ fn summary_of(engine: &Shared, run: &str, community: Option<&str>) -> Result<Kin
         papers: found.papers,
         papers_read: found.papers_read,
         without_pdf: found.without_pdf,
+        unreadable: found.unreadable,
         cited_papers: tallies.len(),
         tally,
         baseline,
@@ -857,7 +865,7 @@ mod tests {
         assert_eq!(sentence["section"], json!({"kind": "experiments"}));
         assert_eq!(sentence["judgement"], json!({"state": "not_classified"}));
         assert_eq!(cites[1]["tally"]["not_classified"], 1);
-        assert_eq!(told["coverage"], json!({"papers": 3, "read": 1, "without_pdf": 2}));
+        assert_eq!(told["coverage"], json!({"papers": 3, "read": 1, "without_pdf": 2, "unreadable": 0}));
 
         // the cited paper has no PDF: it is cited, and says so
         let (_, ties) = ask(&router, "GET", "/api/papers/ties/citation-contexts?run=r1", None).await;

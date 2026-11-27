@@ -1585,7 +1585,7 @@ export interface PaperCitationContexts {
 	cited_by: CitationContextsOf[];
 	cited_by_total: number;
 	/** how many of the run's papers have had their citing sentences read (null without a run) */
-	coverage: { papers: number; read: number; without_pdf: number } | null;
+	coverage: { papers: number; read: number; without_pdf: number; /** with a PDF that could not be read */ unreadable?: number } | null;
 	/** sentences whose place could no longer be found in their paper's text: not shown */
 	left_out: number;
 	/** the model whose readings are shown */
@@ -1606,6 +1606,8 @@ export interface CitationKindsSummary {
 	/** of its papers, whose citing sentences were read */
 	papers_read: number;
 	without_pdf: number;
+	/** of its papers, those with a PDF that could not be read: neither read nor waiting to be */
+	unreadable?: number;
 	/** papers of the library its papers cite */
 	cited_papers: number;
 	tally: CitationTally;

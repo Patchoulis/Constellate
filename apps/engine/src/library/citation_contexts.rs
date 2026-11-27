@@ -344,6 +344,36 @@ impl Library {
     pub fn contexts_kept_among(&self, paper_ids: &[&str]) -> Result<HashSet<String>, LibraryError> {
         Ok(self.kept_contexts_with_hash(paper_ids, Entries::InLibrary)?.into_keys().collect())
     }
+
+    /// Which of `paper_ids` have a PDF this reader tried and could not read (and that file is still the one kept):
+    /// their citing sentences cannot be read, so they are neither read nor waiting to be.
+    pub fn unreadable_among(&self, paper_ids: &[&str]) -> Result<HashSet<String>, LibraryError> {
+        self.read(|connection| {
+            let mut unreadable = HashSet::new();
+            for ids in paper_ids.chunks(500) {
+                let sql = format!(
+                    "SELECT paper_id, pdf_size, pdf_modified FROM paper_passages
+                     WHERE paper_id IN ({}) AND reader = ?{} AND outcome = 'unreadable'",
+                    placeholders(ids.len()),
+                    ids.len() + 1
+                );
+                let mut statement = connection.prepare(&sql)?;
+                let mut values: Vec<rusqlite::types::Value> =
+                    ids.iter().map(|id| rusqlite::types::Value::Text((*id).to_owned())).collect();
+                values.push(rusqlite::types::Value::Integer(i64::from(READER)));
+                let rows = statement.query_map(rusqlite::params_from_iter(values), |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))
+                })?;
+                for row in rows {
+                    let (id, size, modified) = row?;
+                    if same_file(self, &id, size, modified) {
+                        unreadable.insert(id);
+                    }
+                }
+            }
+            Ok(unreadable)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -465,6 +495,17 @@ mod tests {
         // the PDF gone altogether: nothing holds either
         std::fs::remove_file(library.pdf_file("seed")).unwrap();
         assert!(library.kept_contexts(&["seed"], Entries::InLibrary).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_pdf_that_could_not_be_read_is_counted_unreadable_until_it_is_replaced() {
+        let (_folder, library) = library();
+        library.keep_pdf("arith", b"not a pdf at all").unwrap();
+        assert!(library.unreadable_among(&["seed", "arith", "ties"]).unwrap().is_empty(), "not tried yet");
+        library.paper_texts(&["seed", "arith", "ties"]).unwrap();
+        assert_eq!(library.unreadable_among(&["seed", "arith", "ties"]).unwrap(), HashSet::from(["arith".to_owned()]));
+        library.keep_pdf("arith", &seed_pdf()).unwrap();
+        assert!(library.unreadable_among(&["arith"]).unwrap().is_empty(), "another file: not known unreadable");
     }
 
     #[test]
