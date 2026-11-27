@@ -1,15 +1,16 @@
 """HTTP API for the web app.
 
-    python -m rp.server          http://127.0.0.1:8765
+python -m rp.server          http://127.0.0.1:8765
 
-    POST /api/runs               start the pipeline (one at a time)      GET /api/status       job state + log
-    GET  /api/runs               finished runs                           GET /api/runs/<name>  communities
-    PATCH /api/runs/<name>       rename it                               DELETE /api/runs/<name>  remove its results
-    GET  /api/runs/<name>/graph  nodes + edges                           GET/PUT /api/settings
-    GET/POST /api/runs/<name>/overview/<path>   a community's overview: its state / start writing it
-    GET  /api/papers/<id>        a paper's record                        GET /api/pdf/<id>     its PDF (cached)
-    GET  /api/library            what is stored locally                  GET /api/catalog      conferences and categories to pick from
+POST /api/runs               start the pipeline (one at a time)      GET /api/status       job state + log
+GET  /api/runs               finished runs                           GET /api/runs/<name>  communities
+PATCH /api/runs/<name>       rename it                               DELETE /api/runs/<name>  remove its results
+GET  /api/runs/<name>/graph  nodes + edges                           GET/PUT /api/settings
+GET/POST /api/runs/<name>/overview/<path>   a community's overview: its state / start writing it
+GET  /api/papers/<id>        a paper's record                        GET /api/pdf/<id>     its PDF (cached)
+GET  /api/library            what is stored locally                  GET /api/catalog      what there is to pick from
 """
+
 import json
 import os
 import shutil
@@ -18,12 +19,12 @@ from flask import Flask, jsonify, request, send_file
 
 from . import LIBRARY, RUNS, catalog, claude, detect, pipeline, proceedings, reviews, settings, store, usage
 from .jobs import Busy, Job, State
-from .overview import Overviews
 from .library import Papers, acceptance
+from .overview import Overviews
 from .selection import Selection
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024       # the largest thing sent here is a page's text
+app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024  # the largest thing sent here is a page's text
 job = Job()
 
 
@@ -70,8 +71,8 @@ def not_found(_):
 
 
 @app.errorhandler(ValueError)
-def bad_request(problem):
-    return jsonify(error=str(problem)), 400
+def bad_request(error):
+    return jsonify(error=str(error)), 400
 
 
 @app.errorhandler(Busy)
@@ -87,8 +88,9 @@ def start():
     if body.get("rerun"):
         stored = json.loads((_run_folder(body["rerun"]) / "run.json").read_text(encoding="utf-8"))
         body = stored["selection"] | {"redo": body.get("redo")}
-    selection = Selection.parse(body.get("venues"), body.get("start"), body.get("end"), body.get("categories"),
-                                body.get("include_workshops"))
+    selection = Selection.parse(
+        body.get("venues"), body.get("start"), body.get("end"), body.get("categories"), body.get("include_workshops")
+    )
     redo = tuple(body.get("redo") or ())
     job.start(lambda log: pipeline.run(selection, redo, log))
     return jsonify(ok=True)
@@ -120,8 +122,15 @@ def runs():
     found = []
     for path in sorted(RUNS.glob("*/communities.json"), key=os.path.getmtime, reverse=True):
         data = json.loads(path.read_text(encoding="utf-8"))
-        found.append({"name": path.parent.name, "title": _title(path.parent), "papers": data["papers"],
-                      "communities": len(data["communities"]), "modularity": data["modularity"]})
+        found.append(
+            {
+                "name": path.parent.name,
+                "title": _title(path.parent),
+                "papers": data["papers"],
+                "communities": len(data["communities"]),
+                "modularity": data["modularity"],
+            }
+        )
     return jsonify(found)
 
 
@@ -152,7 +161,7 @@ def delete_run(name):
 
 
 overviews = Overviews()
-overview_jobs = {}                # (run, community path) -> Job: at most one overview of a community is written at a time
+overview_jobs = {}  # (run, community path) -> Job: at most one overview of a community is written at a time
 
 
 @app.route("/api/runs/<name>/overview/<path>", methods=["GET", "POST"])
@@ -163,7 +172,9 @@ def community_overview(name, path):
     ready = overviews.get(name, path, model)
     if ready:
         return jsonify(state=State.DONE.value, overview=ready, error=None)
-    writing = overview_jobs.setdefault((name, path), Job())     # not per model: changing it mid-write must not start a second
+    writing = overview_jobs.setdefault(
+        (name, path), Job()
+    )  # not per model: changing it mid-write must not start a second
     if request.method == "POST" and writing.state is not State.RUNNING:
         writing.start(lambda log: overviews.write(name, path, model, log))
     now = writing.snapshot()
@@ -194,9 +205,16 @@ def paper(paper_id):
     """A paper's record, plus what is known about it: how it was accepted, whether its PDF can be shown here,
     what its authors declare (null until read), and the AI-text detector's verdict (null if never scored)."""
     found = papers.get(paper_id)
-    return jsonify(found | {"acceptance": acceptance(found), "readable": proceedings.pdf_url(found) is not None,
-                            "declarations": proceedings.known(paper_id), "reviews": reviews.known(paper_id),
-                            "ai": detect.Detector(log=lambda line: None).verdict(found)})
+    return jsonify(
+        found
+        | {
+            "acceptance": acceptance(found),
+            "readable": proceedings.pdf_url(found) is not None,
+            "declarations": proceedings.known(paper_id),
+            "reviews": reviews.known(paper_id),
+            "ai": detect.Detector(log=lambda line: None).verdict(found),
+        }
+    )
 
 
 @app.get("/api/pdf/<path:paper_id>")
@@ -267,8 +285,9 @@ def library():
     if file.exists():
         with open(file, encoding="utf-8") as handle:
             count = sum(1 for line in handle if line.strip())
-    models = {index.parent.name: len(json.loads(index.read_text()))
-              for index in (LIBRARY / "embeddings").glob("*/index.json")}
+    models = {
+        index.parent.name: len(json.loads(index.read_text())) for index in (LIBRARY / "embeddings").glob("*/index.json")
+    }
     return jsonify(papers=count, embeddings=models, ai_validation=store.read_json(detect.REPORT))
 
 

@@ -8,6 +8,7 @@ Everything on disk lives under <repo>/data (override with the RP_DATA environmen
     data/library/embeddings/<model>/           one vector per (paper id, text hash), shared by every run
     data/runs/<name>/                          one analysis: adjacency, communities, graph, report
 """
+
 import os
 from pathlib import Path
 

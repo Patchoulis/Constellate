@@ -1,15 +1,16 @@
 """User settings, stored in data/settings.json.  Unknown keys are dropped, missing keys take the default."""
+
 from . import DATA, store
 
 DEFAULTS = {
     "embedding_model": "Qwen/Qwen3-Embedding-0.6B",
-    "center_embeddings": True,        # remove the mean embedding before cosine similarity
-    "clustering": "spectral",         # how communities are cut: see cluster.METHODS
+    "center_embeddings": True,  # remove the mean embedding before cosine similarity
+    "clustering": "spectral",  # how communities are cut: see cluster.METHODS
     "max_communities": 24,
     "min_community_size": 15,
-    "min_split_modularity": 0.05,     # a Fiedler split is kept only if its two halves are this distinct
-    "sub_levels": 2,                  # how many times a community is split again into sub-communities
-    "max_links": 8,                   # most links drawn from one paper to its closest papers
+    "min_split_modularity": 0.05,  # a Fiedler split is kept only if its two halves are this distinct
+    "sub_levels": 2,  # how many times a community is split again into sub-communities
+    "max_links": 8,  # most links drawn from one paper to its closest papers
     # Papers the AI-text detector flags are always tagged; switch this off to leave them out of a run altogether.
     "include_ai_papers": True,
     # Which conference papers go into a run: "all", "highlights" (spotlights and orals) or "oral".
@@ -17,19 +18,26 @@ DEFAULTS = {
     # Papers whose authors' declarations raise one of these flags (proceedings.FLAGS) are left out.  It can only
     # act on papers whose declarations have been read.
     "exclude_flags": [],
-    "describe": True,                 # ask Claude to describe every community
+    "describe": True,  # ask Claude to describe every community
     "describe_model": "claude-opus-5-5",
 }
 
 
 # acceptance_filter -> (name as shown, the tiers it lets through)
-ACCEPTANCE = {"all": ("All accepted papers", ("oral", "spotlight", "poster")),
-              "highlights": ("Spotlights and orals", ("oral", "spotlight")),
-              "oral": ("Orals only", ("oral",))}
+ACCEPTANCE = {
+    "all": ("All accepted papers", ("oral", "spotlight", "poster")),
+    "highlights": ("Spotlights and orals", ("oral", "spotlight")),
+    "oral": ("Orals only", ("oral",)),
+}
 
 # What each number may be: (smallest, largest).
-LIMITS = {"max_communities": (2, 500), "min_community_size": (2, 100_000), "min_split_modularity": (0.0, 1.0),
-          "sub_levels": (0, 6), "max_links": (1, 50)}
+LIMITS = {
+    "max_communities": (2, 500),
+    "min_community_size": (2, 100_000),
+    "min_split_modularity": (0.0, 1.0),
+    "sub_levels": (0, 6),
+    "max_links": (1, 50),
+}
 
 
 def _checked(key: str, value):
@@ -37,6 +45,7 @@ def _checked(key: str, value):
     default = DEFAULTS[key]
     if isinstance(default, list):
         from .proceedings import FLAGS
+
         if not isinstance(value, list) or any(flag not in FLAGS for flag in value):
             raise ValueError(f"{key} must be a list of: {', '.join(FLAGS)}")
         return [flag for flag in FLAGS if flag in value]
@@ -46,11 +55,11 @@ def _checked(key: str, value):
         return value
     if isinstance(default, (int, float)):
         try:
-            number = float(value) if not isinstance(value, bool) else None      # true is not a number
+            number = float(value) if not isinstance(value, bool) else None  # true is not a number
         except (TypeError, ValueError):
             number = None
         low, high = LIMITS[key]
-        if number is None or not low <= number <= high:                         # also refuses NaN and infinity
+        if number is None or not low <= number <= high:  # also refuses NaN and infinity
             raise ValueError(f"{key} must be a number between {low} and {high}")
         if isinstance(default, int):
             if number != int(number):
@@ -61,6 +70,7 @@ def _checked(key: str, value):
         raise ValueError(f"{key} must be a name")
     if key == "clustering":
         from .cluster import METHODS
+
         if value not in METHODS:
             raise ValueError(f"clustering must be one of {', '.join(METHODS)}")
     if key == "acceptance_filter" and value not in ACCEPTANCE:

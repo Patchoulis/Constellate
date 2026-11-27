@@ -71,7 +71,11 @@ function emphasised(text: string, key: number) {
 	for (const found of plain.matchAll(EMPHASIS)) {
 		parts.push(plain.slice(from, found.index));
 		parts.push(
-			found[1] !== undefined ? <strong key={`${key}b${found.index}`}>{found[1]}</strong> : <em key={`${key}i${found.index}`}>{found[2]}</em>,
+			found[1] !== undefined ? (
+				<strong key={`${key}b${found.index}`}>{found[1]}</strong>
+			) : (
+				<em key={`${key}i${found.index}`}>{found[2]}</em>
+			),
 		);
 		from = found.index + found[0].length;
 	}
@@ -116,10 +120,6 @@ export function MathText({ children }: { children: string }) {
 		.split(MATH)
 		.map((part, index) =>
 			// split() with one capture group: odd entries are the math
-			index % 2 ? (
-				<Formula key={index} source={part.replace(/^\$\$?|\$\$?$/g, "")} />
-			) : (
-				<Text key={index} text={part} />
-			),
+			index % 2 ? <Formula key={index} source={part.replace(/^\$\$?|\$\$?$/g, "")} /> : <Text key={index} text={part} />,
 		);
 }

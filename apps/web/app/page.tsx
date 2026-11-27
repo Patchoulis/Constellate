@@ -67,9 +67,7 @@ export default function Home() {
 			) : (
 				<main className="relative min-w-0 flex-1">
 					<Notice>
-						{running
-							? "Working… the graph appears when the run finishes."
-							: "Pick a date range or a conference and press Run."}
+						{running ? "Working… the graph appears when the run finishes." : "Pick a date range or a conference and press Run."}
 					</Notice>
 					{log}
 				</main>

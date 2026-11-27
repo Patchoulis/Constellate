@@ -39,24 +39,12 @@ export function ActivityLog({ job }: { job: Job }) {
 }
 
 export function Notice({ children }: { children: React.ReactNode }) {
-	return (
-		<div className="flex size-full items-center justify-center p-8 text-center text-sm text-muted-foreground">
-			{children}
-		</div>
-	);
+	return <div className="flex size-full items-center justify-center p-8 text-center text-sm text-muted-foreground">{children}</div>;
 }
 
 /** One run on screen: its graph, its communities, and the paper being read. Mount it with key={name}, so
  *  opening another run starts with nothing selected. `children` are laid over the graph. */
-export function Workspace({
-	name,
-	catalog,
-	children,
-}: {
-	name: string;
-	catalog: Catalog | undefined;
-	children?: React.ReactNode;
-}) {
+export function Workspace({ name, catalog, children }: { name: string; catalog: Catalog | undefined; children?: React.ReactNode }) {
 	const run = useAsync(() => Promise.all([api.run(name), api.graph(name)]), [name]);
 	const [selected, setSelected] = useState<CommunityNode | null>(null);
 	const [paper, setPaper] = useState<string | null>(null);

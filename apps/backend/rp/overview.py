@@ -11,6 +11,7 @@ shown.
 
 An overview is kept in the library under the model and the exact set of papers, so it is written once.
 """
+
 import hashlib
 import json
 from collections import Counter
@@ -66,8 +67,11 @@ _POINT = {
 }
 SCHEMA = {
     "type": "object",
-    "properties": {"title": {"type": "string"}, "summary": {"type": "string"},
-                   **{key: {"type": "array", "items": _POINT} for key in SECTIONS}},
+    "properties": {
+        "title": {"type": "string"},
+        "summary": {"type": "string"},
+        **{key: {"type": "array", "items": _POINT} for key in SECTIONS},
+    },
     "required": ["title", "summary", *SECTIONS],
     "additionalProperties": False,
 }
@@ -108,12 +112,13 @@ def _prompt(community: dict, roots: list, graph: dict, papers: list) -> str:
                 degree[here] += 1
                 if there not in inside:
                     bridges[_label(root_of[there])] += 1
-    listed = lambda indices: ", ".join(f"[{number[i]}]" for i in indices)                    # noqa: E731
+    listed = lambda indices: ", ".join(f"[{number[i]}]" for i in indices)  # noqa: E731
     by_id = {papers[index]["id"]: index for index in members}
     central = [by_id[p["id"]] for p in community["nearest_to_centroid"] if p["id"] in by_id]
     lines = [
         f"Community: {_label(community)} ({len(members)} papers)",
-        f"Its characteristic terms: {', '.join(community['keywords'])}", "",
+        f"Its characteristic terms: {', '.join(community['keywords'])}",
+        "",
         "STRUCTURE (from the similarity graph)",
         f"Papers closest to the community's mean embedding, i.e. its centre: {listed(central)}",
         f"Papers with the most links to other papers of the community: {listed(i for i, _ in degree.most_common(12))}",
@@ -121,8 +126,10 @@ def _prompt(community: dict, roots: list, graph: dict, papers: list) -> str:
         + ("; ".join(f"{name} ({count} links)" for name, count in bridges.most_common(6)) or "none"),
     ]
     for child in community["children"]:
-        lines.append(f"Sub-community \"{_label(child)}\" ({child['size']} papers; terms: "
-                     f"{', '.join(child['keywords'][:8])}): {listed(child['members'])}")
+        lines.append(
+            f'Sub-community "{_label(child)}" ({child["size"]} papers; terms: '
+            f"{', '.join(child['keywords'][:8])}): {listed(child['members'])}"
+        )
     lines += ["", "PAPERS"]
     lines += [f"[{number[index]}] {papers[index]['title']}\n{papers[index]['abstract']}\n" for index in members]
     return "\n".join(lines)
@@ -136,8 +143,13 @@ def _checked(answer: dict, members: list, papers: list) -> dict:
         for point in answer[key]:
             cited = [members[n - 1] for n in dict.fromkeys(point["papers"]) if 1 <= n <= len(members)]
             if len(cited) >= MIN_CITED:
-                points.append({"title": point["title"], "insight": point["insight"],
-                               "papers": [{"id": papers[i]["id"], "title": papers[i]["title"]} for i in cited]})
+                points.append(
+                    {
+                        "title": point["title"],
+                        "insight": point["insight"],
+                        "papers": [{"id": papers[i]["id"], "title": papers[i]["title"]} for i in cited],
+                    }
+                )
         if points:
             sections.append({"heading": heading, "points": sorted(points, key=lambda p: -len(p["papers"]))})
     return {"title": answer["title"], "summary": answer["summary"], "sections": sections}
@@ -158,12 +170,15 @@ class Overviews:
         roots = json.loads((folder / "communities.json").read_text(encoding="utf-8"))["communities"]
         paths = list(_paths(roots))
         if len(paths) != len(set(paths)):
-            raise ValueError("This run was made by an older version, in which two communities could share a name. "
-                             "Run it again (everything is reused) and ask for the overview then.")
+            raise ValueError(
+                "This run was made by an older version, in which two communities could share a name. "
+                "Run it again (everything is reused) and ask for the overview then."
+            )
         community = _find(roots, path)
         library = Papers().by_id
-        papers = [library[paper_id] for paper_id in
-                  json.loads((folder / "run.json").read_text(encoding="utf-8"))["paper_ids"]]
+        papers = [
+            library[paper_id] for paper_id in json.loads((folder / "run.json").read_text(encoding="utf-8"))["paper_ids"]
+        ]
         ids = sorted(papers[index]["id"] for index in community["members"])
         key = hashlib.sha1((model + "|" + ",".join(ids)).encode()).hexdigest()
         return folder, roots, community, papers, key
@@ -180,9 +195,19 @@ class Overviews:
             return stored[key]
         graph = json.loads((folder / "graph.json").read_text(encoding="utf-8"))
         log(f"reading {len(community['members'])} papers with {model} ...")
-        answer = claude.ask_json(claude.connect(model), model, SYSTEM, _prompt(community, roots, graph, papers),
-                                 SCHEMA, effort="medium", max_tokens=32000,
-                                 purpose="community overviews")
-        overview = _checked(answer, community["members"], papers) | {"model": model, "papers": len(community["members"])}
+        answer = claude.ask_json(
+            claude.connect(model),
+            model,
+            SYSTEM,
+            _prompt(community, roots, graph, papers),
+            SCHEMA,
+            effort="medium",
+            max_tokens=32000,
+            purpose="community overviews",
+        )
+        overview = _checked(answer, community["members"], papers) | {
+            "model": model,
+            "papers": len(community["members"]),
+        }
         store.update_json(self.path, lambda stored: stored.__setitem__(key, overview), indent=1)
         return overview

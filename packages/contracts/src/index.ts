@@ -28,9 +28,7 @@ export type RedoStep = "download" | "embeddings" | "descriptions";
 /** Conferences, or a submission-date range with optional categories (rp/selection.py checks it); or an earlier
  *  run to do again. Either way `redo` lists the steps to do again despite what is stored. */
 export type RunRequest = (
-	| { venues: string[]; include_workshops: boolean }
-	| { start: string; end: string; categories: string[] }
-	| { rerun: string }
+	{ venues: string[]; include_workshops: boolean } | { start: string; end: string; categories: string[] } | { rerun: string }
 ) & { redo?: RedoStep[] };
 
 /** The backend's job state machine (rp/jobs.py). */

@@ -14,15 +14,7 @@
  * So a community is one round cluster from afar, and up close it falls apart into the patches of its
  * sub-communities.
  */
-import {
-	forceCollide,
-	forceLink,
-	forceSimulation,
-	forceX,
-	forceY,
-	type SimulationLinkDatum,
-	type SimulationNodeDatum,
-} from "d3-force";
+import { forceCollide, forceLink, forceSimulation, forceX, forceY, type SimulationLinkDatum, type SimulationNodeDatum } from "d3-force";
 import type { GraphData } from "@rp/contracts";
 import type { CommunityNode } from "@/lib/community";
 
@@ -74,10 +66,10 @@ interface Pull extends SimulationLinkDatum<Home> {
 /** Step 1: a disc per community. */
 function placeCommunities(graph: GraphData, roots: CommunityNode[]): Home[] {
 	const homes: Home[] = roots.map(({ community }) => {
-		const sum = community.members.reduce(
-			(total, index) => ({ x: total.x + graph.nodes[index].x, y: total.y + graph.nodes[index].y }),
-			{ x: 0, y: 0 },
-		);
+		const sum = community.members.reduce((total, index) => ({ x: total.x + graph.nodes[index].x, y: total.y + graph.nodes[index].y }), {
+			x: 0,
+			y: 0,
+		});
 		const r = SPACING * Math.sqrt(community.size);
 		return { x: (sum.x / community.size) * 2400, y: (sum.y / community.size) * 2400, r };
 	});

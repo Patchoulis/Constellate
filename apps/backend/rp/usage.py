@@ -4,6 +4,7 @@ The price of a call is its tokens times the model's price per million (PRICES, t
 model not listed is counted in tokens but not in dollars, and the summary says so).  The ledger holds totals per
 model and per purpose (naming communities, overviews, training the AI-text detector), not individual calls.
 """
+
 import os
 import re
 import threading
@@ -26,13 +27,13 @@ PRICES = {
 }
 LONG_PROMPT = {"claude-haiku-5-5": (100_000, (0.50, 2.50))}
 
-_session = {"usd": 0.0, "calls": 0}                # since this server started
+_session = {"usd": 0.0, "calls": 0}  # since this server started
 _lock = threading.Lock()
 
 
 def price(model: str, input_tokens: int, output_tokens: int) -> float | None:
     """What a call cost in US dollars, or None for a model whose price is not known here."""
-    model = re.sub(r"-\d{8}$", "", model)          # the API may answer with a dated id: claude-opus-5-5-20261101
+    model = re.sub(r"-\d{8}$", "", model)  # the API may answer with a dated id: claude-opus-5-5-20261101
     if model not in PRICES:
         return None
     per_input, per_output = PRICES[model]
@@ -53,18 +54,19 @@ def record(model: str, purpose: str, input_tokens: int, output_tokens: int):
     def add(ledger):
         ledger.setdefault("since", time.strftime("%Y-%m-%d"))
         for table, key in (("models", model), ("purposes", purpose)):
-            entry = ledger.setdefault(table, {}).setdefault(key, {"calls": 0, "input_tokens": 0, "output_tokens": 0,
-                                                                  "usd": 0.0, "unpriced_calls": 0})
+            entry = ledger.setdefault(table, {}).setdefault(
+                key, {"calls": 0, "input_tokens": 0, "output_tokens": 0, "usd": 0.0, "unpriced_calls": 0}
+            )
             entry["calls"] += 1
             entry["input_tokens"] += input_tokens
             entry["output_tokens"] += output_tokens
-            entry["usd"] += usd or 0.0             # not rounded here: thousands of tiny calls would drift
+            entry["usd"] += usd or 0.0  # not rounded here: thousands of tiny calls would drift
             entry["unpriced_calls"] += usd is None
 
     try:
         store.update_json(LEDGER, add)
-    except OSError as problem:
-        print(f"usage: could not write the ledger ({problem}); this call is counted for this session only")
+    except OSError as error:
+        print(f"usage: could not write the ledger ({error}); this call is counted for this session only")
 
 
 def provider() -> dict:
@@ -78,9 +80,14 @@ def provider() -> dict:
 def summary() -> dict:
     ledger = store.read_json(LEDGER) or {}
     models = ledger.get("models", {})
-    return {"provider": provider(), "since": ledger.get("since"),
-            "usd": round(sum(entry["usd"] for entry in models.values()), 4),
-            "calls": sum(entry["calls"] for entry in models.values()),
-            "unpriced_calls": sum(entry["unpriced_calls"] for entry in models.values()),
-            "session_usd": round(_session["usd"], 4), "session_calls": _session["calls"],
-            "models": models, "purposes": ledger.get("purposes", {})}
+    return {
+        "provider": provider(),
+        "since": ledger.get("since"),
+        "usd": round(sum(entry["usd"] for entry in models.values()), 4),
+        "calls": sum(entry["calls"] for entry in models.values()),
+        "unpriced_calls": sum(entry["unpriced_calls"] for entry in models.values()),
+        "session_usd": round(_session["usd"], 4),
+        "session_calls": _session["calls"],
+        "models": models,
+        "purposes": ledger.get("purposes", {}),
+    }

@@ -48,8 +48,8 @@ export function useJob(onDone: (run: string) => void) {
 			const status = await api.status(seen.current);
 			dispatch({ type: "reported", status });
 			if (status.state === "done" && status.result) done.current(status.result);
-		} catch (problem) {
-			dispatch({ type: "unanswered", error: (problem as Error).message });
+		} catch (error) {
+			dispatch({ type: "unanswered", error: (error as Error).message });
 		}
 	}, []);
 
@@ -65,15 +65,18 @@ export function useJob(onDone: (run: string) => void) {
 		return () => clearTimeout(timer);
 	}, [job, report]);
 
-	const start = useCallback(async (request: RunRequest) => {
-		try {
-			await api.start(request);
-			dispatch({ type: "started" });
-		} catch (problem) {
-			dispatch({ type: "unanswered", error: (problem as Error).message });
-			void report(); // "already running" is a refusal too: show what the backend is really doing
-		}
-	}, [report]);
+	const start = useCallback(
+		async (request: RunRequest) => {
+			try {
+				await api.start(request);
+				dispatch({ type: "started" });
+			} catch (error) {
+				dispatch({ type: "unanswered", error: (error as Error).message });
+				void report(); // "already running" is a refusal too: show what the backend is really doing
+			}
+		},
+		[report],
+	);
 
 	/** A job was started some other way (not through `start`): begin showing it. */
 	const follow = useCallback(() => {

@@ -5,6 +5,7 @@ by retrieval: the papers of the whole selection whose embeddings lie closest to 
 Claude is asked what single research topic that point in embedding space stands for.  Without API credentials only
 the characteristic terms and the nearest papers are reported.
 """
+
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
 
@@ -15,7 +16,7 @@ from . import LIBRARY, claude, store
 from .graph import unit
 
 NEAREST = 25
-PARALLEL = 8                 # description requests in flight at once
+PARALLEL = 8  # description requests in flight at once
 
 SYSTEM = """You name research communities found by clustering paper embeddings.
 You are given the papers whose embeddings lie nearest to the mean embedding of one community, nearest first, and \
@@ -43,11 +44,16 @@ class Vocabulary:
     """Word counts of every paper, made once, to find the terms that set any group of papers apart."""
 
     def __init__(self, papers):
-        counter = CountVectorizer(stop_words="english", ngram_range=(1, 2), min_df=2, max_features=200_000,
-                                  token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z\-]{2,}\b")
+        counter = CountVectorizer(
+            stop_words="english",
+            ngram_range=(1, 2),
+            min_df=2,
+            max_features=200_000,
+            token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z\-]{2,}\b",
+        )
         self.per_paper = counter.fit_transform(f"{p['title']} {p['abstract']}" for p in papers).tocsr()
         self.terms = np.array(counter.get_feature_names_out())
-        self.overall = self._share(self.per_paper)                      # how often a term is used anywhere
+        self.overall = self._share(self.per_paper)  # how often a term is used anywhere
 
     @staticmethod
     def _share(rows) -> np.ndarray:
@@ -72,10 +78,14 @@ def _parse(text: str) -> dict:
 
 def _prompt(papers, embeddings, size, center, terms) -> str:
     order, scores = nearest_papers(embeddings, center)
-    listing = "\n\n".join(f"[{rank + 1}] (cosine {score:.3f}) {papers[i]['title']}\n{papers[i]['abstract']}"
-                          for rank, (i, score) in enumerate(zip(order, scores)))
-    return (f"Community of {size} papers.\nCharacteristic terms: {', '.join(terms)}\n\n"
-            f"Papers nearest to the community's mean embedding:\n\n{listing}")
+    listing = "\n\n".join(
+        f"[{rank + 1}] (cosine {score:.3f}) {papers[i]['title']}\n{papers[i]['abstract']}"
+        for rank, (i, score) in enumerate(zip(order, scores))
+    )
+    return (
+        f"Community of {size} papers.\nCharacteristic terms: {', '.join(terms)}\n\n"
+        f"Papers nearest to the community's mean embedding:\n\n{listing}"
+    )
 
 
 class Describer:
@@ -103,9 +113,9 @@ class Describer:
             try:
                 self.client = claude.connect(self.model)
                 self.api = "available"
-            except claude.Unavailable as problem:
+            except claude.Unavailable as error:
                 self.api = "unavailable"
-                self.log(f"  Claude API not available ({problem})")
+                self.log(f"  Claude API not available ({error})")
                 self.log("  -> set ANTHROPIC_API_KEY and run again; everything else is reused.")
         return self.api == "available"
 
@@ -113,9 +123,11 @@ class Describer:
         """Ask for one description and remember it; None when no answer came."""
         try:
             prompt = _prompt(papers, embeddings, len(group), center, terms)
-            text = _parse(claude.ask(self.client, self.model, SYSTEM, prompt, max_tokens=4000, purpose="naming communities"))
-        except claude.NoAnswer as problem:
-            self.log(f"  no description for a group of {len(group)}: {problem}")
+            text = _parse(
+                claude.ask(self.client, self.model, SYSTEM, prompt, max_tokens=4000, purpose="naming communities")
+            )
+        except claude.NoAnswer as error:
+            self.log(f"  no description for a group of {len(group)}: {error}")
             return None
         self.stored[key] = text
         store.update_json(self.path, lambda stored: stored.__setitem__(key, text), indent=1)
@@ -130,8 +142,9 @@ class Describer:
         missing = [index for index, text in enumerate(out) if text is None]
         if missing and self._connect():
             with ThreadPoolExecutor(max_workers=PARALLEL) as pool:
-                written = pool.map(lambda i: self._write(keys[i], papers, embeddings, groups[i], centers[i], terms[i]),
-                                   missing)
+                written = pool.map(
+                    lambda i: self._write(keys[i], papers, embeddings, groups[i], centers[i], terms[i]), missing
+                )
                 for index, text in zip(missing, written):
                     out[index] = text
         return out

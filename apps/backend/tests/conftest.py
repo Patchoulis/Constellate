@@ -1,4 +1,5 @@
 """Tests never touch the real data folder: RP_DATA is pointed at a throwaway folder before `rp` is imported."""
+
 import os
 import sys
 import tempfile
@@ -22,6 +23,15 @@ def blobs():
 
 
 def paper(paper_id, title="A title", abstract="An abstract.", **more):
-    return {"id": paper_id, "title": title, "abstract": abstract, "authors": [], "published": "2026-01-02T00:00:00Z",
-            "updated": "2026-01-02T00:00:00Z", "comment": "", "primary_category": "cs.LG", "categories": ["cs.LG"],
-            **more}
+    return {
+        "id": paper_id,
+        "title": title,
+        "abstract": abstract,
+        "authors": [],
+        "published": "2026-01-02T00:00:00Z",
+        "updated": "2026-01-02T00:00:00Z",
+        "comment": "",
+        "primary_category": "cs.LG",
+        "categories": ["cs.LG"],
+        **more,
+    }

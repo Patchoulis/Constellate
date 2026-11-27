@@ -1,4 +1,5 @@
 """Reviewers' scores, read from the text of a reviews page as the reader shows it."""
+
 from conftest import paper
 from rp import reviews, server
 
@@ -60,12 +61,12 @@ def test_only_reviews_are_read_one_score_per_field_each():
     read = reviews.read_ratings(NEURIPS)
     assert read["reviews"] == 2 and read["exact"] is True
     assert list(read["ratings"]) == ["Rating", "Quality", "Clarity", "Significance", "Originality", "Confidence"]
-    assert read["ratings"]["Quality"]["values"] == [2, 3]          # not the prose, not the authors' quote
+    assert read["ratings"]["Quality"]["values"] == [2, 3]  # not the prose, not the authors' quote
     assert read["ratings"]["Clarity"] == {"values": [2, 4], "meanings": ["fair", "excellent"], "mean": 3.0}
-    assert read["ratings"]["Rating"]["values"] == [4, 5]           # not the comment's "4 -> 5"
+    assert read["ratings"]["Rating"]["values"] == [4, 5]  # not the comment's "4 -> 5"
     assert read["ratings"]["Rating"]["meanings"][0] == "Borderline accept"
-    assert read["ratings"]["Confidence"]["values"] == [3, 4]       # not the meta-review's
-    assert read["ratings"]["Significance"]["meanings"] == ["good", "good"]     # two fields on one line
+    assert read["ratings"]["Confidence"]["values"] == [3, 4]  # not the meta-review's
+    assert read["ratings"]["Significance"]["meanings"] == ["good", "good"]  # two fields on one line
     assert read["ratings"]["Originality"] == {"values": [4, 3], "meanings": ["excellent", "good"], "mean": 3.5}
 
 
@@ -77,7 +78,13 @@ def test_another_conferences_fields_and_ways_of_writing_them():
 
 
 def test_scores_that_are_not_whole_scores_are_left_alone():
-    for line in ("Rating: 6.5", "Clarity: 3/5", "Originality: 2 out of 4", "Rating: 5 -> 7", "Quality: 2 of the proofs"):
+    for line in (
+        "Rating: 6.5",
+        "Clarity: 3/5",
+        "Originality: 2 out of 4",
+        "Rating: 5 -> 7",
+        "Quality: 2 of the proofs",
+    ):
         assert reviews.read_ratings(f"Official Review of Submission1 by Reviewer A\n{line}\n") is None, line
 
 
@@ -99,16 +106,21 @@ def test_a_page_without_scores_says_nothing_and_changes_nothing():
 
 def test_a_fuller_reading_replaces_a_partial_one_but_not_the_other_way_round():
     one = paper("x-2026-2", url=FORUM)
-    half = ICLR[:ICLR.index("Official Review of Submission77 by Reviewer Two")]
-    assert reviews.keep(one, half, FORUM)["reviews"] == 1          # the page was still loading
+    half = ICLR[: ICLR.index("Official Review of Submission77 by Reviewer Two")]
+    assert reviews.keep(one, half, FORUM)["reviews"] == 1  # the page was still loading
     assert reviews.keep(one, ICLR, FORUM)["reviews"] == 2
-    assert reviews.keep(one, half, FORUM)["reviews"] == 2          # collapsed replies later do not undo it
+    assert reviews.keep(one, half, FORUM)["reviews"] == 2  # collapsed replies later do not undo it
     assert reviews.keep(one, NO_HEADINGS, FORUM)["exact"] is True  # nor does a vaguer reading
 
 
 def test_another_papers_page_is_not_read_as_this_papers():
     one = paper("x-2026-3", url=FORUM)
-    for elsewhere in ("https://openreview.net/forum?id=SOMEONEELSE", "https://openreview.net/group?id=NeurIPS.cc", "", "https://example.org/?id=abc123XYZ"):
+    for elsewhere in (
+        "https://openreview.net/forum?id=SOMEONEELSE",
+        "https://openreview.net/group?id=NeurIPS.cc",
+        "",
+        "https://example.org/?id=abc123XYZ",
+    ):
         assert reviews.keep(one, ICLR, elsewhere) is None
     assert reviews.keep(paper("2601.00001", url="https://arxiv.org/abs/2601.00001"), ICLR, FORUM) is None
     assert reviews.keep(one, ICLR, FORUM + "&noteId=xyz")["reviews"] == 2

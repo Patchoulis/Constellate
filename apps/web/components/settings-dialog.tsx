@@ -110,9 +110,7 @@ function Editor({
 }) {
 	const set = (value: Settings[keyof Settings]) => onChange({ [field.key]: value });
 	if (field.kind === "switch") {
-		return (
-			<SwitchRow label={field.label} hint={field.hint} checked={Boolean(settings[field.key])} onCheckedChange={set} />
-		);
+		return <SwitchRow label={field.label} hint={field.hint} checked={Boolean(settings[field.key])} onCheckedChange={set} />;
 	}
 	if (field.kind === "several") {
 		return (
@@ -192,9 +190,8 @@ export function SettingsDialog({
 							<section className="flex flex-col gap-2">
 								<Heading>Redo</Heading>
 								<p className="text-xs text-muted-foreground">
-									Anything already stored is reused: a known paper is not downloaded again, an unchanged one is not
-									embedded again, a described group is not described again. A button here runs the open run again
-									with that step done from scratch.
+									Anything already stored is reused: a known paper is not downloaded again, an unchanged one is not embedded again, a
+									described group is not described again. A button here runs the open run again with that step done from scratch.
 								</p>
 								{REDO.map(({ step, label, hint }) => (
 									<div key={step} className="flex items-center justify-between gap-4 py-1">
@@ -213,8 +210,8 @@ export function SettingsDialog({
 									{group.title === "Which papers" && (
 										<div className="flex items-center justify-between gap-4 py-1">
 											<span className="text-xs text-muted-foreground">
-												Read what the authors of every paper of the open run declare. It downloads each paper&apos;s PDF, so
-												a whole conference takes hours; it can be stopped and continued.
+												Read what the authors of every paper of the open run declare. It downloads each paper&apos;s PDF, so a whole
+												conference takes hours; it can be stopped and continued.
 											</span>
 											<Button variant="outline" className="w-36" disabled={!onReadDeclarations} onClick={() => onReadDeclarations?.()}>
 												<FileSearch />
@@ -227,8 +224,8 @@ export function SettingsDialog({
 											Measured on {validation.held_out} abstracts it was not trained on: it catches{" "}
 											{Math.round(100 * validation.written_caught)}% of abstracts a model wrote from the title and{" "}
 											{Math.round(100 * validation.polished_caught)}% of human abstracts a model polished, while tagging{" "}
-											{Math.round(100 * validation.false_alarms)}% of human ones. Trained on text from{" "}
-											{validation.generators.join(" and ")} only.
+											{Math.round(100 * validation.false_alarms)}% of human ones. Trained on text from {validation.generators.join(" and ")}{" "}
+											only.
 											{validation.by_year && (
 												<>
 													{" "}

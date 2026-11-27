@@ -40,7 +40,15 @@ function fixture() {
 	roots[0].closest_communities = [{ id: 1, cosine: 0.4 }];
 	roots[1].closest_communities = [{ id: 0, cosine: 0.4 }];
 	const graph: GraphData = {
-		nodes: range(0, 100).map((i) => ({ id: `p${i}`, title: `Paper ${i}`, community: i < 60 ? 0 : 1, x: i < 60 ? -0.5 : 0.5, y: 0, ai: false, acceptance: null })),
+		nodes: range(0, 100).map((i) => ({
+			id: `p${i}`,
+			title: `Paper ${i}`,
+			community: i < 60 ? 0 : 1,
+			x: i < 60 ? -0.5 : 0.5,
+			y: 0,
+			ai: false,
+			acceptance: null,
+		})),
 		edges: [],
 	};
 	return { graph, tree: communityTree(roots) };
@@ -83,9 +91,18 @@ test("each level of detail groups every paper exactly once", () => {
 		const papers = groups.flatMap((node) => node.community.members).sort((a, b) => a - b);
 		assert.deepEqual(papers, range(0, 100), `level ${level}`);
 	}
-	assert.deepEqual(groupsAt(tree, 0).map((node) => node.community.size), [60, 40]);
-	assert.deepEqual(groupsAt(tree, 1).map((node) => node.community.size), [35, 25, 40]); // an unsplit community carries on
-	assert.deepEqual(groupsAt(tree, 2).map((node) => node.community.size), [20, 15, 25, 40]);
+	assert.deepEqual(
+		groupsAt(tree, 0).map((node) => node.community.size),
+		[60, 40],
+	);
+	assert.deepEqual(
+		groupsAt(tree, 1).map((node) => node.community.size),
+		[35, 25, 40],
+	); // an unsplit community carries on
+	assert.deepEqual(
+		groupsAt(tree, 2).map((node) => node.community.size),
+		[20, 15, 25, 40],
+	);
 });
 
 test("the layout places every paper inside its community, and communities do not overlap", () => {
@@ -109,7 +126,10 @@ test("a sub-community is one patch: its papers are nearer its own centre than it
 	const { graph, tree } = fixture();
 	const layout = layoutGraph(graph, tree);
 	const [left, right] = tree[0].children.map((node) => ({ node, disc: layout.discs.get(node)! }));
-	for (const [mine, other] of [[left, right], [right, left]] as const) {
+	for (const [mine, other] of [
+		[left, right],
+		[right, left],
+	] as const) {
 		const nearer = mine.node.community.members.filter((index) => {
 			const point = layout.points[index];
 			return Math.hypot(point.x - mine.disc.x, point.y - mine.disc.y) < Math.hypot(point.x - other.disc.x, point.y - other.disc.y);
@@ -136,7 +156,10 @@ test("a label is cut only when it does not fit, and then says so", () => {
 });
 
 const overlaps = (a: { left: number; top: number }, b: { left: number; top: number }, boxes: LabelBox[], i: number, j: number) =>
-	a.left < b.left + boxes[j].width && b.left < a.left + boxes[i].width && a.top < b.top + boxes[j].height && b.top < a.top + boxes[i].height;
+	a.left < b.left + boxes[j].width &&
+	b.left < a.left + boxes[i].width &&
+	a.top < b.top + boxes[j].height &&
+	b.top < a.top + boxes[i].height;
 
 test("hover labels stay inside the graph, even for a point in its corner", () => {
 	const frame = { width: 800, height: 500 };

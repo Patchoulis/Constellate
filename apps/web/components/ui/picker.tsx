@@ -70,7 +70,7 @@ export function GroupedPicker({
 	const chosen = new Set(picked);
 	const toggle = (names: string[], on: boolean) => {
 		const next = new Set(picked);
-		for (const name of names) (on ? next.add(name) : next.delete(name));
+		for (const name of names) on ? next.add(name) : next.delete(name);
 		// keep the menu's order, so the same picks always read (and name a run) the same way
 		onChange(groups.flatMap((group) => group.items.map((item) => item.name)).filter((name) => next.has(name)));
 	};
@@ -148,11 +148,7 @@ export function Choice({
 		<DropdownMenu.Root>
 			<Trigger text={options.find((item) => item.name === value)?.label ?? value} empty={false} quiet={quiet} />
 			<DropdownMenu.Portal>
-				<DropdownMenu.Content
-					align="start"
-					sideOffset={4}
-					className={cn(MENU, "w-(--radix-dropdown-menu-trigger-width) min-w-80")}
-				>
+				<DropdownMenu.Content align="start" sideOffset={4} className={cn(MENU, "w-(--radix-dropdown-menu-trigger-width) min-w-80")}>
 					{options.map((item) => (
 						<DropdownMenu.Item key={item.name} className={ROW} onSelect={() => onChange(item.name)}>
 							<Check className={cn("size-3.5 shrink-0", item.name !== value && "invisible")} />

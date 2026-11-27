@@ -17,6 +17,7 @@ have at least `min_size` papers and the bisection's modularity inside the group 
 (Measured against the whole graph instead, every split below the first few is rejected: the resolution limit of
 modularity.)
 """
+
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -40,6 +41,7 @@ class Leaf:
     """A community: its place in the tree and its papers.  `children` are its sub-communities.
     `path` names it uniquely in a run: a root name ("c7", or "r" for the bisection tree), then ".0" or ".1" for
     each split below it ("c7.0.1")."""
+
     path: str
     nodes: np.ndarray
     children: list = field(default_factory=list)

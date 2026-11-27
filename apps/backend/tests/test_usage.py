@@ -1,4 +1,5 @@
 """What the Claude API cost: priced per call, kept, and summed."""
+
 import pytest
 
 from rp import server, store, usage
@@ -7,7 +8,7 @@ from rp import server, store, usage
 def test_a_call_is_priced_by_its_model_and_its_length():
     assert usage.price("claude-opus-5-5", 1_000_000, 100_000) == pytest.approx(4.0 + 2.0)
     assert usage.price("claude-haiku-5-5", 50_000, 10_000) == pytest.approx(0.005 + 0.005)
-    assert usage.price("claude-haiku-5-5", 200_000, 10_000) == pytest.approx(0.10 + 0.025)     # the long-prompt rate
+    assert usage.price("claude-haiku-5-5", 200_000, 10_000) == pytest.approx(0.10 + 0.025)  # the long-prompt rate
     assert usage.price("some-other-model", 10, 10) is None
 
 
@@ -39,7 +40,7 @@ def test_the_interface_is_told_who_provides_the_model(monkeypatch):
 
 def test_the_model_that_answered_finds_its_price_whatever_the_api_calls_it():
     assert usage.price("claude-opus-5-5-20261101", 1_000_000, 0) == pytest.approx(4.0)
-    assert usage.price("claude-sonnet-5", 1_000_000, 0) == pytest.approx(2.0)      # what Sonnet 5.5 falls back to
+    assert usage.price("claude-sonnet-5", 1_000_000, 0) == pytest.approx(2.0)  # what Sonnet 5.5 falls back to
     assert usage.price("claude-opus-5", 0, 1_000_000) == pytest.approx(25.0)
 
 
@@ -60,7 +61,7 @@ def test_a_ledger_that_cannot_be_written_does_not_lose_the_call(monkeypatch, cap
         raise PermissionError("the file is in use")
 
     monkeypatch.setattr(usage.store, "update_json", held)
-    usage.record("claude-opus-5-5", "naming communities", 1_000_000, 0)            # does not raise
+    usage.record("claude-opus-5-5", "naming communities", 1_000_000, 0)  # does not raise
     assert usage._session == {"usd": pytest.approx(4.0), "calls": 1}
     assert "could not write the ledger" in capsys.readouterr().out
 
@@ -72,10 +73,17 @@ def test_an_answer_a_fallback_helped_with_is_priced_model_by_model(monkeypatch):
 
     recorded = []
     monkeypatch.setattr(claude.usage, "record", lambda *call: recorded.append(call))
-    usage_ = N(input_tokens=1500, output_tokens=300, iterations=[
-        N(model="claude-opus-5-5", input_tokens=1000, output_tokens=50),
-        N(model="claude-opus-5", input_tokens=1000, output_tokens=250)])
-    response = N(model="claude-opus-5", usage=usage_, stop_reason="end_turn", content=[N(type="text", text="An answer")])
+    usage_ = N(
+        input_tokens=1500,
+        output_tokens=300,
+        iterations=[
+            N(model="claude-opus-5-5", input_tokens=1000, output_tokens=50),
+            N(model="claude-opus-5", input_tokens=1000, output_tokens=250),
+        ],
+    )
+    response = N(
+        model="claude-opus-5", usage=usage_, stop_reason="end_turn", content=[N(type="text", text="An answer")]
+    )
 
     class Stream:
         def __enter__(self):
@@ -86,9 +94,12 @@ def test_an_answer_a_fallback_helped_with_is_priced_model_by_model(monkeypatch):
 
     client = N(beta=N(messages=N(stream=lambda **request: Stream())), messages=None)
     assert claude.ask(client, "claude-opus-5-5", "system", "prompt", purpose="community overviews") == "An answer"
-    assert recorded == [("claude-opus-5-5", "community overviews", 1000, 50), ("claude-opus-5", "community overviews", 1000, 250)]
+    assert recorded == [
+        ("claude-opus-5-5", "community overviews", 1000, 50),
+        ("claude-opus-5", "community overviews", 1000, 250),
+    ]
 
     recorded.clear()
-    usage_.iterations = None                                                        # an ordinary answer: one entry
+    usage_.iterations = None  # an ordinary answer: one entry
     claude.ask(client, "claude-opus-5-5", "system", "prompt")
     assert recorded == [("claude-opus-5", "other", 1500, 300)]

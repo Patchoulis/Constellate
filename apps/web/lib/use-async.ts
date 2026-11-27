@@ -3,11 +3,7 @@
 import { useCallback, useEffect, useState, type DependencyList } from "react";
 
 /** Something fetched: exactly one of these at a time, so "loading with stale data and an error" cannot exist. */
-export type Async<T> =
-	| { status: "idle" }
-	| { status: "loading" }
-	| { status: "ready"; data: T }
-	| { status: "failed"; error: string };
+export type Async<T> = { status: "idle" } | { status: "loading" } | { status: "ready"; data: T } | { status: "failed"; error: string };
 
 /**
  * Run `load` whenever `deps` change and report where it stands. Pass null to stay idle (nothing to load yet).
@@ -27,7 +23,7 @@ export function useAsync<T>(load: (() => Promise<T>) | null, deps: DependencyLis
 		setState((previous) => (previous.status === "ready" ? previous : { status: "loading" }));
 		load().then(
 			(data) => !stale && setState({ status: "ready", data }),
-			(problem: Error) => !stale && setState({ status: "failed", error: problem.message }),
+			(error: Error) => !stale && setState({ status: "failed", error: error.message }),
 		);
 		return () => {
 			stale = true;

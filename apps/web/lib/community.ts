@@ -28,9 +28,7 @@ function family(communities: Community[], parent: CommunityNode | null): Communi
 	const depth = parent ? parent.depth + 1 : 0;
 	const nodes: CommunityNode[] = [];
 	for (const community of communities) {
-		const hue = parent
-			? parent.hue + (community.id === 0 ? -1 : 1) * (HUE_SHIFT / depth)
-			: communityHue(community.id);
+		const hue = parent ? parent.hue + (community.id === 0 ? -1 : 1) * (HUE_SHIFT / depth) : communityHue(community.id);
 		const node: CommunityNode = { community, hue, depth, parent, children: [], siblings: nodes };
 		node.children = family(community.children, node);
 		nodes.push(node);
@@ -44,9 +42,7 @@ export function communityTree(communities: Community[]): CommunityNode[] {
 
 /** The groups one level of detail shows: every root followed `level` steps down, as far as each branch goes. */
 export function groupsAt(roots: CommunityNode[], level: number): CommunityNode[] {
-	return roots.flatMap((node) =>
-		level === 0 || node.children.length === 0 ? [node] : groupsAt(node.children, level - 1),
-	);
+	return roots.flatMap((node) => (level === 0 || node.children.length === 0 ? [node] : groupsAt(node.children, level - 1)));
 }
 
 export function treeDepth(roots: CommunityNode[]): number {

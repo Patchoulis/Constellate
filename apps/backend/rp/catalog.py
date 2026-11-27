@@ -15,16 +15,32 @@ from . import claude, cluster, proceedings, settings
 # field -> [(conference name, host of its official list or None)]
 CONFERENCES = {
     "Machine learning": [
-        ("NeurIPS", "neurips.cc"), ("ICML", "icml.cc"), ("ICLR", "iclr.cc"),
-        ("AISTATS", "virtual.aistats.org"), ("MLSys", "mlsys.org"),
-        ("AAAI", None), ("IJCAI", None), ("UAI", None), ("COLT", None), ("KDD", None), ("SIGIR", None),
+        ("NeurIPS", "neurips.cc"),
+        ("ICML", "icml.cc"),
+        ("ICLR", "iclr.cc"),
+        ("AISTATS", "virtual.aistats.org"),
+        ("MLSys", "mlsys.org"),
+        ("AAAI", None),
+        ("IJCAI", None),
+        ("UAI", None),
+        ("COLT", None),
+        ("KDD", None),
+        ("SIGIR", None),
     ],
     "Computer vision": [
-        ("CVPR", "cvpr.thecvf.com"), ("ICCV", "iccv.thecvf.com"), ("ECCV", "eccv.ecva.net"),
-        ("WACV", "wacv.thecvf.com"), ("BMVC", None),
+        ("CVPR", "cvpr.thecvf.com"),
+        ("ICCV", "iccv.thecvf.com"),
+        ("ECCV", "eccv.ecva.net"),
+        ("WACV", "wacv.thecvf.com"),
+        ("BMVC", None),
     ],
     "Language and speech": [
-        ("ACL", None), ("EMNLP", None), ("NAACL", None), ("COLING", None), ("Interspeech", None), ("ICASSP", None),
+        ("ACL", None),
+        ("EMNLP", None),
+        ("NAACL", None),
+        ("COLING", None),
+        ("Interspeech", None),
+        ("ICASSP", None),
     ],
     "Robotics": [("ICRA", None), ("IROS", None), ("CoRL", None), ("RSS", None)],
     "Medicine": [("MICCAI", None), ("MIDL", None)],
@@ -33,19 +49,49 @@ CONFERENCES = {
 
 # field -> [(arXiv category, what it is)]
 CATEGORIES = {
-    "Machine learning": [("cs.LG", "Machine learning"), ("stat.ML", "Statistical ML"), ("cs.AI", "Artificial intelligence"),
-                         ("cs.NE", "Neural and evolutionary computing")],
-    "Vision, language, robotics": [("cs.CV", "Computer vision"), ("cs.CL", "Computation and language"),
-                                   ("cs.RO", "Robotics"), ("eess.AS", "Audio and speech"), ("cs.IR", "Information retrieval")],
-    "Chemistry and materials": [("physics.chem-ph", "Chemical physics"), ("cond-mat.mtrl-sci", "Materials science"),
-                                ("cond-mat.soft", "Soft condensed matter"), ("q-bio.BM", "Biomolecules")],
-    "Physics": [("quant-ph", "Quantum physics"), ("hep-th", "High energy theory"), ("hep-ph", "High energy phenomenology"),
-                ("cond-mat.str-el", "Strongly correlated electrons"), ("cond-mat.stat-mech", "Statistical mechanics"),
-                ("gr-qc", "General relativity"), ("astro-ph.CO", "Cosmology"), ("physics.comp-ph", "Computational physics")],
-    "Biology and medicine": [("q-bio.QM", "Quantitative methods"), ("q-bio.GN", "Genomics"), ("q-bio.NC", "Neurons and cognition"),
-                             ("eess.IV", "Image and video processing"), ("physics.med-ph", "Medical physics")],
-    "Mathematics and statistics": [("math.OC", "Optimization and control"), ("math.ST", "Statistics theory"),
-                                   ("stat.ME", "Methodology"), ("math.PR", "Probability"), ("cs.IT", "Information theory")],
+    "Machine learning": [
+        ("cs.LG", "Machine learning"),
+        ("stat.ML", "Statistical ML"),
+        ("cs.AI", "Artificial intelligence"),
+        ("cs.NE", "Neural and evolutionary computing"),
+    ],
+    "Vision, language, robotics": [
+        ("cs.CV", "Computer vision"),
+        ("cs.CL", "Computation and language"),
+        ("cs.RO", "Robotics"),
+        ("eess.AS", "Audio and speech"),
+        ("cs.IR", "Information retrieval"),
+    ],
+    "Chemistry and materials": [
+        ("physics.chem-ph", "Chemical physics"),
+        ("cond-mat.mtrl-sci", "Materials science"),
+        ("cond-mat.soft", "Soft condensed matter"),
+        ("q-bio.BM", "Biomolecules"),
+    ],
+    "Physics": [
+        ("quant-ph", "Quantum physics"),
+        ("hep-th", "High energy theory"),
+        ("hep-ph", "High energy phenomenology"),
+        ("cond-mat.str-el", "Strongly correlated electrons"),
+        ("cond-mat.stat-mech", "Statistical mechanics"),
+        ("gr-qc", "General relativity"),
+        ("astro-ph.CO", "Cosmology"),
+        ("physics.comp-ph", "Computational physics"),
+    ],
+    "Biology and medicine": [
+        ("q-bio.QM", "Quantitative methods"),
+        ("q-bio.GN", "Genomics"),
+        ("q-bio.NC", "Neurons and cognition"),
+        ("eess.IV", "Image and video processing"),
+        ("physics.med-ph", "Medical physics"),
+    ],
+    "Mathematics and statistics": [
+        ("math.OC", "Optimization and control"),
+        ("math.ST", "Statistics theory"),
+        ("stat.ME", "Methodology"),
+        ("math.PR", "Probability"),
+        ("cs.IT", "Information theory"),
+    ],
 }
 
 _HOSTS = {name.lower(): host for venues in CONFERENCES.values() for name, host in venues if host}
@@ -68,17 +114,33 @@ EMBEDDING_MODELS = [
 
 def as_json() -> dict:
     # "name" is what gets stored; "label" is what a menu shows when that is not the same thing
-    named = lambda table: [{"name": name, "label": label, "note": note} for name, (label, note) in table.items()]   # noqa: E731
+    named = lambda table: [{"name": name, "label": label, "note": note} for name, (label, note) in table.items()]  # noqa: E731
     return {
         "embedding_models": [{"name": name, "note": note} for name, note in EMBEDDING_MODELS],
         "describe_models": named(claude.MODELS),
         "clustering": named(cluster.METHODS),
         "acceptance": [{"name": name, "label": label, "note": ""} for name, (label, _) in settings.ACCEPTANCE.items()],
-        "flags": [{"field": "Leave out papers where", "items": [{"name": flag, "label": meaning, "note": proceedings.FLAG_NOTES[flag]}
-                                                              for flag, meaning in proceedings.FLAGS.items()]}],
-        "conferences": [{"field": field, "items": [{"name": name, "note": "official list" if host else
-                                                    "from arXiv comments: partial"} for name, host in venues]}
-                        for field, venues in CONFERENCES.items()],
-        "categories": [{"field": field, "items": [{"name": name, "note": what} for name, what in categories]}
-                       for field, categories in CATEGORIES.items()],
+        "flags": [
+            {
+                "field": "Leave out papers where",
+                "items": [
+                    {"name": flag, "label": meaning, "note": proceedings.FLAG_NOTES[flag]}
+                    for flag, meaning in proceedings.FLAGS.items()
+                ],
+            }
+        ],
+        "conferences": [
+            {
+                "field": field,
+                "items": [
+                    {"name": name, "note": "official list" if host else "from arXiv comments: partial"}
+                    for name, host in venues
+                ],
+            }
+            for field, venues in CONFERENCES.items()
+        ],
+        "categories": [
+            {"field": field, "items": [{"name": name, "note": what} for name, what in categories]}
+            for field, categories in CATEGORIES.items()
+        ],
     }

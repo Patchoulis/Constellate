@@ -2,13 +2,13 @@
 
 The one place a request (from the HTTP API or the command line) is checked and turned into a Selection.
 """
+
 import hashlib
 import re
 from dataclasses import asdict, dataclass
 from datetime import date
 
-
-MOST_NAMED = 3          # conferences spelled out in a run's name
+MOST_NAMED = 3  # conferences spelled out in a run's name
 
 
 def _clean(values) -> tuple:
@@ -44,7 +44,7 @@ class Selection:
         """Folder name of the run."""
         if self.venues:
             names = [re.sub(r"\W+", "", venue).lower() for venue in self.venues]
-            if len(names) > MOST_NAMED:                 # a long list would not fit in a file name
+            if len(names) > MOST_NAMED:  # a long list would not fit in a file name
                 digest = hashlib.sha1(",".join(sorted(names)).encode()).hexdigest()[:6]
                 names = names[:MOST_NAMED] + [f"and{len(names) - MOST_NAMED}more", digest]
             return "_".join(names)

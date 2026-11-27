@@ -206,7 +206,8 @@ function RunRow({
 /** Cent-scale money: two decimals from a dollar up, four below. */
 const usd = (amount: number) => (amount >= 1 ? `$${amount.toFixed(2)}` : `$${amount.toFixed(4)}`);
 
-const tokens = (count: number) => (count >= 1e6 ? `${+(count / 1e6).toFixed(1)}M` : count >= 1e3 ? `${+(count / 1e3).toFixed(1)}k` : String(count));
+const tokens = (count: number) =>
+	count >= 1e6 ? `${+(count / 1e6).toFixed(1)}M` : count >= 1e3 ? `${+(count / 1e3).toFixed(1)}k` : String(count);
 
 /** The model that writes names and overviews (a menu to change it), who provides it, and what it has cost so
  *  far; the breakdown on hover. */
@@ -221,17 +222,23 @@ function CostLine({ models, model, onModel }: { models: CatalogItem[]; model?: s
 	if (!spent) return null;
 	const lines = (table: Record<string, UsageEntry>) =>
 		Object.entries(table).map(
-			([name, entry]) => `  ${name}: ${usd(entry.usd)} (${entry.calls} calls, ${tokens(entry.input_tokens)} in, ${tokens(entry.output_tokens)} out)`,
+			([name, entry]) =>
+				`  ${name}: ${usd(entry.usd)} (${entry.calls} calls, ${tokens(entry.input_tokens)} in, ${tokens(entry.output_tokens)} out)`,
 		);
 	const detail = [
 		spent.since ? `Counted since ${spent.since}; calls made before that were not recorded.` : "Nothing spent yet.",
 		...(spent.calls ? ["By purpose:", ...lines(spent.purposes), "By model:", ...lines(spent.models)] : []),
-		...(spent.unpriced_calls ? [`${spent.unpriced_calls} calls went to a model whose price is not known here and are not in the total.`] : []),
+		...(spent.unpriced_calls
+			? [`${spent.unpriced_calls} calls went to a model whose price is not known here and are not in the total.`]
+			: []),
 		"Prices are the published list prices per million tokens.",
 	].join("\n");
 	return (
 		<div className="flex items-center justify-between gap-2">
-			<span className="flex min-w-0 items-center gap-1.5" title="The model that names communities and writes overviews, and who provides it">
+			<span
+				className="flex min-w-0 items-center gap-1.5"
+				title="The model that names communities and writes overviews, and who provides it"
+			>
 				<Choice quiet options={models} value={model ?? spent.model.name} onChange={onModel} />
 				<span className="truncate">· {spent.provider.name}</span>
 				{!spent.provider.ready && <span className="shrink-0 text-warning">· no key set</span>}

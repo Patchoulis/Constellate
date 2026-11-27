@@ -7,6 +7,7 @@ Models are loaded by hand: config -> empty model -> weights from the model's saf
 Python 3.15 build; the manual route gives the same weights.  What a hand-loaded model does not know is how its
 token vectors become one vector per text, so that is stated here per model (POOLING), as its model card gives it.
 """
+
 import numpy as np
 
 from .library import Embeddings, paper_text
@@ -34,6 +35,7 @@ def _weights(name: str) -> dict:
     from huggingface_hub import hf_hub_download
     from huggingface_hub.errors import EntryNotFoundError
     from safetensors.torch import load_file
+
     try:
         return load_file(hf_hub_download(name, "model.safetensors"))
     except EntryNotFoundError:
@@ -44,6 +46,7 @@ class Encoder:
     def __init__(self, name: str):
         import torch
         from transformers import AutoConfig, AutoModel, AutoTokenizer
+
         self.torch = torch
         self.pooling = POOLING.get(name, "mean")
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -53,11 +56,22 @@ class Encoder:
         weights = _weights(name)
         wanted = set(model.state_dict())
         # some checkpoints store the encoder under a prefix ("bert.embeddings..." for "embeddings...")
-        renamed = {next((key[len(prefix):] for prefix in ("", "bert.", "roberta.", "model.", "0.auto_model.")
-                         if key.startswith(prefix) and key[len(prefix):] in wanted), key): value.float()
-                   for key, value in weights.items()}
-        missing = [key for key in model.load_state_dict(renamed, strict=False).missing_keys
-                   if "pooler" not in key and "position_ids" not in key]     # unused here / rebuilt by the model
+        renamed = {
+            next(
+                (
+                    key[len(prefix) :]
+                    for prefix in ("", "bert.", "roberta.", "model.", "0.auto_model.")
+                    if key.startswith(prefix) and key[len(prefix) :] in wanted
+                ),
+                key,
+            ): value.float()
+            for key, value in weights.items()
+        }
+        missing = [
+            key
+            for key in model.load_state_dict(renamed, strict=False).missing_keys
+            if "pooler" not in key and "position_ids" not in key
+        ]  # unused here / rebuilt by the model
         if missing:
             raise RuntimeError(f"{name}: weights missing for {missing[:5]}")
         self.model = (model.half() if self.device == "cuda" else model).to(self.device).eval()
@@ -72,13 +86,17 @@ class Encoder:
 
     def encode(self, texts, batch_size) -> np.ndarray:
         torch = self.torch
-        order = np.argsort([-len(t) for t in texts])              # similar lengths together: less padding
+        order = np.argsort([-len(t) for t in texts])  # similar lengths together: less padding
         out = np.zeros((len(texts), self.model.config.hidden_size), dtype=np.float32)
         for start in range(0, len(texts), batch_size):
-            rows = order[start:start + batch_size]
-            batch = self.tokenizer([texts[i] for i in rows], padding=True, truncation=True,
-                                   max_length=min(MAX_TOKENS, self.tokenizer.model_max_length),
-                                   return_tensors="pt").to(self.device)
+            rows = order[start : start + batch_size]
+            batch = self.tokenizer(
+                [texts[i] for i in rows],
+                padding=True,
+                truncation=True,
+                max_length=min(MAX_TOKENS, self.tokenizer.model_max_length),
+                return_tensors="pt",
+            ).to(self.device)
             with torch.no_grad():
                 pooled = self._pool(self.model(**batch).last_hidden_state.float(), batch["attention_mask"])
             out[rows] = torch.nn.functional.normalize(pooled, dim=-1).cpu().numpy()
@@ -100,7 +118,7 @@ def embed_papers(papers, model_name: str, redo=False, batch_size=16, log=print) 
         model = encoder(model_name)
         chunk = batch_size * 25
         for start in range(0, len(missing), chunk):
-            part = missing[start:start + chunk]
-            store.add(part, model.encode([paper_text(p) for p in part], batch_size))    # saved chunk by chunk
+            part = missing[start : start + chunk]
+            store.add(part, model.encode([paper_text(p) for p in part], batch_size))  # saved chunk by chunk
             log(f"    {min(start + chunk, len(missing))}/{len(missing)}")
     return store.get(papers)

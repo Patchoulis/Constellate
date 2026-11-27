@@ -18,18 +18,27 @@ test("escaped characters lose their backslash", () => {
 });
 
 test("styling commands leave their content", () => {
-	assert.equal(plainText("we establish \\textbf{the first benchmark} in \\emph{collaborative} settings"), "we establish the first benchmark in collaborative settings");
+	assert.equal(
+		plainText("we establish \\textbf{the first benchmark} in \\emph{collaborative} settings"),
+		"we establish the first benchmark in collaborative settings",
+	);
 	assert.equal(plainText("\\textsc{NeedleInATable} and {\\bf bold} and \\textcolor{red}{warm}"), "NeedleInATable and bold and warm");
 	assert.equal(plainText("\\textbf{nested \\emph{inside}}"), "nested inside");
 });
 
 test("quotes, dashes, ties and accents become the characters they stand for", () => {
 	assert.equal(plainText("``quoted'' text, pages 3--5 --- and Fig.~2"), "\u201cquoted\u201d text, pages 3\u20135 \u2014 and Fig.\u00a02");
-	assert.equal(plainText("Erd\\H{o}s is left alone but Poincar\\'e and G\\\"odel are not"), "Erd\\H{o}s is left alone but Poincaré and Gödel are not");
+	assert.equal(
+		plainText("Erd\\H{o}s is left alone but Poincar\\'e and G\\\"odel are not"),
+		"Erd\\H{o}s is left alone but Poincaré and Gödel are not",
+	);
 });
 
 test("citations and labels disappear; a footnote is said in brackets", () => {
-	assert.equal(plainText("as shown before \\cite{smith2020} it works.\\footnote{Code is public.}"), "as shown before it works. (Code is public.)");
+	assert.equal(
+		plainText("as shown before \\cite{smith2020} it works.\\footnote{Code is public.}"),
+		"as shown before it works. (Code is public.)",
+	);
 });
 
 test("an author's own macro is left as written rather than guessed at", () => {
@@ -75,5 +84,8 @@ test("Markdown emphasis is set, and stars that are not emphasis are left alone",
 	);
 	assert.equal(read("a * b and 2*3*4 and a lone * star"), "a * b and 2*3*4 and a lone * star");
 	assert.equal(shown("costs **$5** less"), "costs <strong>$5</strong> less"); // a lone dollar sign is not math
-	assert.equal(shown("**bold** then a link https://example.org/x*y"), '<strong>bold</strong> then a link <a href="https://example.org/x*y" target="_blank" rel="noopener noreferrer" class="underline decoration-muted-foreground underline-offset-2 hover:decoration-foreground">https://example.org/x*y</a>');
+	assert.equal(
+		shown("**bold** then a link https://example.org/x*y"),
+		'<strong>bold</strong> then a link <a href="https://example.org/x*y" target="_blank" rel="noopener noreferrer" class="underline decoration-muted-foreground underline-offset-2 hover:decoration-foreground">https://example.org/x*y</a>',
+	);
 });

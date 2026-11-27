@@ -71,7 +71,9 @@ export function GraphView({
 	const rendererRef = useRef<GraphCanvasRenderer | null>(null);
 	const pickRef = useRef(onPickPaper);
 	pickRef.current = onPickPaper;
-	const [hover, setHover] = useState<{ index: number; x: number; y: number; linked: { index: number; x: number; y: number }[] } | null>(null);
+	const [hover, setHover] = useState<{ index: number; x: number; y: number; linked: { index: number; x: number; y: number }[] } | null>(
+		null,
+	);
 	const [level, setLevel] = useState(0);
 	const layout = useMemo(() => layoutGraph(graph, roots), [graph, roots]);
 

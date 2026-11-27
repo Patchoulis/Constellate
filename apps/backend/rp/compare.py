@@ -27,6 +27,7 @@ The number of communities is swept (--k), because a ranking that holds at one si
 embedding model can be changed (--model), because one model's geometry may suit one method.  Run it on another
 run for another dataset.
 """
+
 import argparse
 import json
 from itertools import combinations
@@ -55,8 +56,14 @@ def _labelings(embeddings, k, settings, seeds=(0,)) -> tuple:
             return cluster.labels_of(leaves, len(embeddings))
         return cluster.partition(method, adjacency, vectors, k, seed)
 
-    return ({method: [labels(method, seed) for seed in (seeds if method != "fiedler" else seeds[:1])]
-             for method in cluster.METHODS}, adjacency, vectors)
+    return (
+        {
+            method: [labels(method, seed) for seed in (seeds if method != "fiedler" else seeds[:1])]
+            for method in cluster.METHODS
+        },
+        adjacency,
+        vectors,
+    )
 
 
 def _against_topics(labels, papers, level) -> float:
@@ -66,8 +73,10 @@ def _against_topics(labels, papers, level) -> float:
         rows = [i for i, p in enumerate(papers) if venue in p.get("venues", []) and p["primary_category"]]
         if len(rows) < 100:
             continue
-        topics = [papers[i]["primary_category"] if level == "fine" else papers[i]["primary_category"].split("->")[0]
-                  for i in rows]
+        topics = [
+            papers[i]["primary_category"] if level == "fine" else papers[i]["primary_category"].split("->")[0]
+            for i in rows
+        ]
         scores.append(adjusted_mutual_info_score(topics, labels[rows]))
         weights.append(len(rows))
     return float(np.average(scores, weights=weights)) if scores else float("nan")
@@ -88,7 +97,7 @@ def _coherence(labels, vocabulary: describe.Vocabulary) -> float:
             if joint[a, b] > 0:
                 scores.append(np.log(joint[a, b] / (single[a] * single[b])) / -np.log(joint[a, b]))
             else:
-                scores.append(-1.0)                       # the two terms never share an abstract
+                scores.append(-1.0)  # the two terms never share an abstract
     return float(np.mean(scores))
 
 
@@ -122,25 +131,32 @@ def _rows(papers, embeddings, vocabulary, k, settings, log) -> list:
             "coherence": _coherence(labels, vocabulary),
             "silhouette": silhouette_score(vectors[sample], labels[sample], metric="cosine"),
             "modularity": graph.modularity(adjacency, groups),
-            "smallest": float(min(map(len, groups))), "largest": float(max(map(len, groups))),
+            "smallest": float(min(map(len, groups))),
+            "largest": float(max(map(len, groups))),
         }
 
     rows = []
     for method, labelings in runs.items():
         scores = [score(labels) for labels in labelings]
         mean = {name: float(np.mean([one[name] for one in scores])) for name in scores[0]}
-        rows.append({
-            "k": k, "method": method,
-            "AMI fine": mean["AMI fine"],
-            # how far one random start lands from another on that score: a smaller difference between two
-            # methods means nothing
-            "spread": float(np.std([one["AMI fine"] for one in scores])),
-            "AMI coarse": mean["AMI coarse"], "coherence": mean["coherence"],
-            "silhouette": mean["silhouette"], "modularity": mean["modularity"],
-            "seed stability": _mean_pairwise_ari(labelings),
-            "subsample stability": _mean_pairwise_ari([sub[method][0] for sub in subsampled], kept),
-            "smallest": round(mean["smallest"]), "largest": round(mean["largest"]),
-        })
+        rows.append(
+            {
+                "k": k,
+                "method": method,
+                "AMI fine": mean["AMI fine"],
+                # how far one random start lands from another on that score: a smaller difference between two
+                # methods means nothing
+                "spread": float(np.std([one["AMI fine"] for one in scores])),
+                "AMI coarse": mean["AMI coarse"],
+                "coherence": mean["coherence"],
+                "silhouette": mean["silhouette"],
+                "modularity": mean["modularity"],
+                "seed stability": _mean_pairwise_ari(labelings),
+                "subsample stability": _mean_pairwise_ari([sub[method][0] for sub in subsampled], kept),
+                "smallest": round(mean["smallest"]),
+                "largest": round(mean["largest"]),
+            }
+        )
     return rows
 
 
@@ -151,7 +167,7 @@ def _ranking(rows: list) -> list:
     for k in sorted({row["k"] for row in rows}):
         at_k = [row for row in rows if row["k"] == k]
         for name in fair:
-            if any(np.isnan(row[name]) for row in at_k):          # e.g. no authors' topics: the score ranks nobody
+            if any(np.isnan(row[name]) for row in at_k):  # e.g. no authors' topics: the score ranks nobody
                 continue
             ordered = sorted(at_k, key=lambda row: -row[name])
             for place, row in enumerate(ordered, start=1):
@@ -173,19 +189,27 @@ def compare(name: str, ks=(), model=None, log=print) -> str:
     rows = [row for k in ks for row in _rows(papers, embeddings, vocabulary, k, settings, log)]
 
     columns = list(rows[0])
-    cell = lambda value: f"{value:.3f}" if isinstance(value, float) else str(value)          # noqa: E731
-    text = "\n".join([
-        f"# Clustering comparison: {name}", "",
-        f"{len(papers)} papers, embeddings from `{model}`. Scores are means over {SEEDS} random starts; \"spread\" "
-        f"is the standard deviation of AMI fine between starts. Stability is the mean adjusted Rand index between "
-        f"those starts, and between {SUBSAMPLES} subsamples of 80% of the papers (on the papers two subsamples "
-        "share). What each score means and what it cannot tell is in rp/compare.py.", "",
-        "| " + " | ".join(columns) + " |", "|" + "---|" * len(columns),
-        *("| " + " | ".join(cell(row[c]) for c in columns) + " |" for row in rows), "",
-        "Mean rank over every k on the scores that are fair to all methods (AMI fine, AMI coarse, coherence, "
-        "subsample stability); 1 = best:", "",
-        *(f"- {method}: {rank:.2f}" for rank, method in _ranking(rows)), "",
-    ])
+    cell = lambda value: f"{value:.3f}" if isinstance(value, float) else str(value)  # noqa: E731
+    text = "\n".join(
+        [
+            f"# Clustering comparison: {name}",
+            "",
+            f'{len(papers)} papers, embeddings from `{model}`. Scores are means over {SEEDS} random starts; "spread" '
+            f"is the standard deviation of AMI fine between starts. Stability is the mean adjusted Rand index between "
+            f"those starts, and between {SUBSAMPLES} subsamples of 80% of the papers (on the papers two subsamples "
+            "share). What each score means and what it cannot tell is in rp/compare.py.",
+            "",
+            "| " + " | ".join(columns) + " |",
+            "|" + "---|" * len(columns),
+            *("| " + " | ".join(cell(row[c]) for c in columns) + " |" for row in rows),
+            "",
+            "Mean rank over every k on the scores that are fair to all methods (AMI fine, AMI coarse, coherence, "
+            "subsample stability); 1 = best:",
+            "",
+            *(f"- {method}: {rank:.2f}" for rank, method in _ranking(rows)),
+            "",
+        ]
+    )
     suffix = "" if model == settings["embedding_model"] else "_" + model.split("/")[-1]
     store.write_text(folder / f"clustering_comparison{suffix}.md", text)
     log(text)

@@ -29,8 +29,8 @@ function useOverview(run: string, treePath: string) {
 					setStatus(next);
 					setUnreachable(null);
 				},
-				(problem: Error) => {
-					setUnreachable(problem.message);
+				(error: Error) => {
+					setUnreachable(error.message);
 					// a new object, so the effect below runs again: one failed poll must not end the polling
 					setStatus((last) => last && { ...last });
 				},
@@ -60,7 +60,11 @@ function Point({ point, onOpenPaper }: { point: OverviewPoint; onOpenPaper: (id:
 			<div className="font-ui text-xs text-muted-foreground">Shared by {point.papers.length} papers</div>
 			<div className="flex flex-col border-l pl-1">
 				{shown.map((paper) => (
-					<RowButton key={paper.id} className="py-1 text-sm text-muted-foreground hover:text-foreground" onClick={() => onOpenPaper(paper.id)}>
+					<RowButton
+						key={paper.id}
+						className="py-1 text-sm text-muted-foreground hover:text-foreground"
+						onClick={() => onOpenPaper(paper.id)}
+					>
 						<span>
 							<MathText>{paper.title}</MathText>
 						</span>
@@ -107,8 +111,8 @@ export function OverviewPanel({
 							<h1 className="text-2xl leading-tight font-semibold text-balance">{overview.title}</h1>
 							<p className="text-lg leading-relaxed text-foreground">{overview.summary}</p>
 							<p className="font-ui text-xs text-muted-foreground">
-								Written by {overview.model} from all {overview.papers} papers. Every point cites the papers that share
-								it; click one to read it.
+								Written by {overview.model} from all {overview.papers} papers. Every point cites the papers that share it; click one to read
+								it.
 							</p>
 						</header>
 						{overview.sections.map((section) => (
@@ -125,9 +129,9 @@ export function OverviewPanel({
 				) : (
 					<div className="mx-auto flex max-w-[52ch] flex-col items-start gap-4 pt-10">
 						<p className="font-sans text-lg text-foreground">
-							An overview reads all {community.size} papers of this community and reports what they have in common:
-							the methods that recur, the findings several papers agree on, the directions gaining momentum, and
-							where they disagree. Each point lists the papers behind it.
+							An overview reads all {community.size} papers of this community and reports what they have in common: the methods that recur,
+							the findings several papers agree on, the directions gaining momentum, and where they disagree. Each point lists the papers
+							behind it.
 						</p>
 						{status?.state === "running" ? (
 							<p className="flex items-center gap-2 text-sm text-muted-foreground">

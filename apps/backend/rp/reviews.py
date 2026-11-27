@@ -17,36 +17,52 @@ significance and originality from 1 to 4, a rating from 1 to 6; ICLR: soundness,
 from 1 to 4, a rating from 1 to 10), so the scores are kept as given, by field, and never mixed into one number.
 A page with scores but no review headings (another site's layout) is read as a whole, and says so ("exact": false).
 """
+
 import re
 
 from . import LIBRARY, store
 
-REVIEWS = LIBRARY / "reviews.json"                 # {paper id: {"reviews", "exact", "ratings": {field: {...}}}}
-MAX_TEXT = 2_000_000                               # characters of page text accepted
-MAX_REVIEWS = 40                                   # more than this is not one paper's reviews
+REVIEWS = LIBRARY / "reviews.json"  # {paper id: {"reviews", "exact", "ratings": {field: {...}}}}
+MAX_TEXT = 2_000_000  # characters of page text accepted
+MAX_REVIEWS = 40  # more than this is not one paper's reviews
 
 # the fields, in the order shown; the overall judgement first
-FIELDS = ["Rating", "Overall Recommendation", "Overall", "Recommendation", "Quality", "Clarity", "Significance",
-          "Originality", "Soundness", "Presentation", "Contribution", "Confidence"]
+FIELDS = [
+    "Rating",
+    "Overall Recommendation",
+    "Overall",
+    "Recommendation",
+    "Quality",
+    "Clarity",
+    "Significance",
+    "Originality",
+    "Soundness",
+    "Presentation",
+    "Contribution",
+    "Confidence",
+]
 _FIELD = "(?:" + "|".join(FIELDS) + ")"
-_GAP = r"[^\S\n]*(?:\n[^\S\n]*){0,2}"              # spaces of any kind (web text has no-break ones), up to two line ends
+_GAP = r"[^\S\n]*(?:\n[^\S\n]*){0,2}"  # spaces of any kind (web text has no-break ones), up to two line ends
 # "Field: 3", "Field: 3: good", "Field: 3 good"; not "3.5", "3/5", "3 out of 4", "3 of the proofs", "5 -> 7"
 _SCORE = re.compile(
     r"(?mi)^[^\S\n]*(" + _FIELD + r")[^\S\n]*:" + _GAP + r"(\d{1,2})(?![\d.,/]|\s*(?:/|->|out of|of\b))"
-    r"[^\S\n]*(?:([:\-–])[^\S\n]*)?([^\n\d]*)")
+    r"[^\S\n]*(?:([:\-–])[^\S\n]*)?([^\n\d]*)"
+)
 _INLINE = re.compile(r"(?i)(?<=\S)[^\S\n]+(?=" + _FIELD + r"[^\S\n]*:[^\S\n]*\d)")
-_NOTE = re.compile(r"(?mi)^[^\S\n]*(Official Review|Official Comment|Public Comment|Meta[- ]?Review|Author Rebuttal|"
-                   r"Rebuttal|Paper Decision|Decision|Author[^\n]{0,30}Comment|Ethics Review|Withdrawal)\b[^\n]{0,160}$")
+_NOTE = re.compile(
+    r"(?mi)^[^\S\n]*(Official Review|Official Comment|Public Comment|Meta[- ]?Review|Author Rebuttal|"
+    r"Rebuttal|Paper Decision|Decision|Author[^\n]{0,30}Comment|Ethics Review|Withdrawal)\b[^\n]{0,160}$"
+)
 _NAMES = {field.lower(): field for field in FIELDS}
 
 
 def _scores(text: str, once: bool) -> list:
     """[(field, score, meaning)] in `text`; with `once`, only the first of each field (one review gives one)."""
-    lines = _INLINE.sub("\n", text)                # fields that share a line each get their own
+    lines = _INLINE.sub("\n", text)  # fields that share a line each get their own
     found, seen = [], set()
     for field, score, separator, meaning in _SCORE.findall(lines):
         field, meaning = _NAMES[field.lower()], " ".join(meaning.split()).strip(" .:")
-        if (once and field in seen) or (not separator and len(meaning.split()) > 1):   # prose, not a score's meaning
+        if (once and field in seen) or (not separator and len(meaning.split()) > 1):  # prose, not a score's meaning
             continue
         seen.add(field)
         found.append((field, int(score), meaning[:60]))
@@ -58,11 +74,14 @@ def read_ratings(text: str) -> dict | None:
     "ratings": {field: {"values", "mean", "meanings"}}}, or None if the text has no scores."""
     text = text[:MAX_TEXT]
     notes = list(_NOTE.finditer(text))
-    blocks = [text[note.end():following.start() if following else len(text)]
-              for note, following in zip(notes, notes[1:] + [None]) if note.group(1).lower() == "official review"]
+    blocks = [
+        text[note.end() : following.start() if following else len(text)]
+        for note, following in zip(notes, notes[1:] + [None])
+        if note.group(1).lower() == "official review"
+    ]
     per_review = [scores for scores in (_scores(block, once=True) for block in blocks) if scores]
     exact = bool(per_review)
-    if not exact:                                  # no headings to go by: every score on the page
+    if not exact:  # no headings to go by: every score on the page
         per_review = [_scores(text, once=False)]
     ratings = {}
     for scores in per_review[:MAX_REVIEWS]:
@@ -78,8 +97,11 @@ def read_ratings(text: str) -> dict | None:
     ordered = {field: ratings[field] for field in FIELDS if field in ratings}
     counts = sorted(len(entry["values"]) for entry in ordered.values())
     # without headings, the usual number of scores per field is the best guess at how many reviews there are
-    return {"reviews": min(len(per_review), MAX_REVIEWS) if exact else counts[len(counts) // 2], "exact": exact,
-            "ratings": ordered}
+    return {
+        "reviews": min(len(per_review), MAX_REVIEWS) if exact else counts[len(counts) // 2],
+        "exact": exact,
+        "ratings": ordered,
+    }
 
 
 _read = {"stamp": None, "content": {}}
@@ -112,7 +134,9 @@ def keep(paper: dict, text: str, shown: str | None) -> dict | None:
     if forum(paper.get("url")) is None or forum(shown) != forum(paper.get("url")):
         return before
     ratings = read_ratings(text)
-    if ratings is None or (before and (before.get("exact", False), before["reviews"]) > (ratings["exact"], ratings["reviews"])):
+    if ratings is None or (
+        before and (before.get("exact", False), before["reviews"]) > (ratings["exact"], ratings["reviews"])
+    ):
         return before
     store.update_json(REVIEWS, lambda content: content.__setitem__(paper["id"], ratings))
     return ratings

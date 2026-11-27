@@ -221,7 +221,9 @@ function Abstract({
 			<div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 font-ui text-xs text-muted-foreground">
 				<span>{paper.published.slice(0, 10)}</span>
 				<span>{paper.categories.join(" · ")}</span>
-				{paper.venues?.map((venue) => <span key={venue}>{venue}</span>)}
+				{paper.venues?.map((venue) => (
+					<span key={venue}>{venue}</span>
+				))}
 				<AcceptanceTag state={paper.acceptance} />
 				{paper.ai?.flagged && <AiTag verdict={paper.ai} />}
 			</div>
@@ -230,7 +232,9 @@ function Abstract({
 					<span
 						title={
 							"Mean score per field; hover a score for each reviewer's." +
-							(ratings.exact ? "" : " The reviews could not be told apart on this page, so the count is a guess and quoted scores may be included.")
+							(ratings.exact
+								? ""
+								: " The reviews could not be told apart on this page, so the count is a guess and quoted scores may be included.")
 						}
 					>
 						{ratings.exact ? "" : "about "}
@@ -240,7 +244,11 @@ function Abstract({
 				</div>
 			) : (
 				onReviews && (
-					<button type="button" className="self-start font-ui text-xs text-muted-foreground underline-offset-2 hover:underline" onClick={onReviews}>
+					<button
+						type="button"
+						className="self-start font-ui text-xs text-muted-foreground underline-offset-2 hover:underline"
+						onClick={onReviews}
+					>
 						Reviewers&apos; ratings: open the Reviews tab once to read them
 					</button>
 				)
@@ -320,9 +328,7 @@ export function PaperReader({
 		...(from.paper ? [{ value: "paper" as const, label: "Paper", icon: <FileText /> }] : []),
 		...(from.reviews ? [{ value: "reviews" as const, label: "Reviews", icon: <MessagesSquare /> }] : []),
 	];
-	const flagNames = Object.fromEntries(
-		(catalog?.flags ?? []).flatMap((group) => group.items).map((item) => [item.name, item]),
-	);
+	const flagNames = Object.fromEntries((catalog?.flags ?? []).flatMap((group) => group.items).map((item) => [item.name, item]));
 	const shown = view === "paper" ? from.paper : view === "reviews" ? from.reviews : undefined;
 
 	useEffect(() => {
@@ -337,7 +343,12 @@ export function PaperReader({
 				{tabs.length > 1 && <Segmented options={tabs} value={view} onChange={setView} />}
 				<span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{found ? found.title : id}</span>
 				{found?.url && (
-					<Button variant="ghost" size="icon" title="Open the paper's page in the browser" onClick={() => window.open(found.url, "_blank", "noopener")}>
+					<Button
+						variant="ghost"
+						size="icon"
+						title="Open the paper's page in the browser"
+						onClick={() => window.open(found.url, "_blank", "noopener")}
+					>
 						<ExternalLink />
 					</Button>
 				)}

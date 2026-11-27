@@ -4,6 +4,7 @@ Nothing is fetched or computed twice.  A paper already in the library is not sto
 when the same model already embedded the same paper with exactly the same text (id + hash of title and abstract),
 so a paper whose abstract changed on arXiv is embedded again and one that did not is not.
 """
+
 import hashlib
 import json
 import re
@@ -19,7 +20,7 @@ def from_arxiv(paper: dict) -> bool:
     return re.fullmatch(r"[a-z]+-\d{4}-\d+", paper["id"]) is None
 
 
-TIERS = ("oral", "spotlight", "poster")          # best first
+TIERS = ("oral", "spotlight", "poster")  # best first
 
 
 def acceptance(paper: dict) -> str | None:
@@ -84,6 +85,7 @@ class Papers:
             with open(path, "w", encoding="utf-8") as handle:
                 for paper in self.by_id.values():
                     handle.write(json.dumps(paper, ensure_ascii=False) + "\n")
+
         store.replace(self.path, write)
         if finished:
             self.done.add(finished)
@@ -96,9 +98,11 @@ class Papers:
             chosen = [p for p in self.by_id.values() if wanted & set(p.get("venues", []))]
         else:
             cats, first, last = set(selection.categories), str(selection.start), str(selection.end)
-            chosen = [p for p in self.by_id.values()
-                      if from_arxiv(p) and first <= p["published"][:10] <= last
-                      and (not cats or cats & set(p["categories"]))]
+            chosen = [
+                p
+                for p in self.by_id.values()
+                if from_arxiv(p) and first <= p["published"][:10] <= last and (not cats or cats & set(p["categories"]))
+            ]
         return sorted(chosen, key=lambda p: p["id"])
 
 
@@ -123,7 +127,7 @@ class Embeddings:
         start = 0 if self.vectors is None else len(self.vectors)
         self.vectors = vectors if self.vectors is None else np.concatenate([self.vectors, vectors])
         for offset, paper in enumerate(papers):
-            self.index[paper["id"]] = [start + offset, text_hash(paper)]     # an older row of the id is orphaned
+            self.index[paper["id"]] = [start + offset, text_hash(paper)]  # an older row of the id is orphaned
         store.replace(self.vectors_path, lambda path: np.save(open(path, "wb"), self.vectors))
         store.replace(self.index_path, lambda path: path.write_text(json.dumps(self.index)))
 

@@ -9,10 +9,11 @@ A selection is fetched as a series of slices, each remembered in the library onc
 A slice that finished once is not fetched again, and a paper whose id is already in the library is not stored
 again, unless `redo` is set.
 """
+
 import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Callable, Iterable
 
 from . import arxiv, conferences
 from .library import Papers
@@ -21,11 +22,11 @@ from .selection import Selection
 
 @dataclass
 class Slice:
-    key: str                                      # how the library remembers that this slice is finished
+    key: str  # how the library remembers that this slice is finished
     label: str
-    fetch: Callable[[Callable], Iterable[dict]]   # fetch(log) -> papers
-    venue: str | None = None                      # tag stored on the papers
-    final: bool = True                            # False: the slice can still gain papers, fetch again next time
+    fetch: Callable[[Callable], Iterable[dict]]  # fetch(log) -> papers
+    venue: str | None = None  # tag stored on the papers
+    final: bool = True  # False: the slice can still gain papers, fetch again next time
 
 
 def _from_arxiv_comments(venue: str, include_workshops: bool, log) -> Iterable[dict]:
@@ -41,8 +42,8 @@ def _venue_slice(venue: str, include_workshops: bool) -> Slice:
     def fetch(log):
         try:
             return conferences.accepted_papers(venue, log)
-        except conferences.NoOfficialList as reason:
-            log(f"    {reason}; using arXiv papers whose comment names {venue} instead")
+        except conferences.NoOfficialList as error:
+            log(f"    {error}; using arXiv papers whose comment names {venue} instead")
             return _from_arxiv_comments(venue, include_workshops, log)
 
     return Slice(f"venue|{venue}|{include_workshops}|official", venue, fetch, venue)
@@ -52,9 +53,12 @@ def _day_slice(day: date, categories) -> Slice:
     stamp = day.strftime("%Y%m%d")
     cats = " OR ".join(f"cat:{c}" for c in categories)
     search = f"submittedDate:[{stamp}0000 TO {stamp}2359]" + (f" AND ({cats})" if cats else "")
-    return Slice(f"day|{day.isoformat()}|{','.join(sorted(categories))}", day.isoformat(),
-                 lambda log: arxiv.query(search, log),
-                 final=day < date.today() - timedelta(days=2))          # recent days can still grow
+    return Slice(
+        f"day|{day.isoformat()}|{','.join(sorted(categories))}",
+        day.isoformat(),
+        lambda log: arxiv.query(search, log),
+        final=day < date.today() - timedelta(days=2),
+    )  # recent days can still grow
 
 
 def slices(selection: Selection) -> list:

@@ -8,17 +8,18 @@ Three rules, each learned the hard way:
   * read-change-write happens under a lock (`update_json`): one inside this process, and a lock file beside the
     data so that a second process (the pipeline run from a terminal while the app is open) waits its turn too.
 """
+
 import json
 import os
 import threading
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable
 
 _lock = threading.RLock()
-PATIENCE = 5.0                 # seconds to keep trying to replace a file that is open elsewhere
-STALE = 60.0                   # a lock file older than this was left by a process that died
+PATIENCE = 5.0  # seconds to keep trying to replace a file that is open elsewhere
+STALE = 60.0  # a lock file older than this was left by a process that died
 
 
 def replace(path: Path, write: Callable[[Path], None]):
@@ -32,12 +33,12 @@ def replace(path: Path, write: Callable[[Path], None]):
             try:
                 os.replace(temporary, path)
                 return
-            except PermissionError:            # Windows: the destination is open somewhere
+            except PermissionError:  # Windows: the destination is open somewhere
                 if time.monotonic() > deadline:
                     raise
                 time.sleep(0.05)
     finally:
-        temporary.unlink(missing_ok=True)      # gone already if the move succeeded
+        temporary.unlink(missing_ok=True)  # gone already if the move succeeded
 
 
 def write_text(path: Path, text: str):
@@ -72,10 +73,10 @@ def _between_processes(path: Path):
         except FileExistsError:
             try:
                 if time.time() - lock.stat().st_mtime > STALE:
-                    lock.unlink(missing_ok=True)       # its owner is gone
+                    lock.unlink(missing_ok=True)  # its owner is gone
                     continue
             except FileNotFoundError:
-                continue                               # released just now
+                continue  # released just now
             time.sleep(0.02)
     try:
         yield

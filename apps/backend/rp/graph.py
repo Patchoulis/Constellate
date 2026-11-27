@@ -5,13 +5,14 @@ adjacency[i, j] = max(0, cosine similarity of papers i and j), zero on the diago
 Cutting the graph into communities is in cluster.py; here are the graph itself, its modularity, the Fiedler
 vector's bisection of one group, and the few links per paper worth drawing.
 """
+
 import numpy as np
 from scipy.sparse.csgraph import connected_components
 from scipy.sparse.linalg import LinearOperator, eigsh
 
 from .library import acceptance
 
-DENSE_LIMIT = 30_000          # a dense n x n float32 matrix: 30k papers = 3.6 GB, and it is the only one made
+DENSE_LIMIT = 30_000  # a dense n x n float32 matrix: 30k papers = 3.6 GB, and it is the only one made
 
 
 def unit(rows: np.ndarray) -> np.ndarray:
@@ -23,8 +24,10 @@ def adjacency_matrix(embeddings: np.ndarray, center=True) -> np.ndarray:
     """max(0, cosine similarity).  With `center`, the mean embedding is removed first: text embeddings all share a
     large common direction, which otherwise makes every pair of papers similar and the clip at 0 do nothing."""
     if len(embeddings) > DENSE_LIMIT:
-        raise ValueError(f"{len(embeddings)} papers is too many for a dense similarity matrix "
-                         f"(limit {DENSE_LIMIT}); narrow the date range or categories.")
+        raise ValueError(
+            f"{len(embeddings)} papers is too many for a dense similarity matrix "
+            f"(limit {DENSE_LIMIT}); narrow the date range or categories."
+        )
     vectors = embeddings.astype(np.float32)
     if center:
         vectors = vectors - vectors.mean(axis=0, keepdims=True)
@@ -39,8 +42,12 @@ def modularity(matrix: np.ndarray, groups) -> float:
     """Newman modularity of `groups` (index arrays or boolean masks) on the graph `matrix`."""
     degree = matrix.sum(axis=1, dtype=np.float64)
     total = degree.sum()
-    return float(sum(matrix[np.ix_(group, group)].sum(dtype=np.float64) / total - (degree[group].sum() / total) ** 2
-                     for group in groups))
+    return float(
+        sum(
+            matrix[np.ix_(group, group)].sum(dtype=np.float64) / total - (degree[group].sum() / total) ** 2
+            for group in groups
+        )
+    )
 
 
 def top_eigenvectors(matrix, k: int) -> tuple:
@@ -74,7 +81,7 @@ def fiedler_side(sub: np.ndarray):
         vector = np.linalg.eigh(scale[:, None] * sub * scale[None, :])[1][:, -2]
     else:
         vectors, scale = top_eigenvectors(sub, 2)
-        vector = vectors[:, 0]                                                      # ascending: [second, first]
+        vector = vectors[:, 0]  # ascending: [second, first]
     fiedler = vector * scale
     side = fiedler > 0
     if side.all() or not side.any():
@@ -92,12 +99,12 @@ def natural_neighbours(adjacency: np.ndarray, most=8) -> list:
     count = min(most + 1, len(adjacency) - 1)
     edges = {}
     for start in range(0, len(adjacency), 2048):
-        block = adjacency[start:start + 2048]
+        block = adjacency[start : start + 2048]
         best = np.argpartition(-block, count, axis=1)[:, :count]
         weight = np.take_along_axis(block, best, axis=1)
         order = np.argsort(-weight, axis=1)
         best, weight = np.take_along_axis(best, order, axis=1), np.take_along_axis(weight, order, axis=1)
-        keep = np.argmax(weight[:, :-1] - weight[:, 1:], axis=1) + 1          # those before the largest drop
+        keep = np.argmax(weight[:, :-1] - weight[:, 1:], axis=1) + 1  # those before the largest drop
         for row, (targets, weights, kept) in enumerate(zip(best, weight, keep)):
             for target, similarity in zip(targets[:kept].tolist(), weights[:kept].tolist()):
                 if similarity > 0:
@@ -117,7 +124,18 @@ def drawing(papers, embeddings, adjacency, communities: list, flagged, most_link
     community = np.empty(len(papers), dtype=int)
     for index, leaf in enumerate(communities):
         community[leaf.nodes] = index
-    return {"nodes": [{"id": p["id"], "title": p["title"], "community": int(c), "x": round(float(x), 4),
-                       "y": round(float(y), 4), "ai": bool(ai), "acceptance": acceptance(p)}
-                      for p, c, (x, y), ai in zip(papers, community, position, flagged)],
-            "edges": natural_neighbours(adjacency, most_links)}
+    return {
+        "nodes": [
+            {
+                "id": p["id"],
+                "title": p["title"],
+                "community": int(c),
+                "x": round(float(x), 4),
+                "y": round(float(y), 4),
+                "ai": bool(ai),
+                "acceptance": acceptance(p),
+            }
+            for p, c, (x, y), ai in zip(papers, community, position, flagged)
+        ],
+        "edges": natural_neighbours(adjacency, most_links),
+    }

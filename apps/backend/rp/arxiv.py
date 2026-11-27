@@ -1,4 +1,5 @@
 """The arXiv API: every paper matching a search query, as library records (metadata and abstract, no PDF)."""
+
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -9,7 +10,7 @@ API = "https://export.arxiv.org/api/query"
 ATOM = "{http://www.w3.org/2005/Atom}"
 ARXIV = "{http://arxiv.org/schemas/atom}"
 PAGE = 500
-DELAY = 3.1                      # arXiv asks for one request every three seconds
+DELAY = 3.1  # arXiv asks for one request every three seconds
 HEADERS = {"User-Agent": "research-partitioner/0.1 (python-requests)"}
 
 
@@ -28,27 +29,34 @@ def _parse(xml: str):
             continue
         paper_id = re.sub(r"v\d+$", "", url.split("/abs/")[1])
         primary = entry.find(ARXIV + "primary_category")
-        papers.append({
-            "id": paper_id,
-            "title": _text(entry, ATOM + "title"),
-            "abstract": _text(entry, ATOM + "summary"),
-            "authors": [_text(a, ATOM + "name") for a in entry.findall(ATOM + "author")],
-            "published": _text(entry, ATOM + "published"),
-            "updated": _text(entry, ATOM + "updated"),
-            "comment": _text(entry, ARXIV + "comment"),
-            "primary_category": primary.get("term") if primary is not None else "",
-            "categories": [c.get("term") for c in entry.findall(ATOM + "category")],
-            "url": f"https://arxiv.org/abs/{paper_id}",
-            "pdf_url": f"https://arxiv.org/pdf/{paper_id}",
-        })
+        papers.append(
+            {
+                "id": paper_id,
+                "title": _text(entry, ATOM + "title"),
+                "abstract": _text(entry, ATOM + "summary"),
+                "authors": [_text(a, ATOM + "name") for a in entry.findall(ATOM + "author")],
+                "published": _text(entry, ATOM + "published"),
+                "updated": _text(entry, ATOM + "updated"),
+                "comment": _text(entry, ARXIV + "comment"),
+                "primary_category": primary.get("term") if primary is not None else "",
+                "categories": [c.get("term") for c in entry.findall(ATOM + "category")],
+                "url": f"https://arxiv.org/abs/{paper_id}",
+                "pdf_url": f"https://arxiv.org/pdf/{paper_id}",
+            }
+        )
     return total, papers
 
 
 def _page(search: str, start: int, log) -> tuple:
     """One page of results: (total matches, papers).  Retries with a growing pause; the API sometimes answers
     with an error or an empty page."""
-    params = {"search_query": search, "start": start, "max_results": PAGE,
-              "sortBy": "submittedDate", "sortOrder": "ascending"}
+    params = {
+        "search_query": search,
+        "start": start,
+        "max_results": PAGE,
+        "sortBy": "submittedDate",
+        "sortOrder": "ascending",
+    }
     for attempt in range(1, 7):
         time.sleep(DELAY * attempt)
         try:
@@ -59,7 +67,7 @@ def _page(search: str, start: int, log) -> tuple:
             if papers or start >= total:
                 return total, papers
             raise RuntimeError("empty page")
-        except Exception as error:                # noqa: BLE001
+        except Exception as error:  # noqa: BLE001
             log(f"    retry {attempt} at offset {start}: {error}")
     raise RuntimeError(f"arXiv API kept failing at offset {start} for query: {search}")
 

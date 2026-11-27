@@ -43,10 +43,7 @@ type Sort = { by: (typeof SORTS)[number]; descending: boolean };
 
 export function CommunityDot({ hue }: { hue: number }) {
 	return (
-		<span
-			className="size-2.5 shrink-0 rounded-full"
-			style={{ background: hsl(hue), boxShadow: `0 0 8px 1px ${hsl(hue, 60, 0.7)}` }}
-		/>
+		<span className="size-2.5 shrink-0 rounded-full" style={{ background: hsl(hue), boxShadow: `0 0 8px 1px ${hsl(hue, 60, 0.7)}` }} />
 	);
 }
 
@@ -92,8 +89,8 @@ function Detail({
 				<p className="font-sans text-base text-foreground">{community.description}</p>
 			) : (
 				<p className="text-xs text-muted-foreground">
-					No written description yet: the backend has no Claude API key. Set ANTHROPIC_API_KEY and run again; the
-					download and the embeddings are reused.
+					No written description yet: the backend has no Claude API key. Set ANTHROPIC_API_KEY and run again; the download and the
+					embeddings are reused.
 				</p>
 			)}
 			<div className="flex flex-wrap gap-1">
@@ -137,12 +134,7 @@ function Detail({
 			<section>
 				<Heading className="mb-1.5">Closest {node.depth ? "sibling" : "communities"}</Heading>
 				{community.closest_communities.map((other) => (
-					<Line
-						key={other.id}
-						node={siblings[other.id]}
-						figure={other.cosine.toFixed(2)}
-						onClick={() => onSelect(siblings[other.id])}
-					/>
+					<Line key={other.id} node={siblings[other.id]} figure={other.cosine.toFixed(2)} onClick={() => onSelect(siblings[other.id])} />
 				))}
 			</section>
 			<section>
@@ -165,9 +157,7 @@ function List({ nodes, sort, onSelect }: { nodes: CommunityNode[]; sort: Sort; o
 	// Sizes are bars from zero; similarities sit in a narrow band, so their bars start just under the lowest.
 	const low = sort.by.value === "papers" || sort.by.value === "highlights" ? 0 : Math.min(...values) * 0.9;
 	const span = Math.max(...values) - low || 1;
-	const ordered = [...nodes].sort(
-		(a, b) => (sort.descending ? -1 : 1) * (sort.by.of(a.community) - sort.by.of(b.community)),
-	);
+	const ordered = [...nodes].sort((a, b) => (sort.descending ? -1 : 1) * (sort.by.of(a.community) - sort.by.of(b.community)));
 	return (
 		<ul className="flex flex-col">
 			{ordered.map((node) => (
@@ -187,9 +177,7 @@ function List({ nodes, sort, onSelect }: { nodes: CommunityNode[]; sort: Sort; o
 								}}
 							/>
 						</span>
-						<span className="w-full truncate text-xs text-muted-foreground">
-							{node.community.keywords.slice(2, 7).join(", ")}
-						</span>
+						<span className="w-full truncate text-xs text-muted-foreground">{node.community.keywords.slice(2, 7).join(", ")}</span>
 					</RowButton>
 				</li>
 			))}

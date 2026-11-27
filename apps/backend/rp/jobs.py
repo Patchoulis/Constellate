@@ -6,12 +6,13 @@
 
 Every change of state goes through `_move`, which refuses a transition the table does not list.
 """
+
 import threading
 import traceback
-from enum import Enum
+from enum import StrEnum
 
 
-class State(str, Enum):
+class State(StrEnum):
     IDLE = "idle"
     RUNNING = "running"
     DONE = "done"
@@ -51,12 +52,17 @@ class Job:
         def body():
             try:
                 self._move(State.DONE, result=work(lambda line: self.log.append(str(line))))
-            except Exception as error:                                   # noqa: BLE001
+            except Exception as error:  # noqa: BLE001
                 self.log.append("ERROR: " + traceback.format_exc())
                 self._move(State.FAILED, error=str(error))
 
         threading.Thread(target=body, daemon=True).start()
 
     def snapshot(self, since=0) -> dict:
-        return {"state": self.state.value, "result": self.result, "error": self.error,
-                "log": self.log[since:], "total": len(self.log)}
+        return {
+            "state": self.state.value,
+            "result": self.result,
+            "error": self.error,
+            "log": self.log[since:],
+            "total": len(self.log),
+        }

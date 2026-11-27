@@ -111,10 +111,7 @@ export function AiTag({
 			`What raised it most: ${verdict.markers.join(", ")}.`
 		: "An estimate from word choice, not proof: this abstract's wording is of the kind language models produce.";
 	return (
-		<span
-			title={title}
-			className={cn(TAG, small && SMALL, "border-warning/50 bg-warning/10 text-warning", className)}
-		>
+		<span title={title} className={cn(TAG, small && SMALL, "border-warning/50 bg-warning/10 text-warning", className)}>
 			{hedged ? "AI detected (est.)" : "AI detected"}
 		</span>
 	);
