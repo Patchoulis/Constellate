@@ -1,6 +1,8 @@
 import type {
 	Catalog,
 	CitationNetwork,
+	Critique,
+	CritiqueStarted,
 	Declarations,
 	GraphData,
 	Library,
@@ -111,4 +113,11 @@ export const api = {
 	/** read this paper's reference list from its PDF (slow the first time: the PDF is fetched); answers its network */
 	readReferences: (id: string, inRun?: string) =>
 		call<CitationNetwork>(`/api/papers/${id}/references${inRun ? `?run=${encodeURIComponent(inRun)}` : ""}`, { method: "POST" }),
+	/** a paper's weaknesses: the reviewers' points, and the model's reading kept or what asking would cost (nothing is sent) */
+	critique: (id: string) => call<Critique>(`/api/papers/${encodeURIComponent(id)}/critique`),
+	/** ask the model to read the paper for weaknesses, as the one job; capped at the estimate's worst case */
+	readCritique: (id: string, model: string) =>
+		call<CritiqueStarted>(`/api/papers/${encodeURIComponent(id)}/critique`, send("POST", { model })),
+	/** forget the model's reading of the paper, so that it can be asked again */
+	forgetCritique: (id: string) => call<{ forgotten: number }>(`/api/papers/${encodeURIComponent(id)}/critique`, { method: "DELETE" }),
 };

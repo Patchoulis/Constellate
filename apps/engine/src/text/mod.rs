@@ -18,6 +18,7 @@ pub mod discussion;
 pub mod passages;
 pub mod pdf;
 pub mod references;
+pub mod review_points;
 pub mod reviews;
 
 use regex::Regex;

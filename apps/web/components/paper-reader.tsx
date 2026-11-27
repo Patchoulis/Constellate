@@ -6,6 +6,7 @@ import type { Catalog, CatalogItem, Declarations, Paper, Ratings, ReaderTarget }
 import { AcceptanceTag, AiTag, FlagTag, RatingTags } from "@/components/brand";
 import { Citations } from "@/components/citation-network";
 import { CommunityDot, MarkButton } from "@/components/community-panel";
+import { Weaknesses } from "@/components/critique";
 import { MathText } from "@/components/math-text";
 import { PaperText } from "@/components/paper-text";
 import { PaperReviewFigures } from "@/components/review-summary";
@@ -284,6 +285,7 @@ function Abstract({
 				</div>
 			)}
 			<Declared paper={paper} flagNames={flagNames} />
+			<Weaknesses id={paper.id} onReviews={onReviews} />
 			{related.length > 0 && (
 				<section className="mt-2">
 					<Heading className="mb-1.5 font-ui">Closest papers</Heading>

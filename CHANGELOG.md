@@ -7,6 +7,8 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The paper reader has a Weaknesses section: the reviewers' own weaknesses, questions and limitations point by point, with each reviewer's rating and confidence and any reply of the authors, each point opening on the reviewer's words; and, on request with its cost estimated first, the model's reading of the paper (where each point applies, what the paper says about it, and weaknesses the reviewers did not raise), every statement linked to the paper's own words, kept apart and never a score or verdict.
+
 - Opening a paper's Reviews tab now keeps the whole discussion (each review by section, rebuttals, the meta-review and the decision), shows the paper's mean, range and confidence-weighted mean on its venue's own scale, and adds a Reviews section to each community: how many of its papers have reviews read, ratings per conference and year, the papers reviewers disagreed on most, and what reviewers most often praise and criticise, each linked to the reviewer's words.
 
 - The paper reader has a Text tab showing the paper's text section by section, and citations open it at the exact place they quote, with the words highlighted; quotes Claude gives as evidence are only shown once they have been found in the paper they are attributed to.
