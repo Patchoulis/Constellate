@@ -36,7 +36,9 @@ which other programs may use too, so it is left alone: delete that folder by han
 
 **What it connects to:** the conferences' sites and arXiv (papers), Hugging Face and PyPI (the model and packages,
 once), the Claude API (names and overviews, if you set a key), OpenReview (only pages you open in the reader), and
-frankfurter.dev for the day's exchange rate when your region's currency is not the US dollar. Nothing about you
+frankfurter.dev for the day's exchange rate when your region's currency is not the US dollar. Citation networks
+use no citation service: they are built from the reference lists of the PDFs Constellate reads, and a cited work
+not in your library is looked up on arXiv only. Nothing about you
 or your library is sent anywhere.
 
 **From source** (developers; any platform). You need Node 22 or newer and git; one command gets everything else

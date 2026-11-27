@@ -7,6 +7,7 @@ import { AcceptanceTag, AiTag } from "@/components/brand";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { ResizeHandle } from "@/components/ui/resize-handle";
+import { CITATIONS_NOTE, citationsNote, citedByFigure, citedByOf, citesFigure, citesOf } from "@/lib/citations";
 import { communityLabel, type CommunityNode } from "@/lib/community";
 import type { MarksOf } from "@/lib/marks";
 import { useResizable } from "@/lib/use-resizable";
@@ -16,8 +17,14 @@ import { count, percent, similarity, SIMILARITY_NOTE } from "@/lib/units";
 /** How a user marks a paper, said wherever marking is offered. */
 export const MARK_HINT = "Right-click a paper to mark it";
 
-/** What a list of communities can be ordered by. */
-const SORTS = [
+/** What a list of communities can be ordered by. A figure that is not known yet (`of` gives null) sorts last. */
+const SORTS: readonly {
+	value: string;
+	label: string;
+	title: string;
+	of: (c: Community) => number | null;
+	show: (c: Community) => string;
+}[] = [
 	{
 		value: "papers",
 		label: "Papers",
@@ -46,7 +53,21 @@ const SORTS = [
 		of: (c: Community) => ((c.acceptance.oral ?? 0) + (c.acceptance.spotlight ?? 0)) / c.size,
 		show: (c: Community) => `${percent(((c.acceptance.oral ?? 0) + (c.acceptance.spotlight ?? 0)) / c.size)} of its papers`,
 	},
-] as const;
+	{
+		value: "cited",
+		label: "Cited by",
+		title: `How many times its papers are cited by the run's papers, from inside it and outside it. ${CITATIONS_NOTE}`,
+		of: citedByOf,
+		show: citedByFigure,
+	},
+	{
+		value: "cites",
+		label: "Cites",
+		title: `How many different works its papers cite, found in your library or not. ${CITATIONS_NOTE}`,
+		of: citesOf,
+		show: citesFigure,
+	},
+];
 type Sort = { by: (typeof SORTS)[number]; descending: boolean };
 
 export function CommunityDot({ hue }: { hue: number }) {
@@ -219,6 +240,11 @@ function Detail({
 						{sort.show(community)}
 					</Stat>
 				))}
+				{SORTS.slice(4).map((sort) => (
+					<Stat key={sort.value} label={sort.label} title={`${sort.title} ${citationsNote(community)}`}>
+						{sort.show(community)}
+					</Stat>
+				))}
 				{(["oral", "spotlight"] as const).map(
 					(tier) =>
 						community.acceptance[tier] !== undefined && (
@@ -266,11 +292,16 @@ function Detail({
 }
 
 function List({ nodes, sort, onSelect }: { nodes: CommunityNode[]; sort: Sort; onSelect: (node: CommunityNode) => void }) {
-	const values = nodes.map((node) => sort.by.of(node.community));
-	// Sizes are bars from zero; similarities sit in a narrow band, so their bars start just under the lowest.
-	const low = sort.by.value === "papers" || sort.by.value === "highlights" ? 0 : Math.min(...values) * 0.9;
+	const values = nodes.map((node) => sort.by.of(node.community)).filter((value): value is number => value !== null);
+	// Counts are bars from zero; similarities sit in a narrow band, so their bars start just under the lowest.
+	const low = sort.by.value === "saturation" || sort.by.value === "tightness" ? Math.min(...values) * 0.9 : 0;
 	const span = Math.max(...values) - low || 1;
-	const ordered = [...nodes].sort((a, b) => (sort.descending ? -1 : 1) * (sort.by.of(a.community) - sort.by.of(b.community)));
+	// a figure not known yet goes last whichever way the list is ordered
+	const ordered = [...nodes].sort((a, b) => {
+		const [x, y] = [sort.by.of(a.community), sort.by.of(b.community)];
+		if (x === null || y === null) return (x === null ? 1 : 0) - (y === null ? 1 : 0);
+		return (sort.descending ? -1 : 1) * (x - y);
+	});
 	return (
 		<ul className="flex flex-col">
 			{ordered.map((node) => (
@@ -285,7 +316,7 @@ function List({ nodes, sort, onSelect }: { nodes: CommunityNode[]; sort: Sort; o
 							<span
 								className="block h-full rounded-full"
 								style={{
-									width: `${(100 * (sort.by.of(node.community) - low)) / span}%`,
+									width: `${(100 * ((sort.by.of(node.community) ?? low) - low)) / span}%`,
 									background: hsl(node.hue, 60, 0.8),
 								}}
 							/>
@@ -422,6 +453,7 @@ function Communities({
 				<>
 					<div className="flex items-center gap-2 border-b px-3 py-2">
 						<Segmented
+							className="min-w-0 flex-1 flex-wrap"
 							options={SORTS}
 							value={sort.by.value}
 							onChange={(value) => setSort({ ...sort, by: SORTS.find((option) => option.value === value)! })}

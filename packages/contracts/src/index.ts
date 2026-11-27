@@ -91,6 +91,86 @@ export interface Community {
 	members: number[];
 	/** its two sub-communities, or none when it does not split any further */
 	children: Community[];
+	/** what it cites and how often it is cited, from the reference lists Constellate has read; absent in runs
+	 *  saved before these were counted */
+	citations?: CommunityCitations | null;
+}
+
+/** A community's citations, among the run's papers whose reference lists were read (engine analysis/citations.rs). */
+export interface CommunityCitations {
+	/** of its papers, how many have had their reference list read: `cites` is counted over these */
+	papers_read: number;
+	/** citations its papers receive from the run's read papers, inside the community and outside it (each citing
+	 *  and cited pair once) */
+	cited_by: number;
+	/** of those, from its own papers */
+	cited_by_inside: number;
+	/** distinct works its read papers cite, found or not */
+	cites: number;
+	/** of those, papers of the user's library */
+	cites_in_library: number;
+}
+
+/** What a reference was found to be. */
+export type CitationLink = { kind: "in_library"; paper: string } | { kind: "on_arxiv"; arxiv: string } | { kind: "unresolved" };
+
+/** How far a reference list entry was understood: by an arXiv id or DOI, by its title, or only as written. */
+export type ReferenceConfidence = "identified" | "title_parsed" | "raw_only";
+
+/** A work next to the seed paper of a citation network. */
+export interface CitationNeighbour {
+	/** its name within the network: what `edges` and `similar` refer to */
+	key: string;
+	/** the title, or the entry as written when no title could be read from it */
+	title: string;
+	/** the first few, as written */
+	authors: string[];
+	authors_total: number;
+	year: number | null;
+	venue: string | null;
+	link: CitationLink;
+	/** where to read it outside the app, when known */
+	url: string | null;
+	confidence: ReferenceConfidence;
+	/** how many papers Constellate has read cite it */
+	cited_by: number;
+	/** the entry as written in the seed's reference list; null for a citing paper */
+	entry: string | null;
+}
+
+/**
+ * The citation network around one paper, built from the reference lists of the papers Constellate has read
+ * (engine analysis/citations.rs). Its references are complete once its own PDF is read; the papers citing it
+ * are only those among the read ones, not the whole literature.
+ */
+export interface CitationNetwork {
+	seed: string;
+	/** has the seed's own reference list been read? */
+	seed_state: "read" | "not_read";
+	/** prior work: the works it cites, in the order listed */
+	references: CitationNeighbour[];
+	/** derivative work: read papers that cite it, the most cited first */
+	citations: CitationNeighbour[];
+	/** citations between neighbours (from cites to) */
+	edges: { from: string; to: string }[];
+	/** neighbours that share references (bibliographic coupling) or are cited together (co-citation) */
+	similar: { a: string; b: string; shared_references: number; co_cited: number }[];
+	totals: {
+		references: number;
+		references_in_library: number;
+		references_on_arxiv: number;
+		references_unresolved: number;
+		citations: number;
+		/** of those, how many are listed, the most cited first */
+		citations_shown: number;
+		/** of those, how many are papers of the run asked about (null when none was) */
+		citations_in_run: number | null;
+	};
+	/** whose reference lists it comes from */
+	papers_read: number;
+	papers_in_library: number;
+	/** the day it was built, YYYY-MM-DD */
+	built: string;
 }
 
 export interface RunResult {
@@ -102,6 +182,9 @@ export interface RunResult {
 	modularity: number;
 	ai_flagged: number;
 	communities: Community[];
+	/** of the run's papers, how many have had their reference list read: whose citations `Community.citations`
+	 *  counts; absent in runs saved before these were counted */
+	citations_read?: number | null;
 }
 
 export interface GraphNode {

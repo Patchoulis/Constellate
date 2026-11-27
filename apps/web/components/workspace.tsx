@@ -128,6 +128,7 @@ export function Workspace({ name, catalog, children }: { name: string; catalog: 
 						catalog={catalog}
 						marked={marks.has(paper)}
 						onToggleMark={() => marks.toggle(paper)}
+						run={name}
 						onRatings={onRatings}
 						onOpen={setPaper}
 						onClose={() => setPaper(null)}

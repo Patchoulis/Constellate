@@ -21,6 +21,8 @@ hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 # matrix products through matrixmultiply on every core: the similarity matrix is one n x n product
 ndarray = { version = "0.17", features = ["matrixmultiply-threading"] }
 ort = { version = "=2.0.0-rc.15", features = ["half"] }
+# text out of a paper's PDF, for its reference list: pure Rust, so it builds anywhere with no system library
+pdf-extract = "0.12"
 regex = "1"
 # arXiv answers in Atom XML; a read-only tree is all that is needed
 roxmltree = "0.20"

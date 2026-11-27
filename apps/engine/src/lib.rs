@@ -5,7 +5,7 @@
 //!
 //! | module      | what lives there                                                              |
 //! |-------------|-------------------------------------------------------------------------------|
-//! | [`analysis`] | the similarity graph over papers and what is worked out from it                |
+//! | [`analysis`] | the similarity graph over papers, who cites whom, and what is worked out from them |
 //! | [`api`]     | what the interface asks, over HTTP, answered only to the app itself            |
 //! | [`library`] | what is kept on disk: the SQLite library, and the file store for a run's results |
 //! | [`jobs`]    | the one background job at a time, as an explicit state machine                  |
@@ -15,7 +15,7 @@
 //! | [`selection`] | which papers a run is about: conferences, or a date range                     |
 //! | [`settings`] | the person's settings and how a change to them is checked                     |
 //! | [`sources`] | where papers come from: conference lists, arXiv, proceedings' PDFs             |
-//! | [`text`]    | what is read out of text: authors' declarations, reviewers' scores             |
+//! | [`text`]    | what is read out of text: authors' declarations, reviewers' scores, references |
 //!
 //! Still to come as the Python backend (`apps/backend`) is ported: clustering and reports, the AI-text estimate,
 //! and the rest of `api`'s routes.

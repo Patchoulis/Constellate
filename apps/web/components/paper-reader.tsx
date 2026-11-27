@@ -1,9 +1,10 @@
 "use client";
 
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
-import { ExternalLink, FileSearch, FileText, Loader2, MessagesSquare, X } from "lucide-react";
+import { ExternalLink, FileSearch, FileText, Loader2, MessagesSquare, Network, X } from "lucide-react";
 import type { Catalog, CatalogItem, Declarations, Paper, Ratings } from "@rp/contracts";
 import { AcceptanceTag, AiTag, FlagTag, RatingTags } from "@/components/brand";
+import { Citations } from "@/components/citation-network";
 import { CommunityDot, MarkButton } from "@/components/community-panel";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
@@ -23,7 +24,7 @@ export interface Related {
 	community: CommunityNode;
 }
 
-type View = "abstract" | "paper" | "reviews";
+type View = "abstract" | "paper" | "reviews" | "citations";
 
 /** The desktop app can show another site's page inside the window; a browser tab cannot (sites refuse frames). */
 const EMBEDS = typeof navigator !== "undefined" && /Electron/.test(navigator.userAgent);
@@ -33,7 +34,8 @@ const EMBEDS = typeof navigator !== "undefined" && /Electron/.test(navigator.use
  *   paper    the PDF: from the backend when it can fetch it (arXiv, NeurIPS, ICML, CVPR...: kept locally),
  *            otherwise the paper's own PDF address, which only the desktop app's embedded view can show
  *   reviews  the paper's OpenReview page, where its reviews and discussion are
- * A tab with no source is not offered.
+ * A tab with no source is not offered. The Citations tab is always offered: it is built from the reference lists
+ * Constellate has read (components/citation-network.tsx).
  */
 function sources(paper: Paper): { paper?: { url: string; embedded: boolean }; reviews?: { url: string; embedded: boolean } } {
 	const remote = paper.pdf_url ?? undefined;
@@ -299,6 +301,7 @@ export function PaperReader({
 	catalog,
 	marked,
 	onToggleMark,
+	run,
 	onRatings,
 	onOpen,
 	onClose,
@@ -310,6 +313,8 @@ export function PaperReader({
 	/** has the user marked this paper in this run? */
 	marked: boolean;
 	onToggleMark: () => void;
+	/** the run the paper is opened from: its Citations tab counts the citing papers of that run */
+	run?: string;
 	/** this paper's ratings were just read from its reviews page */
 	onRatings?: (id: string, ratings: Ratings) => void;
 	onOpen: (id: string) => void;
@@ -337,6 +342,7 @@ export function PaperReader({
 		{ value: "abstract" as const, label: "Abstract" },
 		...(from.paper ? [{ value: "paper" as const, label: "Paper", icon: <FileText /> }] : []),
 		...(from.reviews ? [{ value: "reviews" as const, label: "Reviews", icon: <MessagesSquare /> }] : []),
+		...(found ? [{ value: "citations" as const, label: "Citations", icon: <Network /> }] : []),
 	];
 	const flagNames = Object.fromEntries((catalog?.flags ?? []).flatMap((group) => group.items).map((item) => [item.name, item]));
 	const shown = view === "paper" ? from.paper : view === "reviews" ? from.reviews : undefined;
@@ -381,7 +387,8 @@ export function PaperReader({
 				<div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
 					{paper.status === "failed" && <p className="text-sm text-destructive">{paper.error}</p>}
 					{paper.status === "loading" && <p className="text-sm text-muted-foreground">Loading…</p>}
-					{found && (
+					{found && view === "citations" && <Citations paper={found} run={run} onOpen={onOpen} />}
+					{found && view !== "citations" && (
 						<Abstract
 							paper={found}
 							community={community}

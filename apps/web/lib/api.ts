@@ -1,5 +1,6 @@
 import type {
 	Catalog,
+	CitationNetwork,
 	Declarations,
 	GraphData,
 	Library,
@@ -60,4 +61,11 @@ export const api = {
 	readRatings: (id: string, text: string, url: string) => call<Ratings | null>(`/api/reviews/${id}`, send("POST", { text, url })),
 	/** start the job that does that for every paper of a run */
 	readDeclarations: (name: string) => call<{ ok: true }>(`${run(name)}/declarations`, { method: "POST" }),
+	/** the citation network around a paper, from the reference lists read so far; with `inRun` (a run's name), it
+	 *  also counts the citing papers of that run */
+	citations: (id: string, inRun?: string) =>
+		call<CitationNetwork>(`/api/papers/${id}/citations${inRun ? `?run=${encodeURIComponent(inRun)}` : ""}`),
+	/** read this paper's reference list from its PDF (slow the first time: the PDF is fetched); answers its network */
+	readReferences: (id: string, inRun?: string) =>
+		call<CitationNetwork>(`/api/papers/${id}/references${inRun ? `?run=${encodeURIComponent(inRun)}` : ""}`, { method: "POST" }),
 };

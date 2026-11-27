@@ -6,6 +6,7 @@
 //!
 //! | module          | what lives there                                                                   |
 //! |-----------------|------------------------------------------------------------------------------------|
+//! | [`citations`]   | cited works that are not in the library, looked up on arXiv                         |
 //! | [`catalog`]     | the conferences and arXiv categories a run can be about, grouped by field           |
 //! | [`arxiv`]       | arXiv's search API: the query, its pages, and its Atom answer read into papers      |
 //! | [`conferences`] | a conference's official list of accepted papers, or arXiv comments where it has none |
@@ -22,6 +23,7 @@
 pub mod acceptance;
 pub mod arxiv;
 pub mod catalog;
+pub mod citations;
 pub mod conferences;
 pub mod download;
 pub mod proceedings;
