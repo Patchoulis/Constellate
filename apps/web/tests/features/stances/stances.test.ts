@@ -13,7 +13,7 @@ import {
 	tally,
 } from "@/lib/features/stances/stances";
 import { canvasColouring } from "@/lib/graph/graph-colouring";
-import { batchCost } from "./costs";
+import { batchCost } from "../../costs";
 
 const evidence: Evidence = {
 	paper: "p",

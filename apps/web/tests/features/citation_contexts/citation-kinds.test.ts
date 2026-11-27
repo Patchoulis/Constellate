@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { CitationKindsEstimate, CitationTally, CitingSentenceShown, Evidence, PaperCitationContexts } from "@rp/contracts";
-import { batchCost } from "./costs";
+import { batchCost } from "../../costs";
 import {
 	budgetFor,
 	coverageLine,

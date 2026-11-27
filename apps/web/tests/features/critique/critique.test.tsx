@@ -8,7 +8,7 @@ import { ConfirmProvider } from "@/components/shell/confirm";
 
 /** The section as the app draws it: inside the window's one confirmation dialog. */
 const markup = (section: React.ReactElement) => renderToStaticMarkup(<ConfirmProvider>{section}</ConfirmProvider>);
-import { batchCost } from "./costs";
+import { batchCost } from "../../costs";
 import {
 	absenceLine,
 	attachmentNote,

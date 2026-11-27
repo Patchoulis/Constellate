@@ -1,5 +1,5 @@
 /**
- * "Explain this" in the reader, as plain functions (tests/explanation.test.ts): how a selection becomes a place in
+ * "Explain this" in the reader, as plain functions (tests/features/explanation/explanation.test.tsx): how a selection becomes a place in
  * the paper, when to ask before spending, and what is said about costs, garbled text and statements left out.
  * components/features/explanation/passage-explainer.tsx draws them.
  */

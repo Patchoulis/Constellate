@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AnswerEstimate, AnswerSummary, AnswerView, PassageFound, PassagesFound, SearchCoverage } from "@rp/contracts";
-import { askingCost } from "./costs";
+import { askingCost } from "../../costs";
 import {
 	cannotAsk,
 	costLine,

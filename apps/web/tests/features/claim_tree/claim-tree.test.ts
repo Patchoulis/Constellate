@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ClaimNode, ClaimNodeReviews, ClaimsEstimate, Evidence, PointMapping, ReviewPoint } from "@rp/contracts";
-import { batchCost } from "./costs";
+import { batchCost } from "../../costs";
 import {
 	allOpen,
 	budgetFor,

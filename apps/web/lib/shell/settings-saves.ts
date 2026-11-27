@@ -7,7 +7,7 @@
  *     asked --refused--> the refusal is kept; the settings are read again from the engine --read--> shown,
  *                        unless another save was asked for meanwhile (its answer will say more)
  *
- * Pure, so that it is tested (tests/settings-saves.test.ts); app/page.tsx holds it.
+ * Pure, so that it is tested (tests/shell/settings-saves.test.ts); app/page.tsx holds it.
  */
 
 export interface Refusal<T> {

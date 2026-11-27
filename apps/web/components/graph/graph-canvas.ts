@@ -9,7 +9,7 @@
  *    lag anything else.
  *  - Camera: d3-zoom supplies pan / zoom-to-cursor / pinch (screen = world * k + [x, y]).
  *  - Picking: the nearest paper whose dot (plus a few pixels) is under the pointer (lib/graph/pick.ts); a
- *    scan of every paper, about a tenth of a millisecond at 12,500 papers (tests/perf.bench.ts).
+ *    scan of every paper, about a tenth of a millisecond at 12,500 papers (tests/graph/perf.bench.ts).
  *
  * The glow shows what belongs together. Every paper adds a soft radial halo in its group's hue, composited
  * additively ("lighter"). One halo is faint; where a group is dense the halos add up, so each group glows in its

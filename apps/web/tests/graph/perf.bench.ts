@@ -3,7 +3,7 @@
  * split twice, 22,000 links) and prints the numbers, so a later change can be compared with them. Not part of
  * `npm test`: timings depend on the machine, so nothing here passes or fails.
  *
- *     cd apps/web && npx tsx tests/perf.bench.ts
+ *     cd apps/web && npx tsx tests/graph/perf.bench.ts
  *
  * What a frame costs in the browser (drawing, React) is not here: that needs the app open, see the numbers in the
  * commit that added the glow layer.

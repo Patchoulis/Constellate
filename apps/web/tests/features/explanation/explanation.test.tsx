@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Evidence, Explanation, ExplanationEstimate, PaperPassages, PassageAddress, PassageKind } from "@rp/contracts";
 import { Explained } from "@/components/features/explanation/passage-explainer";
-import { askingCost } from "./costs";
+import { askingCost } from "../../costs";
 import {
 	LONGEST_SELECTION,
 	askFirst,
