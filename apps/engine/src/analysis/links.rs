@@ -179,11 +179,53 @@ pub fn knn_graph(adjacency: ArrayView2<f32>, neighbours: usize) -> SparseGraph {
     SparseGraph::from_rows(rows)
 }
 
+/// A set of a run's papers, most central to the set first: by the sum of the similarities of their links to the
+/// set's other papers (`links` as the run's graph has them: node, node, similarity; `nodes` the graph's ids). A
+/// paper the graph does not have, or with no link in the set, counts nothing; ties go by id, so the order is the
+/// same every time. What the features that ask a model of a sample first (extraction, stances) take their sample
+/// from: its first papers are the ones most like the rest.
+pub fn central_first(papers: &[String], nodes: &[String], links: &[(usize, usize, f64)]) -> Vec<String> {
+    let index_of: std::collections::HashMap<&str, usize> =
+        nodes.iter().enumerate().map(|(index, id)| (id.as_str(), index)).collect();
+    let mut in_set = vec![false; nodes.len()];
+    for paper in papers {
+        if let Some(&index) = index_of.get(paper.as_str()) {
+            in_set[index] = true;
+        }
+    }
+    let mut weight = vec![0.0f64; nodes.len()];
+    for &(a, b, similarity) in links {
+        if a != b && in_set.get(a) == Some(&true) && in_set.get(b) == Some(&true) && similarity.is_finite() {
+            weight[a] += similarity;
+            weight[b] += similarity;
+        }
+    }
+    let weight_of = |paper: &String| index_of.get(paper.as_str()).map_or(0.0, |&index| weight[index]);
+    let mut ordered: Vec<String> = papers.to_vec();
+    ordered.sort_unstable();
+    ordered.dedup();
+    ordered.sort_by(|a, b| weight_of(b).total_cmp(&weight_of(a)).then_with(|| a.cmp(b)));
+    ordered
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use ndarray::array;
+
+    #[test]
+    fn the_most_central_papers_of_a_set_come_first_ties_by_id() {
+        let nodes: Vec<String> = ["a", "b", "c", "d", "e"].iter().map(|id| (*id).to_owned()).collect();
+        // d is linked to the most; e is outside the set, so its link to a does not count; a link of no finite
+        // similarity counts nothing
+        let links = [(0, 3, 0.9), (1, 3, 0.8), (2, 3, 0.7), (0, 1, 0.5), (0, 4, 5.0), (2, 1, f64::NAN)];
+        let set: Vec<String> = ["c", "b", "a", "d", "zz", "a"].iter().map(|id| (*id).to_owned()).collect();
+        let ordered = central_first(&set, &nodes, &links);
+        assert_eq!(ordered, ["d", "a", "b", "c", "zz"], "each paper once; one the graph lacks counts nothing");
+        assert_eq!(central_first(&set, &nodes, &links), ordered, "the same every time");
+        assert_eq!(central_first(&set, &nodes, &[]), ["a", "b", "c", "d", "zz"], "no links: by id");
+    }
 
     #[test]
     fn links_stop_at_the_gap_in_similarity() {

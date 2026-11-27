@@ -636,21 +636,16 @@ pub fn recurring_terms(community: &[Record<'_>], run: &[Record<'_>], most: usize
     chosen.into_iter().map(|(recurring, _)| recurring).collect()
 }
 
-/// `members` (indices of a graph's nodes) most central first: by the summed similarity of their links to the
-/// other members, ties by `ids` so the order is the same every time.
+/// `members` (indices of a graph's nodes, `ids` its ids) most central first, as
+/// [`crate::analysis::links::central_first`] orders the papers of a set, each once.
 pub fn central_first(members: &[usize], edges: &[(usize, usize, f64)], ids: &[String]) -> Vec<usize> {
-    let inside: HashSet<usize> = members.iter().copied().collect();
-    let mut weight: HashMap<usize, f64> = members.iter().map(|member| (*member, 0.0)).collect();
-    for &(a, b, similarity) in edges {
-        if a != b && inside.contains(&a) && inside.contains(&b) {
-            *weight.entry(a).or_default() += similarity;
-            *weight.entry(b).or_default() += similarity;
-        }
-    }
-    let mut ordered: Vec<usize> = inside.into_iter().collect();
-    let id = |index: usize| ids.get(index).map_or("", String::as_str);
-    ordered.sort_by(|a, b| weight[b].total_cmp(&weight[a]).then_with(|| id(*a).cmp(id(*b))));
-    ordered
+    let index_of: HashMap<&str, usize> =
+        members.iter().filter_map(|&member| ids.get(member).map(|id| (id.as_str(), member))).collect();
+    let papers: Vec<String> = index_of.keys().map(|id| (*id).to_owned()).collect();
+    crate::analysis::links::central_first(&papers, ids, edges)
+        .iter()
+        .filter_map(|id| index_of.get(id.as_str()).copied())
+        .collect()
 }
 
 /// The model's proposal of a question, as it is kept.

@@ -13,7 +13,7 @@
 //! ```
 //!
 //! A scope is `{"community": "<tree path>"}` or `{"papers": ["<id>", ...]}` (the marked papers, which must be
-//! the run's). Its papers are ordered most central first ([`by_centrality`]); `part` is `sample` (the first
+//! the run's). Its papers are ordered most central first ([`central_first`]); `part` is `sample` (the first
 //! [`SAMPLE`]) or `rest` (the others). The sample's estimate is reckoned from its papers' own texts; the rest's
 //! from the sample's texts, applied to every paper of the rest that has a PDF (and from its own abstract for one
 //! that has none): an estimate either way, and said to be one. The budget of a run is what the user agreed to
@@ -32,9 +32,10 @@ use serde_json::Value as JsonValue;
 
 use super::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::analysis::extraction::{
-    self, Cell, Column, LeftOut, MOST_PAPERS, Plan, Read, SAMPLE, SaidCell, by_centrality, check_columns, checked_rows,
+    self, Cell, Column, LeftOut, MOST_PAPERS, Plan, Read, SAMPLE, SaidCell, check_columns, checked_rows,
     default_columns, extrapolate, kept_cells, prompt_text,
 };
+use crate::analysis::links::central_first;
 use crate::evidence::PaperText;
 use crate::jobs::{Finished, Tracker};
 use crate::library::store::read_json;
@@ -203,7 +204,7 @@ fn papers_of(engine: &Shared, run: &str, scope: &Scope) -> Result<(Graph, Vec<St
         return Err(ApiError::Invalid(format!("a table has at most {MOST_PAPERS} papers: choose a sub-community")));
     }
     let ids: Vec<String> = graph.nodes.iter().map(|node| node.id.clone()).collect();
-    let ordered = by_centrality(&wanted, &ids, &graph.edges);
+    let ordered = central_first(&wanted, &ids, &graph.edges);
     Ok((graph, ordered))
 }
 

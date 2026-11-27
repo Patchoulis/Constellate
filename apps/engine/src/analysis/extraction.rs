@@ -28,8 +28,8 @@
 //! # The sample
 //!
 //! A table is first run on a sample, as Elicit recommends: the [`SAMPLE`] papers most central to the set on the
-//! graph ([`by_centrality`]: the sum of the similarities of their links to the set's other papers), so that the
-//! user sees what it gives and what it cost before paying for the rest.
+//! graph ([`central_first`](crate::analysis::links::central_first): the sum of the similarities of their links to
+//! the set's other papers), so that the user sees what it gives and what it cost before paying for the rest.
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -849,33 +849,6 @@ pub fn checked_rows(
         .collect()
 }
 
-/// The order a set's papers are tried in: most central first, by the sum of the similarities of their links
-/// to the set's other papers (`links` as the run's graph has them: node, node, similarity; `nodes` the graph's
-/// ids). Ties by id, so the order is the same every time. The first [`SAMPLE`] are the sample.
-pub fn by_centrality(papers: &[String], nodes: &[String], links: &[(usize, usize, f64)]) -> Vec<String> {
-    let index_of: std::collections::HashMap<&str, usize> =
-        nodes.iter().enumerate().map(|(index, id)| (id.as_str(), index)).collect();
-    let mut in_set = vec![false; nodes.len()];
-    for paper in papers {
-        if let Some(&index) = index_of.get(paper.as_str()) {
-            in_set[index] = true;
-        }
-    }
-    let mut weight = vec![0.0f64; nodes.len()];
-    for &(a, b, similarity) in links {
-        if a != b && in_set.get(a) == Some(&true) && in_set.get(b) == Some(&true) && similarity.is_finite() {
-            weight[a] += similarity;
-            weight[b] += similarity;
-        }
-    }
-    let weight_of = |paper: &String| index_of.get(paper.as_str()).map_or(0.0, |&index| weight[index]);
-    let mut ordered: Vec<String> = papers.to_vec();
-    ordered.sort_unstable();
-    ordered.dedup();
-    ordered.sort_by(|a, b| weight_of(b).total_cmp(&weight_of(a)).then_with(|| a.cmp(b)));
-    ordered
-}
-
 /// How many cells of a table are not shown as values, by why: what the interface says was left out.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct LeftOut {
@@ -1437,16 +1410,5 @@ mod tests {
         let asked_twice =
             [default_columns()[0].clone(), Column { id: "task-2".to_owned(), ..default_columns()[0].clone() }];
         assert_eq!(check_columns(&asked_twice), Err(InvalidColumns::SameQuestion("Task".to_owned())));
-    }
-
-    #[test]
-    fn the_sample_is_the_most_central_papers_ties_by_id() {
-        let nodes: Vec<String> = ["a", "b", "c", "d", "e"].iter().map(|id| (*id).to_owned()).collect();
-        // d is linked to the most; e is outside the set, so its link to a does not count
-        let links = [(0, 3, 0.9), (1, 3, 0.8), (2, 3, 0.7), (0, 1, 0.5), (0, 4, 5.0)];
-        let set: Vec<String> = ["c", "b", "a", "d", "zz"].iter().map(|id| (*id).to_owned()).collect();
-        let ordered = by_centrality(&set, &nodes, &links);
-        assert_eq!(ordered, ["d", "a", "b", "c", "zz"]);
-        assert_eq!(by_centrality(&set, &nodes, &links), ordered, "the same every time");
     }
 }
