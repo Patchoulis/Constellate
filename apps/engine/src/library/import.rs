@@ -133,6 +133,43 @@ impl Library {
     }
 }
 
+/// How a finished move of the whole files-based library is recorded in `imported`.
+const WHOLE_LIBRARY: &str = "files-library";
+
+/// The files of a files-based library whose presence says there is one to move in.
+const OLD_FILES: [&str; 4] = ["papers.jsonl", "download_done.json", "embeddings", "descriptions.json"];
+
+impl Library {
+    /// Move the files-based library in `folder` in, once: answers what was moved, or `None` when it was moved
+    /// before (or there is none). The move and its record are one transaction, so a move that is interrupted
+    /// (the app closed, the computer off) leaves nothing behind and is simply done again at the next start; a
+    /// move that finished is never done again, so the old files are not read at every start.
+    pub fn import_once(&self, folder: &Path) -> Result<Option<Imported>, ImportError> {
+        let done = |connection: &Connection| -> rusqlite::Result<bool> {
+            Ok(connection
+                .query_row("SELECT 1 FROM imported WHERE source = ?1", [WHOLE_LIBRARY], |_| Ok(()))
+                .optional()?
+                .is_some())
+        };
+        if self.read(|connection| Ok(done(connection)?))? || !OLD_FILES.iter().any(|file| folder.join(file).exists()) {
+            return Ok(None);
+        }
+        let files = Files::read(folder)?; // everything read before the write lock is taken
+        let mut connection = self.connection();
+        let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if done(&transaction)? {
+            return Ok(None); // another process moved it in meanwhile
+        }
+        let imported = files.write(&transaction)?;
+        transaction.execute(
+            "INSERT INTO imported (source, at) VALUES (?1, ?2) ON CONFLICT (source) DO NOTHING",
+            params![WHOLE_LIBRARY, now()],
+        )?;
+        transaction.commit()?;
+        Ok(Some(imported))
+    }
+}
+
 /// One `embeddings/<folder>`: its index and its matrix.
 struct Vectors {
     model: String,
@@ -189,12 +226,17 @@ fn read_papers(path: &Path) -> Result<(Vec<Paper>, usize), ImportError> {
         Err(source) => return Err(StoreError::Io { path: path.into(), source }.into()),
     };
     let (mut papers, mut unreadable) = (Vec::new(), 0);
+    let last = text.lines().enumerate().filter(|(_, line)| !line.trim().is_empty()).map(|(number, _)| number).last();
     for (number, line) in text.lines().enumerate().filter(|(_, line)| !line.trim().is_empty()) {
-        let record: Value = serde_json::from_str(line).map_err(|source| ImportError::Line {
-            path: path.into(),
-            line: number + 1,
-            source,
-        })?;
+        let record: Value = match serde_json::from_str(line) {
+            Ok(record) => record,
+            // the last line cut short: the Python stopped while it appended it; that one paper is skipped
+            Err(_) if Some(number) == last => {
+                unreadable += 1;
+                continue;
+            }
+            Err(source) => return Err(ImportError::Line { path: path.into(), line: number + 1, source }),
+        };
         match serde_json::from_value(record) {
             Ok(paper) => papers.push(paper),
             Err(_) => unreadable += 1,
@@ -205,7 +247,7 @@ fn read_papers(path: &Path) -> Result<(Vec<Paper>, usize), ImportError> {
 
 /// A `.npy` file's matrix: (rows, columns, the data's bytes). Only what the Python wrote is read: float32,
 /// little-endian, C order, two dimensions.
-pub(super) fn read_npy(path: &Path) -> Result<(usize, usize, Vec<u8>), ImportError> {
+pub(crate) fn read_npy(path: &Path) -> Result<(usize, usize, Vec<u8>), ImportError> {
     let wrong = |reason: &str| ImportError::Vectors { path: path.into(), reason: reason.into() };
     let mut bytes = fs::read(path).map_err(|source| StoreError::Io { path: path.into(), source })?;
     if bytes.len() < 10 || !bytes.starts_with(b"\x93NUMPY") {
@@ -738,6 +780,42 @@ mod tests {
         assert_eq!(library.spending().unwrap(), before);
         assert_eq!(library.settings().unwrap()["max_links"], 30);
         assert_eq!(library.paper_count().unwrap(), 4); // the three moved in, and the official one fetched since
+    }
+
+    #[test]
+    fn the_move_at_start_is_done_once_and_one_interrupted_is_done_again_whole() {
+        let (_data, folder) = files_based_library();
+        // interrupted: a damaged file stops it, and nothing of it is kept, nor its record
+        let papers = fs::read_to_string(folder.join("papers.jsonl")).unwrap();
+        fs::write(folder.join("papers.jsonl"), format!("{{\"id\": \"damaged\n{papers}")).unwrap();
+        let library = Library::open(&folder).unwrap();
+        assert!(library.import_once(&folder).is_err());
+        assert_eq!(library.paper_count().unwrap(), 0);
+        // the next start goes through, whole
+        fs::write(folder.join("papers.jsonl"), papers).unwrap();
+        let first = library.import_once(&folder).unwrap().unwrap();
+        assert_eq!((first.papers, first.embeddings["Qwen/Qwen3-Embedding-0.6B"]), (3, 2));
+        // and is never done again: no duplicate, the old files not even read
+        fs::write(folder.join("papers.jsonl"), "this file is not read again").unwrap();
+        assert_eq!(library.import_once(&folder).unwrap(), None);
+        assert_eq!(library.paper_count().unwrap(), 3);
+        assert_eq!(library.embedding_counts().unwrap()["Qwen/Qwen3-Embedding-0.6B"], 2);
+    }
+
+    #[test]
+    fn a_last_paper_cut_short_by_a_crash_is_skipped_and_the_rest_moved_in() {
+        let (_data, folder) = files_based_library();
+        let papers = fs::read_to_string(folder.join("papers.jsonl")).unwrap();
+        fs::write(folder.join("papers.jsonl"), format!("{papers}{{\"id\": \"2603.0000")).unwrap();
+        let imported = import_files(&folder).unwrap();
+        assert_eq!((imported.papers, imported.skipped), (3, 5));
+    }
+
+    #[test]
+    fn a_data_folder_without_an_old_library_has_nothing_to_move() {
+        let data = tempfile::tempdir().unwrap();
+        let library = Library::open(&data.path().join("library")).unwrap();
+        assert_eq!(library.import_once(&data.path().join("library")).unwrap(), None);
     }
 
     #[test]

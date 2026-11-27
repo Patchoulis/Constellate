@@ -277,6 +277,12 @@ export const api = {
 	/** forget its answer only, so that it is asked again (at the cost shown again) */
 	redoAnswer: (name: string, id: string) =>
 		call<{ ok: true; forgotten: boolean }>(`${run(name)}/answers/${encodeURIComponent(id)}/redo`, { method: "POST" }),
+	/** one page of the runs, sorted and searched, without reading every run (the engine only) */
+	runsPage: (query: { offset?: number; limit?: number; sort?: import("@rp/contracts").RunSort; search?: string }) => {
+		const asked = new URLSearchParams();
+		for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== "") asked.set(key, String(value));
+		return call<import("@rp/contracts").RunPage>(`/api/runs?${asked.toString() || "offset=0"}`);
+	},
 };
 
 type StanceScope = import("@rp/contracts").StanceScope;

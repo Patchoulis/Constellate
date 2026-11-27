@@ -68,6 +68,8 @@ pub struct Engine {
     pub transport: Arc<dyn Transport>,
     /// The library, opened when a route first needs it (and tried again after a failure to open).
     library: Mutex<Option<Arc<Library>>>,
+    /// The person's runs: the one being made, the list, the loaded ones ([`crate::pipeline::served`]).
+    pub runs: crate::pipeline::served::Runs,
 }
 
 pub type Shared = Arc<Engine>;
@@ -85,6 +87,7 @@ impl Engine {
             language: Err(Unavailable::NoKey),
             transport: Arc::new(Https::default()),
             library: Mutex::new(None),
+            runs: Default::default(),
         }
     }
 
@@ -98,6 +101,12 @@ impl Engine {
         // pages kept by an older reader of reviews are read again once, here: until then they would not be shown
         if let Err(error) = library.read_stored_pages_again() {
             eprintln!("library: reviews pages could not be read again: {error}");
+        }
+        // the Python backend's files-based library, moved in once (library/import.rs)
+        match library.import_once(&self.data.join("library")) {
+            Ok(Some(imported)) => eprintln!("library: the files-based library was moved in: {imported:?}"),
+            Ok(None) => {}
+            Err(error) => eprintln!("library: the files-based library could not be moved in yet: {error}"),
         }
         *opened = Some(Arc::clone(&library));
         Ok(library)
@@ -330,6 +339,7 @@ pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
     table.extend(super::citation_contexts::table());
     table.extend(super::answers::table());
     table.extend(super::models::table());
+    table.extend(super::runs::table());
     table
 }
 
@@ -393,6 +403,8 @@ struct Status<'a> {
     /// Whether the chosen provider's model can be asked: its key is set (and its address is usable). Only that,
     /// never the key.
     api_key_set: bool,
+    /// The step of the run being made and how far it has got; none when no run is being made.
+    step: Option<crate::pipeline::steps::StepReport>,
 }
 
 async fn status(
@@ -424,6 +436,7 @@ async fn status(
         mode,
         server_owned: server_owned(engine.mode),
         api_key_set: engine.endpoint().is_ok(),
+        step: engine.runs.board.now(),
     };
     Ok(Json(serde_json::to_value(told).map_err(|_| ApiError::Internal)?))
 }

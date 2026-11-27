@@ -7,6 +7,10 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Runs are made by the app's own engine: while one runs, it says which step it is on and how far it has got
+  ("embedding 3,120 of 12,487 papers", the embedding model's download in megabytes), it can be stopped and
+  started again without fetching or embedding anything twice, and the runs and library made before open as they
+  were.
 - The paper reader has a Text tab showing the paper's text section by section, and citations open it at the exact
   place they quote, with the words highlighted; quotes a model gives as evidence are only shown once they have been
   found in the paper they are attributed to.

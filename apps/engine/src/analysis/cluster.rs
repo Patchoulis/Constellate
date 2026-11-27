@@ -452,6 +452,36 @@ pub fn subdivide(
     Ok(Community { parts: Parts::Halves { modularity, halves: Box::new(halves) }, ..community })
 }
 
+/// A community number per paper, from the random start `seed`, with no sub-communities: what comparing the
+/// methods needs (`examples/compare.rs`), where [`communities`] always starts from the same seed. The bisection
+/// method has no random start and answers the same labels whatever the seed.
+pub fn labels(
+    method: Method,
+    papers: Papers,
+    count: usize,
+    limits: Limits,
+    seed: u64,
+) -> Result<Vec<usize>, ClusterError> {
+    papers.check()?;
+    let size = papers.adjacency.nrows();
+    if count == 0 || count > size {
+        return Err(ClusterError::TooFewPapers { papers: size, communities: count });
+    }
+    match method.shape() {
+        Shape::AtOnce(at_once) => partition(at_once, papers, count, seed),
+        Shape::Bisection => {
+            let (groups, _) = by_bisection(method, papers, count, limits)?;
+            let mut labels = vec![0; size];
+            for (index, group) in groups.iter().enumerate() {
+                for &paper in &group.papers {
+                    labels[paper] = index;
+                }
+            }
+            Ok(labels)
+        }
+    }
+}
+
 /// Communities by cutting the largest group still open in two until there are `count` (the Fiedler method). A
 /// group that does not cut acceptably is closed. Returns the groups and the cuts made.
 fn by_bisection(
