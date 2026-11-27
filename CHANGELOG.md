@@ -29,6 +29,12 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The backend is being rewritten in Rust (`apps/engine`), organised by subject; the Python backend stays until the
   Rust one does everything it does.
 
+### Security
+
+- The new engine answers only the app itself: every request must carry a secret token and be addressed to the
+  engine, and pages of other sites are refused. Run on another machine than the app, it requires HTTPS and a token
+  of its own, and warns loudly if HTTPS is turned off.
+
 ## [0.1.0] - 2026-11-26
 
 The first release.
