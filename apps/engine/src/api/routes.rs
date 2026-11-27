@@ -107,7 +107,7 @@ impl Engine {
         }
         let chosen = settings::load(&self.settings_file(), &self.choices)
             .ok()
-            .and_then(|settings| Provider::from_id(&settings.describe_provider))
+            .map(|settings| settings.describe_provider)
             .unwrap_or(Provider::Anthropic);
         self.providers.endpoint(chosen)
     }
