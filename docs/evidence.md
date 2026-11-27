@@ -54,8 +54,11 @@ end_page, end }`. The reference list is in the pages' text but is not a passage.
 - **What is shown is the paper's wording, not the model's.** A quote is found when its letters and digits match the
   paper's after spacing, line breaks, hyphenation, ligatures, accents, quote marks, punctuation and case are set
   aside (`matched: exact`), or with a few letters different (`matched: close`, at most one in twenty, eight in all,
-  only for quotes of 20 letters or more; the hover says how many). A quote of fewer than 20 letters and digits
-  (`SHORTEST_QUOTE`) is never evidence.
+  only for quotes of 20 letters or more; the hover says how many). A close match differs only by slips inside words
+  (a typo, an OCR slip, at most a third of a word's letters): word for word it is the paper's, so a quote that adds
+  or leaves out a word ("not"), changes a number, or changes a negation ("likely" for "unlikely") is not found. A
+  quote of fewer than 20 letters and digits (`SHORTEST_QUOTE`) is never evidence; spaces and punctuation do not
+  count.
 - **A statement whose quotes fail is dropped, not shown bare.** A kept statement shows only its found quotes; the
   others are listed in `Checked::rejected` and counted (`not_in_paper`, `unknown_paper`, `too_short`). A statement
   with found quotes from fewer than `rules.papers` papers goes to `Checked::dropped`. `Rules::ONE_PAPER` is for
