@@ -93,30 +93,57 @@ pub fn title_words(title: &str) -> Vec<String> {
 
 /// Every entry of the paper's reference list, in the order listed; empty when no list is found.
 pub fn read_references(text: &str) -> Vec<Reference> {
+    read_reference_list(text).references
+}
+
+/// How the paper's text points at its reference list: by the entries' numbers ("[12]"), or by their authors and
+/// years ("Vaswani et al., 2017"). A numbered list's entry `n` is `references[n - 1]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Citing {
+    ByNumber,
+    ByAuthorAndYear,
+}
+
+/// The reference list and how it is cited: what the citing sentences of a paper are found with
+/// ([`super::passages::citing_sentences`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReferenceList {
+    pub citing: Citing,
+    pub references: Vec<Reference>,
+}
+
+/// The paper's reference list, with how its entries are marked.
+pub fn read_reference_list(text: &str) -> ReferenceList {
     let lines = page_lines(text);
-    let best = lines
+    let (marking, best) = lines
         .iter()
         .enumerate()
         .filter(|(_, line)| line.as_deref().is_some_and(|line| REFERENCES_HEADING.is_match(line)))
         .map(|(at, _)| entries(list_after(&lines, at + 1)))
-        .max_by_key(Vec::len)
-        .unwrap_or_default();
-    best.iter().take(MAX_REFERENCES).map(|entry| read_entry(entry)).collect()
+        .max_by_key(|(_, entries)| entries.len())
+        .unwrap_or((Marking::Authors, Vec::new()));
+    let citing = match marking {
+        Marking::Brackets | Marking::Numbers => Citing::ByNumber,
+        Marking::Authors => Citing::ByAuthorAndYear,
+    };
+    ReferenceList { citing, references: best.iter().take(MAX_REFERENCES).map(|entry| read_entry(entry)).collect() }
 }
 
-static REFERENCES_HEADING: LazyLock<Regex> = LazyLock::new(|| {
+pub(super) static REFERENCES_HEADING: LazyLock<Regex> = LazyLock::new(|| {
     pattern(
         r"(?i)^(?:\d{1,2}\.?\s*|[A-Z]\.?\s+)?(?:references|bibliography|references and notes|literature cited|works cited)$",
     )
 });
 /// What follows a reference list: an appendix or a checklist.
-static END_HEADING: LazyLock<Regex> = LazyLock::new(|| {
+pub(super) static END_HEADING: LazyLock<Regex> = LazyLock::new(|| {
     pattern(
         r"(?i)^(?:appendix|appendices|supplementary material|supplemental material|technical appendices|(?:neurips |paper )*checklist)\b",
     )
 });
 /// An appendix's lettered heading, "A Proofs" or "B.1. More results": short, and no sentence in it.
-static APPENDIX_HEADING: LazyLock<Regex> = LazyLock::new(|| pattern(r"^[A-H](?:\.\d+)*\.?\s+\p{Lu}[^.,:;()\d]{2,60}$"));
+pub(super) static APPENDIX_HEADING: LazyLock<Regex> =
+    LazyLock::new(|| pattern(r"^[A-H](?:\.\d+)*\.?\s+\p{Lu}[^.,:;()\d]{2,60}$"));
 static PAGE_NUMBER: LazyLock<Regex> = LazyLock::new(|| pattern(r"^\d{1,4}$"));
 
 /// The text's lines, trimmed; a blank line is `None`. Page numbers and running headers are left out entirely.
@@ -226,8 +253,8 @@ fn marking(lines: &[&str]) -> Marking {
     if expected > 3 { Marking::Numbers } else { Marking::Authors }
 }
 
-/// The list's entries, each on one line, without its marker.
-fn entries(list: &[Option<String>]) -> Vec<String> {
+/// How the list's entries are marked, and its entries, each on one line, without its marker.
+fn entries(list: &[Option<String>]) -> (Marking, Vec<String>) {
     let present: Vec<&str> = list.iter().flatten().map(String::as_str).collect();
     let marking = marking(&present);
     let strict = marking == Marking::Authors && mostly_surname_first(list);
@@ -280,7 +307,7 @@ fn entries(list: &[Option<String>]) -> Vec<String> {
         after_break = false;
         previous = line;
     }
-    entries.iter().map(|lines| joined(lines)).filter(|entry| !entry.is_empty()).collect()
+    (marking, entries.iter().map(|lines| joined(lines)).filter(|entry| !entry.is_empty()).collect())
 }
 
 /// Do most of the list's entries begin with a surname and initials, "Vaswani, A."?
@@ -333,7 +360,7 @@ fn joined(lines: &[&str]) -> String {
 }
 
 /// A PDF often writes an accent as its own character before the letter ("M¨oller"); put it on the letter.
-fn accents_composed(text: &str) -> String {
+pub(super) fn accents_composed(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut pending = None;
     for c in text.chars() {

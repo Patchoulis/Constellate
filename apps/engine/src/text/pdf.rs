@@ -43,6 +43,24 @@ pub fn pdf_text(bytes: &[u8]) -> Result<String, Unreadable> {
     Ok(text)
 }
 
+/// The text of the PDF in `bytes`, page by page: `pages[0]` is page 1, as the PDF numbers its pages (not as the
+/// paper prints its page numbers). A page with no text (a full-page figure) is an empty string, so that the
+/// position of every later page stays its page number: a link back to a place in the paper needs the page.
+///
+/// It is the same reader as [`pdf_text`], run page by page, so each page's text is in the same reading order.
+pub fn pdf_pages(bytes: &[u8]) -> Result<Vec<String>, Unreadable> {
+    if bytes.len() > MAX_PDF_BYTES {
+        return Err(Unreadable::TooLarge(bytes.len()));
+    }
+    let pages = catch_unwind(AssertUnwindSafe(|| pdf_extract::extract_text_from_mem_by_pages(bytes)))
+        .map_err(|_| Unreadable::Unhandled)?
+        .map_err(|error| Unreadable::Damaged(error.to_string()))?;
+    if pages.iter().all(|page| page.trim().is_empty()) {
+        return Err(Unreadable::NoText);
+    }
+    Ok(pages)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -86,6 +104,19 @@ mod tests {
             pdf_text(&pdf_with(&["References", "Vaswani, A. Attention is all you need. In NeurIPS, 2017."])).unwrap();
         let lines: Vec<&str> = text.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
         assert_eq!(lines, ["References", "Vaswani, A. Attention is all you need. In NeurIPS, 2017."]);
+    }
+
+    #[test]
+    fn a_pdf_is_read_page_by_page_with_the_same_text() {
+        let bytes = pdf_with(&["Introduction", "We study passages."]);
+        let pages = pdf_pages(&bytes).unwrap();
+        assert_eq!(pages.len(), 1);
+        assert_eq!(
+            pages[0].split_whitespace().collect::<Vec<_>>(),
+            pdf_text(&bytes).unwrap().split_whitespace().collect::<Vec<_>>()
+        );
+        assert!(matches!(pdf_pages(b"not a pdf"), Err(Unreadable::Damaged(_) | Unreadable::Unhandled)));
+        assert_eq!(pdf_pages(&pdf_with(&[])), Err(Unreadable::NoText));
     }
 
     #[test]
