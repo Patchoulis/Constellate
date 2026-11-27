@@ -41,6 +41,9 @@ export type Confirm = (asked: Confirmation) => Promise<boolean>;
 
 const ChooseContext = createContext<Choose | null>(null);
 
+/** How long a question is shown before a click on it counts, and how long after one is answered the next opens. */
+const READ_MS = 300;
+
 /** The asker of the window: one dialog, shown for one question at a time (a second question waits for the first). */
 export function useChoose(): Choose {
 	const choose = useContext(ChooseContext);
@@ -64,29 +67,42 @@ export function useConfirm(): Confirm {
 }
 
 export function ConfirmProvider({ children }: { children: React.ReactNode }) {
-	const [asking, setAsking] = useState<Question | null>(null);
+	// the question shown, numbered (a new number is a new dialog: its focus starts on Cancel again), and when it was
+	// shown: a click that comes sooner than a person could have read it (a double click meant for the question
+	// before) is not taken as an answer
+	const [asking, setAsking] = useState<{ question: Question; number: number; at: number } | null>(null);
 	// the questions asked and their answers, the one shown first
 	const queue = useRef<{ question: Question; answer: (choice: string | null) => void }[]>([]);
+	const shown = useRef(0);
 	// what had the focus when the question was asked (the button that asked): it gets it back when the dialog
 	// closes. Kept here because the dialog may open after a request, when the focus has moved on.
 	const opener = useRef<HTMLElement | null>(null);
 
+	const show = useCallback(() => {
+		const next = queue.current[0];
+		shown.current += 1;
+		setAsking(next ? { question: next.question, number: shown.current, at: Date.now() } : null);
+	}, []);
 	const choose = useCallback(
 		(question: Question) =>
 			new Promise<string | null>((resolve) => {
 				if (queue.current.length === 0 && document.activeElement instanceof HTMLElement && document.activeElement !== document.body)
 					opener.current = document.activeElement;
 				queue.current.push({ question, answer: resolve });
-				if (queue.current.length === 1) setAsking(question);
+				if (queue.current.length === 1) show();
 			}),
-		[],
+		[show],
 	) as Choose;
 	const answer = (choice: string | null) => {
 		const first = queue.current.shift();
 		first?.answer(choice);
-		setAsking(queue.current[0]?.question ?? null);
+		setAsking(null);
+		// the next question, if one waits, opens as a dialog of its own a moment later, never under the click that
+		// answered this one
+		if (queue.current.length > 0) setTimeout(show, READ_MS);
 	};
 
+	const question = asking?.question;
 	return (
 		<ChooseContext value={choose}>
 			{children}
@@ -94,6 +110,7 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
 				<AlertDialog.Portal>
 					<AlertDialog.Overlay className="fixed inset-0 z-[60] bg-black/60" />
 					<AlertDialog.Content
+						key={asking?.number}
 						onCloseAutoFocus={(event) => {
 							const back = opener.current;
 							if (queue.current.length > 0 || !back?.isConnected) return; // another question follows, or the asker is gone
@@ -103,27 +120,28 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
 						}}
 						className="fixed inset-0 z-[70] m-auto flex h-fit max-h-[86dvh] w-[32rem] max-w-[92vw] flex-col gap-3 overflow-y-auto rounded-lg border bg-card p-4 shadow-2xl"
 					>
-						{asking && (
+						{question && (
 							<>
-								<AlertDialog.Title className="text-sm font-semibold">{asking.title}</AlertDialog.Title>
+								<AlertDialog.Title className="text-sm font-semibold">{question.title}</AlertDialog.Title>
 								<AlertDialog.Description asChild>
-									<div className="flex flex-col gap-2 text-xs leading-relaxed text-muted-foreground">{asking.body}</div>
+									<div className="flex flex-col gap-2 text-xs leading-relaxed text-muted-foreground">{question.body}</div>
 								</AlertDialog.Description>
 								<div className="flex flex-wrap justify-end gap-2 pt-1">
 									{/* the safe choice: Radix gives it the focus when the dialog opens */}
 									<AlertDialog.Cancel asChild>
-										<Button variant="outline">{asking.cancel ?? "Cancel"}</Button>
+										<Button variant="outline">{question.cancel ?? "Cancel"}</Button>
 									</AlertDialog.Cancel>
-									{asking.choices.map((choice, index) => {
-										const main = index === asking.choices.length - 1;
+									{question.choices.map((choice, index) => {
+										const main = index === question.choices.length - 1;
 										return (
 											<AlertDialog.Action key={choice.value} asChild>
 												<Button
 													variant={main ? "default" : "outline"}
 													title={choice.title}
-													className={cn(main && asking.destructive && "bg-destructive text-white hover:bg-destructive/85")}
+													className={cn(main && question.destructive && "bg-destructive text-white hover:bg-destructive/85")}
 													onClick={(event) => {
 														event.preventDefault(); // answered here, so that the dialog closes once
+														if (asking && Date.now() - asking.at < READ_MS) return; // too soon to have been read
 														answer(choice.value);
 													}}
 												>

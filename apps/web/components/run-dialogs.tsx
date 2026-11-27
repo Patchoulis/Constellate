@@ -7,7 +7,7 @@ import { useChoose } from "@/components/ui/confirm";
 import { costTitle, costWords } from "@/lib/cost";
 import { namingWords } from "@/lib/naming";
 import type { Answer, Asking, NamingOffer } from "@/lib/run-replace";
-import { replaceWords } from "@/lib/run-replace";
+import { acceptedWords, replaceWords } from "@/lib/run-replace";
 
 /** A setting by the name the settings dialog gives it. */
 const settingLabel = (setting: keyof Settings) => SETTING_LABELS[setting] ?? setting.replaceAll("_", " ");
@@ -50,7 +50,7 @@ function NamingPart({ naming }: { naming: NamingOffer }) {
 export function useAskRun(catalog: Catalog | undefined): (asking: Asking) => Promise<Answer> {
 	const choose = useChoose();
 	return useCallback(
-		async ({ replaced, naming }: Asking) => {
+		async ({ replaced, naming, accepted }: Asking) => {
 			const words = replaced ? replaceWords(replaced, settingLabel, valueLabelOf(catalog)) : null;
 			const go = replaced ? "Make it again" : "Run";
 			const choices: { value: "named" | "unnamed"; label: string; title?: string }[] =
@@ -81,6 +81,7 @@ export function useAskRun(catalog: Catalog | undefined): (asking: Asking) => Pro
 							</>
 						)}
 						{naming && <NamingPart naming={naming} />}
+						{accepted && <p>{acceptedWords(accepted)}</p>}
 					</>
 				),
 			});
@@ -90,14 +91,14 @@ export function useAskRun(catalog: Catalog | undefined): (asking: Asking) => Pro
 }
 
 /** Ask before naming a made run's communities: how many there are, how many are named, and the cost. */
-export function useAskNaming(): (estimate: DescribeEstimate, redo: boolean) => Promise<boolean> {
+export function useAskNaming(): (estimate: DescribeEstimate, redo: boolean, title: string) => Promise<boolean> {
 	const choose = useChoose();
 	return useCallback(
-		async (estimate: DescribeEstimate, redo: boolean) => {
+		async (estimate: DescribeEstimate, redo: boolean, title: string) => {
 			const words = namingWords(estimate);
 			if (!estimate.api_key_set) {
 				await choose({
-					title: "The communities cannot be named now",
+					title: `The communities of "${title}" cannot be named now`,
 					cancel: "Close",
 					choices: [],
 					body: <p>No key is set for {estimate.model}&apos;s provider. Settings, Language model, says which variable to set.</p>,
@@ -105,7 +106,7 @@ export function useAskNaming(): (estimate: DescribeEstimate, redo: boolean) => P
 				return false;
 			}
 			const answer = await choose({
-				title: redo ? "Name every community again?" : "Name the communities?",
+				title: redo ? `Name every community of "${title}" again?` : `Name the communities of "${title}"?`,
 				cancel: words.nothing ? "Close" : "Cancel",
 				choices: words.nothing
 					? []

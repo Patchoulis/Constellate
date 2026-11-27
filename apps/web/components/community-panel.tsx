@@ -350,9 +350,12 @@ export function CommunityPanel({
 	markedPapers,
 	onGoToPaper,
 	onNamed,
+	title,
 }: {
 	/** the run's communities were named: read them again */
 	onNamed: () => void;
+	/** the run's title, said in what is asked before naming its communities */
+	title: string;
 	result: RunResult;
 	roots: CommunityNode[];
 	selected: CommunityNode | null;
@@ -419,6 +422,7 @@ export function CommunityPanel({
 					onOverview={onOverview}
 					onOpenPaper={onOpenPaper}
 					onNamed={onNamed}
+					title={title}
 				/>
 			)}
 		</aside>
@@ -430,7 +434,17 @@ export function CommunityPanel({
  * what naming would cost is shown first (lib/naming.ts), the click starts the job, which is followed with its
  * progress and can be stopped, and the run's communities are read again when it ends.
  */
-function NameCommunities({ run, communities, onNamed }: { run: string; communities: Community[]; onNamed: () => void }) {
+function NameCommunities({
+	run,
+	title,
+	communities,
+	onNamed,
+}: {
+	run: string;
+	title: string;
+	communities: Community[];
+	onNamed: () => void;
+}) {
 	const askNaming = useAskNaming();
 	const [asking, setAsking] = useState(false);
 	const [refused, setRefused] = useState<string | null>(null);
@@ -443,7 +457,7 @@ function NameCommunities({ run, communities, onNamed }: { run: string; communiti
 		setAsking(true);
 		try {
 			const estimate = await api.describeEstimate(run);
-			if (!(await askNaming(estimate, false))) return;
+			if (!(await askNaming(estimate, false, title))) return;
 			await start(async () => (await api.describeRun(run, namingRequest(estimate, false))).id);
 		} catch (error) {
 			setRefused((error as Error).message);
@@ -509,11 +523,13 @@ function Communities({
 	onOverview,
 	onOpenPaper,
 	onNamed,
+	title,
 }: {
 	result: RunResult;
 	roots: CommunityNode[];
 	selected: CommunityNode | null;
 	onNamed: () => void;
+	title: string;
 	/** kept by the panel, so it survives a look at the Marked tab */
 	sort: Sort;
 	marks: MarksOf;
@@ -582,7 +598,7 @@ function Communities({
 							{sort.descending ? <ArrowDownWideNarrow /> : <ArrowUpNarrowWide />}
 						</Button>
 					</div>
-					<NameCommunities run={result.name} communities={result.communities} onNamed={onNamed} />
+					<NameCommunities run={result.name} title={title} communities={result.communities} onNamed={onNamed} />
 					<div className="min-h-0 flex-1 overflow-y-auto p-2">
 						<List nodes={roots} sort={sort} onSelect={onSelect} />
 					</div>

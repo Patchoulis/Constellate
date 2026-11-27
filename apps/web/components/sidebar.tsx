@@ -157,7 +157,7 @@ function RunForm({
 			{naming?.api_key_set && (
 				<SwitchRow
 					label="Name the communities"
-					hint={`With ${naming.model}: ${costWords(naming.estimate)} for up to ${naming.communities_at_most} communities (an estimate)`}
+					hint={`With ${naming.model}: ${costWords(naming.estimate)} for up to ${naming.communities_at_most.toLocaleString()} communities (an estimate)`}
 					checked={named}
 					onCheckedChange={setNamed}
 				/>

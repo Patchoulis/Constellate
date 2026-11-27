@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DescribeBeforeRun, RunReplaced, RunRequest, Settings } from "@rp/contracts";
 import { answered, RequestError } from "@/lib/request";
-import { type Asking, needsNaming, replacedOf, replaceWords, startRun, valueWords } from "@/lib/run-replace";
+import { acceptedWords, type Asking, needsNaming, replacedOf, replaceWords, startRun, valueWords } from "@/lib/run-replace";
 
 const replaced: RunReplaced = {
 	run: "NeurIPS-2025",
@@ -103,7 +103,7 @@ test("a run that would replace one is not made when the person cancels, and noth
 	);
 	assert.deepEqual(started, { kind: "cancelled" });
 	assert.equal(fake.sent.length, 1);
-	assert.deepEqual(asked, [{ replaced, naming: null }]);
+	assert.deepEqual(asked, [{ replaced, naming: null, accepted: null }]);
 });
 
 test("on confirm the same request is sent again with replace, and its naming as the form accepted it", async () => {
@@ -113,6 +113,26 @@ test("on confirm the same request is sent again with replace, and its naming as 
 	const started = await startRun(request, { send: fake.send, beforeRun: async () => plan(), ask: async () => "unnamed" });
 	assert.deepEqual(started, { kind: "started", namesKept: false });
 	assert.deepEqual(fake.sent[1], { ...request, replace: true });
+});
+
+test("the naming the run form accepted is said again in the dialog before the run is replaced with it", async () => {
+	const fake = engine(true);
+	const asked: Asking[] = [];
+	const describe = { provider: "anthropic" as const, model: "a-model", accepted_usd: 0.25 };
+	await startRun(
+		{ venues: ["NeurIPS 2025"], include_workshops: false, describe },
+		{
+			send: fake.send,
+			beforeRun: async () => plan(),
+			ask: async (asking) => (asked.push(asking), null),
+		},
+	);
+	assert.deepEqual(asked[0].accepted, describe);
+	assert.equal(
+		acceptedWords(describe),
+		"Its communities are then named with a-model, at most USD 0.2500, as accepted in the run form (an estimate).",
+	);
+	assert.match(acceptedWords({ provider: "anthropic", model: "m", accepted_tokens: 40_000 }), /at most 40k tokens/);
 });
 
 test("a redo that names again asks in the same dialog, and sends the most shown only when naming was chosen", async () => {

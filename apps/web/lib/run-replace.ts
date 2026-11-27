@@ -11,10 +11,10 @@
  *                                                           --go--------> send(request + replace, naming as chosen)
  *     a request that names nothing yet must first be asked about naming, unless a 409 will ask it (a redo)
  */
-import type { DescribeBeforeRun, RedoStep, RunReplaced, RunRequest, Settings } from "@rp/contracts";
-import { accepting, shownModel } from "@/lib/cost";
+import type { DescribeAccepted, DescribeBeforeRun, RedoStep, RunReplaced, RunRequest, Settings } from "@rp/contracts";
+import { accepting, DOLLAR, shownModel } from "@/lib/cost";
 import { RequestError } from "@/lib/request";
-import { count } from "@/lib/units";
+import { count, money, tokens } from "@/lib/units";
 
 /** What a 409 of `POST /api/runs` says would be replaced, or null for any other refusal (a job running, ...). */
 export function replacedOf(error: unknown): RunReplaced | null {
@@ -41,6 +41,8 @@ export type NamingOffer =
 export interface Asking {
 	replaced: RunReplaced | null;
 	naming: NamingOffer | null;
+	/** naming accepted before (the run form's estimate): said again, since the request goes on with it */
+	accepted?: DescribeAccepted | null;
 }
 
 /** "named": go ahead and name the communities at the cost shown; "unnamed": go ahead, the names as they are. */
@@ -91,7 +93,7 @@ export async function startRun(request: RunRequest, deps: StartDeps): Promise<St
 		const replaced = replacedOf(error);
 		if (!replaced) throw error;
 		const still = asked === request ? naming : null; // asked already: not asked twice
-		const answer = await deps.ask({ replaced, naming: still });
+		const answer = await deps.ask({ replaced, naming: still, accepted: still === null ? (asked.describe ?? null) : null });
 		if (answer === null) return { kind: "cancelled" };
 		const again: RunRequest = { ...chosenRequest(asked, still, answer), replace: true };
 		await deps.send(again);
@@ -100,6 +102,12 @@ export async function startRun(request: RunRequest, deps: StartDeps): Promise<St
 }
 
 // ---- what the dialog says ----
+
+/** The naming a request goes on with, accepted before (the run form): the model and the most, in its unit. */
+export function acceptedWords(accepted: DescribeAccepted): string {
+	const most = accepted.accepted_usd !== undefined ? money(accepted.accepted_usd, DOLLAR) : tokens(accepted.accepted_tokens);
+	return `Its communities are then named with ${accepted.model}, at most ${most}, as accepted in the run form (an estimate).`;
+}
 
 /** A setting's value in words: on/off, a list, "not recorded" for a run that did not record it. */
 export function valueWords(value: unknown, labelOf?: (value: string) => string | undefined): string {

@@ -82,37 +82,50 @@ export default function Home() {
 		setChosen(finished);
 		setFinishedRuns((count) => count + 1);
 	}, askRun);
+	// a start being asked about or sent: nothing else is started meanwhile (a second click would queue a second
+	// question about the same run, answered on what was true before the first)
+	const [starting, setStarting] = useState(false);
 	const start = (request: RunRequest) => {
+		if (starting) return;
+		setStarting(true);
 		setTold(null);
 		setFailed(null);
-		void startJob(request).then((started) => {
-			if (started?.kind === "started" && started.namesKept) setTold(NAMES_KEPT);
-		});
+		void startJob(request)
+			.then((started) => {
+				if (started?.kind === "started" && started.namesKept) setTold(NAMES_KEPT);
+			})
+			.finally(() => setStarting(false));
 	};
 	/** Name the open run's communities again, at the cost shown first: the run itself is not made again. */
 	const describeAgain = async (name: string) => {
+		if (starting) return;
+		setStarting(true);
 		setTold(null);
 		setFailed(null);
 		try {
 			const estimate = await api.describeEstimate(name, true);
-			if (!(await askNaming(estimate, true))) return;
+			const title = ready(runs)?.find((run) => run.name === name)?.title ?? name;
+			if (!(await askNaming(estimate, true, title))) return;
 			await api.describeRun(name, namingRequest(estimate, true));
 			follow();
 		} catch (error) {
 			setFailed((error as Error).message);
+		} finally {
+			setStarting(false);
 		}
 	};
 
 	const known = ready(runs) ?? [];
 	const current = chosen ?? known[0]?.name ?? null; // until one is picked, the most recent run is shown
 	const running = job.state === "running";
+	const busy = running || starting;
 	const log = <ActivityLog job={job} />;
 	return (
 		<div className="flex h-dvh">
 			<Sidebar
 				runs={known}
 				current={current}
-				running={running}
+				running={running} // a start being asked about is refused in `start`, not disabled: its button gets the focus back
 				library={ready(library)}
 				choosable={choosable}
 				settings={settings}
@@ -151,7 +164,13 @@ export default function Home() {
 			{current ? (
 				// every estimate on screen is for the model chosen now (lib/chosen-model.ts)
 				<ChosenModelContext value={chosenModelOf(settings)}>
-					<Workspace key={`${current}#${finishedRuns}`} name={current} catalog={ready(catalog)} model={settings?.describe_model}>
+					<Workspace
+						key={`${current}#${finishedRuns}`}
+						name={current}
+						title={known.find((run) => run.name === current)?.title ?? current}
+						catalog={ready(catalog)}
+						model={settings?.describe_model}
+					>
 						{log}
 					</Workspace>
 				</ChosenModelContext>
@@ -178,7 +197,7 @@ export default function Home() {
 				importProblems={ready(library)?.import_problems}
 				onDetectorChanged={library.reload}
 				onReadDeclarations={
-					current && !running
+					current && !busy
 						? () => {
 								setSettingsOpen(false);
 								void api.readDeclarations(current).then(follow, (error: Error) => {
@@ -189,7 +208,7 @@ export default function Home() {
 						: undefined
 				}
 				onRedo={
-					current && !running
+					current && !busy
 						? (steps) => {
 								setSettingsOpen(false); // the run's log, behind the dialog, is what to watch now
 								// naming again alone does not make the run again: its communities stay as they are
