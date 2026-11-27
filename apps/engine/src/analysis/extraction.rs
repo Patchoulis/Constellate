@@ -9,8 +9,8 @@
 //!
 //! * whole, under the call's key, by [`crate::model::batch::ask_all`] as it arrives, so that a stopped run loses
 //!   nothing and the same call is never paid for twice;
-//! * cell by cell, under each column's own key ([`cell_key`]: the model, the paper, and the column's question and
-//!   kind), so that a column added later asks only for that column, a column whose question changes asks only
+//! * cell by cell, under each column's own key ([`cell_key`]: the model, the paper and whether its PDF or only its
+//!   abstract was read ([`Read`]), and the column's question and kind), so that a column added later asks only for that column, a column whose question changes asks only
 //!   for it again, and renaming or reordering columns asks nothing.
 //!
 //! # What is shown
@@ -439,16 +439,46 @@ fn borne_out(value: Value, found: &[&str]) -> Result<Value, Unverified> {
     }
 }
 
-/// The key one cell's answer is kept under: what it depends on is the provider and model, the paper, and the
-/// column's question and kind.
-pub fn cell_key(chosen: &Chosen, paper: &str, column: &Column) -> AnswerKey {
-    chosen.key(Feature::Extraction, PROMPT, &[paper], &format!("cell {}", column.asked()))
+/// What a paper's cells were asked from. It is in their keys, so that an answer from a paper's abstract (a "not
+/// stated" above all: the abstract says little) is never shown as what its whole text says: a paper whose PDF
+/// arrives later is asked again, with all of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Read {
+    /// Its passages, read from its PDF.
+    Pdf,
+    /// Its title and abstract: it has no PDF, or one that could not be read.
+    Abstract,
 }
 
-fn cell_slot(chosen: &Chosen, paper: &str, column: &Column) -> Slot {
+impl Read {
+    /// What `reading` is asked from; `None` for a paper not in the library, which is never asked.
+    pub fn of(reading: &PaperReading) -> Option<Self> {
+        match reading {
+            PaperReading::Read(_) => Some(Self::Pdf),
+            PaperReading::NoPdf { .. } | PaperReading::Unreadable { .. } => Some(Self::Abstract),
+            PaperReading::NotInLibrary => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Pdf => "pdf",
+            Self::Abstract => "abstract",
+        }
+    }
+}
+
+/// The key one cell's answer is kept under: what it depends on is the provider and model, the paper and what of
+/// it was read, and the column's question and kind.
+pub fn cell_key(chosen: &Chosen, paper: &str, read: Read, column: &Column) -> AnswerKey {
+    let asked = format!("cell {}\nread from {}", column.asked(), read.name());
+    chosen.key(Feature::Extraction, PROMPT, &[paper], &asked)
+}
+
+fn cell_slot(chosen: &Chosen, paper: &str, read: Read, column: &Column) -> Slot {
     Slot {
         feature: Feature::Extraction,
-        key: cell_key(chosen, paper, column),
+        key: cell_key(chosen, paper, read, column),
         subject: Subject::Paper(paper.to_owned()),
     }
 }
@@ -557,6 +587,7 @@ fn answer_tokens(columns: usize) -> (u32, u32) {
 /// One paper's call: the columns it has no answer for.
 struct PaperAsk {
     paper: String,
+    read: Read,
     text: String,
     columns: Vec<Column>,
     question: String,
@@ -580,10 +611,10 @@ impl Plan {
     ) -> Result<Self, LibraryError> {
         let mut asks = Vec::new();
         for (paper, reading) in papers {
-            let Some(text) = prompt_text(reading) else { continue };
+            let (Some(read), Some(text)) = (Read::of(reading), prompt_text(reading)) else { continue };
             let mut missing = Vec::new();
             for column in columns {
-                if library.kept::<SaidCell>(Feature::Extraction, &cell_key(chosen, paper, column))?.is_none() {
+                if library.kept::<SaidCell>(Feature::Extraction, &cell_key(chosen, paper, read, column))?.is_none() {
                     missing.push(column);
                 }
             }
@@ -591,13 +622,16 @@ impl Plan {
                 continue;
             }
             let question = question(&missing);
+            // what was read is in the whole answer's key too, or an abstract's answer kept under it would be found
+            // again (and kept as the PDF's cells) once the PDF arrives
+            let asked = format!("row {question}\nread from {}", read.name());
             let slot = Slot {
                 feature: Feature::Extraction,
-                key: chosen.key(Feature::Extraction, PROMPT, &[paper], &format!("row {question}")),
+                key: chosen.key(Feature::Extraction, PROMPT, &[paper], &asked),
                 subject: Subject::Paper((*paper).to_owned()),
             };
             let columns = missing.into_iter().cloned().collect();
-            asks.push(PaperAsk { paper: (*paper).to_owned(), text, columns, question, slot });
+            asks.push(PaperAsk { paper: (*paper).to_owned(), read, text, columns, question, slot });
         }
         Ok(Self { chosen: chosen.clone(), schema: schema(), asks })
     }
@@ -720,27 +754,28 @@ pub fn run(asking: Asking<'_>, plan: &Plan, budget: &Budget, tracker: &Tracker<'
             // same kept answer; a redo asks it again
             let omitted = SaidCell { column: column.id.clone(), status: OMITTED.to_owned(), ..SaidCell::default() };
             let cell = said.cells.iter().find(|cell| cell.column.trim() == column.id).unwrap_or(&omitted);
-            library.keep(&cell_slot(&plan.chosen, &ask.paper, column), &model, PROMPT, cell)?;
+            library.keep(&cell_slot(&plan.chosen, &ask.paper, ask.read, column), &model, PROMPT, cell)?;
         }
     }
     Ok(ran)
 }
 
-/// For each paper, each column's kept answer, if it has one (read from the library: one thread).
+/// For each paper, each column's kept answer from what of it was read, if it has one (read from the library: one
+/// thread).
 pub fn kept_cells(
     library: &Library,
     chosen: &Chosen,
     columns: &[Column],
-    papers: &[&str],
+    papers: &[(&str, Read)],
 ) -> Result<Vec<Vec<Option<SaidCell>>>, LibraryError> {
     papers
         .iter()
-        .map(|paper| {
+        .map(|(paper, read)| {
             columns
                 .iter()
                 .map(|column| {
                     Ok(library
-                        .kept::<SaidCell>(Feature::Extraction, &cell_key(chosen, paper, column))?
+                        .kept::<SaidCell>(Feature::Extraction, &cell_key(chosen, paper, *read, column))?
                         .map(|kept| kept.answer))
                 })
                 .collect()
@@ -1027,8 +1062,11 @@ mod tests {
     }
 
     fn table(library: &Library, columns: &[Column]) -> Vec<Vec<Cell>> {
-        let kept = kept_cells(library, &Chosen::claude(MODEL), columns, &PAPERS).unwrap();
-        let texts = library.paper_texts(&PAPERS).unwrap().into_iter().map(PaperReading::into_text).collect();
+        let readings = library.paper_texts(&PAPERS).unwrap();
+        let read: Vec<(&str, Read)> =
+            PAPERS.iter().zip(&readings).map(|(paper, reading)| (*paper, Read::of(reading).unwrap())).collect();
+        let kept = kept_cells(library, &Chosen::claude(MODEL), columns, &read).unwrap();
+        let texts = readings.into_iter().map(PaperReading::into_text).collect();
         checked_rows(&PAPERS, columns, kept, texts)
     }
 
@@ -1168,6 +1206,27 @@ mod tests {
         library.forget(Feature::Extraction, &[Subject::Paper("p2".to_owned())]).unwrap();
         let (redo, _) = plan(&library, &columns);
         assert_eq!(redo.asks.iter().map(|ask| ask.paper.as_str()).collect::<Vec<_>>(), ["p2"]);
+    }
+
+    #[test]
+    fn a_paper_asked_from_its_abstract_is_asked_again_with_its_whole_text_once_its_pdf_arrives() {
+        let (_folder, library) = library();
+        let columns = columns();
+        let (plan_once, _) = plan(&library, &columns);
+        let model = model();
+        ask(&library, &model, &plan_once, &plenty());
+        assert!(table(&library, &columns)[2].iter().all(|cell| *cell == Cell::NotStated), "from its abstract");
+
+        // p3's PDF arrives: its abstract's "not stated" is not what its whole text says
+        library.keep_pdf("p3", &pdf_with(&P1)).unwrap();
+        assert!(table(&library, &columns)[2].iter().all(|cell| *cell == Cell::NotAsked), "not shown as the PDF's");
+        let (again, _) = plan(&library, &columns);
+        assert_eq!(again.asks.iter().map(|ask| ask.paper.as_str()).collect::<Vec<_>>(), ["p3"]);
+        assert_eq!(again.asks[0].columns.len(), columns.len(), "every column, from the whole text");
+        assert!(again.asks[0].text.contains("[p. 1] "));
+        ask(&library, &model, &again, &plenty());
+        assert_eq!(model.sent().len(), 4, "asked, not found again under the abstract's whole answer");
+        assert!(matches!(&table(&library, &columns)[2][0], Cell::Stated { .. }));
     }
 
     #[test]

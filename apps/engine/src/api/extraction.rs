@@ -31,8 +31,8 @@ use serde_json::Value as JsonValue;
 
 use super::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::analysis::extraction::{
-    self, Cell, Column, LeftOut, MOST_PAPERS, Plan, SAMPLE, by_centrality, check_columns, checked_rows,
-    default_columns, extrapolate, kept_cells, prompt_text,
+    self, Cell, Column, LeftOut, MOST_PAPERS, Plan, Read, SAMPLE, SaidCell, by_centrality, check_columns,
+    checked_rows, default_columns, extrapolate, kept_cells, prompt_text,
 };
 use crate::evidence::PaperText;
 use crate::jobs::{Finished, Tracker};
@@ -315,15 +315,30 @@ fn table_of(engine: &Shared, run: &str, scope: &Scope) -> Result<Table, ApiError
     let columns = columns_of(&library, run)?;
     let ids = borrowed(&ordered);
     let records = library.papers(&ids)?;
-    let kept = kept_cells(&library, &chosen, &columns, &ids)?;
+    // what is kept from either reading: which one is shown is known only once the paper is read
+    let of = |read: Read| ids.iter().map(|id| (*id, read)).collect::<Vec<_>>();
+    let from_pdf = kept_cells(&library, &chosen, &columns, &of(Read::Pdf))?;
+    let from_abstract = kept_cells(&library, &chosen, &columns, &of(Read::Abstract))?;
     // only the papers with something kept are read: their quotes are checked against their text
-    let answered = |cells: &[Option<_>]| cells.iter().any(Option::is_some);
-    let asked: Vec<&str> = ids.iter().zip(&kept).filter(|(_, cells)| answered(cells)).map(|(id, _)| *id).collect();
+    let answered: Vec<bool> = from_pdf
+        .iter()
+        .zip(&from_abstract)
+        .map(|(pdf, abstract_only)| pdf.iter().chain(abstract_only).any(Option::is_some))
+        .collect();
+    let asked: Vec<&str> = ids.iter().zip(&answered).filter(|(_, answered)| **answered).map(|(id, _)| *id).collect();
     let mut readings = library.paper_texts(&asked)?.into_iter();
     let mut texts: Vec<Option<PaperText>> = Vec::with_capacity(ids.len());
     let mut kinds: Vec<Text> = Vec::with_capacity(ids.len());
-    for ((id, cells), record) in ids.iter().zip(&kept).zip(&records) {
-        let reading = if answered(cells) { readings.next() } else { None };
+    let mut kept: Vec<Vec<Option<SaidCell>>> = Vec::with_capacity(ids.len());
+    let pairs = from_pdf.into_iter().zip(from_abstract).zip(answered);
+    for ((id, record), ((pdf, abstract_only), answered)) in ids.iter().zip(&records).zip(pairs) {
+        let reading = if answered { readings.next() } else { None };
+        // the cells of the paper as it reads now: an abstract's answers are not the PDF's
+        kept.push(match reading.as_ref().and_then(Read::of) {
+            Some(Read::Pdf) => pdf,
+            Some(Read::Abstract) => abstract_only,
+            None => vec![None; columns.len()],
+        });
         let kind = match (&reading, record) {
             (_, None) | (Some(PaperReading::NotInLibrary), _) => Text::NotInLibrary,
             (Some(PaperReading::Read(_)), _) => Text::Pdf,
@@ -447,15 +462,23 @@ fn costing(engine: &Shared, run: &str, scope: &Scope, part: Part) -> Result<Cost
         _ => (TYPICAL_CHARACTERS, Basis::Typical { characters: TYPICAL_CHARACTERS }),
     };
     let rest = borrowed(part_of(&ordered, Part::Rest));
-    let kept = kept_cells(&library, &chosen, &columns, &rest)?;
+    // a paper with a PDF is taken to be read from it (one that cannot be read is then reckoned at more than its
+    // abstract costs: never less)
+    let with_pdf: Vec<bool> = rest.iter().map(|id| library.pdf_file(id).is_file()).collect();
+    let read: Vec<(&str, Read)> = rest
+        .iter()
+        .zip(&with_pdf)
+        .map(|(id, pdf)| (*id, if *pdf { Read::Pdf } else { Read::Abstract }))
+        .collect();
+    let kept = kept_cells(&library, &chosen, &columns, &read)?;
     let records = library.papers(&rest)?;
     let mut characters = Vec::new();
-    for ((id, cells), record) in rest.iter().zip(&kept).zip(records) {
+    for ((pdf, cells), record) in with_pdf.iter().zip(&kept).zip(records) {
         let Some(record) = record else { continue };
         if cells.iter().all(Option::is_some) {
             continue;
         }
-        characters.push(if library.pdf_file(id).is_file() {
+        characters.push(if *pdf {
             typical
         } else {
             let reading = PaperReading::NoPdf { title: record.title, abstract_text: record.r#abstract };
@@ -586,7 +609,7 @@ mod tests {
     use super::super::config::{Environment, Listen};
     use super::super::routes::Engine;
     use super::super::tests::served;
-    use crate::analysis::extraction::{SaidCell, cell_key, default_columns};
+    use crate::analysis::extraction::{Read, SaidCell, cell_key, default_columns};
     use crate::library::papers::tests::paper;
     use crate::library::passages::fixtures::pdf_with;
     use crate::library::{Feature, Known, Library, Slot, Subject};
@@ -679,13 +702,13 @@ mod tests {
         ask(router, "POST", path, Some(body.to_string())).await
     }
 
-    /// Keep the model's answer for one default column of one paper, as a run would have.
+    /// Keep the model's answer for one default column of one paper with a PDF, as a run would have.
     fn keep(data: &tempfile::TempDir, paper: &str, column: &str, said: SaidCell) {
         let library = Library::open(&data.path().join("library")).unwrap();
         let column = default_columns().into_iter().find(|one| one.id == column).unwrap();
         let slot = Slot {
             feature: Feature::Extraction,
-            key: cell_key(&crate::model::chosen::Chosen::claude(MODEL), paper, &column),
+            key: cell_key(&crate::model::chosen::Chosen::claude(MODEL), paper, Read::Pdf, &column),
             subject: Subject::Paper(paper.to_owned()),
         };
         library.keep(&slot, MODEL, super::extraction::PROMPT, &said).unwrap();
