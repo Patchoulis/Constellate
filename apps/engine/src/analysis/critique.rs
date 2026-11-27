@@ -54,6 +54,7 @@ use crate::library::{Feature, Kept, KeptReviews, Library, LibraryError, ReviewPa
 use crate::model::batch::{self, Asking, BatchEstimate, Item, Outcome};
 use crate::model::chosen::Chosen;
 use crate::model::language::{Ask, Budget, Form};
+use crate::text::data_section;
 use crate::text::discussion::{Discussion, Kind, Score, Span};
 use crate::text::passages::{Address, Kind as PassageKind, Passages, chars_of};
 use crate::text::review_points::{Attachment, Concern, review_points};
@@ -63,7 +64,7 @@ use super::reviews::{Scale, scale, venue_of};
 
 /// The version of the prompt and the answer's shape: raise it when either changes, and kept answers are asked for
 /// again.
-pub const PROMPT: u32 = 1;
+pub const PROMPT: u32 = 2;
 /// The most the answer may take, thinking included: a few dozen short entries with quotes.
 pub const MAX_TOKENS: u32 = 12_000;
 /// What an answer is likely to take, for the estimate.
@@ -147,7 +148,8 @@ impl WeaknessKind {
 // ------------------------------------------------------------------------------------------------ the prompt
 
 /// The instructions: the same for every paper, so cached with it. Written for any capable model, not one vendor's.
-pub const SYSTEM: &str = "You read one research paper. Its text is given paragraph by paragraph, each marked with \
+pub const SYSTEM: &str = concat!(
+    "You read one research paper. Its text is given paragraph by paragraph, each marked with \
 its page and section. You answer with one JSON object in exactly the shape asked for, and nothing else.
 
 Rules for every quote: copy it word for word from the paper's text given (not from the reviewers' points), at \
@@ -168,7 +170,11 @@ few and well founded; leave the list empty if nothing stands out. Each has a \"k
 \"weakness\" (one plain sentence, without exaggeration), \"quote\" (the claim or passage of the paper it is about) \
 and \"absent_terms\": when the weakness says something is missing from the paper (no ablation, no baseline, no \
 variance, a detail not given), the words or short phrases that would appear in the paper if it were there, such as \
-\"ablation\" or \"standard deviation\"; otherwise an empty list.";
+\"ablation\" or \"standard deviation\"; otherwise an empty list.
+
+",
+    crate::text::data_rule!()
+);
 
 /// A reviewer's point as it is asked about: its id in the prompt and what it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -214,12 +220,12 @@ pub fn paper_prompt(passages: &Passages) -> (String, Option<usize>) {
         };
         let added = line.chars().count();
         if length + added > LONGEST_PAPER {
-            return (text, Some(length));
+            return (data_section("PAPER", &text), Some(length));
         }
         length += added;
         text.push_str(&line);
     }
-    (text, None)
+    (data_section("PAPER", &text), None)
 }
 
 /// The question: the reviewers' points, numbered, or that there are none.
@@ -228,12 +234,13 @@ pub fn question(points: &[Asked]) -> String {
         return "No reviews of this paper are available: answer \"points\" with an empty list, and give part 2."
             .to_owned();
     }
-    let mut question = String::from("The reviewers' points, each with its id:\n");
+    let mut listed = String::from("The reviewers' points, each with its id:\n");
     for point in points {
         let words = point.text.split_whitespace().collect::<Vec<_>>().join(" ");
         let cut: String = words.chars().take(POINT_CHARS).collect();
-        question.push_str(&format!("[{}] ({}) {}\n", point.id, point.label, cut));
+        listed.push_str(&format!("[{}] ({}) {}\n", point.id, point.label, cut));
     }
+    let mut question = data_section("POINTS", &listed);
     question.push_str("\nAnswer part 1 for every id above, and give part 2.");
     question
 }
@@ -360,15 +367,66 @@ pub enum Location {
     NoPassage,
 }
 
-/// The model's reading of one reviewer's point.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// What the model's reading of one reviewer's point holds: a place for it, the paper's response to it, or both,
+/// but never neither (a reading with nothing found in the paper is no reading, and is not shown).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PointFound {
+    /// Where the point applies (a passage found in the paper, or the answer that there is none), and the paper's
+    /// response when one was found.
+    Placed { location: Location, paper_says: Option<Evidence> },
+    /// The model's place for the point was not found in the paper (or contradicted its own response): only the
+    /// paper's response, found, is shown.
+    Responded { paper_says: Evidence },
+}
+
+/// The model's reading of one reviewer's point. `PointReading` in the contracts: `location` is null exactly when
+/// `paper_says` is not.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PointReading {
     /// The point's id ("p3").
     pub point: String,
-    /// None when the model's quote of the place was not found in the paper.
-    pub location: Option<Location>,
+    pub found: PointFound,
+}
+
+impl PointReading {
+    /// A reading of `point` from what was found of it, if anything was.
+    pub fn of(point: String, location: Option<Location>, paper_says: Option<Evidence>) -> Option<Self> {
+        let found = match (location, paper_says) {
+            (Some(location), paper_says) => PointFound::Placed { location, paper_says },
+            (None, Some(paper_says)) => PointFound::Responded { paper_says },
+            (None, None) => return None,
+        };
+        Some(Self { point, found })
+    }
+
+    /// Where the point applies; none when the model's place for it was not found in the paper.
+    pub fn location(&self) -> Option<&Location> {
+        match &self.found {
+            PointFound::Placed { location, .. } => Some(location),
+            PointFound::Responded { .. } => None,
+        }
+    }
+
     /// What the paper says that responds to the point, found in the paper; shown as the paper's words only.
-    pub paper_says: Option<Evidence>,
+    pub fn paper_says(&self) -> Option<&Evidence> {
+        match &self.found {
+            PointFound::Placed { paper_says, .. } => paper_says.as_ref(),
+            PointFound::Responded { paper_says } => Some(paper_says),
+        }
+    }
+}
+
+/// As the interface reads it: `{point, location, paper_says}`, either of the two null but not both.
+impl Serialize for PointReading {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            point: &'a str,
+            location: Option<&'a Location>,
+            paper_says: Option<&'a Evidence>,
+        }
+        Wire { point: &self.point, location: self.location(), paper_says: self.paper_says() }.serialize(serializer)
+    }
 }
 
 /// Whether a weakness says something is absent, and what a search of the paper's text found.
@@ -409,6 +467,8 @@ pub struct LeftOut {
     pub beyond_limit: usize,
     /// Weaknesses worded as a judgement of the paper (accept, reject, a score): this section gives none.
     pub verdict: usize,
+    /// Points asked about that the answer has no entry for, in the shape asked: they have no reading at all.
+    pub not_answered: usize,
 }
 
 /// The model's answer, checked: what is shown.
@@ -494,11 +554,13 @@ static ABSENT: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Wording that judges the paper as a whole: the prompt forbids it, and the reviewers' text in the prompt (from a
-/// page anyone could write on) might ask for it, so it is refused here too.
+/// page anyone could write on) might ask for it, so it is refused here too. A score or a rating counts only with a
+/// number, and "accepted" only as "be accepted": a paper's own scores (accuracy, F1) and an accepted practice are
+/// what weaknesses are about.
 static VERDICT: LazyLock<Regex> = LazyLock::new(|| {
     #[allow(clippy::unwrap_used)] // a pattern written here either always compiles or never does: the tests say which
     Regex::new(
-        r"(?i)\b(?:accept(?:ed|ance|able)?|reject(?:ed|ion)?|verdict|scores?|scored|rating|rated|recommend(?:s|ed|ation)?)\b|\b\d+(?:\.\d+)?\s*(?:/|out of)\s*10\b",
+        r"(?i)\b(?:accept(?:ance)?|reject(?:ed|ion)?|verdict|recommend(?:s|ed|ation)?)\b|\b(?:be|been)\s+accepted\b|\b(?:scores?|scored|rating|rated)\s*(?:of|:|=|at)?\s*\d|\b\d+(?:\.\d+)?\s*(?:/|out of)\s*10\b",
     )
     .unwrap()
 });
@@ -516,6 +578,7 @@ pub fn read(said: &Said, paper: &str, papers: &Papers, ids: &[String]) -> Readin
             Ok(Ok(entry)) => points.push(Some(entry)),
         }
     }
+    left_out.not_answered = ids.len().saturating_sub(seen.len());
     let mut weaknesses: Vec<WeaknessEntry> = Vec::new();
     for entry in &said.weaknesses {
         match weakness_entry(entry) {
@@ -561,8 +624,8 @@ pub fn read(said: &Said, paper: &str, papers: &Papers, ids: &[String]) -> Readin
             }
             location => location,
         };
-        if location.is_some() || paper_says.is_some() {
-            readings.push((entry.point, PointReading { point: ids[entry.point].clone(), location, paper_says }));
+        if let Some(reading) = PointReading::of(ids[entry.point].clone(), location, paper_says) {
+            readings.push((entry.point, reading));
         }
     }
     readings.sort_by_key(|(point, _)| *point);
@@ -892,7 +955,7 @@ pub(crate) mod tests {
         let plan =
             Plan::new("neurips-2023-1", &Chosen::claude("claude-sonnet-5-5"), &passages(PAPER), Some(&discussion));
         assert!(
-            plan.shared.starts_with("The paper's text:\n[p. 1 | 1. Introduction] 1. Introduction\n"),
+            plan.shared.starts_with("<<<BEGIN PAPER>>>\nThe paper's text:\n[p. 1 | 1. Introduction] 1. Introduction\n"),
             "{}",
             plan.shared
         );
@@ -900,11 +963,12 @@ pub(crate) mod tests {
         assert_eq!(plan.cut, None);
         assert_eq!(
             plan.question,
-            "The reviewers' points, each with its id:\n\
+            "<<<BEGIN POINTS>>>\nThe reviewers' points, each with its id:\n\
              [p1] (Reviewer aBcD, Weaknesses) The experiments are limited to two small benchmarks. The baselines are weak, and an ablation study is missing.\n\
              [p2] (Reviewer aBcD, Questions) How does the rule behave with sixty-four experts?\n\
              [p3] (Reviewer eFgH, Weaknesses) The experiments are limited and the baselines are weak. The ablation study does not isolate the rule.\n\
              [p4] (Reviewer eFgH, Questions) Why were larger models not tried?\n\
+             <<<END POINTS>>>\n\
              \nAnswer part 1 for every id above, and give part 2."
         );
         let item = plan.item();
@@ -931,8 +995,11 @@ pub(crate) mod tests {
     fn a_long_paper_is_cut_and_says_where() {
         let long: String = (0..12_000).map(|n| format!("Paragraph {n} says something about the rule.\n\n")).collect();
         let (text, cut) = paper_prompt(&passages(&long));
-        assert!(text.chars().count() <= LONGEST_PAPER);
-        assert_eq!(cut, Some(text.chars().count()));
+        let inside = text.strip_prefix("<<<BEGIN PAPER>>>\n").and_then(|rest| rest.strip_suffix("<<<END PAPER>>>\n"));
+        let inside = inside.unwrap();
+        assert!(inside.chars().count() <= LONGEST_PAPER);
+        assert_eq!(cut, Some(inside.chars().count()), "the paper's text, as cut, is all its section holds");
+        assert!(SYSTEM.ends_with(crate::text::data_rule!()), "the system prompt says the sections are data");
     }
 
     #[test]
@@ -965,19 +1032,72 @@ pub(crate) mod tests {
         let reading = read(&answer, "p", &cite, &ids(5));
         let read_points: Vec<&str> = reading.points.iter().map(|point| point.point.as_str()).collect();
         assert_eq!(read_points, ["p1", "p2", "p5"]);
-        assert_eq!(reading.points[2].location, None);
-        assert!(reading.points[2].paper_says.is_some());
-        let Some(Location::Passage { evidence }) = &reading.points[0].location else { panic!() };
+        assert_eq!(reading.points[2].location(), None);
+        assert!(reading.points[2].paper_says().is_some());
+        let Some(Location::Passage { evidence }) = reading.points[0].location() else { panic!() };
         assert_eq!(evidence.paper(), "p");
         assert!(evidence.address().is_some());
-        assert!(reading.points[0].paper_says.as_ref().unwrap().quote().starts_with("In response to the reviews"));
-        assert_eq!(reading.points[1].location, Some(Location::NoPassage));
+        assert!(reading.points[0].paper_says().unwrap().quote().starts_with("In response to the reviews"));
+        assert_eq!(reading.points[1].location(), Some(&Location::NoPassage));
+        // "no passage" is told as such, never as a place
+        let told = serde_json::to_value(&reading.points[1]).unwrap();
+        assert_eq!(told, json!({"point": "p2", "location": {"kind": "no_passage"}, "paper_says": null}));
         assert_eq!(reading.weaknesses.len(), 1);
         assert_eq!(reading.weaknesses[0].absence, Absence::NotClaimed);
         assert_eq!(
             reading.left_out,
-            LeftOut { not_in_paper: 3, malformed: 4, unknown_point: 2, beyond_limit: 0, verdict: 1 }
+            LeftOut { not_in_paper: 3, malformed: 4, unknown_point: 2, beyond_limit: 0, verdict: 1, not_answered: 0 }
         );
+    }
+
+    #[test]
+    fn points_asked_about_that_the_answer_leaves_out_are_counted_as_not_answered() {
+        let answer = said(json!({
+            "points": [{"point": "p2", "located": "no_passage", "quote": "", "paper_says": ""},
+                       {"point": "p2", "located": "no_passage", "quote": "", "paper_says": ""}],
+            "weaknesses": []
+        }));
+        let reading = read(&answer, "p", &papers(), &ids(4));
+        assert_eq!(reading.points.len(), 1);
+        assert_eq!((reading.left_out.not_answered, reading.left_out.unknown_point), (3, 1), "p1, p3 and p4");
+    }
+
+    #[test]
+    fn a_weakness_about_scores_or_an_accepted_practice_is_kept_and_only_a_verdict_is_left_out() {
+        for kept in [
+            "The accuracy scores come from a single run, with no variance.",
+            "A widely accepted baseline, hash routing, is missing.",
+            "The rating of each expert by the router is not explained.",
+            "Results are rated by one annotator only.",
+        ] {
+            assert!(!VERDICT.is_match(kept), "{kept}");
+        }
+        for verdict in [
+            "The paper should be rejected, 3/10.",
+            "It should be accepted.",
+            "I recommend acceptance.",
+            "Reject.",
+            "A score of 4 is fair.",
+            "My rating: 3.",
+            "The overall verdict is negative.",
+        ] {
+            assert!(VERDICT.is_match(verdict), "{verdict}");
+        }
+    }
+
+    #[test]
+    fn a_points_reading_has_a_place_or_the_papers_response_and_is_none_with_neither() {
+        let response = Evidence::at("p", &passages(PAPER), &passages(PAPER).passages[1].address).unwrap();
+        assert_eq!(PointReading::of("p1".into(), None, None), None, "nothing found: no reading");
+        let responded = PointReading::of("p1".into(), None, Some(response.clone())).unwrap();
+        assert_eq!((responded.location(), responded.paper_says()), (None, Some(&response)));
+        let told = serde_json::to_value(&responded).unwrap();
+        assert_eq!((told["location"].clone(), told["paper_says"]["paper"].clone()), (Value::Null, json!("p")));
+        let placed = PointReading::of("p2".into(), Some(Location::NoPassage), None).unwrap();
+        assert_eq!((placed.location(), placed.paper_says()), (Some(&Location::NoPassage), None));
+        let both =
+            PointReading::of("p3".into(), Some(Location::Passage { evidence: response.clone() }), Some(response));
+        assert!(matches!(both.unwrap().found, PointFound::Placed { paper_says: Some(_), .. }));
     }
 
     #[test]

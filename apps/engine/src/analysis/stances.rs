@@ -37,11 +37,13 @@ use crate::model::batch::Item;
 use crate::model::chosen::Chosen;
 use crate::model::language::{Ask, Form};
 use crate::text::passages::{Kind, Match, Part, Passages};
+use crate::text::words;
+use crate::text::{data_section, first_chars};
 
 /// The version of the per-paper prompt and answer: raised when either changes, so kept answers are asked again.
-pub const PROMPT: u32 = 1;
+pub const PROMPT: u32 = 2;
 /// The version of the prompt that proposes questions.
-pub const PROPOSE_PROMPT: u32 = 1;
+pub const PROPOSE_PROMPT: u32 = 2;
 /// Papers asked first, before the user decides whether to ask the rest.
 pub const SAMPLE: usize = 10;
 /// A question's length in characters: one sentence.
@@ -66,14 +68,17 @@ pub const PROPOSE_MAX_TOKENS: u32 = 6_000;
 pub const PROPOSE_LIKELY_TOKENS: u32 = 2_500;
 
 /// The instructions of every placement: the same for every paper and question, so cached with the prefix.
-pub const SYSTEM: &str = "You read one research paper and say where it stands on a yes/no research question. \
+pub const SYSTEM: &str = concat!(
+    "You read one research paper and say where it stands on a yes/no research question. \
 Answer only from the paper's text given; never from what you know of other work. A paper supports the question when \
 its own findings or claims say yes; it is mixed when it says yes only under a condition, or yes in some settings \
 and no in others (then state that condition in one sentence of your own); it contradicts the question when its \
 findings say no; and it does not address the question when it takes no position on it, which is the common case \
 and the right answer when in doubt. For every position other than not addressed, copy one to three passages word \
 for word from the paper's text that show the position: whole clauses, not fragments, never paraphrased. Reply \
-with JSON only.";
+with JSON only. ",
+    crate::text::data_rule!()
+);
 
 /// Where a paper stands, as the model is asked to say it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -209,6 +214,7 @@ pub struct Prepared {
 /// The passages a position is read from: running text, headings and captions of the front matter and body.
 fn sent(passages: &Passages) -> String {
     let mut text = String::from("The paper's text, read from its PDF (front matter and body; appendices left out):\n");
+    let mut sent_any = false;
     for passage in &passages.passages {
         let kept = matches!(passage.part, Part::Front | Part::Body)
             && matches!(
@@ -220,19 +226,30 @@ fn sent(passages: &Passages) -> String {
         }
         let line = format!("[p. {}] {}\n", passage.address.page, passage.text.trim());
         if text.len() + line.len() > PAPER_CHARS {
+            // cut at a passage; but a paper whose first passage is longer than the limit (a PDF read as one
+            // block) is sent what fits of it, not its heading alone
+            if !sent_any {
+                let room = crate::text::floor_boundary(&line, PAPER_CHARS.saturating_sub(text.len()));
+                text.push_str(&line[..room]);
+                text.push('\n');
+            }
             text.push_str("[the rest of the paper is left out]\n");
             break;
         }
         text.push_str(&line);
+        sent_any = true;
     }
-    text
+    data_section("PAPER", &text)
 }
 
 fn record(title: &str, abstract_text: &str) -> String {
-    format!(
-        "The paper's title and abstract (its full text is not available):\nTitle: {}\nAbstract: {}\n",
-        title.trim(),
-        abstract_text.trim()
+    data_section(
+        "PAPER",
+        &format!(
+            "The paper's title and abstract (its full text is not available):\nTitle: {}\nAbstract: {}\n",
+            title.trim(),
+            first_chars(abstract_text.trim(), PAPER_CHARS)
+        ),
     )
 }
 
@@ -321,7 +338,7 @@ pub fn answer_key(chosen: &Chosen, paper: &str, read: Read, key_question: &str) 
     chosen.key(Feature::Stances, PROMPT, &[paper], &format!("{key_question}\nread from {from}"))
 }
 
-/// Words that say nothing about what a question or a paper is about.
+/// Words that say nothing about what a question or a paper is about, besides [`words::STOP_WORDS`].
 const STOPWORDS: &[&str] = &[
     "a",
     "about",
@@ -451,28 +468,26 @@ const STOPWORDS: &[&str] = &[
 ];
 
 /// A word folded so that its plural and its common endings meet: "models" and "model", "training" and "train".
+/// A plural folded as every lexical matcher folds it ([`crate::text::words::singular`]), and here also "-ing" and
+/// "-ed" cut, which a yes/no question's verbs need ("does training on X help" and "trained on X").
 fn stem(word: &str) -> String {
-    let word = word.to_lowercase();
     let cut = |suffix: &str, keep: usize| {
         word.strip_suffix(suffix).filter(|stem| stem.chars().count() >= keep).map(str::to_owned)
     };
-    if let Some(stem) = cut("ies", 3) {
-        return format!("{stem}y");
+    if word.ends_with("ies") {
+        return words::singular(word);
     }
-    cut("ing", 4)
-        .or_else(|| cut("ed", 4))
-        .or_else(|| (!word.ends_with("ss")).then(|| cut("s", 3)).flatten())
-        .unwrap_or(word)
+    cut("ing", 4).or_else(|| cut("ed", 4)).unwrap_or_else(|| words::singular(word))
 }
 
 /// The words of a text that can say what it is about, folded, in order (for word pairs).
 fn content_words(text: &str) -> Vec<Option<String>> {
-    text.split(|c: char| !c.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .map(|word| {
-            let lower = word.to_lowercase();
+    words::split(text)
+        .into_iter()
+        .map(|lower| {
             let useful = lower.chars().count() >= 3
                 && !STOPWORDS.contains(&lower.as_str())
+                && !words::is_stop_word(&lower)
                 && !lower.chars().all(|c| c.is_ascii_digit());
             useful.then(|| stem(&lower))
         })
@@ -499,8 +514,9 @@ fn words_of(record: &Record<'_>) -> HashSet<String> {
 /// Which papers could be about a question: what the pre-filter found.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Relevance {
-    /// The question's words the papers were looked at for: those not in most of the papers (a word every paper
-    /// uses tells none apart), or all of them when every one is that common.
+    /// The question's words the papers were looked at for: those in some of the papers but not in most (a word
+    /// every paper uses, or none does, tells none apart); when none is, those some paper uses; when none is
+    /// used, all of them.
     pub terms: Vec<String>,
     /// By paper, in the order given: does its title or abstract have one of `terms`? All true when the question
     /// has no word to look for.
@@ -517,8 +533,23 @@ pub fn relevance(question: &str, records: &[Record<'_>]) -> Relevance {
     }
     let words: Vec<HashSet<String>> = records.par_iter().map(words_of).collect();
     let share = |term: &String| words.iter().filter(|paper| paper.contains(term)).count() as f64 / words.len() as f64;
-    let distinctive: Vec<String> = terms.iter().filter(|term| share(term) < 0.5).cloned().collect();
-    let terms = if distinctive.is_empty() { terms } else { distinctive };
+    // a word no paper uses tells none apart either: looked for alone, it would skip every paper
+    let distinctive: Vec<String> = terms
+        .iter()
+        .filter(|term| {
+            let share = share(term);
+            share > 0.0 && share < 0.5
+        })
+        .cloned()
+        .collect();
+    let used: Vec<String> = terms.iter().filter(|term| share(term) > 0.0).cloned().collect();
+    let terms = if !distinctive.is_empty() {
+        distinctive
+    } else if !used.is_empty() {
+        used
+    } else {
+        terms
+    };
     let related = words.par_iter().map(|paper| terms.iter().any(|term| paper.contains(term))).collect();
     Relevance { terms, related }
 }
@@ -620,21 +651,16 @@ pub fn recurring_terms(community: &[Record<'_>], run: &[Record<'_>], most: usize
     chosen.into_iter().map(|(recurring, _)| recurring).collect()
 }
 
-/// `members` (indices of a graph's nodes) most central first: by the summed similarity of their links to the
-/// other members, ties by `ids` so the order is the same every time.
+/// `members` (indices of a graph's nodes, `ids` its ids) most central first, as
+/// [`crate::analysis::links::central_first`] orders the papers of a set, each once.
 pub fn central_first(members: &[usize], edges: &[(usize, usize, f64)], ids: &[String]) -> Vec<usize> {
-    let inside: HashSet<usize> = members.iter().copied().collect();
-    let mut weight: HashMap<usize, f64> = members.iter().map(|member| (*member, 0.0)).collect();
-    for &(a, b, similarity) in edges {
-        if a != b && inside.contains(&a) && inside.contains(&b) {
-            *weight.entry(a).or_default() += similarity;
-            *weight.entry(b).or_default() += similarity;
-        }
-    }
-    let mut ordered: Vec<usize> = inside.into_iter().collect();
-    let id = |index: usize| ids.get(index).map_or("", String::as_str);
-    ordered.sort_by(|a, b| weight[b].total_cmp(&weight[a]).then_with(|| id(*a).cmp(id(*b))));
-    ordered
+    let index_of: HashMap<&str, usize> =
+        members.iter().filter_map(|&member| ids.get(member).map(|id| (id.as_str(), member))).collect();
+    let papers: Vec<String> = index_of.keys().map(|id| (*id).to_owned()).collect();
+    crate::analysis::links::central_first(&papers, ids, edges)
+        .iter()
+        .filter_map(|id| index_of.get(id.as_str()).copied())
+        .collect()
 }
 
 /// The model's proposal of a question, as it is kept.
@@ -643,16 +669,24 @@ pub struct Proposals {
     pub questions: Vec<Claim<String>>,
 }
 
-pub const PROPOSE_SYSTEM: &str = "You read the abstracts of a group of research papers and find the yes/no research \
-questions on which several of them take a position. Use only the abstracts given. Reply with JSON only.";
+pub const PROPOSE_SYSTEM: &str = concat!(
+    "You read the abstracts of a group of research papers and find the yes/no research questions on which several \
+     of them take a position. Use only the abstracts given. Reply with JSON only. ",
+    crate::text::data_rule!()
+);
+
+/// Characters of one paper's abstract sent to propose questions, at most: a record whose abstract runs on (a
+/// source that put the paper's text there) does not make one prompt too large to send.
+pub const PROPOSAL_ABSTRACT: usize = 3_000;
 
 /// The abstracts of the papers a proposal is asked from, each headed by its id, in the order given.
 pub fn proposal_text(papers: &[(&str, Record<'_>)]) -> String {
     let mut text = String::from("The papers' abstracts, each headed by the paper's id in brackets:\n\n");
     for (id, record) in papers {
-        text.push_str(&format!("[{id}] {}\n{}\n\n", record.title.trim(), record.abstract_text.trim()));
+        let (title, abstract_text) = (record.title.trim(), first_chars(record.abstract_text.trim(), PROPOSAL_ABSTRACT));
+        text.push_str(&format!("[{id}] {title}\n{abstract_text}\n\n"));
     }
-    text
+    data_section("ABSTRACTS", &text)
 }
 
 pub fn proposal_prompt() -> String {
@@ -889,6 +923,19 @@ mod tests {
     }
 
     #[test]
+    fn a_question_word_no_paper_uses_does_not_make_the_pre_filter_skip_every_paper() {
+        // a community about synthetic data, asked about robustness, which none of its abstracts names
+        let papers = records(&[
+            ("Synthetic data for pre-training", "Generated text as training data."),
+            ("Cheap synthetic corpora", "Synthetic data at scale."),
+            ("Filtering synthetic data", "Removing bad synthetic samples."),
+        ]);
+        let found = relevance("Does synthetic data improve robustness?", &papers);
+        assert_eq!(found.related, [true, true, true], "{found:?}");
+        assert!(!found.terms.contains(&"robustness".to_owned()), "{found:?}");
+    }
+
+    #[test]
     fn the_pre_filter_and_the_terms_are_the_same_whatever_the_number_of_threads() {
         let titles: Vec<String> = (0..300).map(|n| format!("Paper {n} on synthetic data {}", n % 7)).collect();
         let abstracts: Vec<String> =
@@ -1028,6 +1075,22 @@ mod tests {
     }
 
     #[test]
+    fn two_questions_about_a_paper_send_the_same_system_and_shared_text() {
+        let prepared = vec![prepare("2601.00001", &pdf_paper()).unwrap()];
+        let (chosen, schema) = (Chosen::claude(MODEL), schema());
+        let ask = |question: &str| {
+            let prompt = question_prompt(question);
+            let key = key_question(question, 0);
+            let items = items(&prepared, &prompt, &key, &chosen, &schema);
+            (items[0].ask.system.to_owned(), items[0].ask.shared.map(str::to_owned), items[0].slot.key.clone())
+        };
+        let one = ask("Does pre-training on synthetic data help downstream accuracy?");
+        let two = ask("Does a smaller synthetic corpus remove the gain?");
+        assert_eq!((&one.0, &one.1), (&two.0, &two.1), "byte for byte, so the prompt cache is read");
+        assert_ne!(one.2, two.2, "each question's answer is kept apart");
+    }
+
+    #[test]
     fn a_quote_found_only_with_letters_changed_does_not_place_the_paper() {
         // "no gain" read as "a gain": a close match, which could turn a no into a yes
         let placed = place(
@@ -1046,8 +1109,27 @@ mod tests {
     fn a_long_paper_is_cut_at_a_passage() {
         let long: String = (0..2_000).map(|n| format!("Sentence number {n} of a long paper.\n\n")).collect();
         let prepared = prepare("p", &reading(&format!("1. Introduction\n\n{long}"))).unwrap();
-        assert!(prepared.shared.len() <= PAPER_CHARS + 60);
-        assert!(prepared.shared.ends_with("[the rest of the paper is left out]\n"));
+        assert!(prepared.shared.len() <= PAPER_CHARS + 100);
+        assert!(prepared.shared.starts_with("<<<BEGIN PAPER>>>\n"), "the paper's text is a data section");
+        assert!(prepared.shared.ends_with("[the rest of the paper is left out]\n<<<END PAPER>>>\n"));
+        assert!(SYSTEM.ends_with(crate::text::data_rule!()) && PROPOSE_SYSTEM.ends_with(crate::text::data_rule!()));
+    }
+
+    #[test]
+    fn a_paper_read_as_one_passage_longer_than_the_limit_is_sent_what_fits_of_it() {
+        let block: String = (0..4_000).map(|n| format!("Sentence number {n} of a paper read as one block. ")).collect();
+        let prepared = prepare("p", &reading(&block)).unwrap();
+        assert!(prepared.shared.contains("Sentence number 10 of a paper"), "not the heading alone");
+        assert!(prepared.shared.len() <= PAPER_CHARS + 100);
+        assert!(prepared.shared.ends_with("[the rest of the paper is left out]\n<<<END PAPER>>>\n"));
+    }
+
+    #[test]
+    fn a_proposals_abstracts_are_a_data_section_each_cut_to_its_bound() {
+        let long = "word ".repeat(PROPOSAL_ABSTRACT);
+        let text = proposal_text(&[("p1", Record { title: "A title", abstract_text: &long })]);
+        assert!(text.starts_with("<<<BEGIN ABSTRACTS>>>\n") && text.ends_with("<<<END ABSTRACTS>>>\n"));
+        assert!(text.len() < PROPOSAL_ABSTRACT + 200, "{}", text.len());
     }
 
     #[test]

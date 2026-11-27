@@ -208,7 +208,7 @@ export function AskBox({
 		const { question, estimate } = state;
 		// one click, one request: a second click while it is sent or runs does nothing
 		void start(async () => {
-			const started = await api.askQuestion(run, { question, community, ...shownModel(estimate), ...accepting(estimate) });
+			const started = await api.askQuestion(run, { id: estimate.id, question, community, ...shownModel(estimate), ...accepting(estimate) });
 			asked.reload();
 			if (started.job === null) {
 				open(started.id); // kept: nothing was asked

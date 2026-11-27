@@ -20,6 +20,8 @@ pub mod citation_contexts;
 pub mod claim_tree;
 pub mod config;
 pub mod connections;
+#[cfg(test)]
+pub(crate) mod contract;
 pub mod critique;
 pub mod explanation;
 pub mod extraction;

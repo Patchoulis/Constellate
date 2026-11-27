@@ -34,8 +34,8 @@ use super::reviews::papers_of;
 use super::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::analysis::citation_contexts::{Context, Grouping, Neighbour, PaperContexts, Section};
 use crate::analysis::citation_kinds::{
-    self, Case, CitationKind, CitedRecord, Classified, Judgement, Plan, Ranked, SAMPLE, Said, Tally, Verdict, judge,
-    kept_readings, most_cited, ranked, tallies,
+    self, Case, CitationKind, CitedRecord, Judgement, Plan, Ranked, SAMPLE, Said, Tally, Verdict, judge, kept_reading,
+    kept_readings, most_cited, ranked, tallies, verdicts,
 };
 use crate::analysis::citations::Linker;
 use crate::evidence::Evidence;
@@ -114,6 +114,8 @@ pub struct Coverage {
     pub papers: usize,
     pub read: usize,
     pub without_pdf: usize,
+    /// With a PDF that could not be read: their citing sentences cannot be read either.
+    pub unreadable: usize,
 }
 
 /// `PaperCitationContexts` in the contracts.
@@ -169,16 +171,9 @@ fn shown(
             *left_out += 1;
             continue;
         };
-        let verdict = judge(&context, reading.as_ref());
-        let judgement = Judgement::of(&verdict, citing, passages);
+        let judgement = Judgement::of(&judge(&context, reading.as_ref()), citing, passages);
         // counted as shown: words no longer had from the paper's pages make it not justified in the count too
-        let counted = match (&verdict, &judgement) {
-            (Verdict::Justified { kind, .. }, Judgement::NotJustified { .. }) => {
-                Verdict::NotJustified { claimed: *kind }
-            }
-            _ => verdict,
-        };
-        tally.add(&counted);
+        tally.add_shown(&judgement);
         let around = |neighbour: Option<Neighbour>| {
             let neighbour = neighbour?;
             Evidence::at(citing, passages, &neighbour.address).filter(|evidence| evidence.quote() == neighbour.sentence)
@@ -207,7 +202,8 @@ fn coverage(library: &Library, ids: &[String]) -> Result<Coverage, ApiError> {
     let wanted: Vec<&str> = ids.iter().map(String::as_str).collect();
     let read = library.contexts_kept_among(&wanted)?.len();
     let without_pdf = ids.iter().filter(|id| !library.pdf_file(id).is_file()).count();
-    Ok(Coverage { papers: ids.len(), read, without_pdf })
+    let unreadable = library.unreadable_among(&wanted)?.len();
+    Ok(Coverage { papers: ids.len(), read, without_pdf, unreadable })
 }
 
 fn contexts_of_paper(
@@ -369,6 +365,7 @@ struct Citations {
     papers: usize,
     papers_read: usize,
     without_pdf: usize,
+    unreadable: usize,
     cases: Vec<Case>,
     records: HashMap<String, CitedRecord>,
 }
@@ -400,7 +397,8 @@ fn citations_of(engine: &Shared, library: &Library, run: &str, community: Option
         })
         .collect();
     let without_pdf = ids.iter().filter(|id| !library.pdf_file(id).is_file()).count();
-    Ok(Citations { papers: ids.len(), papers_read: kept.len(), without_pdf, cases, records })
+    let unreadable = library.unreadable_among(&wanted)?.len();
+    Ok(Citations { papers: ids.len(), papers_read: kept.len(), without_pdf, unreadable, cases, records })
 }
 
 /// What the kinds of a community's citations come to: `CitationKindsSummary` in the contracts. Every figure is a
@@ -411,6 +409,8 @@ pub struct KindsSummary {
     /// Of its papers, whose citing sentences were read.
     pub papers_read: usize,
     pub without_pdf: usize,
+    /// Of its papers, those with a PDF that could not be read.
+    pub unreadable: usize,
     /// Papers of the library its papers cite.
     pub cited_papers: usize,
     /// All its citations of papers of the library taken together.
@@ -428,16 +428,52 @@ pub struct KindsSummary {
     pub model: String,
 }
 
+/// Citing papers whose passages are held at once while a community's justified readings are checked.
+const PAGES_AT_ONCE: usize = 200;
+
+/// `verdicts` of `cases`, each justified one checked against its citing paper's pages as the paper's own view
+/// checks it ([`Judgement::of`]): one whose sentence, or whose words, are no longer at their place there counts as
+/// not justified. Only the papers with a justified reading have their passages loaded (those the model was paid
+/// to read, not every paper of the run), a round at a time, from the request's own thread.
+fn on_the_pages(library: &Library, cases: &[Case], mut verdicts: Vec<Verdict>) -> Result<Vec<Verdict>, ApiError> {
+    let mut citing: Vec<&str> = cases
+        .iter()
+        .zip(&verdicts)
+        .filter(|(_, verdict)| matches!(verdict, Verdict::Justified { .. }))
+        .map(|(case, _)| case.citing.as_str())
+        .collect();
+    citing.sort_unstable();
+    citing.dedup();
+    for papers in citing.chunks(PAGES_AT_ONCE) {
+        let readings: HashMap<&str, PaperReading> = papers.iter().copied().zip(library.paper_texts(papers)?).collect();
+        for (case, verdict) in cases.iter().zip(verdicts.iter_mut()) {
+            let Verdict::Justified { kind, .. } = verdict else { continue };
+            let claimed = *kind;
+            let Some(reading) = readings.get(case.citing.as_str()) else { continue };
+            let on_its_page = reading.passages().is_some_and(|passages| {
+                let sentence = Evidence::at(&case.citing, passages, &case.context.address);
+                sentence.is_some_and(|sentence| sentence.quote() == case.context.sentence)
+                    && matches!(Judgement::of(&*verdict, &case.citing, passages), Judgement::Justified { .. })
+            });
+            if !on_its_page {
+                *verdict = Verdict::NotJustified { claimed };
+            }
+        }
+    }
+    Ok(verdicts)
+}
+
 fn summary_of(engine: &Shared, run: &str, community: Option<&str>) -> Result<KindsSummary, ApiError> {
     let library = engine.library()?;
     let chosen = engine.chosen()?;
     let model = chosen.model().to_owned();
     let found = citations_of(engine, &library, run, community)?;
     let readings = kept_readings(&library, &chosen, &found.cases)?;
-    let tallies = tallies(&found.cases, &readings);
+    let verdicts = on_the_pages(&library, &found.cases, verdicts(&found.cases, &readings))?;
+    let tallies = tallies(&found.cases, &verdicts);
     let mut tally = Tally::default();
-    for (case, reading) in found.cases.iter().zip(&readings) {
-        tally.add(&judge(&case.context, reading.as_ref()));
+    for verdict in &verdicts {
+        tally.add(verdict);
     }
     tally.papers = found.cases.iter().map(|case| case.citing.as_str()).collect::<HashSet<_>>().len();
     let lists = [
@@ -460,6 +496,7 @@ fn summary_of(engine: &Shared, run: &str, community: Option<&str>) -> Result<Kin
         papers: found.papers,
         papers_read: found.papers_read,
         without_pdf: found.without_pdf,
+        unreadable: found.unreadable,
         cited_papers: tallies.len(),
         tally,
         baseline,
@@ -509,9 +546,7 @@ fn plan_of(
         }
         Scope::Rest => found.cases,
     };
-    Ok(Plan::new(&chosen, cases, &found.records, |key| {
-        Ok(library.kept::<Classified>(Feature::CitationKinds, key)?.is_some())
-    })?)
+    Ok(Plan::new(&chosen, cases, &found.records, |key, case| Ok(kept_reading(library, key, case)?.is_some()))?)
 }
 
 /// `CitationKindsEstimate` in the contracts: what reading a scope's kinds would cost, before anything is sent.
@@ -568,7 +603,9 @@ struct ClassifyRequest {
     community: Option<String>,
     scope: Scope,
     /// The most the job may spend: in US dollars, or in tokens for a model with no price.
+    #[serde(alias = "accepted_usd")]
     budget_usd: Option<f64>,
+    #[serde(alias = "accepted_tokens")]
     budget_tokens: Option<u64>,
     /// The model (of its provider) and the number of sentences the estimate the person saw was for: asking
     /// another model, or more sentences, is refused (estimate again).
@@ -602,6 +639,11 @@ async fn classify_run(
         chosen.as_shown(request.provider, &request.model).map_err(|why| ApiError::Invalid(why.to_string()))?;
         // in dollars for a model with a price, in tokens for one without, as the estimate was shown
         let plan = plan_of(&engine, &library, &run, community.as_deref(), request.scope)?;
+        // papers read, added or relinked since the estimate was shown: more to ask than was accepted is refused
+        // here, before a job is started, as it is again in the job
+        if plan.to_ask() > request.to_ask {
+            return Err(refused(Refused::Changed));
+        }
         let cost = estimate_batch::<Said>(&library, &plan.items(), &plan.chosen)?.cost;
         let terms = Terms::AtMost { usd: MOST_BUDGET_USD, tokens: MOST_BUDGET_TOKENS };
         let budget = budget(&cost, accepted, terms).map_err(refused)?;
@@ -624,12 +666,18 @@ async fn classify_run(
                 plan.kept,
                 plan.calls.len()
             ));
-            let asking =
-                Asking { library: &library, transport: &*transport, endpoint, recorder: &*library, in_flight: IN_FLIGHT };
+            let asking = Asking {
+                library: &library,
+                transport: &*transport,
+                endpoint,
+                recorder: &*library,
+                in_flight: IN_FLIGHT,
+            };
             let done = citation_kinds::classify(asking, &plan, &budget, tracker).map_err(|error| error.to_string())?;
             tracker.log(&format!(
-                "Read {} citing sentences; {} were missing from the answers, {} calls had no usable answer, {} were not started.",
-                done.read, done.unanswered, done.failed, done.not_started
+                "Read {} citing sentences; {} were missing from the answers, {} calls had no usable answer, {} calls \
+                 were not started (the budget, a stop). {} citing sentences were not read: they stay not classified.",
+                done.read, done.unanswered, done.failed, done.not_started, done.not_asked
             ));
             Ok(Finished::Feature { feature: Feature::CitationKinds, subject })
         })?;
@@ -669,7 +717,7 @@ mod tests {
     use super::super::config::tests::STRONG;
     use super::super::config::{Environment, Listen};
     use super::super::routes::Engine;
-    use crate::analysis::citation_kinds::{PROMPT, sentence_key};
+    use crate::analysis::citation_kinds::{Classified, PROMPT, sentence_key};
     use crate::library::papers::tests::paper;
     use crate::library::passages::fixtures::pdf_with;
     use crate::library::{Known, Library, Slot};
@@ -784,6 +832,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_start_takes_the_accepted_amount_under_either_name() {
+        let named = |body: Value| serde_json::from_value::<super::ClassifyRequest>(body).unwrap();
+        let old = named(json!({"scope": "sample", "model": "m", "to_ask": 1, "budget_usd": 1.5}));
+        let new = named(json!({"scope": "sample", "model": "m", "to_ask": 1, "accepted_usd": 1.5}));
+        assert_eq!((old.budget_usd, new.budget_usd), (Some(1.5), Some(1.5)));
+        assert_eq!(
+            named(json!({"scope": "rest", "model": "m", "to_ask": 1, "accepted_tokens": 9})).budget_tokens,
+            Some(9)
+        );
+    }
+
     #[tokio::test]
     async fn a_papers_citing_sentences_are_served_as_evidence_with_no_key_at_all() {
         let data = data();
@@ -805,7 +865,7 @@ mod tests {
         assert_eq!(sentence["section"], json!({"kind": "experiments"}));
         assert_eq!(sentence["judgement"], json!({"state": "not_classified"}));
         assert_eq!(cites[1]["tally"]["not_classified"], 1);
-        assert_eq!(told["coverage"], json!({"papers": 3, "read": 1, "without_pdf": 2}));
+        assert_eq!(told["coverage"], json!({"papers": 3, "read": 1, "without_pdf": 2, "unreadable": 0}));
 
         // the cited paper has no PDF: it is cited, and says so
         let (_, ties) = ask(&router, "GET", "/api/papers/ties/citation-contexts?run=r1", None).await;
@@ -849,7 +909,8 @@ mod tests {
                 key: sentence_key(&crate::model::chosen::Chosen::claude(MODEL), "seed", cited, &context.address),
                 subject: Subject::Paper(cited.to_owned()),
             };
-            library.keep(&slot, MODEL, PROMPT, &Classified { kind, quote: quote.to_owned() }).unwrap();
+            let reading = Classified { kind, quote: quote.to_owned(), sentence: Some(context.sentence.clone()) };
+            library.keep(&slot, MODEL, PROMPT, &reading).unwrap();
         };
         keep("ties", CitationKind::Baseline, "compare against the merging");
         keep("arith", CitationKind::Contrasts, "Task arithmetic fails on every benchmark");
@@ -974,6 +1035,81 @@ mod tests {
         let (status, told) = ask(&router, "POST", "/api/runs/r1/citation-kinds", Some(other)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
         assert!(told["error"].as_str().unwrap().contains("estimate before asking"));
+    }
+
+    #[tokio::test]
+    async fn a_start_asking_more_sentences_than_the_estimate_shown_is_refused_before_any_job() {
+        let data = data();
+        let (router, _) = serve(&data, true);
+        ask(&router, "GET", "/api/papers/seed/citation-contexts", None).await;
+        let (_, estimate) = ask(&router, "GET", "/api/runs/r1/citation-kinds/estimate?scope=rest", None).await;
+        assert_eq!(estimate["to_ask"], 2, "{estimate}");
+        // shown when one sentence was to be asked; two are now (a PDF read since, a paper added)
+        let body = json!({"scope": "rest", "budget_usd": 1.0, "model": MODEL, "to_ask": 1}).to_string();
+        let (status, told) = ask(&router, "POST", "/api/runs/r1/citation-kinds", Some(body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+        assert!(told["error"].as_str().unwrap().contains("changed since it was shown"), "{told}");
+        let (_, status) = ask(&router, "GET", "/api/status", None).await;
+        assert!(!["running", "done", "failed"].contains(&status["state"].as_str().unwrap_or("")), "no job: {status}");
+    }
+
+    #[tokio::test]
+    async fn a_communitys_figures_count_a_kind_justified_only_where_the_citing_papers_pages_say_its_words() {
+        let data = data();
+        let (router, engine) = serve(&data, false);
+        ask(&router, "GET", "/api/papers/seed/citation-contexts", None).await;
+        let library = engine.library().unwrap();
+        let contexts = library.kept_contexts(&["seed"], Entries::InLibrary).unwrap().remove("seed").unwrap();
+        let linked = contexts.in_library();
+        let context = linked.iter().find(|(paper, _)| paper == "ties").unwrap().1[0].clone();
+        let case = |sentence: &str| Case {
+            citing: "seed".to_owned(),
+            cited: "ties".to_owned(),
+            context: Context { sentence: sentence.to_owned(), ..context.clone() },
+        };
+        let reading =
+            Classified { kind: CitationKind::Baseline, quote: "compare against the merging".into(), sentence: None };
+        // as the page has it: justified; a sentence kept that the page no longer says at its place: not
+        let cases = [case(&context.sentence), case("We compare against the merging of [9] as a weak baseline.")];
+        let judged = verdicts(&cases, &[Some(reading.clone()), Some(reading)]);
+        assert!(judged.iter().all(|verdict| matches!(verdict, Verdict::Justified { .. })), "{judged:?}");
+        let checked = on_the_pages(&library, &cases, judged).unwrap();
+        assert!(matches!(checked[0], Verdict::Justified { kind: CitationKind::Baseline, .. }), "{checked:?}");
+        assert_eq!(checked[1], Verdict::NotJustified { claimed: CitationKind::Baseline });
+    }
+
+    #[tokio::test]
+    async fn every_answer_of_these_routes_fits_its_type_in_the_contracts() {
+        use crate::api::contract::assert_fits;
+        let data = data();
+        let (router, engine) = serve(&data, false);
+        ask(&router, "GET", "/api/papers/seed/citation-contexts", None).await;
+        let library = engine.library().unwrap();
+        let contexts = library.kept_contexts(&["seed"], Entries::InLibrary).unwrap().remove("seed").unwrap();
+        let ties = contexts.in_library().into_iter().find(|(paper, _)| paper == "ties").unwrap().1[0].clone();
+        let slot = Slot {
+            feature: Feature::CitationKinds,
+            key: sentence_key(&crate::model::chosen::Chosen::claude(MODEL), "seed", "ties", &ties.address),
+            subject: Subject::Paper("ties".to_owned()),
+        };
+        let reading =
+            Classified { kind: CitationKind::Baseline, quote: "compare against the merging".into(), sentence: None };
+        library.keep(&slot, MODEL, PROMPT, &reading).unwrap();
+
+        let (status, paper) = ask(&router, "GET", "/api/papers/seed/citation-contexts?run=r1", None).await;
+        assert_eq!(status, StatusCode::OK, "{paper}");
+        assert_eq!(paper["cites"][1]["sentences"][0]["judgement"]["state"], "justified", "{paper}");
+        assert_fits("PaperCitationContexts", &paper, &["kinds"]);
+        let (_, cited) = ask(&router, "GET", "/api/papers/ties/citation-contexts?run=r1", None).await;
+        assert_eq!(cited["cited_by"][0]["paper"], "seed", "{cited}");
+        assert_fits("PaperCitationContexts", &cited, &["kinds"]);
+        let (status, summary) = ask(&router, "GET", "/api/runs/r1/citation-kinds", None).await;
+        assert_eq!(status, StatusCode::OK, "{summary}");
+        assert_eq!(summary["baseline"][0]["paper"], "ties", "{summary}");
+        assert_fits("CitationKindsSummary", &summary, &["kinds", "titles"]);
+        let (status, estimate) = ask(&router, "GET", "/api/runs/r1/citation-kinds/estimate?scope=sample", None).await;
+        assert_eq!(status, StatusCode::OK, "{estimate}");
+        assert_fits("CitationKindsEstimate", &estimate, &[]);
     }
 
     #[tokio::test]

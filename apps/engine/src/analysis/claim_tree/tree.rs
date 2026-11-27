@@ -742,6 +742,58 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn an_answer_of_ten_thousand_nodes_is_read_to_its_bound_and_every_node_is_shown_or_counted() {
+        let mut answer = SaidTree { nodes: Vec::new() };
+        let quotes = [
+            "matches dense experts at a fraction of the compute",
+            "a routing rule that keeps every expert busy during training",
+            "reaches the perplexity of the dense model with a third of the compute",
+            "a quote that is in no paper anywhere at all",
+        ];
+        for at in 0..10_000 {
+            let id = format!("x{at}");
+            let (parent, kind) = match at % 5 {
+                0 => (None, SaidKind::Claim),
+                1 => (Some(format!("x{}", at - 1)), SaidKind::Finding),
+                2 => (Some(format!("x{}", at - 1)), SaidKind::Experiment),
+                // a chain three deep under evidence: misplaced, with what is under it
+                3 => (Some(format!("x{}", at - 1)), SaidKind::Finding),
+                _ => (Some("nowhere".to_owned()), SaidKind::Table),
+            };
+            answer.nodes.push(node(&id, parent.as_deref(), kind, quotes[at % quotes.len()]));
+        }
+        let tree = build(&answer, "p", &text()).unwrap();
+        assert!(tree.nodes.len() <= MAX_NODES);
+        assert_eq!(tree.nodes.len() + tree.left_out.total(), answer.nodes.len(), "{:?}", tree.left_out);
+        assert!(tree.left_out.over_bounds >= answer.nodes.len() - MAX_ANSWERED);
+        // every node shown stands where its kind may, under a node shown
+        for node in &tree.nodes {
+            let parent = node.parent.as_deref().map(|id| tree.node(id).unwrap().kind);
+            assert!(node.kind.may_stand_under(parent), "{node:?}");
+        }
+    }
+
+    #[test]
+    fn a_chain_of_parents_as_long_as_the_answer_is_refused_only_when_it_closes() {
+        let chain = |closed: bool| SaidTree {
+            nodes: (0..MAX_ANSWERED)
+                .map(|at| {
+                    let parent = match at {
+                        0 if closed => Some(format!("x{}", MAX_ANSWERED - 1)),
+                        0 => None,
+                        _ => Some(format!("x{}", at - 1)),
+                    };
+                    node(&format!("x{at}"), parent.as_deref(), SaidKind::Finding, "keeps every expert busy")
+                })
+                .collect(),
+        };
+        assert!(matches!(build(&chain(true), "p", &text()), Err(Malformed::Cycle(_))));
+        let open = build(&chain(false), "p", &text()).unwrap();
+        assert!(open.nodes.is_empty());
+        assert_eq!(open.left_out.total(), MAX_ANSWERED);
+    }
+
+    #[test]
     fn the_same_answer_checked_twice_gives_the_same_tree() {
         assert_eq!(build(&said(), "p", &text()), build(&said(), "p", &text()));
     }

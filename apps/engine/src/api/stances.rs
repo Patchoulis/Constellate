@@ -331,16 +331,18 @@ struct AskBody {
 /// What the user was shown and clicked: the model (of its provider) and the most it could cost, in dollars, or in
 /// tokens for a model with no price. A job that would now cost more, or ask another model, is refused rather than
 /// run on terms the user did not see.
+const NOTHING_ACCEPTED: &str = "say what was accepted of the estimate shown (accepted_usd or accepted_tokens)";
+
 #[derive(Clone, Debug, Deserialize)]
 struct Approved {
     #[serde(default)]
     provider: Option<Provider>,
     model: String,
     /// The estimate's "at most", in US dollars; null when the model's price is not known.
-    #[serde(alias = "approved_usd")]
+    #[serde(alias = "approved_usd", alias = "budget_usd")]
     accepted_usd: Option<f64>,
     /// For a model with no price: the estimate's "at most", in tokens.
-    #[serde(default)]
+    #[serde(default, alias = "budget_tokens")]
     accepted_tokens: Option<u64>,
 }
 
@@ -352,6 +354,11 @@ impl Approved {
     /// The budget of a batch whose estimate is `estimate`, if it is within what was approved: the worst case shown.
     fn budget(&self, estimate: &BatchEstimate) -> Result<Budget, String> {
         let accepted = Accepted::of(self.accepted_usd, self.accepted_tokens).map_err(|why| why.to_string())?;
+        // naming nothing is not accepting: for a model with no price (a price shown is refused unless sent back) it
+        // would run on a worst case never agreed to
+        if accepted == Accepted::Shown && estimate.cost.calls > 0 && estimate.cost.most_usd.is_none() {
+            return Err(NOTHING_ACCEPTED.to_owned());
+        }
         budget(&estimate.cost, accepted, Terms::AsShown).map_err(|why| why.to_string())
     }
 }
@@ -381,7 +388,10 @@ fn checked(question: &str) -> Result<String, ApiError> {
 /// The papers about which the pre-filter decided, said so the user can judge it.
 #[derive(Serialize)]
 pub struct Filtered {
+    /// The scope's papers the library has: `related` and `unrelated` add up to it.
     pub papers: usize,
+    /// The scope's papers the library does not have: neither asked nor skipped, with `papers` the scope's total.
+    pub not_in_library: usize,
     /// Papers sharing a distinctive word with the question.
     pub related: usize,
     /// Papers sharing none: skipped unless `include_unrelated`.
@@ -394,6 +404,7 @@ pub struct Filtered {
 fn filtered(plan: &Plan) -> Filtered {
     Filtered {
         papers: plan.present,
+        not_in_library: plan.relevance.related.len() - plan.present,
         related: plan.related(),
         unrelated: plan.present - plan.related(),
         include_unrelated: plan.include_unrelated,
@@ -855,6 +866,9 @@ fn propose(engine: &Shared, run: &str, community: &str, body: ProposeBody) -> Re
         .map(|(id, record)| (id.to_owned(), record.title.to_owned(), record.abstract_text.to_owned()))
         .collect();
     let subject = papers.scope.subject(run);
+    let scope = papers.scope.clone();
+    let run = run.to_owned();
+    let fresh = body.fresh;
     approved.check_model(&chosen)?;
     let worker = Shared::clone(engine);
     let job = engine.job.start_tracked("proposing questions for a community", move |tracker| {
@@ -866,15 +880,19 @@ fn propose(engine: &Shared, run: &str, community: &str, body: ProposeBody) -> Re
         let schema = stances::proposal_schema();
         let items = proposal_slot_items(&records, &shared, &prompt, round, &chosen, &schema, subject.clone());
         ask_items::<Proposals>(&worker, &library, &chosen, &items, &approved, tracker)?;
+        // proposing anew: the new round's proposals are shown once they are kept, and the old ones until then (a
+        // job refused, stopped or failed leaves them shown)
+        let new_kept =
+            library.kept::<Proposals>(Feature::Stances, &items[0].slot.key).map_err(|error| error.to_string())?;
+        if fresh && new_kept.is_some() {
+            change_questions(&library, &run, &scope, |kept| {
+                kept.proposal_round = kept.proposal_round.max(round);
+                Ok(())
+            })
+            .map_err(|error| error.to_string())?;
+        }
         Ok(Finished::Feature { feature: Feature::Stances, subject })
     })?;
-    // proposing anew: from now on the new round's proposals are the ones shown
-    if body.fresh {
-        change_questions(&library, run, &papers.scope, |kept| {
-            kept.proposal_round = kept.proposal_round.max(round);
-            Ok(())
-        })?;
-    }
     Ok(Started { job, id: "proposals".to_owned() })
 }
 
@@ -1053,7 +1071,8 @@ pub(super) mod tests {
         }
     }
 
-    /// A run of four papers: c0 (p1, p2, p3) with a sub-community c0.0 (p1, p2), and c1 (p4).
+    /// A run of five papers: c0 (p1, p2, p3, and p5, which the library does not have) with a sub-community c0.0
+    /// (p1, p2), and c1 (p4).
     fn engine(key: bool) -> (axum::Router, tempfile::TempDir) {
         let data = tempfile::tempdir().unwrap();
         {
@@ -1079,11 +1098,11 @@ pub(super) mod tests {
         std::fs::create_dir_all(&run).unwrap();
         let graph = json!({"nodes": [
             {"id": "p1", "acceptance": "oral"}, {"id": "p2", "acceptance": "poster"},
-            {"id": "p3", "acceptance": null}, {"id": "p4"}],
+            {"id": "p3", "acceptance": null}, {"id": "p4"}, {"id": "p5"}],
             "edges": [[0, 1, 0.9], [1, 2, 0.5], [0, 2, 0.1]]});
         std::fs::write(run.join("graph.json"), graph.to_string()).unwrap();
         let tree = json!({"communities": [
-            {"tree_path": "c0", "members": [0, 1, 2], "children": [{"tree_path": "c0.0", "members": [0, 1]}]},
+            {"tree_path": "c0", "members": [0, 1, 2, 4], "children": [{"tree_path": "c0.0", "members": [0, 1]}]},
             {"tree_path": "c1", "members": [3]}]});
         std::fs::write(run.join("communities.json"), tree.to_string()).unwrap();
         let listen = Listen::from_environment(&Environment::from_pairs([
@@ -1165,6 +1184,15 @@ pub(super) mod tests {
             let mut asked = accepting(&cost, ACCEPTED);
             asked["question"] = json!(QUESTION);
             asked["part"] = json!("sample");
+            // naming nothing accepted is refused, also for a model with no price
+            let mut bare = asked.clone();
+            bare.as_object_mut().unwrap().retain(|field, _| !field.starts_with("accepted"));
+            let (status, refused) = send(&router, "POST", &format!("{C0}/ask"), Some(bare)).await;
+            if status == StatusCode::OK {
+                let done = finished(&router, &refused["job"]).await;
+                assert_eq!(done["state"], "failed", "{chosen:?}: {done}");
+            }
+            assert_eq!(transport.sent().len(), sent, "{chosen:?}: nothing accepted, nothing sent");
             let (status, started) = send(&router, "POST", &format!("{C0}/ask"), Some(asked.clone())).await;
             assert_eq!(status, StatusCode::OK, "{started}");
             let done = finished(&router, &started["job"]).await;
@@ -1208,11 +1236,13 @@ pub(super) mod tests {
         let (status, plan) =
             call(&router, "POST", &format!("{C0}/estimate"), Some(json!({"question": QUESTION}))).await;
         assert_eq!(status, StatusCode::OK, "{plan}");
+        crate::api::contract::assert_fits("StancePlan", &plan, &[]);
         assert_eq!(
             (plan["filter"]["papers"].clone(), plan["filter"]["related"].clone(), plan["filter"]["unrelated"].clone()),
             (json!(3), json!(2), json!(1)),
             "the paper on molecules shares no word with the question"
         );
+        assert_eq!(plan["filter"]["not_in_library"], 1, "p5 is neither asked nor skipped, but counted");
         assert_eq!((plan["sample"]["papers"].clone(), plan["sample"]["abstract_only"].clone()), (json!(2), json!(2)));
         assert!(plan["all"]["estimate"]["usd"].as_f64().unwrap() > 0.0);
         assert_eq!(posts(), before, "the estimate sends nothing");
@@ -1247,6 +1277,7 @@ pub(super) mod tests {
 
         let (status, result) = call(&router, "GET", &format!("{C0}/{id}"), None).await;
         assert_eq!(status, StatusCode::OK);
+        crate::api::contract::assert_fits("StanceResult", &result, &[]);
         assert_eq!((result["answered"].clone(), result["to_ask"].clone()), (json!(2), json!(2)));
         let rows = result["rows"].as_array().unwrap();
         assert_eq!(
@@ -1274,10 +1305,12 @@ pub(super) mod tests {
         assert_eq!(posts() - before, 2);
 
         let (_, listing) = call(&router, "GET", C0, None).await;
+        crate::api::contract::assert_fits("StanceListing", &listing, &[]);
         assert_eq!(listing["questions"][0]["question"], QUESTION);
         assert_eq!(listing["proposals"], Value::Null);
 
         let (status, redone) = call(&router, "POST", &format!("{C0}/{id}/redo"), None).await;
+        crate::api::contract::assert_fits("StanceAsked", &redone, &[]);
         assert_eq!((status, redone["round"].clone()), (StatusCode::OK, json!(1)));
         let (_, result) = call(&router, "GET", &format!("{C0}/{id}"), None).await;
         assert_eq!(result["answered"], 0, "a redo asks again");
@@ -1290,6 +1323,46 @@ pub(super) mod tests {
         assert_eq!(status, StatusCode::CONFLICT, "{busy}");
         finished(&router).await;
         assert_eq!(posts() - before, 4);
+    }
+
+    #[tokio::test]
+    async fn proposing_anew_leaves_the_kept_proposals_shown_when_the_job_keeps_none() {
+        let (router, data) = engine(true);
+        {
+            // proposals kept from before, over c0's papers most central first
+            let library = Library::open(&data.path().join("library")).unwrap();
+            let chosen = Chosen::claude("claude-opus-5-5");
+            let slot = Slot {
+                feature: Feature::Stances,
+                key: chosen.key(Feature::Stances, stances::PROPOSE_PROMPT, &["p2", "p1", "p3"], "proposals\nround 0"),
+                subject: Subject::Community { run: "r1".to_owned(), community: "c0".to_owned() },
+            };
+            let quote =
+                |paper: &str, quote: &str| crate::evidence::Quote { paper: paper.to_owned(), quote: quote.to_owned() };
+            let kept = Proposals {
+                questions: vec![crate::evidence::Claim {
+                    statement: QUESTION.to_owned(),
+                    quotes: vec![
+                        quote("p1", "pre-training on synthetic data improves downstream accuracy"),
+                        quote("p2", "Synthetic data for pre-training gave no gain in downstream accuracy"),
+                    ],
+                }],
+            };
+            library.keep(&slot, "claude-opus-5-5", stances::PROPOSE_PROMPT, &kept).unwrap();
+        }
+        let (status, listing) = call(&router, "GET", C0, None).await;
+        assert_eq!(status, StatusCode::OK, "{listing}");
+        assert_eq!(listing["proposals"]["questions"][0]["statement"], QUESTION, "{listing}");
+        crate::api::contract::assert_fits("StanceListing", &listing, &[]);
+
+        // proposing anew, on terms the estimate no longer matches: the job is refused and keeps nothing
+        let fresh = json!({"fresh": true, "model": "claude-opus-5-5", "approved_usd": 0.000_001});
+        let (status, started) = call(&router, "POST", &format!("{C0}/proposals"), Some(fresh)).await;
+        assert_eq!(status, StatusCode::OK, "{started}");
+        crate::api::contract::assert_fits("StanceStarted", &started, &[]);
+        assert_eq!(finished(&router).await["state"], "failed");
+        let (_, listing) = call(&router, "GET", C0, None).await;
+        assert_eq!(listing["proposals"]["questions"][0]["statement"], QUESTION, "still shown: {listing}");
     }
 
     #[tokio::test]
@@ -1351,6 +1424,9 @@ pub(super) mod tests {
         let (status, proposals) =
             call(&router, "POST", &format!("{C0}/proposals/estimate"), Some(json!({"fresh": false}))).await;
         assert_eq!((status, proposals["papers"].clone()), (StatusCode::OK, json!(3)));
+        crate::api::contract::assert_fits("StanceProposalPlan", &proposals, &[]);
         assert_eq!(proposals["estimate"]["to_ask"], 1);
+        crate::api::contract::assert_fits("StanceListing", &listing, &[]);
+        crate::api::contract::assert_fits("StancePlan", &plan, &[]);
     }
 }

@@ -133,11 +133,14 @@ export const api = {
 		call<CitationNetwork>(`/api/papers/${id}/references${inRun ? `?run=${encodeURIComponent(inRun)}` : ""}`, { method: "POST" }),
 	/** a paper's weaknesses: the reviewers' points, and the model's reading kept or what asking would cost (nothing is sent) */
 	critique: (id: string) => call<Critique>(`/api/papers/${encodeURIComponent(id)}/critique`),
-	/** ask the model to read the paper for weaknesses, as the one job; capped at the estimate's worst case */
-	/** ask for the model's reading, for the model the estimate was shown for, within a budget (the worst case shown
-	 *  when none is named): in US dollars, or in tokens for a model with no price */
-	readCritique: (id: string, shown: import("@rp/contracts").ShownModel, budget?: import("@rp/contracts").BudgetOf) =>
-		call<CritiqueStarted>(`/api/papers/${encodeURIComponent(id)}/critique`, send("POST", { ...shown, ...budget })),
+	/** ask for the model's reading, as the one job, for the model the estimate was shown for: within the worst case
+	 *  accepted (refused when asking would now cost more) or a budget of one's own; in US dollars, or in tokens for a
+	 *  model with no price */
+	readCritique: (
+		id: string,
+		shown: import("@rp/contracts").ShownModel,
+		budget: import("@rp/contracts").AcceptedCost | import("@rp/contracts").BudgetOf,
+	) => call<CritiqueStarted>(`/api/papers/${encodeURIComponent(id)}/critique`, send("POST", { ...shown, ...budget })),
 	/** forget the model's reading of the paper, so that it can be asked again */
 	forgetCritique: (id: string) => call<{ forgotten: number }>(`/api/papers/${encodeURIComponent(id)}/critique`, { method: "DELETE" }),
 	/** where a community's papers (or the marked ones) stand on a question (engine api/stances.rs) */

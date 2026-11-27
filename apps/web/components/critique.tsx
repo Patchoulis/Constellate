@@ -29,7 +29,7 @@ import {
 	scoreTitle,
 } from "@/lib/critique";
 import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
-import { budgetOf, shownModel } from "@/lib/cost";
+import { accepting, shownModel } from "@/lib/cost";
 import { ready, useAsync } from "@/lib/use-async";
 import { elsewhereLine, useFollowedJob } from "@/lib/use-followed-job";
 import { count, knownMoney } from "@/lib/units";
@@ -224,7 +224,7 @@ function ModelPart({
 	const ask = (asked: Extract<CritiqueModelPart, { state: "not_asked" }>) =>
 		void start(async () => {
 			// the model and the most shown go with the request: the engine refuses if either changed
-			const started = await api.readCritique(id, shownModel(asked), budgetOf(asked.estimate));
+			const started = await api.readCritique(id, shownModel(asked), accepting(asked.estimate));
 			if (started.outcome === "started") return started.job;
 			onChanged(); // read before: nothing was asked
 			return null;

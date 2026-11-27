@@ -39,7 +39,7 @@ use super::security::{self, Guard, LARGEST_BODY};
 use crate::jobs::{Busy, Counted, Finished, Job, Phase, Progress};
 use crate::library::{Library, LibraryError};
 use crate::model::chosen::Chosen;
-use crate::model::language::{Endpoint, Https, Provider, Transport, Unavailable};
+use crate::model::language::{Endpoint, Provider, Transport, Unavailable};
 use crate::settings::{self, Choices, Settings, SettingsError};
 
 /// How long a request may take from its first byte to its answer: a client that sends its body slowly (to hold
@@ -83,7 +83,12 @@ impl Engine {
             mode: Mode::Local,
             providers,
             language: Err(Unavailable::NoKey),
-            transport: Arc::new(Https::default()),
+            // in the tests, a transport that reaches nothing: a test that gives a key and starts a job must
+            // never call a real provider, even one it did not mean to start
+            #[cfg(not(test))]
+            transport: Arc::new(crate::model::language::Https::default()),
+            #[cfg(test)]
+            transport: Arc::new(crate::model::language::fake::Fake::default()),
             library: Mutex::new(None),
         }
     }
