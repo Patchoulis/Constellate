@@ -4,7 +4,12 @@
 //! | module       | what lives there                                                              |
 //! |--------------|-------------------------------------------------------------------------------|
 //! | [`citations`] | who cites whom, from the papers' own reference lists                         |
+//! | [`citation_contexts`] | the sentences where one paper of the library cites another           |
+//! | [`citation_kinds`] | what kind of citation each citing sentence makes, as the model reads it |
 //! | [`claim_tree`] | a paper's claims as a tree, with its reviewers' points mapped onto them      |
+//! | [`critique`] | a paper's weaknesses: the reviewers' points, then a model's reading            |
+//! | [`extraction`] | a table of one answer per paper and question, each with the paper's words   |
+//! | [`stances`]  | where a community's papers stand on a yes/no question                         |
 //! | [`graph`]    | the similarity graph itself, its degrees and modularity                       |
 //! | [`links`]    | each paper's closest papers: the links drawn, and the nearest-neighbour graph |
 //! | [`eigen`]    | eigenvectors of symmetric matrices, small and dense or large and matrix-free  |
