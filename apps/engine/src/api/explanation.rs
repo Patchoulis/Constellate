@@ -331,7 +331,12 @@ async fn start(
         let accepted =
             budget(&shown.cost, accepted, Terms::AsShown).map_err(|why| ApiError::Invalid(why.to_string()))?;
         let transport = engine.transport.clone();
-        let job = engine.job.start_tracked(PURPOSE, move |tracker| {
+        let about = crate::jobs::About {
+            feature: Feature::Explanation,
+            subject: Subject::Paper(opened.paper.clone()),
+            item: None,
+        };
+        let job = engine.job.start_about(PURPOSE, about, move |tracker| {
             let item = item(opened.slot(), &opened.chosen, &opened.prompt, &schema);
             let asking = Asking {
                 library: &opened.library,

@@ -653,7 +653,8 @@ async fn classify_run(
             Some(community) => Subject::Community { run: run.clone(), community: community.clone() },
             None => Subject::Run(run.clone()),
         };
-        let id = engine.job.start_tracked("reading citation kinds", move |tracker| {
+        let about = crate::jobs::About { feature: Feature::CitationKinds, subject: subject.clone(), item: None };
+        let id = engine.job.start_about("reading citation kinds", about, move |tracker| {
             let plan = plan_of(&shared, &library, &run, community.as_deref(), request.scope)
                 .map_err(|error| error.to_string())?;
             if plan.chosen.as_shown(request.provider, &request.model).is_err() || plan.to_ask() > request.to_ask {

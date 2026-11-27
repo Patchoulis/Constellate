@@ -237,7 +237,9 @@ async fn start(State(engine): State<Shared>, Path(id): Path<String>, body: Bytes
         plan.chosen.as_shown(asked.provider, model).map_err(|why| ApiError::Invalid(why.to_string()))?;
         let budget = budget_of(&asked, &plan.estimate(&library)?)?;
         let transport = engine.transport.clone();
-        let job = engine.job.start_tracked("a paper's weaknesses", move |tracker| {
+        let about =
+            crate::jobs::About { feature: Feature::Critique, subject: Subject::Paper(plan.paper.clone()), item: None };
+        let job = engine.job.start_about("a paper's weaknesses", about, move |tracker| {
             work(&library, &*transport, endpoint, &plan, &budget, tracker)
         })?;
         Ok(Started::Started { job })

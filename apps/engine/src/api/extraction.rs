@@ -564,6 +564,7 @@ async fn start(
         let columns = columns_of(&library, &run)?;
         let transport = engine.transport.clone();
         let subject = scope.subject(&run);
+        let about = crate::jobs::About { feature: Feature::Extraction, subject: subject.clone(), item: None };
         let work = move |tracker: &Tracker<'_>| {
             let ids = borrowed(&papers);
             let readings = library.paper_texts(&ids).map_err(|error| error.to_string())?;
@@ -589,7 +590,7 @@ async fn start(
             }
             Ok(Finished::Feature { feature: Feature::Extraction, subject })
         };
-        Ok(engine.job.start_tracked("the extraction table", work)?)
+        Ok(engine.job.start_about("the extraction table", about, work)?)
     })
     .await?;
     Ok(Json(Begun { ok: true, id }))

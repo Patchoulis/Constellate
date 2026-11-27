@@ -594,7 +594,8 @@ fn ask(
     let key = stances::key_question(&question, round);
     let worker = Shared::clone(engine);
     let subject = papers.scope.subject(run);
-    let job = engine.job.start_tracked("asking where papers stand on a question", move |tracker| {
+    let about = crate::jobs::About { feature: Feature::Stances, subject: subject.clone(), item: None };
+    let job = engine.job.start_about("asking where papers stand on a question", about, move |tracker| {
         let library = worker.library().map_err(|error| error.to_string())?;
         tracker.log(&format!("Reading {} papers for: {question}", ids.len()));
         let wanted: Vec<&str> = ids.iter().map(String::as_str).collect();
@@ -871,7 +872,8 @@ fn propose(engine: &Shared, run: &str, community: &str, body: ProposeBody) -> Re
     let fresh = body.fresh;
     approved.check_model(&chosen)?;
     let worker = Shared::clone(engine);
-    let job = engine.job.start_tracked("proposing questions for a community", move |tracker| {
+    let about = crate::jobs::About { feature: Feature::Stances, subject: subject.clone(), item: None };
+    let job = engine.job.start_about("proposing questions for a community", about, move |tracker| {
         let library = worker.library().map_err(|error| error.to_string())?;
         let records: Vec<(&str, Record<'_>)> =
             sent.iter().map(|(id, title, abstract_text)| (id.as_str(), Record { title, abstract_text })).collect();

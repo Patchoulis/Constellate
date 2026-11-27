@@ -387,8 +387,9 @@ struct Status<'a> {
     state: Phase,
     /// What a finished job made ([`Finished`]): a run, a feature's answers, or nothing to open.
     outcome: Option<Finished>,
-    /// The name of the run a finished job made, and nothing else: what the Python backend's `result` is, so that
-    /// an interface that knows only that never takes a feature's job for a run.
+    /// Derived from `outcome`, kept for an interface that knows only the Python backend: the name of the run a
+    /// finished job made, and nothing else, so that such an interface never takes a feature's job for a run. New
+    /// code reads `outcome`.
     result: Option<String>,
     error: Option<String>,
     /// The log's lines from `since` on, and how many it has in all.
@@ -406,6 +407,13 @@ struct Status<'a> {
     /// Whether the chosen provider's model can be asked: its key is set (and its address is usable). Only that,
     /// never the key.
     api_key_set: bool,
+    /// The feature a feature's job is (or was) for, from the moment it starts ([`crate::jobs::About`]): so that
+    /// another window can tell which section a running job belongs to. None for any other job.
+    feature: Option<crate::library::Feature>,
+    /// What that job asks about, as `outcome`'s subject is told.
+    subject: Option<crate::library::Subject>,
+    /// The one item of the subject it asks about, when it is one: a question's id among a run's questions.
+    item: Option<String>,
 }
 
 async fn status(
@@ -422,7 +430,14 @@ async fn status(
         Some(Finished::Run { run }) => Some(run.clone()),
         Some(Finished::Feature { .. } | Finished::Nothing) | None => None,
     };
+    let (feature, subject, item) = match job.about {
+        Some(about) => (Some(about.feature), Some(about.subject), about.item),
+        None => (None, None, None),
+    };
     let told = Status {
+        feature,
+        subject,
+        item,
         id: job.id,
         kind: job.kind,
         state: job.state,

@@ -199,7 +199,10 @@ export interface Status {
 	/** what kind of work it is ("a run", "asking about papers") */
 	kind?: string;
 	state: JobState;
-	/** the name of the run a finished job made, once state is "done"; null for any other job */
+	/**
+	 * the name of the run a finished job made, once state is "done"; null for any other job. Derived from `outcome` by
+	 * the engine and kept for compatibility with the Python backend: read `outcome` where it is there
+	 */
 	result: string | null;
 	/** what a finished job made; absent from the Python backend, whose finished jobs are runs (`result`) */
 	outcome?: JobOutcome | null;
@@ -219,6 +222,15 @@ export interface Status {
 	papers?: JobPapers | null;
 	/** whether a key for the chosen provider is set (never the key itself); absent from the Python backend */
 	api_key_set?: boolean;
+	/**
+	 * the feature a feature's job is (or was) for, from the moment it starts, so that any window can tell which section a
+	 * running job belongs to; null for any other job, absent from the Python backend
+	 */
+	feature?: FeatureName | null;
+	/** what that job asks about, as `outcome`'s subject */
+	subject?: FeatureSubject | null;
+	/** the one item of the subject it asks about, when it is one: a question's id among a run's questions */
+	item?: string | null;
 }
 
 /** n of m done, and what it has spent so far on the language model's API, in US dollars (of calls with a price). */
@@ -1756,8 +1768,8 @@ export interface AnswerCounts {
 	malformed: number;
 }
 
-/** Where a question stands: answered, the papers do not say, too little verified to show, being asked, or not answered. */
-export type AnswerState = "answered" | "not_in_papers" | "unverified" | "asking" | "unanswered";
+/** Where a question stands: answered, the papers do not say, too little verified to show, being asked, not answered, or answered with no statement at all. */
+export type AnswerState = "answered" | "not_in_papers" | "unverified" | "asking" | "unanswered" | "empty";
 
 /** `GET /api/runs/<run>/answers/<id>`: a question and its kept answer, its quotes checked again. */
 export interface AnswerView {

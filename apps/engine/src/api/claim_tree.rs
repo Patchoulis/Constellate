@@ -169,7 +169,8 @@ fn begin(
         if !covers(&cost, accepted) {
             return Err(ApiError::Invalid(GREW.to_owned()));
         }
-        let job = engine.job.start_tracked(KIND, move |tracker| {
+        let about = crate::jobs::About { feature: Feature::ClaimTree, subject: Subject::Paper(id.clone()), item: None };
+        let job = engine.job.start_about(KIND, about, move |tracker| {
             let askers = Askers { library: &library, transport: &*transport, endpoint, recorder: &*library };
             let done = ask(&askers, &id, &chosen, &budget, tracker).map_err(|error| error.to_string())?;
             tracker.log(&format!("The claim tree: {}", told(&done.tree)));
