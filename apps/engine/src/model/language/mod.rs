@@ -569,6 +569,13 @@ pub enum Unavailable {
     /// What is missing or wrong in how a provider other than the Claude API is set up.
     #[error(transparent)]
     Setup(#[from] Setup),
+    /// The settings that say which provider to ask cannot be read (a damaged or hand-edited file): no provider is
+    /// asked rather than one guessed.
+    #[error(
+        "The settings file (settings.json in the data folder) cannot be read, so which provider to ask is not known: \
+         fix the file or remove it"
+    )]
+    SettingsUnreadable,
 }
 
 /// What is missing or wrong in a provider's variables, naming the variable (never its value).

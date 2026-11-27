@@ -106,12 +106,21 @@ impl Engine {
     /// Where the language model is asked: the provider chosen in the settings, with its key and address as
     /// read at start, or why it cannot be asked (its key is not set). Every feature that asks the model asks
     /// here, so that the choice in the interface is the one that is used.
+    ///
+    /// Settings that cannot be read (a damaged or hand-edited file) say nothing of which provider was chosen: that
+    /// is told ([`Unavailable::SettingsUnreadable`]), never taken for the Claude API, which the server may not be
+    /// set to send papers' text to.
     pub fn endpoint(&self) -> Result<Endpoint, Unavailable> {
-        let chosen = settings::load(&self.settings_file(), &self.choices)
-            .ok()
-            .map(|settings| settings.describe_provider)
-            .unwrap_or(Provider::Anthropic);
-        self.endpoint_for(chosen)
+        let settings = self.read_settings()?;
+        self.endpoint_for(settings.describe_provider)
+    }
+
+    /// The settings, or why the provider to ask cannot be known from them.
+    fn read_settings(&self) -> Result<Settings, Unavailable> {
+        settings::load(&self.settings_file(), &self.choices).map_err(|error| {
+            eprintln!("settings: {error}");
+            Unavailable::SettingsUnreadable
+        })
     }
 
     fn endpoint_for(&self, provider: Provider) -> Result<Endpoint, Unavailable> {
@@ -123,9 +132,10 @@ impl Engine {
 
     /// The provider, model and effort every feature asks with, and the endpoint it asks at, read together from
     /// the settings ([`Chosen::new`]): the one place a feature learns which model it asks, so that what it
-    /// estimates, keys its answers under and sends cannot be of different providers.
+    /// estimates, keys its answers under and sends cannot be of different providers. Settings that cannot be read
+    /// are an error naming the file, never a provider guessed.
     pub fn chosen(&self) -> Result<Chosen, ApiError> {
-        let settings = settings::load(&self.settings_file(), &self.choices)?;
+        let settings = self.read_settings().map_err(|why| ApiError::Invalid(why.to_string()))?;
         let provider = settings.describe_provider;
         Chosen::new(self.endpoint_for(provider), provider, &settings).map_err(|why| ApiError::Invalid(why.to_string()))
     }
@@ -480,6 +490,22 @@ mod tests {
         for bad in devices.into_iter().chain(others) {
             assert!(matches!(one_name(bad), Err(ApiError::NotFound)), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn settings_that_cannot_be_read_ask_no_provider_rather_than_the_claude_api() {
+        let data = tempfile::tempdir().unwrap();
+        let mut engine = Engine::new(data.path().to_path_buf(), Choices::default());
+        engine.providers = crate::model::language::Providers::from_lookup(|name| {
+            matches!(name, "ANTHROPIC_API_KEY" | "OPENAI_API_KEY").then(|| "test-key-not-real".to_owned())
+        });
+        std::fs::write(engine.settings_file(), r#"{"describe_provider": "openai""#).unwrap();
+        assert_eq!(engine.endpoint().unwrap_err(), Unavailable::SettingsUnreadable);
+        let refused = engine.chosen().unwrap_err();
+        assert!(matches!(refused, ApiError::Invalid(_)) && refused.to_string().contains("settings.json"), "{refused}");
+        // read again once the file can be: the provider it names
+        std::fs::write(engine.settings_file(), r#"{"describe_provider": "openai"}"#).unwrap();
+        assert_eq!(engine.endpoint().unwrap().provider(), Provider::OpenAi);
     }
 
     #[test]
