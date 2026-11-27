@@ -8,6 +8,7 @@ import { KIND_HUE, edgeKinds, lineKind } from "@/lib/citation-kinds";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { Input } from "@/components/ui/field";
+import { missingRoute } from "@/lib/answers";
 import { api } from "@/lib/api";
 import {
 	authorLine,
@@ -333,14 +334,19 @@ function Lists({ network, onOpen }: { network: CitationNetwork; onOpen: (work: C
  * Mounted only when the tab is opened, so nothing is fetched before.
  */
 export function Citations({ paper, run, onOpen }: { paper: Paper; run?: string; onOpen: (id: string) => void }) {
-	const kept = useAsync(() => api.citations(paper.id, run), [paper.id, run]);
+	const kept = useAsync(() => api.citations(paper.id, run), [paper.id, run], { keep: false });
 	const [asked, setAsked] = useState(false);
-	const reading = useAsync(asked ? () => api.readReferences(paper.id, run) : null, [asked, paper.id, run]);
+	const reading = useAsync(asked ? () => api.readReferences(paper.id, run) : null, [asked, paper.id, run], { keep: false });
+	// the first click reads; after a failure, the same button reads again
+	const read = asked ? reading.reload : () => setAsked(true);
 	const network = ready(reading) ?? ready(kept);
-	const kinds = ready(useAsync(() => contextsOf(paper.id, run).then(edgeKinds), [paper.id, run]));
+	const kinds = ready(useAsync(() => contextsOf(paper.id, run).then(edgeKinds), [paper.id, run], { keep: false }));
 	const open = opener(onOpen);
 
 	if (!network) {
+		// a backend without the route (the Python one) has no network to show: nothing went wrong
+		if (kept.status === "failed" && missingRoute(kept.error))
+			return <p className="text-sm text-muted-foreground">No citation network is available for this paper here.</p>;
 		if (kept.status === "failed")
 			return (
 				<div className="flex flex-col items-start gap-2 font-ui">
@@ -371,7 +377,7 @@ export function Citations({ paper, run, onOpen }: { paper: Paper; run?: string; 
 							<p className="text-xs text-muted-foreground">
 								This paper&apos;s own reference list has not been read yet, so its prior work is not shown. Reading it fetches its PDF once.
 							</p>
-							<Button variant="outline" disabled={reading.status === "loading"} onClick={() => setAsked(true)}>
+							<Button variant="outline" disabled={reading.status === "loading"} onClick={read}>
 								{reading.status === "loading" ? <Loader2 className="animate-spin" /> : <BookOpenText />}
 								{reading.status === "loading" ? "Reading the paper's references" : "Read this paper's references"}
 							</Button>

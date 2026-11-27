@@ -5,6 +5,7 @@ import { AlignLeft, FileText, MessageSquareText, Sparkles } from "lucide-react";
 import type { Passage, PassageAddress, PassageKind } from "@rp/contracts";
 import { PassageExplainer, type AskedOnce, type ExplainMode } from "@/components/passage-explainer";
 import { Button } from "@/components/ui/button";
+import { missingRoute } from "@/lib/answers";
 import { api } from "@/lib/api";
 import { highlighted, pages, passageAt } from "@/lib/evidence";
 import { explainable, placeKey, resolveSelection, selectionQuote } from "@/lib/explanation";
@@ -104,9 +105,10 @@ export function PaperText({
 	/** the run the paper is read from: where related passages are looked for */
 	run?: string;
 }) {
-	const read = useAsync(() => api.passages(id), [id]);
+	const read = useAsync(() => api.passages(id), [id], { keep: false });
 	const quote = at?.address ? null : (at?.quote ?? null);
-	const located = useAsync(quote ? () => api.locate(id, quote) : null, [id, quote]);
+	// where another quote was found is never this one's place
+	const located = useAsync(quote ? () => api.locate(id, quote) : null, [id, quote], { keep: false });
 	const found = ready(located);
 	const mark = at?.address ?? (found?.found ? found.address : null);
 	const markRef = useRef<HTMLElement | null>(null);
@@ -114,7 +116,7 @@ export function PaperText({
 	const target = passages && mark ? passageAt(passages, mark) : -1;
 
 	// the passages explained before; a backend without the route has no explaining at all
-	const marks = useAsync(() => api.explainedPassages(id), [id]);
+	const marks = useAsync(() => api.explainedPassages(id), [id], { keep: false });
 	const explaining = ready(marks);
 	const explained = new Set(explaining?.explained.map(placeKey) ?? []);
 	const [chosen, setChosen] = useState<Chosen | null>(null);
@@ -195,7 +197,15 @@ export function PaperText({
 		}
 	};
 
-	if (read.status === "failed") return <p className="text-sm text-destructive">{read.error}</p>;
+	if (read.status === "failed")
+		// a backend without the route (the Python one), or no PDF the engine can read: nothing went wrong
+		return missingRoute(read.error) ? (
+			<p className="text-sm text-muted-foreground">
+				The paper&apos;s text is not available here{onOpenPdf ? ": its PDF is in the Paper tab." : "."}
+			</p>
+		) : (
+			<p className="text-sm text-destructive">{read.error}</p>
+		);
 	if (!passages) return <p className="text-sm text-muted-foreground">Reading the paper…</p>;
 	return (
 		<article ref={articleRef} className="relative mx-auto flex max-w-[68ch] flex-col gap-3 font-sans select-text">
