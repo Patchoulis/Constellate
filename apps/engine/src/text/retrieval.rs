@@ -998,6 +998,37 @@ mod tests {
     }
 
     #[test]
+    fn the_least_recently_used_index_is_dropped_first_and_the_one_just_built_is_kept_even_alone_over_the_budget() {
+        let papers = Arc::new(library());
+        let one = index(&papers).bytes();
+        let built = |indexes: &Indexes, scope: &str| {
+            let papers = Arc::clone(&papers);
+            assert!(matches!(indexes.get(scope, Wait::Forever, move |_| Ok(index(&papers))).unwrap(), Got::Ready(_)));
+        };
+        let not_again = |indexes: &Indexes, scope: &str| {
+            let got = indexes.get(scope, Wait::Forever, |_| Err("built again".to_owned()));
+            assert!(matches!(got, Ok(Got::Ready(_))), "{scope}: {got:?}");
+        };
+        // room for two
+        let indexes = Indexes::with_budget(one * 2 + one / 2);
+        built(&indexes, "a");
+        built(&indexes, "b");
+        not_again(&indexes, "a"); // a is now the more recently used
+        built(&indexes, "c");
+        assert_eq!(indexes.kept(), ["a", "c"], "b, used least recently, was dropped");
+        // room for none: the one just built stays, for whoever asks next
+        let small = Indexes::with_budget(1);
+        built(&small, "a");
+        built(&small, "b");
+        assert_eq!(small.kept(), ["b"]);
+        not_again(&small, "b");
+        // forgotten, it is built again
+        small.forget("b");
+        assert!(small.kept().is_empty());
+        built(&small, "b");
+    }
+
+    #[test]
     fn many_threads_searching_while_indexes_are_built_and_evicted_all_get_the_same_answers() {
         let papers = Arc::new(library());
         let expected = index(&papers).search("merging distillation", Ranking::Lexical);
