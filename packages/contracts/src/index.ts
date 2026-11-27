@@ -709,3 +709,146 @@ export interface Library {
 		by_year: Record<string, { abstracts: number; flagged: number }> | null;
 	} | null;
 }
+
+// ---- cited answers ----
+
+/** How much of a run's or a community's papers a search covers (engine text/retrieval.rs `Coverage`). */
+export interface SearchCoverage {
+	papers: number;
+	/** searched in their full text, read from their PDF */
+	full_text: number;
+	/** read, but only their first passages are searched: the index was full */
+	capped: number;
+	/** searched in their title and abstract only: no PDF kept */
+	no_pdf: number;
+	/** searched in their title and abstract only: their PDF could not be read */
+	unreadable: number;
+	/** not in the library: not searched */
+	missing: number;
+}
+
+/** A passage found for a search or a question: the paper's own words there, as evidence one can click. */
+export interface PassageFound {
+	evidence: Evidence;
+	/** does a statement of the answer shown cite it? (always false for a search) */
+	cited: boolean;
+}
+
+/** While a scope's papers are being indexed (the first search of it reads the PDFs not read before). */
+export interface SearchIndexing {
+	state: "indexing";
+	done: number;
+	of: number;
+}
+
+/** `GET /api/runs/<run>/passages/found?q=...&community=<tree path>`: found without any model, at no cost. */
+export type PassagesFound = { state: "ready"; query: string; coverage: SearchCoverage; passages: PassageFound[] } | SearchIndexing;
+
+/** Tokens of a call, by how they are billed (engine usage/prices.rs `Tokens`). */
+export interface AnswerTokens {
+	input: number;
+	output: number;
+	cache_read: number;
+	cache_write_5m: number;
+	cache_write_1h: number;
+}
+
+/** What a call is likely to cost (engine model/language.rs `Estimate`): an estimate either way. */
+export interface AnswerCost {
+	model: string;
+	calls: number;
+	tokens: AnswerTokens;
+	/** US dollars; null when the model's price is not known */
+	usd: number | null;
+	most_usd: number | null;
+	counting: { kind: "assumed" | "measured"; chars_per_token: number };
+}
+
+/** `GET /api/runs/<run>/answers/estimate?q=...&community=...`: what asking would cost. Nothing is sent. */
+export type AnswerEstimate =
+	| {
+			state: "ready";
+			/** the question's id once asked */
+			id: string;
+			model: string;
+			/** its answer is kept: reopening it costs nothing */
+			kept: boolean;
+			/** passages that fit in the prompt, and the papers they are from */
+			passages: number;
+			papers: number;
+			coverage: SearchCoverage;
+			prompt_cap_tokens: number;
+			max_answer_tokens: number;
+			/** null when kept */
+			cost: AnswerCost | null;
+			/** the most it can cost in US dollars, which the request must accept; null when the price is not known */
+			most_usd: number | null;
+			/** the most tokens it can take (its cap when the price is not known) */
+			most_tokens: number;
+			api_key_set: boolean;
+	  }
+	| SearchIndexing;
+
+/** `POST /api/runs/<run>/answers`, sent when the user clicks the button showing the estimate. */
+export interface AnswerRequest {
+	question: string;
+	/** a community's tree path; absent or null for the whole run */
+	community?: string | null;
+	/** the model the estimate shown was for: a request for another is refused */
+	model: string;
+	/** the `most_usd` the user was shown; null when the price is not known */
+	accepted_usd: number | null;
+}
+
+/** The question's id, and the job asking it (null when its answer was kept). */
+export interface AnswerStarted {
+	id: string;
+	job: number | null;
+}
+
+/** One line of `GET /api/runs/<run>/answers`, the questions asked of a run, the latest first. */
+export interface AnswerSummary {
+	id: string;
+	question: string;
+	community: string | null;
+	model: string;
+	asked_at: string;
+	/** its answer is kept: reopening it costs nothing */
+	answered: boolean;
+}
+
+/** One statement of an answer: a model's reading; its evidence is the papers' words. */
+export interface AnswerStatement {
+	sentence: string;
+	about: "one_paper" | "several_papers";
+}
+
+export interface AnswerCounts {
+	/** statements the model wrote */
+	written: number;
+	shown: number;
+	/** left out: their quotes were not found in the papers they name */
+	not_found: number;
+	/** left out: not of the shape asked for */
+	malformed: number;
+}
+
+/** Where a question stands: answered, the papers do not say, too little verified to show, being asked, or not answered. */
+export type AnswerState = "answered" | "not_in_papers" | "unverified" | "asking" | "unanswered";
+
+/** `GET /api/runs/<run>/answers/<id>`: a question and its kept answer, its quotes checked again. */
+export interface AnswerView {
+	id: string;
+	question: string;
+	community: string | null;
+	model: string;
+	asked_at: string;
+	state: AnswerState;
+	/** only when answered */
+	statements: Cited<AnswerStatement>[];
+	counts: AnswerCounts;
+	/** the passages the model was given, best first */
+	passages: PassageFound[];
+	/** the papers the statements shown cite */
+	cited_papers: string[];
+}
