@@ -136,6 +136,32 @@ pub const MIGRATIONS: &[&str] = &[
         at     TEXT NOT NULL
     );
     ",
+    // 2: a paper's reviews page as the reader showed it, and the notes read from it
+    r"
+    -- The text of a paper's reviews page as the user's reader showed it, and the page's address. Kept so that a
+    -- newer reader can read it again, and so that positions in a reading point into something that is still there.
+    -- `text_hash` (text_hash of papers.rs) tells a reading of this text from one of an earlier page.
+    CREATE TABLE review_pages (
+        paper_id  TEXT PRIMARY KEY REFERENCES papers (id) ON DELETE CASCADE,
+        address   TEXT NOT NULL,
+        text      TEXT NOT NULL,
+        text_hash TEXT NOT NULL,
+        read_at   TEXT NOT NULL
+    );
+
+    -- What a version of the reader (text/discussion.rs PARSER) found on a paper's page: its notes, as JSON. A paper
+    -- has one row per version that read it; keeping a new page removes them all.
+    CREATE TABLE review_readings (
+        paper_id  TEXT NOT NULL REFERENCES review_pages (paper_id) ON DELETE CASCADE,
+        parser    BIGINT NOT NULL,
+        text_hash TEXT NOT NULL,
+        reviews   BIGINT NOT NULL CHECK (reviews >= 0),
+        content   TEXT NOT NULL,
+        read_at   TEXT NOT NULL,
+        PRIMARY KEY (paper_id, parser)
+    );
+    CREATE INDEX review_readings_by_parser ON review_readings (parser);
+    ",
 ];
 
 /// Bring `connection` to the last of `migrations`. Refuses a database newer than the list.

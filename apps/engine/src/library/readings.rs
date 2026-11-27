@@ -184,10 +184,47 @@ fn reading_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Reading> {
     })
 }
 
-fn ratings_of(connection: &Connection, paper_id: &str) -> rusqlite::Result<Option<Ratings>> {
+pub(super) fn ratings_of(connection: &Connection, paper_id: &str) -> rusqlite::Result<Option<Ratings>> {
     connection
         .query_row("SELECT content FROM ratings WHERE paper_id = ?1", [paper_id], |row| json_column(row, 0))
         .optional()
+}
+
+/// [`Library::keep_ratings`] inside a write that may do more (keeping a paper's whole reviews page with them).
+pub(super) fn keep_ratings_in(
+    connection: &Connection,
+    paper_id: &str,
+    ratings: Ratings,
+) -> Result<Ratings, LibraryError> {
+    if let Some(before) = ratings_of(connection, paper_id)?
+        && ratings.says_less_than(&before)
+    {
+        return Ok(before);
+    }
+    put_ratings(connection, paper_id, &ratings)?;
+    Ok(ratings)
+}
+
+impl From<&crate::text::reviews::Ratings> for Ratings {
+    /// The scores read from a reviews page, as the library keeps them: fields in the order shown.
+    fn from(read: &crate::text::reviews::Ratings) -> Self {
+        Ratings {
+            reviews: u32::try_from(read.reviews).unwrap_or(u32::MAX),
+            exact: read.exact,
+            ratings: read
+                .ratings
+                .iter()
+                .map(|(field, scores)| {
+                    let ratings = FieldRatings {
+                        values: scores.values.iter().map(|&value| u32::from(value)).collect(),
+                        mean: scores.mean,
+                        meanings: scores.meanings.clone(),
+                    };
+                    (field.name().to_owned(), ratings)
+                })
+                .collect(),
+        }
+    }
 }
 
 impl Library {
@@ -241,15 +278,7 @@ impl Library {
     /// Keep a reading of a paper's reviews page, unless the one kept says more; returns what is kept now. The
     /// comparison and the write are one transaction, so two pages read at once cannot both win.
     pub fn keep_ratings(&self, paper_id: &str, ratings: Ratings) -> Result<Ratings, LibraryError> {
-        self.write(|transaction| {
-            if let Some(before) = ratings_of(transaction, paper_id)?
-                && ratings.says_less_than(&before)
-            {
-                return Ok(before);
-            }
-            put_ratings(transaction, paper_id, &ratings)?;
-            Ok(ratings)
-        })
+        self.write(|transaction| keep_ratings_in(transaction, paper_id, ratings))
     }
 
     /// For each paper, its score by `classifier` if that classifier scored exactly its present text.
