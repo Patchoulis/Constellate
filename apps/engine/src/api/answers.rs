@@ -1113,6 +1113,7 @@ mod tests {
         let (status, view) = ask(&router, "GET", &path, None).await;
         assert_eq!(status, StatusCode::OK, "{view}");
         assert_eq!(view["state"], "answered", "{view}");
+        crate::api::contract::assert_fits("AnswerView", &view, &[]);
         assert_eq!(view["statements"].as_array().unwrap().len(), 2, "{view}");
         assert_eq!(view["statements"][0]["statement"]["sentence"], "Merging counts shared directions twice.");
         assert_eq!(view["statements"][0]["evidence"][0]["established"]["kind"], "verified");
@@ -1132,5 +1133,37 @@ mod tests {
         assert_eq!(ask(&router, "GET", &path, None).await.1["state"], "unanswered");
         assert_eq!(ask(&router, "DELETE", &path, None).await.0, StatusCode::OK);
         assert_eq!(ask(&router, "GET", &path, None).await.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn every_answer_of_these_routes_fits_its_type_in_the_contracts() {
+        use crate::api::contract::assert_fits;
+
+        let data = data();
+        let router = router(with_key(engine(&data)));
+        let (_, found) =
+            ask(&router, "GET", &format!("/api/runs/r1/passages/found?q={}", query("merging")), None).await;
+        assert!(!found["passages"].as_array().unwrap().is_empty(), "{found}");
+        assert_fits("PassagesFound", &found, &[]);
+        assert_fits("SearchCoverage", &found["coverage"], &[]);
+        assert_fits("PassageFound", &found["passages"][0], &[]);
+
+        let (_, told) =
+            ask(&router, "GET", &format!("/api/runs/r1/answers/estimate?q={}", query(QUESTION)), None).await;
+        assert_eq!(told["state"], "ready", "{told}");
+        assert_fits("AnswerEstimate", &told, &[]);
+        assert_fits("AskingCost", &told["cost"], &[]);
+
+        let request = json!({"id": told["id"], "question": QUESTION, "provider": told["provider"], "model": told["model"], "accepted_usd": told["most_usd"]});
+        let (status, started) = ask(&router, "POST", "/api/runs/r1/answers", Some(request.to_string())).await;
+        assert_eq!(status, StatusCode::OK, "{started}");
+        assert_fits("AnswerStarted", &started, &[]);
+
+        let (_, listed) = ask(&router, "GET", "/api/runs/r1/answers", None).await;
+        assert_fits("AnswerSummary", &listed[0], &[]);
+        let (_, view) =
+            ask(&router, "GET", &format!("/api/runs/r1/answers/{}", started["id"].as_str().unwrap()), None).await;
+        assert_fits("AnswerView", &view, &[]);
+        assert_fits("AnswerCounts", &view["counts"], &[]);
     }
 }
