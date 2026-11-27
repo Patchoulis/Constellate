@@ -99,6 +99,10 @@ pub fn last_token_vectors(
     if hidden.len() != texts * width * size {
         return Err(EmbedError::Shape { got: hidden.len(), expected: texts * width * size });
     }
+    if width == 0 {
+        // texts with no tokens at all (empty ones) have no last position: their vectors are zeros
+        return Ok(vec![vec![0.0; size]; texts]);
+    }
     Ok((0..texts)
         .map(|row| {
             let start = (row * width + width - 1) * size;
@@ -202,7 +206,14 @@ impl Encoder {
         let outputs = self.session.run_with_options(inputs, &only)?;
         let (shape, hidden) = outputs["last_hidden_state"].try_extract_tensor::<f32>()?;
         let size = shape.last().copied().unwrap_or(0) as usize;
-        last_token_vectors(hidden, rows, width, size)
+        let mut vectors = last_token_vectors(hidden, rows, width, size)?;
+        // a text with no tokens is all padding: what the model gave at its last position is not its vector
+        for (vector, tokens) in vectors.iter_mut().zip(&tokens) {
+            if tokens.is_empty() {
+                vector.iter_mut().for_each(|x| *x = 0.0);
+            }
+        }
+        Ok(vectors)
     }
 }
 
@@ -238,6 +249,11 @@ mod tests {
         let vectors = last_token_vectors(&hidden, 2, 2, 2).unwrap();
         assert_eq!(vectors, [vec![0.6, 0.8], vec![0.0, 1.0]]);
         assert_eq!(last_token_vectors(&[0.0, 0.0], 1, 1, 2).unwrap(), [vec![0.0, 0.0]]); // not divided by zero
+    }
+
+    #[test]
+    fn a_batch_of_texts_with_no_tokens_gives_zero_vectors_and_does_not_panic() {
+        assert_eq!(last_token_vectors(&[], 2, 0, 3).unwrap(), [vec![0.0; 3], vec![0.0; 3]]);
     }
 
     #[test]
