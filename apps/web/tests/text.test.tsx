@@ -89,3 +89,9 @@ test("Markdown emphasis is set, and stars that are not emphasis are left alone",
 		'<strong>bold</strong> then a link <a href="https://example.org/x*y" target="_blank" rel="noopener noreferrer" class="underline decoration-muted-foreground underline-offset-2 hover:decoration-foreground">https://example.org/x*y</a>',
 	);
 });
+
+test("stars that are arithmetic, arguments or footnote marks are not emphasis", () => {
+	for (const text of ["x**2 + y**2", "Use **kwargs and **options", "(*) marks and (*) again", "a ** b ** c"])
+		assert.equal(shown(text), text);
+	assert.equal(shown("**Results.** We find"), "<strong>Results.</strong> We find");
+});

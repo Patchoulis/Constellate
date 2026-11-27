@@ -60,7 +60,7 @@ function Formula({ source }: { source: string }) {
 /** Markdown's `**bold**` and `*italic*`, as OpenReview abstracts use them ("**CALM** (*Corrective Adaptation*)").
  *  A star that touches a letter or digit on its outer side, or a space on its inner side, is not emphasis
  *  ("a * b", "2*3*4"). */
-const EMPHASIS = /\*\*([^*\n]+?)\*\*|(?<![\w*])\*([^*\s](?:[^*\n]*[^*\s])?)\*(?![\w*])/g;
+const EMPHASIS = /(?<![\w*])\*\*([^*\s\n](?:[^*\n]*[^*\s\n])?)\*\*(?![\w*])|(?<![\w*])\*([^*\s)](?:[^*\n]*[^*\s(])?)\*(?![\w*])/g;
 
 /** A stretch of text with no math and no links: LaTeX's marks resolved, Markdown's emphasis set. */
 function emphasised(text: string, key: number) {
