@@ -10,10 +10,10 @@
 //! | [`jobs`]    | the one background job at a time, as an explicit state machine                  |
 //! | [`model`]   | the embedding model, on any graphics card or the processor                     |
 //! | [`selection`] | which papers a run is about: conferences, or a date range                     |
+//! | [`text`]    | what is read out of text: authors' declarations, reviewers' scores           |
 //!
 //! Still to come as the Python backend (`apps/backend`) is ported: `sources` (arXiv, conference lists,
-//! proceedings), `analysis` (similarity graph, clustering, reports), `text` (authors' declarations, reviewers'
-//! ratings, the AI-text estimate) and `api` (what the interface asks for, answered only on this computer and only
+//! proceedings), `analysis` (similarity graph, clustering, reports), the AI-text estimate and `api` (what the interface asks for, answered only on this computer and only
 //! to the app itself).
 
 pub mod analysis;
