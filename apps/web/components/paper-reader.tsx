@@ -9,6 +9,7 @@ import { CommunityDot, MarkButton } from "@/components/community-panel";
 import { Weaknesses } from "@/components/critique";
 import { MathText } from "@/components/math-text";
 import { PaperText } from "@/components/paper-text";
+import { ExplainFromText } from "@/components/passage-explainer";
 import { PaperReviewFigures } from "@/components/review-summary";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { ResizeHandle } from "@/components/ui/resize-handle";
@@ -419,6 +420,7 @@ export function PaperReader({
 				</Button>
 			</div>
 			{view === "reviews" && <PaperReviewFigures id={id} version={read} />}
+			{view === "paper" && found?.readable && <ExplainFromText onText={() => setView("text")} />}
 			{shown && found ? (
 				<Page
 					key={`${view}:${shown.url}`}
@@ -433,7 +435,7 @@ export function PaperReader({
 					{found && view === "citations" && <Citations paper={found} run={run} onOpen={onOpen} />}
 					{found && view === "text" && (
 						// a new citation starts afresh: nothing of the last one may stay highlighted while this one is found
-						<PaperText key={JSON.stringify(at ?? null)} id={found.id} at={at} onOpenPdf={from.paper ? openPdf : undefined} />
+						<PaperText key={JSON.stringify(at ?? null)} id={found.id} at={at} onOpenPdf={from.paper ? openPdf : undefined} run={run} />
 					)}
 					{found && view !== "citations" && view !== "text" && (
 						<Abstract

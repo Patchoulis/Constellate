@@ -17,6 +17,7 @@
 pub mod config;
 pub mod connections;
 pub mod critique;
+pub mod explanation;
 pub mod extraction;
 pub mod login;
 pub mod passages;

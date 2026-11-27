@@ -1091,3 +1091,106 @@ export interface ExtractionEstimate {
 	/** what it was reckoned from: the papers' own texts, or (for the rest) the sample's */
 	basis: { kind: "texts" } | { kind: "sample_texts"; papers: number; characters: number } | { kind: "typical"; characters: number };
 }
+
+// ---- explain a passage ----
+
+/** `POST /api/papers/<id>/explanation/prepare` (and the other explanation routes): the passage's address, as
+ *  `PaperPassages` gives it. The passage explained is the one the address starts in. */
+export interface ExplanationRequest {
+	address: PassageAddress;
+}
+
+/** `POST /api/papers/<id>/explanation`: the passage, and the model and worst case the reader was shown; the
+ *  engine refuses when either changed since, so nothing is paid that was not shown. */
+export interface ExplanationStart extends ExplanationRequest {
+	model: string;
+	most_usd: number | null;
+}
+
+/** What is asked about a passage, from its kind (engine explanation/mod.rs). */
+export type ExplanationQuestion = "passage" | "equation" | "table" | "figure";
+
+export type ExplanationPart = "explanation" | "symbol" | "reading" | "prerequisite";
+
+/** One statement of an explanation: the paper's (with the evidence found for it, never empty) or general
+ *  background knowledge, which never carries a link to the paper. */
+export type ExplanationStatement =
+	| { source: "paper"; part: ExplanationPart; symbol: string | null; text: string; evidence: Evidence[] }
+	| { source: "background"; part: ExplanationPart; symbol: string | null; text: string };
+
+/** A kept explanation, its quotes checked again when it is shown. */
+export interface Explanation {
+	/** the model that wrote it, as the API named it */
+	model: string;
+	kept_at: string;
+	statements: ExplanationStatement[];
+	/** statements not shown: said to be the paper's but their quotes were not found in it, or of the wrong shape */
+	left_out: { not_found: number; malformed: number; past_bound: number };
+}
+
+/** What explaining would cost: an estimate, from characters at an assumed or measured rate. */
+export interface ExplanationEstimate {
+	/** likely and at most, in US dollars; null when the model's price is not known */
+	usd: number | null;
+	most_usd: number | null;
+	prompt_tokens: number;
+	answer_tokens: number;
+	counting: { kind: "assumed" | "measured"; chars_per_token: number };
+}
+
+/** A symbol or a capitalised term the passage uses, and the sentence of the paper that introduces it (found by
+ *  a program, no model). */
+export interface DefinedTerm {
+	term: { kind: "symbol" | "name"; text: string };
+	evidence: Evidence;
+}
+
+export type ExplanationPrepared =
+	| {
+			state: "ready";
+			paper: string;
+			passage: { kind: PassageKind; address: PassageAddress };
+			question: ExplanationQuestion;
+			/** the passage's extracted text may be garbled (equations, tables, figures): only text is sent */
+			garbled: boolean;
+			/** the model that would be asked: the one chosen in the settings */
+			model: string;
+			definitions: DefinedTerm[];
+			/** kept from before: shown at no cost */
+			explained: Explanation | null;
+			/** null when an explanation is kept */
+			estimate: ExplanationEstimate | null;
+	  }
+	| { state: "no_text"; why: "no_pdf" | "unreadable" };
+
+/** `POST /api/papers/<id>/explanation`: the job that asks, when one was started (none when one is kept). */
+export interface ExplanationStarted {
+	started: boolean;
+	job: number | null;
+}
+
+/** `GET /api/papers/<id>/explanations`: the passages with an explanation kept for the model chosen. */
+export interface ExplainedPassages {
+	model: string;
+	explained: PassageAddress[];
+}
+
+/** A passage of another paper about the same thing, found by the words they share (no model). */
+export interface RelatedPassage {
+	paper: string;
+	evidence: Evidence;
+	/** the words it shares with the passage asked about, the rarest first */
+	words: string[];
+}
+
+/** `POST /api/runs/<run>/papers/<id>/related`: what was searched and found. */
+export interface RelatedPassages {
+	/** nearby papers looked at (neighbours in the graph, then the paper's community), at most `bound` */
+	nearby: number;
+	bound: number;
+	by_text: number;
+	/** searched by their abstract only: their PDF has not been read */
+	by_abstract: number;
+	not_in_library: number;
+	found: RelatedPassage[];
+}

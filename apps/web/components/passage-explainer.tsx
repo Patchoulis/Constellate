@@ -1,0 +1,470 @@
+"use client";
+
+/**
+ * "Explain this" in the reader's Text tab (engine explanation/): a passage, an equation or a caption explained by
+ * the model, every statement about the paper with the paper's own words beside it and general background marked
+ * as such; the paper's own definitions of the symbols and terms it uses (found without a model); and passages of
+ * nearby papers about the same thing (found without a model). The cost is shown before anything is sent, and an
+ * explanation is kept, so opening it again is free.
+ */
+import { useEffect, useRef, useState } from "react";
+import { AlignLeft, Loader2, RotateCcw, Sparkles, Square, X } from "lucide-react";
+import type { DefinedTerm, Evidence, Explanation, ExplanationStatement, JobProgress, Passage } from "@rp/contracts";
+import { EvidenceLink } from "@/components/evidence-link";
+import { MathText } from "@/components/math-text";
+import { Button, Heading, Segmented } from "@/components/ui/button";
+import { api } from "@/lib/api";
+import { pages } from "@/lib/evidence";
+import {
+	ASK_BELOW_KEY,
+	BACKGROUND_NOTE,
+	MODEL_NOTE,
+	PART_HEADING,
+	askFirst,
+	byPart,
+	costLine,
+	costNote,
+	garbledNote,
+	leftOutNote,
+	placeKey,
+	readAskBelow,
+	searchedLine,
+	symbolSource,
+} from "@/lib/explanation";
+import { money } from "@/lib/units";
+import { ready, useAsync } from "@/lib/use-async";
+import { cn } from "@/lib/utils";
+
+export type ExplainMode = "explain" | "related";
+
+const POLL_MS = 1200;
+const USD = { code: "USD", rate: 1, date: null };
+
+/** "Do not ask again below": kept in this browser only; unreadable storage means always asking. */
+function storedAskBelow(): number | null {
+	try {
+		return readAskBelow(window.localStorage.getItem(ASK_BELOW_KEY));
+	} catch (error) {
+		return null;
+	}
+}
+
+function storeAskBelow(amount: number | null) {
+	try {
+		if (amount === null) window.localStorage.removeItem(ASK_BELOW_KEY);
+		else window.localStorage.setItem(ASK_BELOW_KEY, String(amount));
+	} catch (error) {
+		// not kept: the next explanation asks again, which is the safe side
+	}
+}
+
+/** A place in this paper, labelled by its page: the paper is the one being read. */
+function Place({ evidence }: { evidence: Evidence }) {
+	const established = evidence.established;
+	return <EvidenceLink evidence={evidence} label={established.kind === "verified" ? pages(established.address) : "abstract"} />;
+}
+
+function Statement({ statement }: { statement: ExplanationStatement }) {
+	const symbol = statement.symbol ? symbolSource(statement.symbol) : "";
+	const said = (
+		<>
+			{symbol && (
+				<span className="mr-1.5 font-medium text-foreground">
+					<MathText>{symbol}</MathText>
+				</span>
+			)}
+			<MathText>{statement.text}</MathText>
+		</>
+	);
+	if (statement.source === "background") {
+		return (
+			<p title={BACKGROUND_NOTE} className="border-l-2 border-dashed border-muted-foreground/40 pl-2 text-muted-foreground italic">
+				<span className="mr-1.5 rounded-sm border border-dashed px-1 font-ui text-[0.65rem] tracking-wide not-italic uppercase">
+					Background, not from this paper
+				</span>
+				{said}
+			</p>
+		);
+	}
+	return (
+		<p className="border-l-2 border-primary/40 pl-2">
+			<span title={MODEL_NOTE}>{said}</span>{" "}
+			<span className="font-ui text-xs text-muted-foreground">
+				(
+				{statement.evidence.map((piece, index) => (
+					<span key={index}>
+						{index > 0 && "; "}
+						<Place evidence={piece} />
+					</span>
+				))}
+				)
+			</span>
+		</p>
+	);
+}
+
+export function Explained({ explained, onRedo }: { explained: Explanation; onRedo: () => void }) {
+	const left = leftOutNote(explained.left_out);
+	return (
+		<div className="flex flex-col gap-3">
+			<div className="flex items-center gap-2 font-ui text-xs text-muted-foreground">
+				<span title={MODEL_NOTE} className="flex-1">
+					Explained by the model ({explained.model}), kept {explained.kept_at.slice(0, 10)}: opening it again costs nothing.
+				</span>
+				<Button
+					variant="ghost"
+					className="h-6 px-2 text-xs"
+					title="Set this explanation aside and ask the model again (it costs again)"
+					onClick={onRedo}
+				>
+					<RotateCcw />
+					Redo
+				</Button>
+			</div>
+			{explained.statements.length === 0 && (
+				<p className="text-sm text-muted-foreground">No statement of this explanation could be shown.</p>
+			)}
+			{byPart(explained.statements).map((group) => (
+				<div key={group.part} className="flex flex-col gap-1.5 text-sm leading-relaxed">
+					<Heading>{PART_HEADING[group.part]}</Heading>
+					{group.statements.map((statement, index) => (
+						<Statement key={index} statement={statement} />
+					))}
+				</div>
+			))}
+			{left && <p className="font-ui text-xs text-warning">{left}</p>}
+		</div>
+	);
+}
+
+function Definitions({ definitions }: { definitions: DefinedTerm[] }) {
+	if (definitions.length === 0) return null;
+	return (
+		<div className="flex flex-col gap-1">
+			<Heading title="Found by a program in the paper's text, with no model: the sentence where the paper introduces each symbol or term this passage uses.">
+				Defined here
+			</Heading>
+			<ul className="flex flex-col gap-1 text-sm">
+				{definitions.map((defined) => (
+					<li key={defined.term.text} className="flex flex-wrap items-baseline gap-x-1.5">
+						<span className="font-medium">{defined.term.text}</span>
+						<span className="text-muted-foreground">“{defined.evidence.quote}”</span>
+						<Place evidence={defined.evidence} />
+					</li>
+				))}
+			</ul>
+		</div>
+	);
+}
+
+/** Asking the model, as the engine's job: one state at a time. */
+type Asking =
+	| { state: "idle" }
+	| { state: "starting" }
+	/** `unanswered`: the last look at the job failed; it is looked at again, and Stop stays */
+	| { state: "running"; job: number; progress: JobProgress | null; unanswered: string | null }
+	| { state: "failed"; error: string };
+
+function AskBelow({ value, onChange }: { value: number | null; onChange: (value: number | null) => void }) {
+	const [amount, setAmount] = useState(value ?? 0.05);
+	return (
+		<label
+			className="flex items-center gap-1.5 font-ui text-xs text-muted-foreground"
+			title="Kept in this browser only. The amount compared is the most an explanation could cost, not its likely cost."
+		>
+			<input
+				type="checkbox"
+				checked={value !== null}
+				onChange={(event) => {
+					const next = event.target.checked ? amount : null;
+					storeAskBelow(next);
+					onChange(next);
+				}}
+			/>
+			Do not ask again when it costs at most USD
+			<input
+				type="number"
+				min={0.001}
+				step={0.01}
+				value={amount}
+				onChange={(event) => {
+					const next = Number(event.target.value);
+					if (!(next > 0)) return;
+					setAmount(next);
+					if (value !== null) {
+						storeAskBelow(next);
+						onChange(next);
+					}
+				}}
+				className="h-5 w-16 rounded-sm border bg-transparent px-1 tabular-nums"
+			/>
+		</label>
+	);
+}
+
+/** The passages of the open paper already asked about without a confirmation (or redone, or stopped): never
+ *  again without a click while the paper is open, whatever the panel does in between. */
+export type AskedOnce = Set<string>;
+
+function ExplainView({
+	paper,
+	passage,
+	onExplained,
+	askedOnce,
+}: {
+	paper: string;
+	passage: Passage;
+	onExplained: () => void;
+	askedOnce: AskedOnce;
+}) {
+	const prepared = useAsync(() => api.prepareExplanation(paper, passage.address), [paper, passage.address.page, passage.address.start]);
+	const found = ready(prepared);
+	const [asking, setAsking] = useState<Asking>({ state: "idle" });
+	const [askBelow, setAskBelow] = useState<number | null>(null);
+	// what decides asking without a confirmation is the setting as it was when the panel opened: changing it
+	// applies to the next passage, never to the estimate on screen
+	const autoBelow = useRef<number | null | undefined>(undefined);
+	useEffect(() => {
+		autoBelow.current = storedAskBelow();
+		setAskBelow(autoBelow.current);
+	}, []);
+	const key = placeKey(passage.address);
+
+	const start = async () => {
+		if (found?.state !== "ready" || !found.estimate) return;
+		askedOnce.add(key);
+		setAsking({ state: "starting" });
+		try {
+			// the model and the worst case shown go with the request: the engine refuses if either changed
+			const started = await api.explain(paper, passage.address, found.model, found.estimate.most_usd);
+			if (started.started && started.job !== null) setAsking({ state: "running", job: started.job, progress: null, unanswered: null });
+			else {
+				setAsking({ state: "idle" });
+				prepared.reload();
+			}
+		} catch (error) {
+			setAsking({ state: "failed", error: (error as Error).message });
+		}
+	};
+
+	// follow the job until it is over; then what was kept is read
+	const reload = useRef(prepared.reload);
+	reload.current = prepared.reload;
+	const explained = useRef(onExplained);
+	explained.current = onExplained;
+	useEffect(() => {
+		if (asking.state !== "running") return;
+		const timer = setTimeout(async () => {
+			try {
+				const status = await api.status(0);
+				if (status.id === asking.job && status.state === "running") {
+					setAsking({ ...asking, progress: status.progress ?? null, unanswered: null });
+					return;
+				}
+				if (status.id === asking.job && status.state === "failed") {
+					setAsking({ state: "failed", error: status.error ?? "The explanation could not be written." });
+					return;
+				}
+				setAsking({ state: "idle" });
+				reload.current();
+				explained.current();
+			} catch (error) {
+				// the job may still be running: keep looking, and keep the Stop button
+				setAsking({ ...asking, unanswered: (error as Error).message });
+			}
+		}, POLL_MS);
+		return () => clearTimeout(timer);
+	}, [asking]);
+
+	const estimate = found?.state === "ready" ? found.estimate : null;
+	useEffect(() => {
+		const below = autoBelow.current;
+		if (!estimate || below === undefined || askedOnce.has(key) || asking.state !== "idle" || askFirst(estimate, below)) return;
+		void start();
+		// start is a fresh closure every render; only a new estimate can lead to asking unconfirmed
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [estimate]);
+
+	if (prepared.status === "failed") return <p className="text-sm text-destructive">{prepared.error}</p>;
+	if (!found) return <p className="text-sm text-muted-foreground">Looking at the passage…</p>;
+	if (found.state === "no_text")
+		return (
+			<p className="text-sm text-muted-foreground">
+				{found.why === "no_pdf" ? "The library keeps no PDF of this paper" : "This paper's PDF could not be read"}: there is no text to
+				explain.
+			</p>
+		);
+	const garbled = garbledNote(found.passage.kind);
+	return (
+		<div className="flex flex-col gap-3">
+			{garbled && (
+				<p className="font-ui text-xs text-warning" title="Images of a page are not sent: the model reads the text extracted from the PDF.">
+					{garbled}
+				</p>
+			)}
+			<Definitions definitions={found.definitions} />
+			{found.explained && (
+				<Explained
+					explained={found.explained}
+					onRedo={async () => {
+						try {
+							await api.redoExplanation(paper, passage.address);
+							askedOnce.add(key); // a redo asks again only on a click
+							prepared.reload();
+						} catch (error) {
+							setAsking({ state: "failed", error: (error as Error).message });
+						}
+					}}
+				/>
+			)}
+			{found.estimate && asking.state !== "running" && (
+				<div className="flex flex-col gap-1.5 rounded-md border p-2">
+					<p className="font-ui text-xs" title={costNote(found.estimate)}>
+						{costLine(found.estimate)} Asked of the model chosen in the settings ({found.model}).
+					</p>
+					<div className="flex flex-wrap items-center gap-3">
+						<Button className="h-7 text-xs" disabled={asking.state === "starting"} onClick={() => void start()}>
+							{asking.state === "starting" ? <Loader2 className="animate-spin" /> : <Sparkles />}
+							Explain
+						</Button>
+						<AskBelow value={askBelow} onChange={setAskBelow} />
+					</div>
+				</div>
+			)}
+			{asking.state === "running" && (
+				<div className="flex items-center gap-2 font-ui text-xs text-muted-foreground">
+					<Loader2 className="size-3.5 animate-spin" />
+					<span className="flex-1">
+						Asking the model…
+						{asking.progress && ` ${money(asking.progress.usd, USD)} spent so far.`}
+						{asking.unanswered && ` (${asking.unanswered}: looking again.)`}
+					</span>
+					<Button
+						variant="ghost"
+						className="h-6 px-2 text-xs"
+						title="Stop asking"
+						onClick={() => {
+							askedOnce.add(key);
+							void api.cancelJob(asking.job).catch(() => {});
+						}}
+					>
+						<Square />
+						Stop
+					</Button>
+				</div>
+			)}
+			{asking.state === "failed" && <p className="text-sm text-destructive">{asking.error}</p>}
+		</div>
+	);
+}
+
+function RelatedView({ paper, run, passage }: { paper: string; run: string; passage: Passage }) {
+	const related = useAsync(
+		() => api.relatedPassages(run, paper, passage.address),
+		[run, paper, passage.address.page, passage.address.start],
+	);
+	const found = ready(related);
+	if (related.status === "failed") return <p className="text-sm text-destructive">{related.error}</p>;
+	if (!found) return <p className="text-sm text-muted-foreground">Reading the nearby papers…</p>;
+	return (
+		<div className="flex flex-col gap-2">
+			<p
+				className="font-ui text-xs text-muted-foreground"
+				title="Found by the words they share, with no model: a passage that uses the same words may still be about something else."
+			>
+				{searchedLine(found)}
+			</p>
+			{found.found.length === 0 && (
+				<p className="text-sm text-muted-foreground">No passage of these papers shares enough words with this one.</p>
+			)}
+			<ul className="flex flex-col gap-2">
+				{found.found.map((near, index) => (
+					<li key={index} className="flex flex-col gap-0.5 text-sm">
+						<span className="text-muted-foreground">“{near.evidence.quote}”</span>
+						<span className="flex flex-wrap items-baseline gap-x-2 font-ui text-xs text-muted-foreground">
+							<EvidenceLink evidence={near.evidence} />
+							<span title="The words this passage shares with the one you chose, the rarest first">shares: {near.words.join(", ")}</span>
+						</span>
+					</li>
+				))}
+			</ul>
+		</div>
+	);
+}
+
+/** The panel under a chosen passage: its explanation, or passages of nearby papers about the same thing. */
+export function PassageExplainer({
+	paper,
+	run,
+	passage,
+	mode,
+	note,
+	onMode,
+	onClose,
+	onExplained,
+	askedOnce,
+}: {
+	paper: string;
+	/** the run the paper is read from: related passages are looked for among its papers */
+	run?: string;
+	passage: Passage;
+	mode: ExplainMode;
+	/** said above the panel: how the selection was taken */
+	note: string | null;
+	onMode: (mode: ExplainMode) => void;
+	onClose: () => void;
+	/** an explanation was just kept: the passage's mark is shown */
+	onExplained: () => void;
+	askedOnce: AskedOnce;
+}) {
+	const tabs = [
+		{
+			value: "explain" as const,
+			label: "Explain",
+			icon: <Sparkles />,
+			title: "The model explains this passage (shown with its cost first)",
+		},
+		...(run
+			? [
+					{
+						value: "related" as const,
+						label: "Find related",
+						icon: <AlignLeft />,
+						title: "Passages of nearby papers sharing its words: free",
+					},
+				]
+			: []),
+	];
+	return (
+		<section className={cn("my-1 flex flex-col gap-3 rounded-md border bg-card p-3 font-sans shadow-sm")} aria-label="Explain this passage">
+			<div className="flex items-center gap-2">
+				<Segmented options={tabs} value={run ? mode : "explain"} onChange={onMode} />
+				<span className="flex-1 font-ui text-xs text-muted-foreground">{pages(passage.address)}</span>
+				<Button variant="ghost" size="icon" title="Close" onClick={onClose}>
+					<X />
+				</Button>
+			</div>
+			{note && <p className="font-ui text-xs text-muted-foreground">{note}</p>}
+			{mode === "related" && run ? (
+				<RelatedView paper={paper} run={run} passage={passage} />
+			) : (
+				<ExplainView paper={paper} passage={passage} onExplained={onExplained} askedOnce={askedOnce} />
+			)}
+		</section>
+	);
+}
+
+/** Said on the PDF tab: what is selected in the browser's PDF viewer cannot be read, so explaining is on the Text tab. */
+export function ExplainFromText({ onText }: { onText: () => void }) {
+	return (
+		<div className="flex shrink-0 items-center gap-2 border-b px-3 py-1 font-ui text-xs text-muted-foreground">
+			<span className="flex-1">
+				To explain a passage, an equation or a table, select it on the Text tab: what is selected in the PDF view cannot be read.
+			</span>
+			<Button variant="ghost" className="h-6 px-2 text-xs" onClick={onText}>
+				<AlignLeft />
+				Text tab
+			</Button>
+		</div>
+	);
+}
