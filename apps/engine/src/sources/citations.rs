@@ -18,17 +18,13 @@
 //!     backing off, a third time ──▶ gives up: RateLimited, saying when to try again
 //! ```
 //!
-//! The address asked is `CONSTELLATE_ARXIV_API` from the environment (`.env.example`), arXiv's own API when unset.
+//! The address asked is the one its caller passes ([`enrich`]'s `base`): arXiv's own API, [`super::arxiv::API`].
 
 use std::time::{Duration, Instant};
 
 use crate::analysis::citations::{Link, LinkedReference, Linker, same_title};
 use crate::text::references::{Confidence, Reference, title_words};
 
-/// The environment variable that names the arXiv API's address.
-pub const ARXIV_API_VARIABLE: &str = "CONSTELLATE_ARXIV_API";
-/// arXiv's own API: the default of [`ARXIV_API_VARIABLE`], as `.env.example` gives it.
-const ARXIV_API: &str = "https://export.arxiv.org/api/query";
 /// arXiv asks for no more than one request every three seconds.
 pub const PAUSE: Duration = Duration::from_secs(3);
 /// How long to wait after a refusal that says nothing about when to come back; doubled each time.
@@ -41,14 +37,6 @@ const MOST_REFUSALS: u32 = 3;
 const SEARCH_RESULTS: usize = 5;
 /// Words of a title put in a search: arXiv's phrase search needs no more to find it.
 const SEARCH_WORDS: usize = 12;
-
-/// The arXiv API's address: from the environment, else arXiv's own.
-pub fn endpoint() -> String {
-    std::env::var(ARXIV_API_VARIABLE)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| ARXIV_API.to_owned())
-}
 
 /// An answer to a request.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -450,7 +438,8 @@ mod tests {
             unresolved("Solver-informed rl: Grounding large language models for authentic optimization modeling", 2025),
             LinkedReference { link: Link::InLibrary { paper: "x".to_owned() }, ..unresolved("Already known", 2020) },
         ];
-        let found = enrich(&mut paper, &linker, ARXIV_API, &mut Pacer::default(), &mut get, &mut clock).unwrap();
+        let found =
+            enrich(&mut paper, &linker, super::super::arxiv::API, &mut Pacer::default(), &mut get, &mut clock).unwrap();
         assert_eq!(found, 1);
         assert_eq!(paper[0].link, Link::OnArxiv { arxiv: "2505.11792".to_owned() });
         assert_eq!(paper[0].reference.confidence, Confidence::Identified);

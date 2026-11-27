@@ -590,9 +590,14 @@ pub fn sentence_spans(text: &str) -> Vec<(usize, usize)> {
             let spaced = chars.get(end).is_some_and(|c| c.is_whitespace());
             let opens =
                 next.is_some_and(|n| n.is_uppercase() || n.is_ascii_digit() || matches!(n, '(' | '[' | '"' | '“'));
+            // The word before the stop, looked at only as far back as an abbreviation is long: a run of thousands of
+            // characters without a space (dot leaders, a line of a table) would otherwise be read back to its start
+            // at every one of its full stops.
+            const LONGEST_ABBREVIATION: usize = 8;
             let word: String = chars[from..at]
                 .iter()
                 .rev()
+                .take(LONGEST_ABBREVIATION + 1)
                 .take_while(|c| !c.is_whitespace() && **c != '(')
                 .collect::<Vec<_>>()
                 .into_iter()
@@ -822,14 +827,16 @@ fn find_quote(text: &[char], quote: &[char]) -> Option<(usize, usize, Match)> {
     best.map(|(start, end, edits)| (start, end, Match::Close { differences: u32::try_from(edits).unwrap_or(u32::MAX) }))
 }
 
-/// `start..end` (characters of `text`) widened to whole words.
+/// `start..end` (characters of `text`) widened to whole words. An accent written as a mark of its own after its
+/// letter ("e" then U+0301) is part of the word, so the wording shown keeps it.
 fn whole_words(text: &[char], start: usize, end: usize) -> (usize, usize) {
+    let in_word = |c: char| c.is_alphanumeric() || is_combining_mark(c);
     let mut start = start.min(text.len());
     let mut end = end.min(text.len());
-    while start > 0 && text[start - 1].is_alphanumeric() {
+    while start > 0 && in_word(text[start - 1]) {
         start -= 1;
     }
-    while end < text.len() && text[end].is_alphanumeric() {
+    while end < text.len() && in_word(text[end]) {
         end += 1;
     }
     (start, end)
@@ -1262,6 +1269,25 @@ We prove that the bound holds for every task.\n\n3\n",
             (13, 42, "shared directions are counted", Match::Exact)
         );
         assert_eq!(locate_in("We show nothing.", "shared directions"), None);
+    }
+
+    #[test]
+    fn a_quote_ending_on_a_letter_with_an_accent_of_its_own_keeps_the_accent() {
+        // "café" written as "cafe" and a combining acute accent, as text from some PDFs and pages is
+        let text = "Un cafe\u{301} noir, s'il vous plait.";
+        let (span, wording, matched) = locate_in(text, "un café").unwrap();
+        assert_eq!((wording.as_str(), matched), ("Un cafe\u{301}", Match::Exact));
+        assert_eq!(chars_of(text, span.start, span.end), wording);
+    }
+
+    #[test]
+    fn a_long_run_without_spaces_is_cut_into_sentences_in_linear_time() {
+        // dot leaders, or a table row the PDF ran together: 200,000 characters with a full stop at every other one
+        let text = format!("{} End of it. Next one.", "x.".repeat(100_000));
+        let started = std::time::Instant::now();
+        let spans = sentence_spans(&text);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+        assert_eq!(spans, [(0, 200_000), (200_001, 200_011), (200_012, 200_021)]);
     }
 
     #[test]

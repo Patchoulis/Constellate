@@ -7,6 +7,8 @@
 //! | [`passages`]     | a paper's text made addressable; where a quote is in it; the sentences citing a reference |
 //! | [`pdf`]          | the text of a paper's PDF, in reading order, whole or page by page             |
 //! | [`references`]   | the works a paper cites, from its reference list                               |
+//! | [`retrieval`]    | where a run's or a community's papers talk about something: a lexical index    |
+//! | [`review_points`] | what each reviewer raised, point by point, with the authors' replies          |
 //! | [`reviews`]      | the scores reviewers gave, from the text of a reviews page                     |
 //! | [`discussion`]   | the whole thread of a reviews page: reviews by section, replies, the decision  |
 //!

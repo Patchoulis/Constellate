@@ -26,6 +26,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use super::discussion::{Kind, read_discussion};
 use super::{char_len_at, first_chars, pattern, squash};
 
 /// Characters of page text read; the interface refuses more before it gets here.
@@ -150,13 +151,6 @@ pub(super) static NOT_WHOLE: LazyLock<Regex> = LazyLock::new(|| pattern(r"(?i)\A
 /// A field and its score, starting right here: where fields share a line, each is moved onto its own.
 static FIELD_AHEAD: LazyLock<Regex> = LazyLock::new(|| pattern(&format!(r"(?i)\A({})[^\S\n]*:[^\S\n]*\d", fields())));
 static SPACES: LazyLock<Regex> = LazyLock::new(|| pattern(r"[^\S\n]+"));
-/// The heading of a note in the thread. A sentence that merely starts with one of those words is prose, so a
-/// heading is the word alone on its line or goes on to say whose note it is.
-static NOTE: LazyLock<Regex> = LazyLock::new(|| {
-    pattern(
-        r"(?mi)^[^\S\n]*(Official Review|Official Comment|Public Comment|Meta[- ]?Review|Author Rebuttal|Rebuttal|Paper Decision|Decision|Author[^\n]{0,30}Comment|Ethics Review|Withdrawal)\b(?:[^\n]{0,120}\b(?:by|of)\s+(?:Reviewer|Authors?|Area Chairs?|Senior Area Chairs?|Program Chairs?|Ethics Reviewer|Submission\s?\d+|Paper\s?\d+)\b[^\n]{0,60}|[ \t]*)$",
-    )
-});
 static FORUM: LazyLock<Regex> = LazyLock::new(|| pattern(r"openreview\.net/[^?#]*\?(?:[^#]*&)?id=([\w-]+)"));
 
 /// The text with every field that shares a line with something before it moved onto a line of its own. A
@@ -214,6 +208,16 @@ pub(super) fn scores(text: &str, once: bool) -> Vec<(Field, u8, String)> {
     found
 }
 
+/// A review's scores as (field, score, meaning), its confidence among them.
+fn review_scores(kind: &Kind) -> Vec<(Field, u8, String)> {
+    match kind {
+        Kind::OfficialReview { scores, confidence } => {
+            scores.iter().chain(confidence).map(|score| (score.field, score.value, score.meaning.clone())).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// The mean, rounded to two decimals half to even, as Python's `round` does, so that readings kept by the
 /// Python backend compare equal.
 fn mean(values: &[u8]) -> f64 {
@@ -229,17 +233,16 @@ fn mean(values: &[u8]) -> f64 {
 }
 
 /// The scores on a reviews page, or `None` if it has none.
+///
+/// What a review is, and where it ends, is what the reader of the whole thread says ([`read_discussion`]), so
+/// that the scores shown and the reviews shown are of the same notes: the same headings (an older page's
+/// "Official Review by AnonReviewer2" too), the same end at the site's footer, the same scores.
 pub fn read_ratings(text: &str) -> Option<Ratings> {
     let text = first_chars(text, MAX_TEXT);
-    let notes: Vec<_> = NOTE.captures_iter(text).filter_map(|note| Some((note.get(0)?, note.get(1)?))).collect();
-    let mut per_review: Vec<Vec<(Field, u8, String)>> = notes
-        .iter()
-        .enumerate()
-        .filter(|(_, (_, kind))| kind.as_str().to_lowercase() == "official review")
-        .map(|(index, (note, _))| {
-            let end = notes.get(index + 1).map_or(text.len(), |(next, _)| next.start());
-            scores(&text[note.end()..end], true)
-        })
+    let mut per_review: Vec<Vec<(Field, u8, String)>> = read_discussion(text)
+        .map(|discussion| discussion.reviews().map(|(_, note)| review_scores(&note.kind)).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
         .filter(|scores| !scores.is_empty())
         .collect();
     let exact = !per_review.is_empty();
@@ -504,6 +507,44 @@ Rating: 8: accept, good paper
         .unwrap();
         assert_eq!(read.ratings.keys().copied().collect::<Vec<_>>(), [Field::OverallRecommendation]);
         assert_eq!(read.ratings[&Field::OverallRecommendation].values, [3, 4]);
+    }
+
+    #[test]
+    fn the_scores_and_the_thread_agree_on_every_page_on_what_a_review_is_and_what_it_scored() {
+        use crate::text::discussion::fixtures::{
+            ICLR_2021, ICLR_2024, ICML_2024, ICML_2025, NEURIPS_2023, NEURIPS_2025,
+        };
+        let pages = [NEURIPS, ICLR, NEURIPS_2023, NEURIPS_2025, ICLR_2021, ICLR_2024, ICML_2024, ICML_2025];
+        for (number, page) in pages.into_iter().enumerate() {
+            let discussion = read_discussion(page).unwrap();
+            let scored: Vec<Vec<(Field, u8)>> = discussion
+                .reviews()
+                .map(|(_, note)| {
+                    review_scores(&note.kind).into_iter().map(|(field, value, _)| (field, value)).collect()
+                })
+                .filter(|scores: &Vec<(Field, u8)>| !scores.is_empty())
+                .collect();
+            let read = read_ratings(page).unwrap();
+            assert_eq!((read.reviews, read.exact), (scored.len(), true), "page {number}");
+            for (field, scores) in &read.ratings {
+                let in_thread: Vec<u8> = scored
+                    .iter()
+                    .filter_map(|review| review.iter().find(|(f, _)| f == field).map(|(_, v)| *v))
+                    .collect();
+                assert_eq!(scores.values, in_thread, "page {number}, {field:?}");
+            }
+            let fields: usize = scored.iter().flatten().map(|(field, _)| *field).collect::<HashSet<_>>().len();
+            assert_eq!(read.ratings.len(), fields, "page {number}");
+        }
+    }
+
+    #[test]
+    fn an_older_pages_reviews_signed_by_anonymous_reviewers_are_told_apart() {
+        use crate::text::discussion::fixtures::ICLR_2021;
+        let read = read_ratings(ICLR_2021).unwrap();
+        assert_eq!((read.reviews, read.exact), (2, true));
+        assert_eq!(read.ratings[&Field::Rating].values, [5, 7]);
+        assert_eq!(read.ratings[&Field::Confidence].values, [4, 3]);
     }
 
     #[test]
