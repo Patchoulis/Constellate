@@ -48,7 +48,7 @@ const ORDINARY = [
 	'"integrity": "sha512-q0bYMEtP3q8pCNYnEHMDmYqEmqrQ5aDTCgXL2bZpFNgAAABBBCCCDDD=="',
 	"ANTHROPIC_API_KEY=",
 	"risk-assessment-for-the-whole-run-and-its-results",
-	"https://github.com/astral-sh/uv/issues/19622",
+	"https://github.com/pykeio/ort/issues/19622",
 	"-----BEGIN CERTIFICATE-----",
 ];
 

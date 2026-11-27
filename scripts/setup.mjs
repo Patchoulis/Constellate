@@ -3,7 +3,7 @@
  *
  * It checks for what the project is built with and installs what is missing, asking nothing:
  *
- *   Rust        the backend. Installed with rustup (https://rustup.rs), the Rust project's own installer, into
+ *   Rust        the engine. Installed with rustup (https://rustup.rs), the Rust project's own installer, into
  *               your user folder; no administrator rights. On Windows it also needs Microsoft's C++ build
  *               tools, which this cannot install for you: it says how if they are missing.
  *   rustfmt, clippy   the formatter and linter `npm run pr` runs

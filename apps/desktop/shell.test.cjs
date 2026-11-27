@@ -117,10 +117,10 @@ test("the Linux packages are named, pictured and filed as the app", () => {
 	assert.match(linux, /^ {2}category: Science$/m);
 });
 
-test("the engine is what goes into the app's resources, and nothing of a Python setup does", () => {
+test("the engine is what goes into the app's resources, and nothing of the old backend's setup does", () => {
 	const builder = fs.readFileSync(path.join(__dirname, "electron-builder.yml"), "utf8");
 	assert.match(builder, /^extraResources:\n {2}# .*\n {2}- from: engine\n {4}to: engine$/m);
-	assert.doesNotMatch(builder, /backend|uv\b|requirements/);
+	assert.doesNotMatch(builder, /backend|requirements|from: bin/);
 });
 
 test("the licences gathered for the engine are the crates compiled into it, for the system packaged", (t) => {

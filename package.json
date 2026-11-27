@@ -14,7 +14,6 @@
 		"dist": "node scripts/build.mjs --dist",
 		"dev": "node scripts/dev.mjs",
 		"typecheck": "turbo run typecheck",
-		"pipeline": "npm run pipeline --workspace @rp/backend --",
 		"test": "turbo run test",
 		"pr": "node scripts/pr.mjs"
 	},

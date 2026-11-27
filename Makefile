@@ -20,25 +20,25 @@ run: # Build and open the desktop app.
 ##@ Build
 
 .PHONY: build
-build: # Build the interface (Next standalone output).
+build: # Build the interface (Next standalone output) and the engine.
 	npm run build
 
 .PHONY: dist
-dist: # Build the Windows installer into dist/.
+dist: # Build this system's packages into dist/ (the Windows installer, or the AppImage and .deb).
 	npm run dist
 
 ##@ Testing and linting
 
 .PHONY: test
-test: # Run every test: the engine, the backend, the interface, the desktop shell, the scripts and hooks.
+test: # Run every test: the engine, the interface, the desktop shell, the scripts and hooks.
 	npm run pr -- --only=tests
 
 .PHONY: fmt
-fmt: # Format all code (cargo fmt, prettier, ruff format).
+fmt: # Format all code (cargo fmt, prettier).
 	npm run pr -- --fix --only=format
 
 .PHONY: lint
-lint: # Lint all code (clippy with warnings denied, ruff check, and the project's naming rule).
+lint: # Lint all code (clippy with warnings denied, and the project's naming rule).
 	npm run pr -- --only=lint
 
 .PHONY: pr
@@ -48,4 +48,4 @@ pr: # Everything a pull request must pass: format check, lint, types, tests.
 .PHONY: clean
 clean: # Remove build output.
 	cargo clean
-	rm -rf apps/web/.next dist
+	rm -rf apps/web/.next apps/desktop/engine dist
