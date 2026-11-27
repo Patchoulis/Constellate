@@ -154,7 +154,8 @@ pub enum Match {
     /// The same letters and digits in the same order: only spacing, line breaks, hyphenation, ligatures, accents,
     /// quote marks, punctuation and case differ.
     Exact,
-    /// A few letters or digits differ (a typo, a word the model changed).
+    /// A few letters differ inside words (a typo, an OCR slip), word for word the same otherwise: never a word added
+    /// or left out, a number or a negation changed (`close_enough`).
     Close { differences: u32 },
 }
 
@@ -842,6 +843,72 @@ fn whole_words(text: &[char], start: usize, end: usize) -> (usize, usize) {
     (start, end)
 }
 
+/// Words that turn a statement into its opposite: a quote may never differ from the paper by one of them.
+const NEGATIONS: [&str; 12] =
+    ["not", "no", "nor", "never", "none", "nothing", "neither", "nobody", "nowhere", "cannot", "without", "non"];
+/// What, put before a word, makes it mean the opposite ("likely", "unlikely").
+const NEGATING_PREFIXES: [&str; 8] = ["un", "in", "im", "il", "ir", "non", "dis", "a"];
+
+/// A word as the close match compares it: its letters and digits as the search sees them, and whether it negates.
+struct Word {
+    letters: Vec<char>,
+    negates: bool,
+}
+
+/// The words of `text`, split at spaces (so "multi-task" is one word), those with no letter or digit left out.
+fn words(text: &str) -> Vec<Word> {
+    text.split_whitespace()
+        .filter_map(|token| {
+            let letters = Skeleton::of([token]).letters;
+            let plain: String = letters.iter().collect();
+            let lower = token.to_lowercase();
+            let negates = NEGATIONS.contains(&plain.as_str()) || lower.contains("n't") || lower.contains("n\u{2019}t");
+            (!letters.is_empty()).then_some(Word { letters, negates })
+        })
+        .collect()
+}
+
+/// The fewest insertions, deletions and substitutions that make `one` into `other`.
+fn edit_distance(one: &[char], other: &[char]) -> usize {
+    let mut row: Vec<usize> = (0..=other.len()).collect();
+    for (at, &letter) in one.iter().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = at + 1;
+        for column in 1..=other.len() {
+            let above = row[column];
+            row[column] = (diagonal + usize::from(other[column - 1] != letter)).min(above + 1).min(row[column - 1] + 1);
+            diagonal = above;
+        }
+    }
+    row[other.len()]
+}
+
+/// Whether a close match of `quote` to the paper's `wording` differs only by slips inside words (a letter the PDF
+/// reader or the model got wrong, hyphenation, a ligature), and so says what the paper says. Refused: a word added or
+/// left out (the model dropping "not"), a number changed, a negation changed ("not" for "now", "likely" for
+/// "unlikely"), or a word more than a slip away from the paper's (more than a third of its letters).
+fn close_enough(wording: &str, quote: &str) -> bool {
+    let (paper, model) = (words(wording), words(quote));
+    if paper.len() != model.len() {
+        return false;
+    }
+    paper.iter().zip(&model).all(|(paper, model)| {
+        if paper.letters == model.letters {
+            return true;
+        }
+        let digits = |word: &Word| word.letters.iter().any(char::is_ascii_digit);
+        if digits(paper) || digits(model) || paper.negates || model.negates {
+            return false;
+        }
+        let (short, long) = if paper.letters.len() <= model.letters.len() { (paper, model) } else { (model, paper) };
+        let prefix: String = long.letters[..long.letters.len() - short.letters.len()].iter().collect();
+        if long.letters.ends_with(&short.letters) && NEGATING_PREFIXES.contains(&prefix.as_str()) {
+            return false;
+        }
+        edit_distance(&paper.letters, &model.letters) * 3 <= long.letters.len()
+    })
+}
+
 /// Where `quote` is in `text` (a title or an abstract, say): its span in characters of `text`, the words of `text`
 /// there, and how it matched. A quote with no letters or digits is never found.
 pub fn locate_in(text: &str, quote: &str) -> Option<(Span, String, Match)> {
@@ -851,7 +918,11 @@ pub fn locate_in(text: &str, quote: &str) -> Option<(Span, String, Match)> {
     let chars: Vec<char> = text.chars().collect();
     let (start, end) = whole_words(&chars, haystack.from[start].1, haystack.from[end - 1].1 + 1);
     let to_u32 = |value: usize| u32::try_from(value).unwrap_or(u32::MAX);
-    Some((Span { start: to_u32(start), end: to_u32(end) }, chars[start..end].iter().collect(), matched))
+    let wording: String = chars[start..end].iter().collect();
+    if matches!(matched, Match::Close { .. }) && !close_enough(&wording, quote) {
+        return None;
+    }
+    Some((Span { start: to_u32(start), end: to_u32(end) }, wording, matched))
 }
 
 /// How many letters and digits a quote has, as the search counts them: what a minimum length is measured in.
@@ -898,6 +969,9 @@ impl Passages {
             wording.extend(&last_text[..to]);
             wording
         };
+        if matches!(matched, Match::Close { .. }) && !close_enough(&wording, quote) {
+            return None;
+        }
         let to_u32 = |value: usize| u32::try_from(value).unwrap_or(u32::MAX);
         let (begin, finish) = (&self.passages[first].address, &self.passages[last].address);
         Some(Located {
@@ -1225,6 +1299,49 @@ We prove that the bound holds for every task.\n\n3\n",
         let found = read.locate("We rescale the inflated singlar values. The final model is").unwrap();
         assert!(matches!(found.matched, Match::Close { differences } if (1..=8).contains(&differences)), "{found:?}");
         assert!(found.wording.starts_with("We rescale the inflated singular values"), "{}", found.wording);
+    }
+
+    /// What the paper says, for the close-match rule: long enough that three letters are within what a close match
+    /// allows.
+    const SAYS: &str = "Merging the fine-tuned models does not improve the accuracy on every task we tried, and it \
+                        costs 3 GPU hours. Calibration is unlikely to help and never removes the shared directions.";
+
+    #[test]
+    fn a_close_match_may_differ_by_letters_inside_words() {
+        let (_, wording, matched) =
+            locate_in(SAYS, "the fine-tuned modles does not improve the acuracy on every task we tried").unwrap();
+        assert!(matches!(matched, Match::Close { differences: 3 }), "{matched:?}");
+        assert_eq!(wording, "the fine-tuned models does not improve the accuracy on every task we tried");
+    }
+
+    #[test]
+    fn a_close_match_that_drops_or_adds_a_word_or_changes_a_number_or_a_negation_is_refused() {
+        for changed in [
+            // "not" dropped: three letters, within what a quote this long may differ by
+            "Merging the fine-tuned models does improve the accuracy on every task we tried",
+            // a word added
+            "the fine-tuned models does not improve the accuracy on every one task we tried",
+            // "no" for "not"
+            "Merging the fine-tuned models does no improve the accuracy on every task we tried",
+            // a number changed
+            "on every task we tried, and it costs 8 GPU hours. Calibration is unlikely to help",
+            // a negating prefix dropped
+            "and it costs 3 GPU hours. Calibration is likely to help and never removes the shared",
+            // "never" for "ever"
+            "Calibration is unlikely to help and ever removes the shared directions.",
+            // another word, not a slip
+            "Merging the fine-tuned models does not improve the accuracy on every task we tired",
+        ] {
+            assert_eq!(locate_in(SAYS, changed), None, "{changed}");
+            let read = read_passages(&[format!("1. Results\n\n{SAYS}\n")]);
+            assert_eq!(read.locate(changed), None, "{changed}");
+        }
+    }
+
+    #[test]
+    fn a_quote_padded_with_spaces_and_punctuation_is_no_longer_for_it() {
+        assert!(letters_in("  the  model ,,, ... !!! ---   we  show  ") < 20);
+        assert_eq!(letters_in("“ﬁne”"), 4, "a ligature counts as its letters, quote marks as nothing");
     }
 
     #[test]

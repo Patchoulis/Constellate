@@ -381,6 +381,9 @@ pub enum TransportError {
     Unreachable,
     #[error("the language model's API took too long to answer")]
     TimedOut,
+    /// Not sent: the work was asked to stop while the request waited for its turn (after a rate limit).
+    #[error("asking was stopped")]
+    Cancelled,
 }
 
 /// The one way this reaches the network. An implementation sends `key` as the `x-api-key` header and nowhere
@@ -1122,6 +1125,7 @@ fn retry_after(error: &AskError, reply_says: Option<&str>, attempt: u32) -> Opti
             let wait = retry_after.unwrap_or(backoff);
             (wait <= LONGEST_WAIT).then_some(wait)
         }
+        AskError::NoAnswer(NoAnswer::Transport(TransportError::Cancelled)) => None,
         AskError::NoAnswer(NoAnswer::Overloaded | NoAnswer::ServerError(_) | NoAnswer::Transport(_)) => Some(backoff),
         _ => None,
     }
@@ -1282,14 +1286,27 @@ impl<'a> Client<'a> {
             return Err(NoAnswer::Unexpected.into());
         };
         // paid for whether or not the answer is usable: recorded before it is looked at
-        let (answered, tokens, cost) = self.record(ask.purpose, ask.model, &message);
+        let (answered, tokens, cost) = match message.usage {
+            Some(_) => self.record(ask.purpose, ask.model, &message),
+            // an answer that says nothing of what it took (a gateway that drops the usage) is counted at its worst
+            // case, as one in no shape known is, not as nothing: its thinking cannot be counted from its text
+            None => {
+                let worst = self.worst(ask);
+                let model = message.model.clone().unwrap_or_else(|| ask.model.to_owned());
+                let call = Call { model: model.clone(), purpose: ask.purpose.to_owned(), tokens: worst };
+                let cost = call.cost();
+                self.recorder.record(call);
+                (model, worst, cost)
+            }
+        };
         budget.settle(held, &tokens, cost);
         match message.stop_reason.as_deref() {
             Some("refusal") => {
                 let category = message.stop_details.and_then(|details| details.category);
                 return Err(NoAnswer::Refused { category }.into());
             }
-            Some("max_tokens") => return Err(NoAnswer::Cut.into()),
+            // the answer ran into the model's context window rather than `max_tokens`: cut off all the same
+            Some("max_tokens" | "model_context_window_exceeded") => return Err(NoAnswer::Cut.into()),
             _ => {}
         }
         let text: String = message
@@ -1395,7 +1412,13 @@ impl<'a> Client<'a> {
             self.stopped()?;
             let asked = self.asked(ask, wrong.as_deref());
             let worst = self.worst_asked(&asked);
-            let held = budget.hold(&priced, &worst)?;
+            let held = match (budget.hold(&priced, &worst), &wrong) {
+                (Ok(held), _) => held,
+                // the first attempt was paid for: this is an answer that was not the JSON asked for, not a call
+                // that was never started, which a batch would start again from the beginning (and pay for again)
+                (Err(_), Some(why)) => return Err(NoAnswer::NotJson(why.clone()).into()),
+                (Err(over), None) => return Err(over.into()),
+            };
             let Request { path, body } = self.request(&asked);
             let reply = match self.send(&path, ask.model, &[], body.to_string().as_bytes()) {
                 Ok(reply) => reply,
@@ -1797,6 +1820,40 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_without_its_usage_is_counted_at_its_worst_case_not_as_free() {
+        let mut answer = message("claude-opus-5-5", r#"{"answer": "x"}"#, "end_turn", Value::Null);
+        answer.as_object_mut().unwrap().remove("usage");
+        let fake = Fake::new(vec![Ok(ok(&answer))]);
+        let calls = Mutex::new(Vec::new());
+        let client = Client::new(&fake, endpoint(), &calls);
+        let schema = schema();
+        let budget = Budget::new(Limit::Tokens(100_000));
+        let answered = client.ask(&ask(&schema, Some("The paper's text.")), &budget).unwrap();
+        assert_eq!(answered.answer, r#"{"answer": "x"}"#);
+        assert_eq!(answered.tokens.output, 2_000, "max_tokens: the thinking it took is not known");
+        assert_eq!(budget.spent().0, answered.tokens.all());
+        let calls = calls.into_inner().unwrap();
+        assert_eq!(calls[0].tokens, answered.tokens);
+        assert!(calls[0].cost().is_some_and(|cost| cost > Usd::ZERO));
+    }
+
+    #[test]
+    fn prose_cut_off_by_the_context_window_is_not_shown_as_a_whole_answer() {
+        let cut = message(
+            "claude-opus-5-5",
+            "The paper shows that merging",
+            "model_context_window_exceeded",
+            usage(30, 9, 0, 0),
+        );
+        let fake = Fake::new(vec![Ok(ok(&cut))]);
+        let calls = Mutex::new(Vec::new());
+        let client = Client::new(&fake, endpoint(), &calls);
+        let schema = schema();
+        let prose = Ask { form: Form::Text, ..ask(&schema, None) };
+        assert_eq!(client.ask(&prose, &plenty()), Err(AskError::NoAnswer(NoAnswer::Cut)));
+    }
+
+    #[test]
     fn a_fallback_s_tokens_are_recorded_by_each_model_that_worked_on_the_answer() {
         let mut answered = message("claude-opus-4-8", r#"{"answer": "x"}"#, "end_turn", usage(30, 40, 0, 0));
         answered["usage"]["iterations"] = json!([
@@ -2143,6 +2200,24 @@ mod every_provider {
         );
         assert_eq!(fake.sent().len(), 2);
         assert!(fake.sent()[0].body["messages"][1]["content"].as_str().unwrap().contains("What does the paper claim?"));
+    }
+
+    #[test]
+    fn an_answer_not_in_json_whose_second_try_the_budget_cannot_take_is_not_json_not_a_call_never_started() {
+        let schema = schema();
+        let fake = Fake::new(vec![Ok(ok(&completion("MiniMax-M3", "Sure, it merges.", chat_usage(50, 10, 0))))]);
+        let calls = Mutex::new(Vec::new());
+        let client = Client::new(&fake, endpoint(Provider::MiniMax), &calls);
+        let ask = ask("MiniMax-M3", &schema);
+        // room for the first attempt's worst case, not for a second one after what the first took
+        let first = client.worst_asked(&client.asked(&ask, None)).all();
+        let budget = Budget::new(Limit::Tokens(first + 10));
+        let error = client.ask(&ask, &budget).unwrap_err();
+        // a batch starts a call refused by the budget again once room is made: this one was paid for already
+        assert_eq!(error, NoAnswer::NotJson("it is not JSON".to_owned()).into());
+        assert_eq!(fake.sent().len(), 1);
+        assert_eq!(calls.into_inner().unwrap().len(), 1, "the first attempt is recorded");
+        assert_eq!(budget.spent().0, 60);
     }
 
     #[test]

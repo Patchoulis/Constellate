@@ -17,8 +17,9 @@
 //!    what it took, so racing calls can never pass it together; one refused while others hold theirs waits for
 //!    one of them to settle and asks again), when the API says it cannot be used at all ([`Unavailable`]; an
 //!    unknown model fails only its own items), or when the job is asked to stop. What was not started is
-//!    [`Outcome::NotStarted`] with why. A stop does not cut short a rate-limit wait already begun.
-//!    Items with the same slot are asked once and all given that outcome.
+//!    [`Outcome::NotStarted`] with why. A stop cuts short a rate-limit wait already begun (within [`SPACING`]),
+//!    and the request that waited is not sent. Items with the same slot are asked once and all given that outcome
+//!    (and counted as done together).
 //! 5. **A rate limit pauses everyone, then lets them go one by one.** The client waits out a `retry-after`; here
 //!    that wait holds back every thread's next request too, and when it is over they go [`SPACING`] apart rather
 //!    than all at once into the same limit.
@@ -231,8 +232,14 @@ where
     let done = Mutex::new(of - asked);
     let report = |done: u64| tracker.progress(Progress { done, of, usd: budget.spent().1 });
     report(*locked(&done));
+    // an item asked in the place of repeats of it is done for them too
+    let mut with_repeats: HashMap<usize, u64> = HashMap::new();
+    for (_, original) in &repeats {
+        *with_repeats.entry(*original).or_default() += 1;
+    }
 
-    let paced = Paced { inner: asking.transport, gate: Mutex::new(Gate::default()) };
+    let cancelled = || tracker.cancelled();
+    let paced = Paced { inner: asking.transport, gate: Mutex::new(Gate::default()), cancelled: &cancelled };
     // the calls each thread's item took are held until its answer is kept with them, in one transaction
     let pending = Pending::default();
     let client = Client::new(&paced, asking.endpoint.clone(), &pending);
@@ -265,7 +272,7 @@ where
                         }
                         locked(&answered).push((index, outcome));
                         let mut done = locked(&done);
-                        *done += 1;
+                        *done += 1 + with_repeats.get(&index).copied().unwrap_or(0);
                         report(*done);
                     }
                 }
@@ -376,15 +383,27 @@ fn ask_one<T: DeserializeOwned + Serialize>(
     let outcome = match asked {
         Ok(Ok(answered)) => {
             // the answer and what it cost, kept together: never a call paid for whose answer is lost
-            let content = serde_json::to_string(&answered.answer).map_err(LibraryError::from);
-            let kept = content.and_then(|content| {
-                asking.recorder.keep_paid(asking.library, &item.slot, &answered.model, item.prompt, &content, calls)
-            });
+            let kept = match serde_json::to_string(&answered.answer) {
+                Ok(content) => {
+                    asking.recorder.keep_paid(asking.library, &item.slot, &answered.model, item.prompt, &content, calls)
+                }
+                Err(error) => {
+                    // nothing to keep, but the calls were paid for
+                    for call in calls {
+                        asking.recorder.record(call);
+                    }
+                    Err(error.into())
+                }
+            };
             if let Err(error) = kept {
                 // the answer is still handed back; it is asked for again next time
                 eprintln!("library: an answer for {} could not be kept: {error}", item.slot.feature.name());
             }
             return Outcome::Answered(answered);
+        }
+        // stopped while it waited for its turn: nothing more of it was sent
+        Ok(Err(AskError::NoAnswer(NoAnswer::Transport(TransportError::Cancelled)))) => {
+            Outcome::NotStarted(Stopped::Cancelled)
         }
         Ok(Err(AskError::NoAnswer(why))) => Outcome::Failed(Failure::NoAnswer(why)),
         Ok(Err(AskError::Unavailable(why))) => Outcome::Failed(Failure::Unavailable(why)),
@@ -431,15 +450,25 @@ impl Gate {
 struct Paced<'a> {
     inner: &'a dyn Transport,
     gate: Mutex<Gate>,
+    /// Whether the batch was asked to stop: a wait for a turn (up to a minute and a half after a rate limit) is cut
+    /// short by it, and the request is then not sent.
+    cancelled: &'a (dyn Fn() -> bool + Sync),
 }
 
 impl Paced<'_> {
-    /// Wait for this request's turn, when the batch is held back.
-    fn turn(&self) {
-        let wait = locked(&self.gate).turn(Instant::now());
-        if let Some(wait) = wait {
-            self.inner.wait(wait);
+    /// Wait for this request's turn, when the batch is held back, in steps of [`SPACING`] so that a stop is
+    /// heard within one.
+    fn turn(&self) -> Result<(), TransportError> {
+        let mut left = locked(&self.gate).turn(Instant::now()).unwrap_or(Duration::ZERO);
+        while !left.is_zero() {
+            if (self.cancelled)() {
+                return Err(TransportError::Cancelled);
+            }
+            let step = left.min(SPACING);
+            self.inner.wait(step);
+            left -= step;
         }
+        Ok(())
     }
 }
 
@@ -452,7 +481,7 @@ impl Transport for Paced<'_> {
         body: &[u8],
         patience: Duration,
     ) -> Result<Reply, TransportError> {
-        self.turn();
+        self.turn()?;
         self.inner.post(url, key, headers, body, patience)
     }
 
@@ -465,12 +494,12 @@ impl Transport for Paced<'_> {
         body: &[u8],
         patience: Duration,
     ) -> Result<Reply, TransportError> {
-        self.turn();
+        self.turn()?;
         self.inner.post_keyed(url, key, sent_as, headers, body, patience)
     }
 
     fn get(&self, url: &str, key: &ApiKey, sent_as: KeyHeader, patience: Duration) -> Result<Reply, TransportError> {
-        self.turn();
+        self.turn()?;
         self.inner.get(url, key, sent_as, patience)
     }
 
@@ -878,6 +907,38 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_that_cannot_be_written_down_still_has_its_call_recorded() {
+        /// Read from the answer like any other, but refuses to be written back as JSON.
+        #[derive(Clone, Debug, PartialEq, Deserialize)]
+        struct Unwritable {
+            #[allow(dead_code)]
+            said: String,
+        }
+        impl Serialize for Unwritable {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("not this one"))
+            }
+        }
+        let (_folder, library) = library();
+        let (questions, papers) = numbered(1);
+        let schema = schema();
+        let items = items(&questions, &papers, &schema);
+        let run = Run::new();
+        let (log, progress) = (|_: &str| {}, |_: Progress| {});
+        let tracker = Tracker::new(&log, &progress, &run.cancel);
+        let asking = Asking {
+            library: &library,
+            transport: &Echo { took: (40, 20), ..Echo::default() },
+            endpoint: endpoint(),
+            recorder: &run.calls,
+            in_flight: 1,
+        };
+        let outcomes = ask_all::<Unwritable>(asking, &items, &plenty(), &tracker).unwrap();
+        assert!(matches!(outcomes[0], Outcome::Answered(_)));
+        assert_eq!(run.calls.lock().unwrap().len(), 1, "paid for, so recorded");
+    }
+
+    #[test]
     fn a_batch_to_another_provider_sends_the_key_as_that_provider_reads_it() {
         let (_folder, library) = library();
         let (questions, papers) = numbered(1);
@@ -927,7 +988,68 @@ mod tests {
         let outcomes = Run::new().ask(&library, &echo, &items, &plenty(), 1);
         assert_eq!(said(&outcomes[0]), Some("limited"));
         let waited = echo.waited.lock().unwrap().clone();
-        assert_eq!(waited.len(), 1);
-        assert!(waited[0] > Duration::from_millis(6_900) && waited[0] <= Duration::from_secs(7), "{waited:?}");
+        assert!(waited.iter().all(|step| *step <= SPACING), "waited in steps a stop can cut short: {waited:?}");
+        let all: Duration = waited.iter().sum();
+        assert!(all > Duration::from_millis(6_900) && all <= Duration::from_secs(7), "{all:?}");
+    }
+
+    #[test]
+    fn a_stop_cuts_a_rate_limit_wait_short_and_the_request_that_waited_is_not_sent() {
+        let (_folder, library) = library();
+        let questions = vec!["limited".to_owned(), "question 1".to_owned()];
+        let papers = vec!["paper".to_owned(); 2];
+        let schema = schema();
+        let items = items(&questions, &papers, &schema);
+        let run = Run::new();
+        // the stop is asked for while the client waits out the rate limit: Echo's wait does not sleep, so it is
+        // asked for at the first step of the wait
+        struct Stopping<'a> {
+            echo: Echo,
+            cancel: &'a Cancel,
+        }
+        impl Transport for Stopping<'_> {
+            fn post(
+                &self,
+                url: &str,
+                key: &ApiKey,
+                headers: &[(&str, &str)],
+                body: &[u8],
+                patience: Duration,
+            ) -> Result<Reply, TransportError> {
+                self.echo.post(url, key, headers, body, patience)
+            }
+            fn wait(&self, duration: Duration) {
+                self.echo.wait(duration);
+                self.cancel.cancel();
+            }
+        }
+        let stopping = Stopping { echo: Echo::default(), cancel: &run.cancel };
+        let log = |_: &str| {};
+        let progress = |_: Progress| {};
+        let tracker = Tracker::new(&log, &progress, &run.cancel);
+        let asking = Asking {
+            library: &library,
+            transport: &stopping,
+            endpoint: endpoint(),
+            recorder: &run.calls,
+            in_flight: 1,
+        };
+        let outcomes = ask_all::<Said>(asking, &items, &plenty(), &tracker).unwrap();
+        assert_eq!(outcomes, [Outcome::NotStarted(Stopped::Cancelled), Outcome::NotStarted(Stopped::Cancelled)]);
+        assert_eq!(stopping.echo.posts.load(Ordering::SeqCst), 1, "only the request that was limited was sent");
+        assert_eq!(stopping.echo.waited.lock().unwrap().len(), 1, "one step of the seven seconds, then stopped");
+    }
+
+    #[test]
+    fn the_same_question_twice_counts_both_as_done_when_it_is_answered() {
+        let (_folder, library) = library();
+        let questions = vec!["question".to_owned(), "question".to_owned(), "other".to_owned()];
+        let papers = vec!["paper".to_owned(); 3];
+        let schema = schema();
+        let items = items(&questions, &papers, &schema);
+        let run = Run::new();
+        run.ask(&library, &Echo::default(), &items, &plenty(), 1);
+        let progress = run.progress.lock().unwrap();
+        assert_eq!(progress.last().map(|progress| (progress.done, progress.of)), Some((3, 3)));
     }
 }

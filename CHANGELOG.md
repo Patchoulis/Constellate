@@ -109,6 +109,9 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A quote a model gives as evidence is no longer accepted when it differs from the paper by a whole word, a number
+  or a negation (a quote that leaves out the paper's "not" was found as a close match); only slips inside words
+  are still allowed.
 - A setting the backend refuses (a number of communities out of range, say) now says why, in the backend's
   words, under the list of runs until that setting is saved, instead of quietly going back; a failed rename or
   delete of a run says why too.

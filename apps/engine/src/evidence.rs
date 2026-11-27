@@ -434,6 +434,30 @@ mod tests {
     }
 
     #[test]
+    fn a_quote_that_leaves_out_the_paper_s_not_is_not_evidence() {
+        let says =
+            "1. Results\n\nCalibrating the merged spectrum does not improve the accuracy of any task we tried.\n";
+        let papers = Papers::from([("2501.00003".to_owned(), read(says))]);
+        let claim = |quote_text: &str| vec![claim("Calibration helps.", vec![quote("2501.00003", quote_text)])];
+        let turned = check(
+            claim("Calibrating the merged spectrum does improve the accuracy of any task we tried"),
+            &papers,
+            Rules::ONE_PAPER,
+        );
+        assert!(turned.cited.is_empty(), "the paper says the opposite");
+        assert_eq!(turned.counts.not_in_paper, 1);
+        let slipped = check(
+            claim("Calibrating the merged spectrum does not improve the acuracy of any task we tried"),
+            &papers,
+            Rules::ONE_PAPER,
+        );
+        assert_eq!(
+            slipped.cited[0].evidence[0].quote(),
+            "Calibrating the merged spectrum does not improve the accuracy of any task we tried"
+        );
+    }
+
+    #[test]
     fn a_quote_of_a_paper_that_may_not_be_cited_is_refused() {
         let checked = check(
             vec![claim("Something.", vec![quote("9999.99999", "merging task vectors counts shared directions twice")])],
