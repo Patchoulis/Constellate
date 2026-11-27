@@ -166,6 +166,10 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   you can sign out on every device at once. Requests from other sites are refused, sign-in attempts are limited, and
   everything secret is read from the environment or `.env` only. When the window is connected to such a server, the
   embedding model is the server's to decide and is no longer offered in Settings.
+- A web site open in your browser while Constellate runs can no longer read your library, runs and settings by
+  pointing a name of its own at your computer (DNS rebinding): the interface answers only under this computer's
+  names (or those listed in `CONSTELLATE_WEB_HOSTS` on a server). Its pages now carry a strict Content Security
+  Policy: only the app's own scripts run, and the page talks to nothing but the app.
 
 ## [0.1.0] - 2026-11-26
 
