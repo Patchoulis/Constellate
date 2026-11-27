@@ -943,6 +943,18 @@ pub fn discover(transport: &dyn Transport, endpoint: &Endpoint) -> Result<Vec<St
         .ok_or_else(|| Unavailable::Setup(Setup::NoSuchEndpoint("CONSTELLATE_MODEL_BASE_URL")).into())
 }
 
+/// Whether `answered` is `asked` itself, or `asked` with a date or version after a hyphen (`-2026-11-01`,
+/// `-20261101`, `-001`): digits and hyphens only, so that `gpt-6.2-sol-pro` is not taken for `gpt-6.2-sol`.
+fn dated_of(answered: &str, asked: &str) -> bool {
+    match answered.strip_prefix(asked) {
+        Some("") => true,
+        Some(rest) => rest
+            .strip_prefix('-')
+            .is_some_and(|tail| !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit() || b == b'-')),
+        None => false,
+    }
+}
+
 /// How long a reply's `retry-after` header says to wait. A header that is negative, not a number, or absurd is no
 /// wait at all (and must not panic); a long one is kept just past [`LONGEST_WAIT`], so that it is not waited for.
 fn retry_after_header(reply: &Reply) -> Option<Duration> {
@@ -1259,8 +1271,8 @@ impl<'a> Client<'a> {
             };
             // a server that reports no usage (some local ones) is counted from characters rather than as nothing
             let tokens = read.tokens.unwrap_or_else(|| self.estimated(&asked, said));
-            // a dated or suffixed id of the model asked for has its price
-            let recorded = if answered.starts_with(ask.model) { ask.model } else { answered.as_str() };
+            // a dated id of the model asked for (gpt-6.2-sol-2026-11-01) has its price; another model has its own
+            let recorded = if dated_of(&answered, ask.model) { ask.model } else { answered.as_str() };
             let call = Call { model: price_key(provider, recorded), purpose: ask.purpose.to_owned(), tokens };
             let cost = call.cost();
             // paid for whether or not the answer is usable: recorded before it is looked at
@@ -2176,6 +2188,16 @@ mod every_provider {
         assert_eq!(proxy.url("/responses"), "https://gateway.example.org/openai/v1/responses");
         assert!(!proxy.is_default());
         assert!(endpoint(Provider::Gemini).is_default());
+    }
+
+    #[test]
+    fn a_dated_id_of_the_model_asked_for_has_its_price_and_another_model_its_own() {
+        assert!(dated_of("gpt-6.2-sol", "gpt-6.2-sol"));
+        assert!(dated_of("gpt-6.2-sol-2026-11-01", "gpt-6.2-sol"));
+        assert!(dated_of("grok-4.7-0309", "grok-4.7"));
+        assert!(!dated_of("gpt-6.2-sol-pro", "gpt-6.2-sol"));
+        assert!(!dated_of("gpt-6.2-solar", "gpt-6.2-sol"));
+        assert!(!dated_of("gpt-6.2-sol-", "gpt-6.2-sol"));
     }
 
     #[test]

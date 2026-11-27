@@ -164,7 +164,8 @@ impl Settings {
             }
         }
         if changes.contains_key("describe_provider") || changes.contains_key("describe_model") {
-            next.describe_model = model(&next.describe_provider, &next.describe_model, changes, choices)?;
+            let switched = next.describe_provider != self.describe_provider;
+            next.describe_model = model(&next.describe_provider, &next.describe_model, switched, changes, choices)?;
         }
         Ok(next)
     }
@@ -180,8 +181,23 @@ impl Settings {
             .filter(|(key, _)| MODEL_KEYS.contains(&key.as_str()))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        if let Ok(next) = settings.apply(&chosen, choices) {
-            settings = next;
+        // when they do not go together (a model since removed, an effort a newer engine wrote), as much of them is
+        // kept as can be: the effort alone, the provider with its model, else the provider with its first model;
+        // the provider is never dropped for a bad model, since it decides where papers' text is sent
+        let part = |keys: &[&str]| -> Map<String, Value> {
+            chosen.iter().filter(|(key, _)| keys.contains(&key.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect()
+        };
+        match settings.apply(&chosen, choices) {
+            Ok(next) => settings = next,
+            Err(_) => {
+                if let Ok(next) = settings.apply(&part(&["describe_effort"]), choices) {
+                    settings = next;
+                }
+                let with_model = settings.apply(&part(&["describe_provider", "describe_model"]), choices);
+                if let Ok(next) = with_model.or_else(|_| settings.apply(&part(&["describe_provider"]), choices)) {
+                    settings = next;
+                }
+            }
         }
         for (key, value) in stored.iter().filter(|(key, _)| !chosen.contains_key(*key)) {
             let one = Map::from_iter([(key.clone(), value.clone())]);
@@ -229,14 +245,22 @@ fn provider(key: &'static str, value: &Value) -> Result<String, Invalid> {
     Ok(provider.id().to_owned())
 }
 
-/// The model kept for `provider`: `model` when the provider has it; when only the provider was changed, that
-/// provider's first model rather than another provider's.
-fn model(provider: &str, model: &str, changes: &Map<String, Value>, choices: &Choices) -> Result<String, Invalid> {
+/// The model kept for `provider`: `model` when the provider has it; when the provider was `switched` without a
+/// model, that provider's first model rather than another provider's (and for one that lists none, a refusal:
+/// its model must be given).
+fn model(
+    provider: &str,
+    model: &str,
+    switched: bool,
+    changes: &Map<String, Value>,
+    choices: &Choices,
+) -> Result<String, Invalid> {
     let provider = Provider::from_id(provider).unwrap_or(Provider::Anthropic);
     let about = provider.about();
-    let model = match about.models.first() {
-        Some(first) if !changes.contains_key("describe_model") => first.id,
-        _ => model,
+    let model = match (switched && !changes.contains_key("describe_model"), about.models.first()) {
+        (true, Some(first)) => first.id,
+        (true, None) => return Err(Invalid::NotAModel { key: "describe_model", provider: about.label }),
+        (false, _) => model,
     };
     if provider == Provider::Anthropic {
         // the Claude API's models are the engine's own list, as they always were
@@ -452,6 +476,22 @@ mod tests {
         // the provider changed alone: its first model, not the other provider's
         let switched = before.apply(&changes(json!({"describe_provider": "gemini"})), &choices()).unwrap();
         assert_eq!(switched.describe_model, "gemini-4-carbon");
+        // the same provider sent again keeps its model; one that lists none must be given its model
+        let astra = before
+            .apply(&changes(json!({"describe_provider": "openai", "describe_model": "gpt-6.2-astra"})), &choices());
+        let again = astra.unwrap().apply(&changes(json!({"describe_provider": "openai"})), &choices()).unwrap();
+        assert_eq!(again.describe_model, "gpt-6.2-astra");
+        assert!(before.apply(&changes(json!({"describe_provider": "compatible"})), &choices()).is_err());
+        // a stored model since removed keeps its provider (where papers go), with that provider's first model
+        let stored =
+            changes(json!({"describe_provider": "openai", "describe_model": "gpt-gone", "describe_effort": "extreme"}));
+        let stored = Settings::from_stored(&stored, &Choices { describe_models: Vec::new(), ..choices() });
+        assert_eq!((stored.describe_provider.as_str(), stored.describe_model.as_str()), ("openai", "gpt-gone"));
+        let removed = changes(
+            json!({"describe_provider": "anthropic", "describe_model": "claude-gone", "describe_effort": "low"}),
+        );
+        let removed = Settings::from_stored(&removed, &choices());
+        assert_eq!((removed.describe_model.as_str(), removed.describe_effort), ("claude-opus-5-5", Effort::Low));
         let folder = tempfile::tempdir().unwrap();
         let file = folder.path().join("settings.json");
         save(&file, &changes(json!({"describe_provider": "gemini"})), &choices()).unwrap();

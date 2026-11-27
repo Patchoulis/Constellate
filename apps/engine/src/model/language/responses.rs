@@ -144,7 +144,7 @@ impl Usage {
             None => (written, 0),
         };
         Tokens {
-            input: self.input_tokens.saturating_sub(read).saturating_sub(short + long),
+            input: self.input_tokens.saturating_sub(read).saturating_sub(short.saturating_add(long)),
             output: self.output_tokens,
             cache_read: read,
             cache_write_5m: short,
