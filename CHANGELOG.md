@@ -53,6 +53,10 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Moving around the graph, and pointing at papers, is smooth again with the whole run in view: a frame takes a few
   milliseconds instead of about 30 with 12,500 papers; the app also opens its window a little sooner.
 
+### Fixed
+
+- Marked papers and panel sizes are kept between launches: the interface is served on the same port each time.
+
 ### Security
 
 - The new engine answers only the app itself: every request must carry a secret token and be addressed to the

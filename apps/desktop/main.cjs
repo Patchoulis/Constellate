@@ -21,9 +21,9 @@ const { app, BrowserWindow, dialog, session, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const http = require("node:http");
-const net = require("node:net");
 const path = require("node:path");
 const { Lifecycle } = require("./lifecycle.cjs");
+const { interfacePort } = require("./port.cjs");
 const setup = require("./setup.cjs");
 
 const BACKEND_PORT = 8765; // the web build forwards /api here (apps/web/next.config.ts)
@@ -80,17 +80,6 @@ app.on("second-instance", () => {
 	if (window.isMinimized()) window.restore();
 	window.focus();
 });
-
-function freePort() {
-	return new Promise((resolve, reject) => {
-		const probe = net.createServer();
-		probe.once("error", reject);
-		probe.listen(0, "127.0.0.1", () => {
-			const { port } = probe.address();
-			probe.close(() => resolve(port));
-		});
-	});
-}
 
 function answers(url) {
 	return new Promise((resolve) => {
@@ -202,7 +191,8 @@ async function startServers() {
 	const python = await backendPython();
 	life.move("serving"); // from the repository there was nothing to install: straight to serving
 	if (!life.is("serving")) throw new Error("The app is closing.");
-	const port = await freePort();
+	// the same port as last time, so the window still has what it remembered (marked papers, panel sizes)
+	const port = await interfacePort(path.join(places.data, "interface-port"));
 	const url = `http://127.0.0.1:${port}`;
 	await Promise.all([
 		serve(
