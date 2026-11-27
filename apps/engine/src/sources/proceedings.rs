@@ -29,7 +29,9 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
+use super::polite::{self, Politeness};
 use super::{Fetch, GetError, Limits, Origin, Paper, any_https, get_following};
+use crate::threads::{Outcome, Progress};
 
 /// The hosts a PDF may come from, a leading "www." aside.
 pub const PDF_HOSTS: [&str; 5] = [
@@ -354,6 +356,19 @@ pub fn download_pdf(fetch: &dyn Fetch, address: &str) -> Result<Vec<u8>, PdfErro
     download_within(fetch, address, Limits { max_bytes: MAX_PDF, time: PDF_TIME })
 }
 
+/// Many PDFs downloaded at once, each as [`download_pdf`] does it, within each host's limits and pauses
+/// ([`polite`]): one answer per address, in their order. Every PDF of the batch is held in memory until the
+/// batch is done, so a caller hands addresses over a few dozen at a time (the text of a batch read with
+/// [`crate::text::pdf::pdf_texts`] while the next downloads).
+pub fn download_pdfs(
+    fetch: &(dyn Fetch + Sync),
+    addresses: &[String],
+    politeness: &Politeness,
+    progress: &Progress,
+) -> Vec<Outcome<Result<Vec<u8>, PdfError>>> {
+    polite::fetch_all(fetch, addresses, politeness, progress, download_pdf)
+}
+
 fn download_within(fetch: &dyn Fetch, address: &str, limits: Limits) -> Result<Vec<u8>, PdfError> {
     let (address, response) = get_following(fetch, address, limits, &publisher_host)?;
     if response.status != 200 {
@@ -580,5 +595,30 @@ mod tests {
             assert!(matches!(download_pdf(&fake, address), Err(PdfError::Get(GetError::NotAllowed(_)))), "{address}");
         }
         assert!(fake.asked().is_empty());
+    }
+
+    #[test]
+    fn a_batch_of_pdfs_is_downloaded_with_each_answer_in_its_place_and_a_bad_one_its_own() {
+        let pdf = || ok("application/pdf", PDF);
+        let addresses: Vec<String> = [
+            "https://proceedings.mlr.press/v1/a.pdf",
+            "https://evil.example/b.pdf",
+            "https://proceedings.mlr.press/v1/c.pdf",
+            "https://openaccess.thecvf.com/d.pdf",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let fake = Fake::new()
+            .with(&addresses[0], pdf())
+            .with(&addresses[1], pdf())
+            .with(&addresses[2], html("<html>a login page</html>"))
+            .with(&addresses[3], pdf());
+        let quick = Politeness { arxiv: polite::Rule { at_once: 1, pause: Duration::ZERO }, ..Politeness::default() };
+        let downloaded = download_pdfs(&fake, &addresses, &quick, &Progress::new());
+        assert_eq!(downloaded[0], Outcome::Done(Ok(PDF.as_bytes().to_vec())));
+        assert!(matches!(&downloaded[1], Outcome::Done(Err(PdfError::Get(GetError::NotAllowed(_))))));
+        assert!(matches!(&downloaded[2], Outcome::Done(Err(PdfError::NotAPdf(_)))));
+        assert_eq!(downloaded[3], Outcome::Done(Ok(PDF.as_bytes().to_vec())));
+        assert!(!fake.asked().iter().any(|asked| asked.contains("evil")));
     }
 }

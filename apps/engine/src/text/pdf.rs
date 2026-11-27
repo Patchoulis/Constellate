@@ -13,6 +13,8 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use crate::threads::{self, Outcome, Progress};
+
 /// A PDF larger than this is not one paper (a scanned book, or not a PDF at all).
 pub const MAX_PDF_BYTES: usize = 80 * 1024 * 1024;
 
@@ -41,6 +43,17 @@ pub fn pdf_text(bytes: &[u8]) -> Result<String, Unreadable> {
         return Err(Unreadable::NoText);
     }
     Ok(text)
+}
+
+/// The text of many PDFs on every core, one answer per PDF in their order, and `progress` counted as they are
+/// read ([`crate::threads::each`]). Each PDF is read from its own bytes alone, so the answers are the same on one
+/// thread or many, and a PDF that cannot be read (or that makes the reader panic) is that PDF's answer: the
+/// others are read as usual.
+///
+/// Every PDF of the batch is held in memory at once: a caller reading a conference hands them over a few dozen
+/// at a time, and keeps what was read from each batch (in one write) before the next.
+pub fn pdf_texts<B: AsRef<[u8]> + Sync>(pdfs: &[B], progress: &Progress) -> Vec<Outcome<Result<String, Unreadable>>> {
+    threads::each(pdfs, progress, |bytes| pdf_text(bytes.as_ref()))
 }
 
 /// The text of the PDF in `bytes`, page by page: `pages[0]` is page 1, as the PDF numbers its pages (not as the
@@ -117,6 +130,29 @@ mod tests {
         );
         assert!(matches!(pdf_pages(b"not a pdf"), Err(Unreadable::Damaged(_) | Unreadable::Unhandled)));
         assert_eq!(pdf_pages(&pdf_with(&[])), Err(Unreadable::NoText));
+    }
+
+    #[test]
+    fn many_pdfs_are_read_side_by_side_each_to_its_own_answer_the_same_on_one_thread_and_on_many() {
+        let pdfs: Vec<Vec<u8>> = (0..40)
+            .map(|paper| match paper % 5 {
+                0 => b"not a pdf at all".to_vec(),
+                1 => pdf_with(&[]),
+                _ => pdf_with(&["References", &format!("Author, A. Paper number {paper}. In ICML, 2025.")]),
+            })
+            .collect();
+        let progress = Progress::new();
+        let (one, many) = threads::on_one_and_many(|| pdf_texts(&pdfs, &progress));
+        assert_eq!(one, many);
+        assert_eq!(progress.done(), 80); // both batches counted
+        for (paper, outcome) in many.iter().enumerate() {
+            match (paper % 5, outcome) {
+                (0, Outcome::Done(Err(Unreadable::Damaged(_) | Unreadable::Unhandled))) => {}
+                (1, Outcome::Done(Err(Unreadable::NoText))) => {}
+                (_, Outcome::Done(Ok(text))) => assert!(text.contains(&format!("Paper number {paper}."))),
+                (_, other) => panic!("paper {paper}: {other:?}"),
+            }
+        }
     }
 
     #[test]
