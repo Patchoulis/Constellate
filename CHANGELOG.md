@@ -87,6 +87,9 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Naming a run's communities and writing a community's overview show what they would cost before anything is sent
+  (in the run form, and on the overview's button); each point of an overview is shown only with quotes found in at
+  least three of the papers it names, in the papers' own words, and the overview says how many points were left out.
 - The engine computes on every core: the similarity graph, the communities, nearest neighbours and citation figures
   are worked out several times faster with the same results, PDFs are read side by side, and downloads run a few at
   a time within each site's limits (arXiv still one request every three seconds). `CONSTELLATE_THREADS` caps the

@@ -10,6 +10,7 @@ import { Input, Label, SwitchRow } from "@/components/ui/field";
 import { GroupedPicker } from "@/components/ui/picker";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
+import { accepting, costWords, shownModel } from "@/lib/cost";
 import { chosenLabel, chosenOf, unavailableBecause, type Choosable } from "@/lib/models";
 import { ready, useAsync } from "@/lib/use-async";
 import { useResizable } from "@/lib/use-resizable";
@@ -69,6 +70,10 @@ function RunForm({
 		categories: ["cs.LG", "stat.ML"],
 		moreCategories: "",
 	});
+	// naming the communities costs money: its most is shown here and accepted with the click (the engine only)
+	const naming = ready(useAsync(() => api.describeBeforeRun(), [running]));
+	const [named, setNamed] = useState(true);
+	const describe = naming?.api_key_set && named ? { describe: { ...shownModel(naming.estimate), ...accepting(naming.estimate) } } : {};
 	const set = <K extends keyof Form>(key: K, value: Form[K]) => setForm({ ...form, [key]: value });
 	const text = (key: "year" | "moreVenues" | "start" | "end" | "moreCategories") => ({
 		value: form[key],
@@ -133,7 +138,15 @@ function RunForm({
 					</Label>
 				</>
 			)}
-			<Button disabled={running} onClick={() => onStart(request(mode, form))}>
+			{naming?.api_key_set && (
+				<SwitchRow
+					label="Name the communities"
+					hint={`With ${naming.model}: ${costWords(naming.estimate)} for up to ${naming.communities_at_most} communities (an estimate)`}
+					checked={named}
+					onCheckedChange={setNamed}
+				/>
+			)}
+			<Button disabled={running} onClick={() => onStart({ ...request(mode, form), ...describe })}>
 				{running ? <Loader2 className="animate-spin" /> : <Play />}
 				{running ? "Running" : "Run"}
 			</Button>

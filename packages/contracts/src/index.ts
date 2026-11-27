@@ -175,7 +175,12 @@ export const REDO_STEPS: RedoStep[] = ["download", "embeddings", "descriptions"]
  *  run to do again. Either way `redo` lists the steps to do again despite what is stored. */
 export type RunRequest = (
 	{ venues: string[]; include_workshops: boolean } | { start: string; end: string; categories: string[] } | { rerun: string }
-) & { redo?: RedoStep[] };
+) & {
+	redo?: RedoStep[];
+	/** name the run's communities within the most `GET /api/describe/estimate` showed (DescribeAccepted); absent: the
+	 *  run is made without names, which can be added from it later. The engine only; Python names without asking. */
+	describe?: DescribeAccepted;
+};
 
 /** The backend's job state machine (rp/jobs.py). */
 export type JobState = "idle" | "running" | "done" | "failed";
@@ -188,7 +193,8 @@ export type JobOutcome =
 	{ kind: "run"; run: string } | { kind: "feature"; feature: FeatureName; subject: FeatureSubject } | { kind: "nothing" };
 
 /** The features that keep the model's answers (engine library/answers.rs `Feature`). */
-export type FeatureName = "extraction" | "citation_kinds" | "stances" | "answers" | "critique" | "explanation" | "claim_tree";
+export type FeatureName =
+	"extraction" | "citation_kinds" | "stances" | "answers" | "critique" | "explanation" | "claim_tree" | "describing" | "overview";
 
 /** What a feature's answers are about. */
 export type FeatureSubject = { paper: string } | { run: string } | { community: { run: string; community: string } };
@@ -689,23 +695,42 @@ export interface AiVerdict {
 export interface OverviewPoint {
 	title: string;
 	insight: string;
+	/** the engine: the papers whose quotes were found (at least 3); the Python: the papers cited */
 	papers: { id: string; title: string }[];
+	/** the quotes found, in the papers' own words (the engine only) */
+	evidence?: Evidence[];
 }
 
-/** What a community's papers have in common, written by Claude from all of them (rp/overview.py). */
+/** What a community's papers have in common, written by the language model from them (engine writing/overview.rs). */
 export interface Overview {
 	title: string;
+	/** empty when it was left out: its quotes were not found (`counts.summary_left_out`) */
 	summary: string;
 	sections: { heading: string; points: OverviewPoint[] }[];
 	model: string;
+	/** the community's papers */
 	papers: number;
+	/** the engine only: the summary's quotes */
+	summary_evidence?: Evidence[];
+	provider?: ProviderId;
+	/** of `papers`, how many the model was given (its most central, within a bound) */
+	papers_given?: number;
+	/** points written, shown and left out */
+	counts?: OverviewCounts;
 }
 
-/** Where the writing of an overview stands. */
+/** Where the writing of an overview stands, for the model chosen now. */
 export interface OverviewStatus {
 	state: JobState;
 	overview: Overview | null;
 	error: string | null;
+	/** the engine only: the model it is (or would be) written by */
+	provider?: ProviderId;
+	model?: string;
+	/** what writing it would cost, when it is neither kept nor being written: an estimate */
+	estimate?: BatchCost | null;
+	/** a key for the chosen provider is set (never the key) */
+	api_key_set?: boolean;
 }
 
 /** One thing that can be picked from a menu, and a few words about it. */
@@ -1754,4 +1779,59 @@ export interface AnswerView {
 	passages: PassageFound[];
 	/** the papers the statements shown cite */
 	cited_papers: string[];
+}
+
+// ---- names, descriptions and overviews of communities (engine writing/) ----
+
+/** How many points of an overview were written, shown and left out. */
+export interface OverviewCounts {
+	written: number;
+	shown: number;
+	/** left out: their quotes were not found in at least 3 of the papers they name */
+	not_found: number;
+	/** left out: not of the shape asked for */
+	malformed: number;
+	/** the summary was left out, its quotes not found in enough papers */
+	summary_left_out: boolean;
+}
+
+/** `POST /api/runs/<run>/overview/<path>`: the model the estimate was shown for and its most. */
+export type OverviewRequest = ShownModel & AcceptedCost;
+
+/** `GET /api/describe/estimate`: what naming a run made with the settings would cost at most, before it is made
+ *  (its communities are not known yet: as many as the settings allow). An estimate. */
+export interface DescribeBeforeRun {
+	provider: ProviderId;
+	model: string;
+	communities_at_most: number;
+	calls_at_most: number;
+	estimate: AskingCost;
+	api_key_set: boolean;
+	/** the settings' "describe communities" */
+	describe: boolean;
+}
+
+/** What a run request accepts of `DescribeBeforeRun`: the model shown and its most. */
+export type DescribeAccepted = ShownModel & AcceptedCost;
+
+/** `GET /api/runs/<run>/describe/estimate[?redo=true]`: what naming a made run's communities would cost. */
+export interface DescribeEstimate {
+	provider: ProviderId;
+	model: string;
+	/** communities and sub-communities of the run */
+	communities: number;
+	/** of those, with a name now */
+	named: number;
+	/** calls kept from before (`kept`) cost nothing */
+	estimate: BatchCost;
+	api_key_set: boolean;
+}
+
+/** `POST /api/runs/<run>/describe`: name the run's communities (all again with `redo`), as the one job. */
+export type DescribeRequest = ShownModel & AcceptedCost & { redo?: boolean };
+
+/** The job naming them; it finishes as `{kind: "run", run}`: open the run again to see the names. */
+export interface DescribeStarted {
+	ok: true;
+	id: number;
 }

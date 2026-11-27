@@ -32,6 +32,7 @@ pub mod reviews;
 pub mod routes;
 pub mod security;
 pub mod stances;
+pub mod writing;
 
 use std::future::Future;
 use std::io;

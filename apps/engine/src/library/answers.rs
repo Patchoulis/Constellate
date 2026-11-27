@@ -37,10 +37,14 @@ pub enum Feature {
     Explanation,
     /// A paper's claims as a tree, with its reviews mapped onto them.
     ClaimTree,
+    /// A community's name and description, written when a run is made ([`crate::writing::describe`]).
+    Describing,
+    /// A community's overview, with every point's quotes ([`crate::writing::overview`]).
+    Overview,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 7] = [
+    pub const ALL: [Feature; 9] = [
         Feature::Extraction,
         Feature::CitationKinds,
         Feature::Stances,
@@ -48,6 +52,8 @@ impl Feature {
         Feature::Critique,
         Feature::Explanation,
         Feature::ClaimTree,
+        Feature::Describing,
+        Feature::Overview,
     ];
 
     /// As stored.
@@ -60,6 +66,8 @@ impl Feature {
             Feature::Critique => "critique",
             Feature::Explanation => "explanation",
             Feature::ClaimTree => "claim_tree",
+            Feature::Describing => "describing",
+            Feature::Overview => "overview",
         }
     }
 }

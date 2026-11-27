@@ -2,13 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, PenLine, X } from "lucide-react";
-import type { OverviewPoint, OverviewStatus } from "@rp/contracts";
+import type { OverviewPoint, OverviewRequest, OverviewStatus } from "@rp/contracts";
 import { CommunityDot } from "@/components/community-panel";
+import { EvidenceLink } from "@/components/evidence-link";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton } from "@/components/ui/button";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
 import { communityLabel, type CommunityNode } from "@/lib/community";
+import { accepting, costTitle, costWords, shownModel } from "@/lib/cost";
 import { useFocusReturn } from "@/lib/use-focus-return";
 import { useResizable } from "@/lib/use-resizable";
 
@@ -29,7 +31,7 @@ export function useOverview(run: string, treePath: string, model: string | undef
 	const [unreachable, setUnreachable] = useState<string | null>(null);
 	const asking = useRef(0); // which question is the latest: only its answer is shown
 	const ask = useCallback(
-		(write = false) => {
+		(write?: OverviewRequest | true) => {
 			const question = ++asking.current;
 			return api.overview(run, treePath, write).then(
 				(next) => {
@@ -59,30 +61,41 @@ export function useOverview(run: string, treePath: string, model: string | undef
 		const timer = setTimeout(ask, POLL_MS);
 		return () => clearTimeout(timer);
 	}, [status, ask]);
-	return { status, error: unreachable ?? status?.error ?? null, write: () => ask(true) };
+	// the engine writes only within the most of the estimate it showed; the Python backend shows none
+	const estimate = status?.estimate ?? null;
+	const write = () => ask(estimate ? { ...shownModel(estimate), ...accepting(estimate) } : true);
+	return { status, error: unreachable ?? status?.error ?? null, write };
 }
 
 /** One claim about the community, and the papers that share it: the citations are the evidence. */
 function Point({ point, onOpenPaper }: { point: OverviewPoint; onOpenPaper: (id: string) => void }) {
 	const [all, setAll] = useState(false);
 	const shown = all ? point.papers : point.papers.slice(0, CITED_AT_FIRST);
+	// the quote of each paper, as the paper words it (the engine only)
+	const quoteOf = (id: string) => point.evidence?.find((piece) => piece.paper === id);
 	return (
 		<li className="flex flex-col gap-1.5">
 			<h3 className="text-lg leading-snug font-semibold text-foreground">{point.title}</h3>
 			<p className="text-base text-foreground/90">{point.insight}</p>
 			<div className="font-ui text-xs text-muted-foreground">Shared by {point.papers.length} papers</div>
 			<div className="flex flex-col border-l pl-1">
-				{shown.map((paper) => (
-					<RowButton
-						key={paper.id}
-						className="py-1 text-sm text-muted-foreground hover:text-foreground"
-						onClick={() => onOpenPaper(paper.id)}
-					>
-						<span>
-							<MathText>{paper.title}</MathText>
-						</span>
-					</RowButton>
-				))}
+				{shown.map((paper) => {
+					const quote = quoteOf(paper.id);
+					return (
+						<div key={paper.id} className="flex flex-col">
+							<RowButton className="py-1 text-sm text-muted-foreground hover:text-foreground" onClick={() => onOpenPaper(paper.id)}>
+								<span>
+									<MathText>{paper.title}</MathText>
+								</span>
+							</RowButton>
+							{quote && (
+								<p className="pb-1 pl-2 text-xs text-muted-foreground">
+									<span className="italic">“{quote.quote}”</span> <EvidenceLink evidence={quote} />
+								</p>
+							)}
+						</div>
+					);
+				})}
 				{point.papers.length > CITED_AT_FIRST && (
 					<RowButton className="py-1 font-ui text-xs text-muted-foreground" onClick={() => setAll(!all)}>
 						{all ? "Show fewer" : `Show all ${point.papers.length}`}
@@ -132,10 +145,21 @@ export function OverviewPanel({
 					<article className="mx-auto flex max-w-[68ch] flex-col gap-6 font-sans">
 						<header className="flex flex-col gap-3">
 							<h1 className="text-2xl leading-tight font-semibold text-balance">{overview.title}</h1>
-							<p className="text-lg leading-relaxed text-foreground">{overview.summary}</p>
+							{overview.summary && <p className="text-lg leading-relaxed text-foreground">{overview.summary}</p>}
 							<p className="font-ui text-xs text-muted-foreground">
-								Written by {overview.model} from all {overview.papers} papers. Every point cites the papers that share it; click one to read
-								it.
+								{overview.papers_given === undefined || overview.papers_given === overview.papers
+									? `Written by ${overview.model} from all ${overview.papers} papers.`
+									: `Written by ${overview.model} from the ${overview.papers_given} most central of the ${overview.papers} papers.`}{" "}
+								{overview.counts
+									? "Each point is the model's reading; it is shown only with quotes found in at least 3 of the papers it names, in the papers' own words."
+									: "Every point cites the papers that share it; click one to read it."}
+								{overview.counts && overview.counts.not_found + overview.counts.malformed > 0 && (
+									<>
+										{" "}
+										{overview.counts.not_found + overview.counts.malformed} of the {overview.counts.written} points written were left out:
+										their quotes were not found{overview.counts.summary_left_out ? ", nor were the summary's" : ""}.
+									</>
+								)}
 							</p>
 						</header>
 						{overview.sections.map((section) => (
@@ -152,9 +176,9 @@ export function OverviewPanel({
 				) : (
 					<div className="mx-auto flex max-w-[52ch] flex-col items-start gap-4 pt-10">
 						<p className="font-sans text-lg text-foreground">
-							An overview reads all {community.size} papers of this community and reports what they have in common: the methods that recur,
-							the findings several papers agree on, the directions gaining momentum, and where they disagree. Each point lists the papers
-							behind it.
+							An overview reads the {community.size} papers of this community (the most central, when there are very many) and reports what
+							they have in common: the methods that recur, the findings several papers agree on, the directions gaining momentum, and where
+							they disagree. Each point lists the papers behind it.
 						</p>
 						{status?.state === "running" ? (
 							<p className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -162,10 +186,18 @@ export function OverviewPanel({
 								Reading {community.size} papers. This takes a minute or two.
 							</p>
 						) : (
-							<Button disabled={status === null && !error} onClick={write}>
-								<PenLine />
-								Write the overview
-							</Button>
+							<div className="flex flex-col items-start gap-1">
+								<Button disabled={(status === null && !error) || status?.api_key_set === false} onClick={write}>
+									<PenLine />
+									Write the overview
+								</Button>
+								{status?.estimate && (
+									<p className="text-xs text-muted-foreground" title={costTitle(status.estimate)}>
+										With {status.estimate.model}: {costWords(status.estimate)} (an estimate).
+										{status.api_key_set === false && " No key is set for its provider."}
+									</p>
+								)}
+							</div>
 						)}
 						{error && <p className="text-sm text-destructive">{error}</p>}
 						<p className="text-xs text-muted-foreground">

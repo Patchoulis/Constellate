@@ -292,6 +292,12 @@ other route sends nothing to any provider.
 | `GET /api/runs/{run}/answers/{id}`                                        | One question and its kept answer, checked again.                                                      |
 | `DELETE /api/runs/{run}/answers/{id}`                                     | Forgets a question and its answer.                                                                    |
 | `POST /api/runs/{run}/answers/{id}/redo`                                  | Forgets its answer only; says whether there was one.                                                  |
+| **Names, descriptions and overviews of communities**                      |                                                                                                       |
+| `GET /api/describe/estimate`                                              | What naming a run made with the settings would cost at most, before it is made; nothing is sent.      |
+| `GET /api/runs/{run}/describe/estimate`                                   | What naming the run's communities (`?redo=true`: all again) would cost; nothing is sent.              |
+| `POST /api/runs/{run}/describe`                                           | Names and describes them, as the job, within the most accepted.                                       |
+| `GET /api/runs/{run}/overview/{path}`                                     | Where a community's overview stands for the model chosen, and its estimate.                           |
+| `POST /api/runs/{run}/overview/{path}`                                    | Writes it, as the job, within the most accepted: each point only with quotes found.                   |
 
 Across a network, also (the first six answer anyone; the last two need the session):
 
