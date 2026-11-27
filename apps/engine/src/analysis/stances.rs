@@ -116,16 +116,20 @@ pub enum Read {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "group", rename_all = "snake_case")]
 pub enum Placed {
+    /// The quotes found, and how many others the model gave were not found in the paper (left out, and said).
     Supports {
         evidence: Vec<Evidence>,
+        quotes_not_found: usize,
     },
     Mixed {
         /// The model's words for the condition, beside the paper's own.
         condition: String,
         evidence: Vec<Evidence>,
+        quotes_not_found: usize,
     },
     Contradicts {
         evidence: Vec<Evidence>,
+        quotes_not_found: usize,
     },
     NotAddressed,
     /// The model placed it for or against, but none of its quotes was found in the paper: not counted either way,
@@ -171,10 +175,12 @@ pub fn place(paper: &str, said: &Said, text: &PaperText) -> Placed {
     if evidence.is_empty() {
         return Placed::NotVerified { quotes_not_found: not_found.max(1) };
     }
+    // some quotes found and some not: placed on those found, with the others counted rather than dropped unseen
+    let quotes_not_found = not_found;
     match said.stance {
-        Stance::Supports => Placed::Supports { evidence },
-        Stance::Mixed => Placed::Mixed { condition: condition.to_owned(), evidence },
-        Stance::Contradicts => Placed::Contradicts { evidence },
+        Stance::Supports => Placed::Supports { evidence, quotes_not_found },
+        Stance::Mixed => Placed::Mixed { condition: condition.to_owned(), evidence, quotes_not_found },
+        Stance::Contradicts => Placed::Contradicts { evidence, quotes_not_found },
         Stance::NotAddressed => Placed::NotAddressed,
     }
 }
@@ -839,9 +845,19 @@ mod tests {
             &said(Stance::Supports, "", &["pre-training on synthetic data improves downstream accuracy"]),
             &text(&pdf_paper()),
         );
-        let Placed::Supports { evidence } = placed else { panic!("{placed:?}") };
+        let Placed::Supports { evidence, quotes_not_found } = placed else { panic!("{placed:?}") };
         assert_eq!(evidence[0].quote(), "pre-training on synthetic data improves downstream accuracy");
         assert!(matches!(evidence[0].established(), Established::Verified { .. }));
+        assert_eq!(quotes_not_found, 0);
+    }
+
+    #[test]
+    fn a_placement_with_some_quotes_not_found_is_placed_on_those_found_and_counts_the_others() {
+        let quotes =
+            ["pre-training on synthetic data improves downstream accuracy", "a sentence the paper never wrote"];
+        let placed = place("2601.00001", &said(Stance::Supports, "", &quotes), &text(&pdf_paper()));
+        let Placed::Supports { evidence, quotes_not_found } = placed else { panic!("{placed:?}") };
+        assert_eq!((evidence.len(), quotes_not_found), (1, 1), "the one not found is counted, not dropped unseen");
     }
 
     #[test]
@@ -891,7 +907,7 @@ mod tests {
             &said(Stance::Contradicts, "", &["Synthetic pre-training data brought no gain in downstream accuracy"]),
             &text(&no_pdf_paper()),
         );
-        let Placed::Contradicts { evidence } = placed else { panic!() };
+        let Placed::Contradicts { evidence, .. } = placed else { panic!() };
         assert!(matches!(evidence[0].established(), Established::Abstract { .. }));
         assert_eq!(prepare("x", &PaperReading::NotInLibrary), None);
     }

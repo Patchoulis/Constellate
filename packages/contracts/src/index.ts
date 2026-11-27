@@ -1050,9 +1050,18 @@ export type StanceScope = { community: string } | { papers: string[] };
  * `not_verified` and is never counted for or against. `unusable`: the kept answer is not one the question allows.
  */
 export type StancePlaced =
-	| { group: "supports"; evidence: Evidence[] }
-	| { group: "mixed"; /** the model's words for when the answer is yes */ condition: string; evidence: Evidence[] }
-	| { group: "contradicts"; evidence: Evidence[] }
+	| {
+			group: "supports";
+			evidence: Evidence[];
+			/** quotes the model gave that were not found in the paper: left out */ quotes_not_found?: number;
+	  }
+	| {
+			group: "mixed";
+			/** the model's words for when the answer is yes */ condition: string;
+			evidence: Evidence[];
+			quotes_not_found?: number;
+	  }
+	| { group: "contradicts"; evidence: Evidence[]; quotes_not_found?: number }
 	| { group: "not_addressed" }
 	| { group: "not_verified"; quotes_not_found: number }
 	| { group: "unusable" };
