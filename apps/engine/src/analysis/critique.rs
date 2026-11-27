@@ -50,9 +50,10 @@ use serde_json::{Value, json};
 
 use crate::evidence::{self, Claim, Evidence, PaperText, Papers, Quote, Rules};
 use crate::jobs::Tracker;
-use crate::library::{AnswerKey, Feature, Kept, KeptReviews, Library, LibraryError, ReviewPage, Slot, Subject};
+use crate::library::{Feature, Kept, KeptReviews, Library, LibraryError, ReviewPage, Slot, Subject};
 use crate::model::batch::{self, Asking, BatchEstimate, Item, Outcome};
-use crate::model::language::{Ask, Budget, Counting, Effort, Form};
+use crate::model::chosen::Chosen;
+use crate::model::language::{Ask, Budget, Form};
 use crate::text::discussion::{Discussion, Kind, Score, Span};
 use crate::text::passages::{Address, Kind as PassageKind, Passages, chars_of};
 use crate::text::review_points::{Attachment, Concern, review_points};
@@ -279,8 +280,8 @@ pub struct Said {
 #[derive(Clone, Debug)]
 pub struct Plan {
     pub paper: String,
-    /// The model chosen in the settings.
-    pub model: String,
+    /// The model chosen in the settings, of its provider.
+    pub chosen: Chosen,
     /// The paper's text, as sent.
     pub shared: String,
     /// Where the paper's text was cut, in characters, when it was.
@@ -290,18 +291,19 @@ pub struct Plan {
 }
 
 impl Plan {
-    pub fn new(paper: &str, model: &str, passages: &Passages, discussion: Option<&Discussion>) -> Self {
+    pub fn new(paper: &str, chosen: &Chosen, passages: &Passages, discussion: Option<&Discussion>) -> Self {
         let (shared, cut) = paper_prompt(passages);
         let points = discussion.map(asked_points).unwrap_or_default();
         let question = question(&points);
-        Self { paper: paper.to_owned(), model: model.to_owned(), shared, cut, points, question }
+        Self { paper: paper.to_owned(), chosen: chosen.clone(), shared, cut, points, question }
     }
 
-    /// Where the answer is kept: by model, prompt version, paper and question (which holds the reviewers' points).
+    /// Where the answer is kept: by provider and model, prompt version, paper and question (which holds the
+    /// reviewers' points).
     pub fn slot(&self) -> Slot {
         Slot {
             feature: Feature::Critique,
-            key: AnswerKey::new(Feature::Critique, &self.model, PROMPT, &[&self.paper], &self.question),
+            key: self.chosen.key(Feature::Critique, PROMPT, &[&self.paper], &self.question),
             subject: Subject::Paper(self.paper.clone()),
         }
     }
@@ -312,12 +314,12 @@ impl Plan {
             prompt: PROMPT,
             ask: Ask {
                 purpose: "a paper's weaknesses",
-                model: &self.model,
+                model: self.chosen.model(),
                 system: SYSTEM,
                 shared: Some(&self.shared),
                 question: &self.question,
                 form: Form::Json(&SCHEMA),
-                effort: Effort::Medium,
+                effort: self.chosen.effort(),
                 max_tokens: MAX_TOKENS,
             },
             likely_tokens: LIKELY_TOKENS,
@@ -326,7 +328,7 @@ impl Plan {
 
     /// What asking would cost, if it is not kept. Nothing is sent.
     pub fn estimate(&self, library: &Library) -> Result<BatchEstimate, LibraryError> {
-        batch::estimate_batch::<Said>(library, &[self.item()], Counting::ASSUMED)
+        batch::estimate_batch::<Said>(library, &[self.item()], &self.chosen)
     }
 
     /// The answer kept for this question, if there is one.
@@ -887,7 +889,8 @@ pub(crate) mod tests {
     #[test]
     fn the_prompt_gives_the_papers_text_by_page_and_section_and_the_reviewers_points_by_id() {
         let discussion = read_discussion(NEURIPS_2023).unwrap();
-        let plan = Plan::new("neurips-2023-1", "claude-sonnet-5-5", &passages(PAPER), Some(&discussion));
+        let plan =
+            Plan::new("neurips-2023-1", &Chosen::claude("claude-sonnet-5-5"), &passages(PAPER), Some(&discussion));
         assert!(
             plan.shared.starts_with("The paper's text:\n[p. 1 | 1. Introduction] 1. Introduction\n"),
             "{}",
@@ -910,15 +913,17 @@ pub(crate) mod tests {
         assert!(!SYSTEM.contains("Claude"), "the prompt names no vendor's model");
         // the schema asks for both parts and allows only the kinds there are
         assert_eq!(SCHEMA["required"], json!(["points", "weaknesses"]));
+        assert!(crate::model::language::strict_ready(&SCHEMA), "every object closed and every property required");
         let kinds = &SCHEMA["properties"]["weaknesses"]["items"]["properties"]["kind"]["enum"];
         assert_eq!(kinds.as_array().unwrap().len(), WeaknessKind::ALL.len());
         assert_eq!(kinds[0], "missing_baseline");
         // no reviews: only part 2 is asked for
-        let alone = Plan::new("2601.00001", "claude-sonnet-5-5", &passages(PAPER), None);
+        let alone = Plan::new("2601.00001", &Chosen::claude("claude-sonnet-5-5"), &passages(PAPER), None);
         assert!(alone.points.is_empty() && alone.question.starts_with("No reviews of this paper are available"));
         assert_ne!(alone.slot().key, plan.slot().key);
         // another model is another answer
-        let other = Plan::new("neurips-2023-1", "claude-opus-5-5", &passages(PAPER), Some(&discussion));
+        let other =
+            Plan::new("neurips-2023-1", &Chosen::claude("claude-opus-5-5"), &passages(PAPER), Some(&discussion));
         assert_ne!(other.slot().key, plan.slot().key);
     }
 
@@ -1100,12 +1105,12 @@ pub(crate) mod tests {
     fn an_answer_is_asked_once_kept_and_not_asked_again_and_the_estimate_sends_nothing() {
         let (_folder, library) = library();
         let discussion = read_discussion(ICLR_2024).unwrap();
-        let plan = Plan::new("p", "claude-sonnet-5-5", &passages(PAPER), Some(&discussion));
+        let plan = Plan::new("p", &Chosen::claude("claude-sonnet-5-5"), &passages(PAPER), Some(&discussion));
         let answer = json!({"points": [{"point": "p1", "located": "no_passage", "quote": "", "paper_says": ""}], "weaknesses": []});
         let fake = Fake::new(vec![Ok(answer_reply(&answer.to_string()))]);
         let estimate = plan.estimate(&library).unwrap();
         assert_eq!((estimate.to_ask, estimate.kept), (1, 0));
-        assert!(estimate.usd.unwrap() > Usd::ZERO && estimate.usd.unwrap() < estimate.most_usd.unwrap());
+        assert!(estimate.cost.usd.unwrap() > Usd::ZERO && estimate.cost.usd.unwrap() < estimate.cost.most_usd.unwrap());
         assert!(fake.sent().is_empty(), "the estimate sends nothing");
 
         let run = Run::new();
@@ -1133,7 +1138,7 @@ pub(crate) mod tests {
     #[test]
     fn an_answer_that_is_not_json_fails_this_paper_and_keeps_nothing() {
         let (_folder, library) = library();
-        let plan = Plan::new("p", "claude-sonnet-5-5", &passages(PAPER), None);
+        let plan = Plan::new("p", &Chosen::claude("claude-sonnet-5-5"), &passages(PAPER), None);
         let fake = Fake::new(vec![Ok(answer_reply("The paper is weak. Reject.")), Ok(error(500, "api_error", "x"))]);
         assert!(matches!(Run::new().ask(&library, &fake, &plan), Outcome::Failed(_)));
         assert!(plan.kept(&library).unwrap().is_none());

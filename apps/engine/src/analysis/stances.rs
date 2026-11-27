@@ -34,7 +34,8 @@ use serde_json::{Value, json};
 use crate::evidence::{self, Cited, Claim, Established, Evidence, PaperText, Papers, Rules};
 use crate::library::{AnswerKey, Feature, PaperReading, Slot, Subject};
 use crate::model::batch::Item;
-use crate::model::language::{Ask, Effort, Form};
+use crate::model::chosen::Chosen;
+use crate::model::language::{Ask, Form};
 use crate::text::passages::{Kind, Match, Part, Passages};
 
 /// The version of the per-paper prompt and answer: raised when either changes, so kept answers are asked again.
@@ -282,7 +283,7 @@ pub fn items<'a>(
     prepared: &'a [Prepared],
     prompt: &'a str,
     key_question: &str,
-    model: &'a str,
+    chosen: &'a Chosen,
     schema: &'a Value,
 ) -> Vec<Item<'a>> {
     prepared
@@ -290,18 +291,18 @@ pub fn items<'a>(
         .map(|paper| Item {
             slot: Slot {
                 feature: Feature::Stances,
-                key: answer_key(model, &paper.paper, paper.read, key_question),
+                key: answer_key(chosen, &paper.paper, paper.read, key_question),
                 subject: Subject::Paper(paper.paper.clone()),
             },
             prompt: PROMPT,
             ask: Ask {
                 purpose: "where papers stand on a question",
-                model,
+                model: chosen.model(),
                 system: SYSTEM,
                 shared: Some(&paper.shared),
                 question: prompt,
                 form: Form::Json(schema),
-                effort: Effort::Low,
+                effort: chosen.effort(),
                 max_tokens: MAX_TOKENS,
             },
             likely_tokens: LIKELY_TOKENS,
@@ -312,12 +313,12 @@ pub fn items<'a>(
 /// The key an answer about `paper` is kept under: what [`items`] uses, for looking it up without asking.
 /// What the paper was read from is in the key: an answer from its abstract is not taken for one from its PDF, so a
 /// paper whose PDF arrives later is asked again with its whole text, and its label says what was read.
-pub fn answer_key(model: &str, paper: &str, read: Read, key_question: &str) -> AnswerKey {
+pub fn answer_key(chosen: &Chosen, paper: &str, read: Read, key_question: &str) -> AnswerKey {
     let from = match read {
         Read::Pdf => "pdf",
         Read::Abstract => "abstract",
     };
-    AnswerKey::new(Feature::Stances, model, PROMPT, &[paper], &format!("{key_question}\nread from {from}"))
+    chosen.key(Feature::Stances, PROMPT, &[paper], &format!("{key_question}\nread from {from}"))
 }
 
 /// Words that say nothing about what a question or a paper is about.
@@ -691,25 +692,25 @@ pub fn proposal_items<'a>(
     shared: &'a str,
     prompt: &'a str,
     round: u32,
-    model: &'a str,
+    chosen: &'a Chosen,
     schema: &'a Value,
     subject: Subject,
 ) -> Vec<Item<'a>> {
     vec![Item {
         slot: Slot {
             feature: Feature::Stances,
-            key: AnswerKey::new(Feature::Stances, model, PROPOSE_PROMPT, papers, &format!("proposals\nround {round}")),
+            key: chosen.key(Feature::Stances, PROPOSE_PROMPT, papers, &format!("proposals\nround {round}")),
             subject,
         },
         prompt: PROPOSE_PROMPT,
         ask: Ask {
             purpose: "questions a community's papers take positions on",
-            model,
+            model: chosen.model(),
             system: PROPOSE_SYSTEM,
             shared: Some(shared),
             question: prompt,
             form: Form::Json(schema),
-            effort: Effort::Medium,
+            effort: chosen.effort(),
             max_tokens: PROPOSE_MAX_TOKENS,
         },
         likely_tokens: PROPOSE_LIKELY_TOKENS,
@@ -759,7 +760,7 @@ mod tests {
     use crate::library::{Known, Library};
     use crate::model::batch::{self, Asking, Outcome};
     use crate::model::language::fake::{Fake, message, ok};
-    use crate::model::language::{Budget, Counting, Endpoint, KEY_VARIABLE, Limit};
+    use crate::model::language::{Budget, Endpoint, KEY_VARIABLE, Limit};
     use crate::text::passages::read_passages;
     use crate::usage::{Call, Usd};
 
@@ -972,13 +973,17 @@ mod tests {
         let schema = schema();
         let prompt = question_prompt("Does pre-training on synthetic data help downstream accuracy?");
         let key = key_question("Does pre-training on synthetic data help downstream accuracy?", 0);
-        let items = items(&prepared, &prompt, &key, MODEL, &schema);
+        let chosen = Chosen::claude(MODEL);
+        let items = items(&prepared, &prompt, &key, &chosen, &schema);
+        assert!(
+            crate::model::language::strict_ready(&schema) && crate::model::language::strict_ready(&proposal_schema())
+        );
 
         // the estimate sends nothing
         let fake = Fake::new(vec![]);
-        let estimate = batch::estimate_batch::<Said>(&library, &items, Counting::ASSUMED).unwrap();
+        let estimate = batch::estimate_batch::<Said>(&library, &items, &chosen).unwrap();
         assert_eq!((estimate.to_ask, fake.sent().len()), (2, 0));
-        assert!(estimate.usd.unwrap() > Usd::ZERO);
+        assert!(estimate.cost.usd.unwrap() > Usd::ZERO);
 
         let fake = Fake::new(vec![
             answer(
@@ -1006,7 +1011,7 @@ mod tests {
         assert!(matches!(asked.outcomes[0], Outcome::Kept(_)));
         assert!(matches!(asked.outcomes[1], Outcome::Answered(_)));
         assert_eq!(asked.sent.len(), 1);
-        let key = answer_key(MODEL, "2601.00001", Read::Pdf, &key);
+        let key = answer_key(&chosen, "2601.00001", Read::Pdf, &key);
         let kept = library.kept::<Said>(Feature::Stances, &key).unwrap().unwrap();
         assert_eq!(kept.answer.stance, Stance::Supports);
     }
@@ -1016,7 +1021,7 @@ mod tests {
         let one = prepare("2601.00001", &pdf_paper()).unwrap();
         let two = prepare("2601.00001", &pdf_paper()).unwrap();
         assert_eq!(one.shared, two.shared, "byte for byte, so the prompt cache is read");
-        let key = |model: &str, read: Read, question: &str| answer_key(model, "p", read, question);
+        let key = |model: &str, read: Read, question: &str| answer_key(&Chosen::claude(model), "p", read, question);
         assert_ne!(key(MODEL, Read::Pdf, &key_question("q?", 0)), key(MODEL, Read::Pdf, &key_question("q?", 1)));
         assert_ne!(key(MODEL, Read::Pdf, "q"), key("another-model", Read::Pdf, "q"), "the model is in the key");
         assert_ne!(key(MODEL, Read::Pdf, "q"), key(MODEL, Read::Abstract, "q"), "an abstract's answer is not a PDF's");

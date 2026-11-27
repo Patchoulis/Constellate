@@ -44,7 +44,7 @@
 //!   by how they are billed, cache reads and writes apart; a call is recorded whether its answer is usable or
 //!   not, since it was paid for either way.
 //! - **A budget** ([`Budget`]) is checked before every call: a call whose worst case would take the batch past
-//!   what its caller is willing to spend is not started. [`estimate`] says what a batch is likely to cost before
+//!   what its caller is willing to spend is not started. [`estimate_for`] says what a batch is likely to cost before
 //!   it is started.
 //! - **The key** is read from `ANTHROPIC_API_KEY` only, the address from `ANTHROPIC_BASE_URL` when it is set (and
 //!   each other provider's from the variables its row names). Neither is ever logged, shown in a `Debug`, put in an
@@ -80,6 +80,7 @@ pub use provider::{
 };
 use provider::{Api, effort_for};
 pub use providers::{AddressState, Availability, KeyState, Listed, ListedModel, Place, Providers};
+pub use schema::strict_ready;
 
 /// The version of the API this speaks (`anthropic-version`).
 pub const API_VERSION: &str = "2026-10-21";
@@ -305,7 +306,8 @@ impl Endpoint {
 }
 
 /// How hard the model thinks before it answers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Ordered from least to most, so that a feature's cap on it is a `min`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Effort {
     Low,
@@ -665,9 +667,21 @@ struct Held {
     usd: Usd,
 }
 
+impl fmt::Debug for Budget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (tokens, usd) = self.spent();
+        formatter.debug_struct("Budget").field("limit", &self.limit).field("spent", &(tokens, usd)).finish()
+    }
+}
+
 impl Budget {
     pub fn new(limit: Limit) -> Self {
         Self { limit, spending: Mutex::new(Spending::default()) }
+    }
+
+    /// What it is held to.
+    pub fn limit(&self) -> Limit {
+        self.limit
     }
 
     /// What the batch's calls have taken so far: tokens, and dollars (of priced calls).
@@ -756,41 +770,106 @@ pub struct Planned {
     pub max_tokens: u32,
 }
 
-/// What a batch is likely to cost, before it is started: what the interface shows as "about N dollars".
+/// What asking would cost, before anything is sent: what the interface shows as "about N dollars" (or, for a
+/// model whose price is not known, as so many tokens at most). Every feature's estimate is one of these
+/// (`AskingCost` in the contracts), so that each says the same things: which provider and model, how tokens were
+/// reckoned and the prefix counted, and the worst case in tokens a budget can be held to when dollars cannot.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Estimate {
+    pub provider: Provider,
     pub model: String,
     pub calls: u64,
     /// Likely tokens, by how they are billed.
     pub tokens: Tokens,
-    /// Likely cost; `None` when the model's price is not known.
+    /// Likely cost; `None` when the model's price is not known (or it runs on this computer).
     pub usd: Option<Usd>,
     /// If every answer took `max_tokens` and nothing was read from the cache.
     pub most_usd: Option<Usd>,
+    /// Tokens of every kind in that worst case: what a budget in tokens is held to when there is no price.
+    pub most_tokens: u64,
     /// How the prompt's tokens were reckoned: it is an estimate either way.
     pub counting: Counting,
     /// How the shared prefix was counted: written once and read after, or, for a provider that reports no caching
     /// ([`Caching::NotReported`]), paid for in full by every question.
     pub caching: Caching,
+    /// The model runs on this computer (a server on loopback): it costs no API fee, and its cost is not in
+    /// dollars.
+    pub on_this_computer: bool,
 }
 
-/// What `planned` calls to the Claude API's `model` are likely to cost, and at most. Prompt caching is counted as
-/// it works when the questions over one shared part are asked one after the other within five minutes: the first
-/// writes the cache, the others read it.
-pub fn estimate(model: &str, planned: &[Planned], counting: Counting) -> Estimate {
-    estimate_for(Provider::Anthropic, model, planned, counting)
+/// The most characters [`Client::ask`] adds to a question it asks once more, after an answer that did not follow
+/// the schema: what was wrong with it, and the request to answer again. Counted in an estimate's worst case.
+const RETRY_CHARS: u64 = 600;
+
+/// Where a model's calls are sent, as far as what they cost goes: the provider (whose prices they are billed at),
+/// whether the model runs on this computer (which costs no API fee, whatever its id), and how JSON answers are had
+/// there (where the schema is written into the question, it is paid for as part of it, and an answer that does not
+/// follow it is asked for once more). What an estimate is reckoned by, so that it counts what is really sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pricing {
+    pub provider: Provider,
+    pub on_this_computer: bool,
+    pub answers: Answers,
 }
 
-/// [`estimate`] for `model` of any provider, its prompt caching counted as that provider caches
-/// ([`Capabilities::caching`]): marked or written at a price of its own, the first question writes the prefix and
-/// the rest read it; cached by itself at no extra price, the first pays for it in full and the rest read it; not
-/// reported, every question pays for it in full. The most is always every answer at `max_tokens` and nothing read.
+impl Pricing {
+    /// How `endpoint` is priced.
+    pub fn of(endpoint: &Endpoint) -> Self {
+        Self {
+            provider: endpoint.provider(),
+            on_this_computer: endpoint.on_this_computer(),
+            answers: endpoint.capabilities().answers,
+        }
+    }
+
+    /// How `provider` is priced when its endpoint is not set up (yet): as its row says.
+    pub fn listed(provider: Provider) -> Self {
+        Self { provider, on_this_computer: false, answers: provider.about().capabilities.answers }
+    }
+
+    /// The characters of `ask`'s question as it is sent here: with the schema written into it where the provider
+    /// cannot be held to one.
+    pub fn question_chars(self, ask: &Ask<'_>) -> u64 {
+        let count = |text: &str| u64::try_from(text.chars().count()).unwrap_or(u64::MAX);
+        match (self.provider, ask.form) {
+            (Provider::Anthropic, _) | (_, Form::Text) => count(ask.question),
+            (_, Form::Json(schema)) => count(&schema::question(ask.question, schema, self.answers, None)),
+        }
+    }
+
+    /// What `planned` calls to `model` are likely to cost here, and at most ([`estimate_for`] the provider). A
+    /// model on this computer has no dollar figure; where answers are not held to the schema by the provider, the
+    /// worst case counts every question asked twice, as the client does when an answer does not follow it.
+    pub fn estimate(self, model: &str, planned: &[Planned], counting: Counting) -> Estimate {
+        let asked_again = self.provider != Provider::Anthropic && self.answers != Answers::Enforced;
+        let estimate = reckon(self.provider, model, planned, counting, asked_again);
+        if self.on_this_computer {
+            Estimate { usd: None, most_usd: None, on_this_computer: true, ..estimate }
+        } else {
+            estimate
+        }
+    }
+}
+
+/// What `planned` calls to `model` of `provider` are likely to cost, and at most, at the prices of that provider
+/// ([`price_key`]), its prompt caching counted as that provider caches ([`Capabilities::caching`]): marked or
+/// written at a price of its own, the first question writes the prefix and the rest read it; cached by itself at no
+/// extra price, the first pays for it in full and the rest read it; not reported, every question pays for it in
+/// full. The cache is counted as it works when the questions over one shared part are asked one after the other
+/// within a few minutes. The most is always every answer at `max_tokens` and nothing read. A feature estimates
+/// through [`Pricing::estimate`], which also counts what the provider's way of answering in JSON adds.
 pub fn estimate_for(provider: Provider, model: &str, planned: &[Planned], counting: Counting) -> Estimate {
+    reckon(provider, model, planned, counting, false)
+}
+
+/// [`estimate_for`], with each question's worst case counted twice when `asked_again`.
+fn reckon(provider: Provider, model: &str, planned: &[Planned], counting: Counting, asked_again: bool) -> Estimate {
     let priced = price_key(provider, model);
     let caching = provider.about().capabilities.caching;
     let mut likely = Tokens::default();
     let mut likely_usd = Some(Usd::ZERO);
     let mut most_usd = Some(Usd::ZERO);
+    let mut most_tokens = 0u64;
     let mut calls = 0u64;
     let add = |total: &mut Option<Usd>, tokens: &Tokens| {
         *total = total.and_then(|sum| price_of(&priced, tokens).map(|cost| sum + cost));
@@ -832,10 +911,28 @@ pub fn estimate_for(provider: Provider, model: &str, planned: &[Planned], counti
             add(&mut likely_usd, &call);
             likely = likely + call;
             add(&mut most_usd, &worst);
+            most_tokens = most_tokens.saturating_add(worst.all());
+            if asked_again {
+                // the second attempt: the same prompt with what was wrong added after the question
+                let again = Tokens { input: worst.input + counting.tokens(RETRY_CHARS), ..worst };
+                add(&mut most_usd, &again);
+                most_tokens = most_tokens.saturating_add(again.all());
+            }
             calls += 1;
         }
     }
-    Estimate { model: model.to_owned(), calls, tokens: likely, usd: likely_usd, most_usd, counting, caching }
+    Estimate {
+        provider,
+        model: model.to_owned(),
+        calls,
+        tokens: likely,
+        usd: likely_usd,
+        most_usd,
+        most_tokens,
+        counting,
+        caching,
+        on_this_computer: false,
+    }
 }
 
 /// The id a model's price is kept under in the prices file, and its calls in the ledger: the Claude API's models by
@@ -1213,9 +1310,11 @@ impl<'a> Client<'a> {
     /// its own, and as plain input everywhere else (where an unpriced cache would make the worst case unpriced).
     fn worst_asked(&self, asked: &Asked<'_>) -> Tokens {
         let counting = self.counting();
-        let count = |text: &str| counting.tokens(u64::try_from(text.chars().count()).unwrap_or(u64::MAX));
-        let prefix = count(asked.ask.system) + asked.ask.shared.map_or(0, count);
-        let question = count(&asked.question);
+        let chars = |text: &str| u64::try_from(text.chars().count()).unwrap_or(u64::MAX);
+        // the prefix counted as one text, as an estimate counts it: two parts rounded up apart would be a token
+        // more than the estimate's worst case, and a budget of exactly that worst case would refuse the call
+        let prefix = counting.tokens(chars(asked.ask.system) + asked.ask.shared.map_or(0, chars));
+        let question = counting.tokens(chars(&asked.question));
         let output = u64::from(asked.ask.max_tokens);
         match self.endpoint.provider.about().capabilities.caching {
             Caching::Marked | Caching::AutomaticWritesBilled => {
@@ -1333,7 +1432,7 @@ impl<'a> Client<'a> {
     }
 
     /// Measure how many characters a token is for prompts like `ask`, with one token count, and reckon later
-    /// prompts with it: what makes [`estimate`] and the budget's worst cases closer to what calls will cost.
+    /// prompts with it: what makes [`estimate_for`] and the budget's worst cases closer to what calls will cost.
     ///
     /// A provider that cannot count tokens is not asked: the counting stays [`Counting::Assumed`], which says that
     /// what is reckoned with it is an estimate from characters.
@@ -1802,7 +1901,12 @@ mod tests {
         // 739 papers of 40,000 characters, three questions each
         let plan =
             Planned { shared_chars: 40_000, question_chars: 300, questions: 3, answer_tokens: 800, max_tokens: 4_000 };
-        let estimated = estimate("claude-opus-5-5", &vec![plan; 739], Counting::Measured { chars_per_token: 4.0 });
+        let estimated = estimate_for(
+            Provider::Anthropic,
+            "claude-opus-5-5",
+            &vec![plan; 739],
+            Counting::Measured { chars_per_token: 4.0 },
+        );
         assert_eq!(estimated.calls, 739 * 3);
         assert_eq!(estimated.tokens.cache_write_5m, 739 * 10_000);
         assert_eq!(estimated.tokens.cache_read, 739 * 2 * 10_000);
@@ -1812,7 +1916,7 @@ mod tests {
         // per paper: 10000 written at $5, 20000 read at $0.20, 225 question tokens at $4, 2400 answer tokens at $20
         let per_paper = 10_000 * 5_000_000 + 20_000 * 200_000 + 225 * 4_000_000 + 2_400 * 20_000_000;
         assert_eq!(likely, Usd::from_picodollars(739 * per_paper));
-        assert_eq!(estimate("claude-unknown-1", &[plan], Counting::ASSUMED).usd, None);
+        assert_eq!(estimate_for(Provider::Anthropic, "claude-unknown-1", &[plan], Counting::ASSUMED).usd, None);
         assert_eq!(Counting::ASSUMED, Counting::Assumed { chars_per_token: CHARS_PER_TOKEN });
     }
 
@@ -2082,7 +2186,41 @@ mod every_provider {
         // 10000 written at $2.50, 20000 read at $0.10, 225 question tokens at $2, 2400 answer tokens at $10
         let expected = 10_000 * 2_500_000 + 20_000 * 100_000 + 225 * 2_000_000 + 2_400 * 10_000_000;
         assert_eq!(openai.usd, Some(Usd::from_picodollars(expected)));
-        assert_eq!(estimate("claude-opus-5-5", &[plan], counting).caching, Caching::Marked);
+        assert_eq!(estimate_for(Provider::Anthropic, "claude-opus-5-5", &[plan], counting).caching, Caching::Marked);
+    }
+
+    #[test]
+    fn an_estimate_counts_what_the_providers_way_of_answering_in_json_adds_and_no_fee_on_this_computer() {
+        let plan =
+            Planned { shared_chars: 40_000, question_chars: 300, questions: 3, answer_tokens: 800, max_tokens: 4_000 };
+        let counting = Counting::ASSUMED;
+        let held = Pricing::listed(Provider::OpenAi).estimate("gpt-6.2-sol", &[plan], counting);
+        assert_eq!(held, estimate_for(Provider::OpenAi, "gpt-6.2-sol", &[plan], counting), "held to the schema");
+        // not held to it: an answer that does not follow it is asked for once more, which the worst case counts
+        let prompted = Pricing::listed(Provider::Meta);
+        let once = estimate_for(Provider::Meta, "muse-spark-1.3", &[plan], counting);
+        let twice = prompted.estimate("muse-spark-1.3", &[plan], counting);
+        assert_eq!(twice.tokens, once.tokens, "the likely cost is one answer each");
+        assert!(twice.most_tokens > 2 * once.most_tokens, "{} {}", twice.most_tokens, once.most_tokens);
+        // the schema written into the question is part of what is sent
+        let schema = json!({"type": "object", "properties": {"said": {"type": "string"}}});
+        let ask = Ask {
+            purpose: "a test",
+            model: "muse-spark-1.3",
+            system: "",
+            shared: None,
+            question: "What?",
+            form: Form::Json(&schema),
+            effort: Effort::Low,
+            max_tokens: 10,
+        };
+        assert!(prompted.question_chars(&ask) > 5 + schema.to_string().chars().count() as u64);
+        assert_eq!(Pricing::listed(Provider::Anthropic).question_chars(&ask), 5);
+        // on this computer: no dollars, said so, and the worst case in tokens all the same
+        let here = Pricing { on_this_computer: true, ..Pricing::listed(Provider::Compatible) };
+        let local = here.estimate("qwen3:32b", &[plan], counting);
+        assert_eq!((local.usd, local.most_usd, local.on_this_computer), (None, None, true));
+        assert!(local.most_tokens > local.tokens.all());
     }
 
     #[test]

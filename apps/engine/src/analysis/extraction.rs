@@ -39,7 +39,8 @@ use crate::evidence::{self, Claim, Evidence, PaperText, Papers, Quote, Rules};
 use crate::jobs::Tracker;
 use crate::library::{AnswerKey, Feature, Library, LibraryError, PaperReading, Slot, Subject};
 use crate::model::batch::{self, Asking, BatchEstimate, Item, Outcome};
-use crate::model::language::{Ask, Budget, Counting, Effort, Estimate, Form, Planned, estimate};
+use crate::model::chosen::Chosen;
+use crate::model::language::{Ask, Budget, Counting, Estimate, Form, Planned};
 
 /// The version of the prompt and of the answer's shape: raised when either changes, so kept answers are asked
 /// again rather than read as what they are not.
@@ -438,16 +439,16 @@ fn borne_out(value: Value, found: &[&str]) -> Result<Value, Unverified> {
     }
 }
 
-/// The key one cell's answer is kept under: what it depends on is the model, the paper, and the column's
-/// question and kind.
-pub fn cell_key(model: &str, paper: &str, column: &Column) -> AnswerKey {
-    AnswerKey::new(Feature::Extraction, model, PROMPT, &[paper], &format!("cell {}", column.asked()))
+/// The key one cell's answer is kept under: what it depends on is the provider and model, the paper, and the
+/// column's question and kind.
+pub fn cell_key(chosen: &Chosen, paper: &str, column: &Column) -> AnswerKey {
+    chosen.key(Feature::Extraction, PROMPT, &[paper], &format!("cell {}", column.asked()))
 }
 
-fn cell_slot(model: &str, paper: &str, column: &Column) -> Slot {
+fn cell_slot(chosen: &Chosen, paper: &str, column: &Column) -> Slot {
     Slot {
         feature: Feature::Extraction,
-        key: cell_key(model, paper, column),
+        key: cell_key(chosen, paper, column),
         subject: Subject::Paper(paper.to_owned()),
     }
 }
@@ -564,16 +565,16 @@ struct PaperAsk {
 
 /// The calls a table needs, made from what is kept: a paper with every column answered is not asked.
 pub struct Plan {
-    model: String,
+    chosen: Chosen,
     schema: Json,
     asks: Vec<PaperAsk>,
 }
 
 impl Plan {
-    /// The calls `columns` need for `papers` (each with what the library read of it), with `model`.
+    /// The calls `columns` need for `papers` (each with what the library read of it), asked of `chosen`.
     pub fn new(
         library: &Library,
-        model: &str,
+        chosen: &Chosen,
         columns: &[Column],
         papers: &[(&str, &PaperReading)],
     ) -> Result<Self, LibraryError> {
@@ -582,7 +583,7 @@ impl Plan {
             let Some(text) = prompt_text(reading) else { continue };
             let mut missing = Vec::new();
             for column in columns {
-                if library.kept::<SaidCell>(Feature::Extraction, &cell_key(model, paper, column))?.is_none() {
+                if library.kept::<SaidCell>(Feature::Extraction, &cell_key(chosen, paper, column))?.is_none() {
                     missing.push(column);
                 }
             }
@@ -592,13 +593,13 @@ impl Plan {
             let question = question(&missing);
             let slot = Slot {
                 feature: Feature::Extraction,
-                key: AnswerKey::new(Feature::Extraction, model, PROMPT, &[paper], &format!("row {question}")),
+                key: chosen.key(Feature::Extraction, PROMPT, &[paper], &format!("row {question}")),
                 subject: Subject::Paper((*paper).to_owned()),
             };
             let columns = missing.into_iter().cloned().collect();
             asks.push(PaperAsk { paper: (*paper).to_owned(), text, columns, question, slot });
         }
-        Ok(Self { model: model.to_owned(), schema: schema(), asks })
+        Ok(Self { chosen: chosen.clone(), schema: schema(), asks })
     }
 
     /// Papers with something to ask.
@@ -617,12 +618,12 @@ impl Plan {
                     prompt: PROMPT,
                     ask: Ask {
                         purpose: PURPOSE,
-                        model: &self.model,
+                        model: self.chosen.model(),
                         system: SYSTEM,
                         shared: Some(&ask.text),
                         question: &ask.question,
                         form: Form::Json(&self.schema),
-                        effort: Effort::Low,
+                        effort: self.chosen.effort(),
                         max_tokens,
                     },
                     likely_tokens,
@@ -633,16 +634,29 @@ impl Plan {
 
     /// What asking would cost (nothing is sent).
     pub fn estimate(&self, library: &Library) -> Result<BatchEstimate, LibraryError> {
-        batch::estimate_batch::<Said>(library, &self.items(), Counting::ASSUMED)
+        batch::estimate_batch::<Said>(library, &self.items(), &self.chosen)
     }
 }
 
-/// What papers whose texts have not been read would cost, from how long their texts are taken to be
-/// (`characters`, one per paper to ask: an estimate from other papers' texts, or a paper's own abstract), asked
-/// every one of `columns`.
-pub fn extrapolate(model: &str, columns: &[Column], characters: &[u64]) -> Estimate {
+/// What papers whose texts have not been read would cost when asked of `chosen`, from how long their texts are
+/// taken to be (`characters`, one per paper to ask: an estimate from other papers' texts, or a paper's own
+/// abstract), asked every one of `columns`.
+pub fn extrapolate(chosen: &Chosen, columns: &[Column], characters: &[u64]) -> Estimate {
     let all: Vec<&Column> = columns.iter().collect();
-    let question_chars = u64::try_from(question(&all).chars().count()).unwrap_or(u64::MAX);
+    let asked = question(&all);
+    let schema = schema();
+    let ask = Ask {
+        purpose: PURPOSE,
+        model: chosen.model(),
+        system: SYSTEM,
+        shared: None,
+        question: &asked,
+        form: Form::Json(&schema),
+        effort: chosen.effort(),
+        max_tokens: 0,
+    };
+    // as sent to the provider: with the schema in it where it cannot be held to one
+    let question_chars = chosen.pricing().question_chars(&ask);
     let system = u64::try_from(SYSTEM.chars().count()).unwrap_or(u64::MAX);
     let (max_tokens, answer_tokens) = answer_tokens(columns.len());
     let plans: Vec<Planned> = characters
@@ -655,7 +669,7 @@ pub fn extrapolate(model: &str, columns: &[Column], characters: &[u64]) -> Estim
             max_tokens,
         })
         .collect();
-    estimate(model, &plans, Counting::ASSUMED)
+    chosen.estimate(&plans, Counting::ASSUMED)
 }
 
 /// What came of a run.
@@ -706,7 +720,7 @@ pub fn run(asking: Asking<'_>, plan: &Plan, budget: &Budget, tracker: &Tracker<'
             // same kept answer; a redo asks it again
             let omitted = SaidCell { column: column.id.clone(), status: OMITTED.to_owned(), ..SaidCell::default() };
             let cell = said.cells.iter().find(|cell| cell.column.trim() == column.id).unwrap_or(&omitted);
-            library.keep(&cell_slot(&plan.model, &ask.paper, column), &model, PROMPT, cell)?;
+            library.keep(&cell_slot(&plan.chosen, &ask.paper, column), &model, PROMPT, cell)?;
         }
     }
     Ok(ran)
@@ -715,7 +729,7 @@ pub fn run(asking: Asking<'_>, plan: &Plan, budget: &Budget, tracker: &Tracker<'
 /// For each paper, each column's kept answer, if it has one (read from the library: one thread).
 pub fn kept_cells(
     library: &Library,
-    model: &str,
+    chosen: &Chosen,
     columns: &[Column],
     papers: &[&str],
 ) -> Result<Vec<Vec<Option<SaidCell>>>, LibraryError> {
@@ -726,7 +740,7 @@ pub fn kept_cells(
                 .iter()
                 .map(|column| {
                     Ok(library
-                        .kept::<SaidCell>(Feature::Extraction, &cell_key(model, paper, column))?
+                        .kept::<SaidCell>(Feature::Extraction, &cell_key(chosen, paper, column))?
                         .map(|kept| kept.answer))
                 })
                 .collect()
@@ -997,7 +1011,7 @@ mod tests {
     fn plan(library: &Library, columns: &[Column]) -> (Plan, Vec<PaperReading>) {
         let readings = library.paper_texts(&PAPERS).unwrap();
         let pairs: Vec<(&str, &PaperReading)> = PAPERS.iter().copied().zip(&readings).collect();
-        (Plan::new(library, MODEL, columns, &pairs).unwrap(), readings)
+        (Plan::new(library, &Chosen::claude(MODEL), columns, &pairs).unwrap(), readings)
     }
 
     fn ask(library: &Library, model: &Model, plan: &Plan, budget: &Budget) -> Ran {
@@ -1013,7 +1027,7 @@ mod tests {
     }
 
     fn table(library: &Library, columns: &[Column]) -> Vec<Vec<Cell>> {
-        let kept = kept_cells(library, MODEL, columns, &PAPERS).unwrap();
+        let kept = kept_cells(library, &Chosen::claude(MODEL), columns, &PAPERS).unwrap();
         let texts = library.paper_texts(&PAPERS).unwrap().into_iter().map(PaperReading::into_text).collect();
         checked_rows(&PAPERS, columns, kept, texts)
     }
@@ -1054,6 +1068,7 @@ mod tests {
             .collect();
         assert!(ids.windows(2).all(|pair| pair[0] < pair[1]), "the columns in their order");
         assert_eq!(first["output_config"]["format"]["schema"], schema());
+        assert!(crate::model::language::strict_ready(&schema()), "every object closed and every property required");
         let required = &schema()["properties"]["cells"]["items"]["required"];
         assert_eq!(required.as_array().unwrap().len(), 9);
         // the paper with no PDF is asked from its title and abstract, and told so
@@ -1162,10 +1177,13 @@ mod tests {
         let (plan, _) = plan(&library, &columns);
         let estimate = plan.estimate(&library).unwrap();
         assert_eq!((estimate.items, estimate.to_ask), (3, 3));
-        assert!(estimate.usd.unwrap() > Usd::ZERO && estimate.usd <= estimate.most_usd);
-        let extrapolated = extrapolate(MODEL, &columns, &[90_000, 90_000, 1_500]);
+        assert!(estimate.cost.usd.unwrap() > Usd::ZERO && estimate.cost.usd <= estimate.cost.most_usd);
+        let extrapolated = extrapolate(&Chosen::claude(MODEL), &columns, &[90_000, 90_000, 1_500]);
         assert_eq!(extrapolated.calls, 3);
-        assert!(extrapolated.usd.unwrap() > estimate.usd.unwrap(), "two long papers cost more than these short ones");
+        assert!(
+            extrapolated.usd.unwrap() > estimate.cost.usd.unwrap(),
+            "two long papers cost more than these short ones"
+        );
         assert_eq!(library.spending().unwrap().total.calls, 0, "nothing was recorded: nothing was sent");
     }
 

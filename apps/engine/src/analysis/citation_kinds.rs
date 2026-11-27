@@ -30,7 +30,8 @@ use crate::evidence::{Evidence, SHORTEST_QUOTE};
 use crate::jobs::Tracker;
 use crate::library::{AnswerKey, Feature, Library, LibraryError, Slot, Subject};
 use crate::model::batch::{self, Asking, Item, Outcome};
-use crate::model::language::{Ask, Budget, Effort, Form};
+use crate::model::chosen::Chosen;
+use crate::model::language::{Ask, Budget, Form};
 use crate::text::passages::{Address, Match, Passages, letters_in, locate_in};
 
 /// The version of the prompt and the answer's shape. Raise it when either changes: kept readings are asked again.
@@ -305,13 +306,13 @@ pub fn question(title: &str, abstract_text: &str, contexts: &[&Context]) -> Stri
     question
 }
 
-/// The key one citing sentence's reading is kept under.
-pub fn sentence_key(model: &str, citing: &str, cited: &str, address: &Address) -> AnswerKey {
+/// The key one citing sentence's reading by `chosen` is kept under.
+pub fn sentence_key(chosen: &Chosen, citing: &str, cited: &str, address: &Address) -> AnswerKey {
     let place = format!(
         "citing sentence at page {} characters {} to page {} character {}",
         address.page, address.start, address.end_page, address.end
     );
-    AnswerKey::new(Feature::CitationKinds, model, PROMPT, &[citing, cited], &place)
+    chosen.key(Feature::CitationKinds, PROMPT, &[citing, cited], &place)
 }
 
 /// One citation to be read: who cites, whom, and where.
@@ -343,7 +344,8 @@ pub struct Call {
 /// the job asks.
 #[derive(Debug)]
 pub struct Plan {
-    pub model: String,
+    /// The model chosen in the settings, of its provider.
+    pub chosen: Chosen,
     pub cases: Vec<Case>,
     /// Each case's own key.
     pub keys: Vec<AnswerKey>,
@@ -357,14 +359,14 @@ impl Plan {
     /// The calls for those of `cases` whose reading `is_kept` does not find, grouped by cited paper (in the
     /// order of their first case), [`PER_CALL`] at a time. A case whose cited paper has no record is left out.
     pub fn new(
-        model: &str,
+        chosen: &Chosen,
         cases: Vec<Case>,
         records: &HashMap<String, CitedRecord>,
         is_kept: impl Fn(&AnswerKey) -> Result<bool, LibraryError>,
     ) -> Result<Self, LibraryError> {
         let cases: Vec<Case> = cases.into_iter().filter(|case| records.contains_key(&case.cited)).collect();
         let keys: Vec<AnswerKey> =
-            cases.iter().map(|case| sentence_key(model, &case.citing, &case.cited, &case.context.address)).collect();
+            cases.iter().map(|case| sentence_key(chosen, &case.citing, &case.cited, &case.context.address)).collect();
         let mut by_cited: Vec<(String, Vec<usize>)> = Vec::new();
         let mut seen: HashSet<&AnswerKey> = HashSet::new();
         let mut kept = 0;
@@ -387,7 +389,7 @@ impl Plan {
             for chunk in indices.chunks(PER_CALL) {
                 let contexts: Vec<&Context> = chunk.iter().map(|&index| &cases[index].context).collect();
                 let names: Vec<&str> = chunk.iter().map(|&index| keys[index].as_str()).collect();
-                let key = AnswerKey::new(Feature::CitationKinds, model, PROMPT, &[&cited], &names.join("\n"));
+                let key = chosen.key(Feature::CitationKinds, PROMPT, &[&cited], &names.join("\n"));
                 calls.push(Call {
                     question: question(&record.title, &record.abstract_text, &contexts),
                     cited: cited.clone(),
@@ -396,7 +398,7 @@ impl Plan {
                 });
             }
         }
-        Ok(Plan { model: model.to_owned(), cases, keys, calls, kept, schema: schema() })
+        Ok(Plan { chosen: chosen.clone(), cases, keys, calls, kept, schema: schema() })
     }
 
     /// Citations to be asked about.
@@ -419,12 +421,12 @@ impl Plan {
                     prompt: PROMPT,
                     ask: Ask {
                         purpose: "citation kinds",
-                        model: &self.model,
+                        model: self.chosen.model(),
                         system: SYSTEM,
                         shared: None,
                         question: &call.question,
                         form: Form::Json(&self.schema),
-                        effort: Effort::Low,
+                        effort: self.chosen.effort(),
                         max_tokens: MOST_PER_CALL + MOST_PER_SENTENCE * sentences,
                     },
                     likely_tokens: LIKELY_PER_CALL + LIKELY_PER_SENTENCE * sentences,
@@ -489,12 +491,16 @@ pub fn classify(
     Ok(done)
 }
 
-/// The reading kept for each case (by the model of `model`), in the cases' order.
-pub fn kept_readings(library: &Library, model: &str, cases: &[Case]) -> Result<Vec<Option<Classified>>, LibraryError> {
+/// The reading kept for each case (by `chosen`), in the cases' order.
+pub fn kept_readings(
+    library: &Library,
+    chosen: &Chosen,
+    cases: &[Case],
+) -> Result<Vec<Option<Classified>>, LibraryError> {
     cases
         .iter()
         .map(|case| {
-            let key = sentence_key(model, &case.citing, &case.cited, &case.context.address);
+            let key = sentence_key(chosen, &case.citing, &case.cited, &case.context.address);
             Ok(library.kept::<Classified>(Feature::CitationKinds, &key)?.map(|kept| kept.answer))
         })
         .collect()
@@ -575,7 +581,7 @@ mod tests {
     use crate::jobs::{Cancel, Progress};
     use crate::model::batch::estimate_batch;
     use crate::model::language::fake::{Fake, message, ok};
-    use crate::model::language::{Counting, Endpoint, KEY_VARIABLE, Limit};
+    use crate::model::language::{Endpoint, KEY_VARIABLE, Limit};
     use crate::text::passages::Marker;
     use crate::usage::{Call as Spent, Usd};
 
@@ -778,7 +784,7 @@ baseline.\nAfter: It wins.\n"
     #[test]
     fn citations_are_asked_in_calls_by_cited_paper_and_the_estimate_sends_nothing() {
         let (_folder, library) = library();
-        let plan = Plan::new(MODEL, cases(), &records(), not_kept(&library)).unwrap();
+        let plan = Plan::new(&Chosen::claude(MODEL), cases(), &records(), not_kept(&library)).unwrap();
         assert_eq!(plan.cases.len(), 31, "the case whose cited paper has no record is left out");
         assert_eq!(
             plan.calls.iter().map(|call| (call.cited.as_str(), call.cases.len())).collect::<Vec<_>>(),
@@ -787,11 +793,11 @@ baseline.\nAfter: It wins.\n"
         assert_eq!(plan.to_ask(), 31);
         let items = plan.items();
         assert!(items.iter().all(|item| item.ask.model == MODEL && item.ask.shared.is_none()));
-        let estimate = estimate_batch::<Said>(&library, &items, Counting::ASSUMED).unwrap();
-        assert_eq!((estimate.items, estimate.to_ask, estimate.by_model[0].calls), (3, 3, 3));
-        assert!(estimate.usd.unwrap() > Usd::ZERO && estimate.usd <= estimate.most_usd);
+        let estimate = estimate_batch::<Said>(&library, &items, &plan.chosen).unwrap();
+        assert_eq!((estimate.items, estimate.to_ask, estimate.cost.calls), (3, 3, 3));
+        assert!(estimate.cost.usd.unwrap() > Usd::ZERO && estimate.cost.usd <= estimate.cost.most_usd);
         // another model is another key: nothing kept by one is taken for the other's
-        let other = Plan::new("claude-sonnet-5", cases(), &records(), not_kept(&library)).unwrap();
+        let other = Plan::new(&Chosen::claude("claude-sonnet-5"), cases(), &records(), not_kept(&library)).unwrap();
         assert_ne!(other.keys[0], plan.keys[0]);
     }
 
@@ -835,7 +841,7 @@ baseline.\nAfter: It wins.\n"
             reply(json!([{"id": "1", "kind": "uses", "quote": "build on task arithmetic"}])),
         ];
         let transport = Fake::new(replies);
-        let plan = Plan::new(MODEL, cases(), &records(), not_kept(&library)).unwrap();
+        let plan = Plan::new(&Chosen::claude(MODEL), cases(), &records(), not_kept(&library)).unwrap();
         let done = run(&library, &transport, &plan);
         assert_eq!(done, Classifying { calls: 3, read: 25, unanswered: 1, failed: 1, not_started: 0 });
         let sent = transport.sent();
@@ -848,7 +854,7 @@ baseline.\nAfter: It wins.\n"
                 .starts_with("The cited paper: title of ties")
         );
 
-        let readings = kept_readings(&library, MODEL, &plan.cases).unwrap();
+        let readings = kept_readings(&library, &Chosen::claude(MODEL), &plan.cases).unwrap();
         let verdicts: Vec<Verdict> =
             plan.cases.iter().zip(&readings).map(|(case, reading)| judge(&case.context, reading.as_ref())).collect();
         assert!(matches!(verdicts[0], Verdict::Justified { kind: CitationKind::Baseline, .. }));
@@ -858,7 +864,7 @@ baseline.\nAfter: It wins.\n"
         assert!(matches!(verdicts[30], Verdict::Justified { kind: CitationKind::Uses, .. }));
 
         // asked again: only what has no reading, in new calls; what was read is not paid for twice
-        let again = Plan::new(MODEL, cases(), &records(), not_kept(&library)).unwrap();
+        let again = Plan::new(&Chosen::claude(MODEL), cases(), &records(), not_kept(&library)).unwrap();
         assert_eq!((again.kept, again.to_ask()), (25, 6));
         assert_eq!(again.calls.iter().map(|call| call.cases.len()).collect::<Vec<_>>(), [6]);
     }
@@ -866,7 +872,7 @@ baseline.\nAfter: It wins.\n"
     #[test]
     fn a_batch_kept_from_a_stopped_job_is_split_without_being_asked_again() {
         let (_folder, library) = library();
-        let plan = Plan::new(MODEL, cases()[30..31].to_vec(), &records(), not_kept(&library)).unwrap();
+        let plan = Plan::new(&Chosen::claude(MODEL), cases()[30..31].to_vec(), &records(), not_kept(&library)).unwrap();
         let said = Said {
             citations: vec![SaidCitation {
                 id: "1".into(),
@@ -879,7 +885,7 @@ baseline.\nAfter: It wins.\n"
         let transport = Fake::new(vec![]);
         let done = run(&library, &transport, &plan);
         assert_eq!((done.read, transport.sent().len()), (1, 0));
-        assert!(kept_readings(&library, MODEL, &plan.cases).unwrap()[0].is_some());
+        assert!(kept_readings(&library, &Chosen::claude(MODEL), &plan.cases).unwrap()[0].is_some());
     }
 
     #[test]

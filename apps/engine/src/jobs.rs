@@ -26,15 +26,30 @@ use std::thread;
 
 use serde::Serialize;
 
+use crate::library::{Feature, Subject};
 use crate::threads::{Progress as Counter, panic_message};
 use crate::usage::Usd;
+
+/// What a finished job of the engine's made, for whoever follows it (`JobOutcome` in the contracts). Only a run is
+/// opened by the interface's job follower; a feature's component recognises its own outcome and shows its answers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Finished {
+    /// A run was made (or made again): its name.
+    Run { run: String },
+    /// A feature finished asking about this subject: its answers are kept and can be shown.
+    Feature { feature: Feature, subject: Subject },
+    /// Nothing to open (citing sentences read for the whole library, say).
+    Nothing,
+}
 
 /// How far a job that does many things has got.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct Progress {
     pub done: u64,
     pub of: u64,
-    /// What it has spent so far (on the Claude API), in US dollars as the interface is told them.
+    /// What it has spent so far on the language model's API, in US dollars as the interface is told them (of the
+    /// calls whose price is known).
     pub usd: Usd,
 }
 
@@ -505,6 +520,25 @@ mod tests {
         assert_eq!(told["papers"]["of"], 10_000);
         job.start("a run", |_| Ok(1)).unwrap();
         assert_eq!(finished(&job).papers, None, "a job that counts nothing says nothing about papers");
+    }
+
+    #[test]
+    fn a_finished_job_says_what_it_made_in_the_interfaces_words() {
+        let made = |finished: Finished| serde_json::to_value(finished).unwrap();
+        assert_eq!(
+            made(Finished::Run { run: "neurips2025".to_owned() }),
+            serde_json::json!({"kind": "run", "run": "neurips2025"})
+        );
+        assert_eq!(
+            made(Finished::Feature { feature: Feature::Critique, subject: Subject::Paper("p1".to_owned()) }),
+            serde_json::json!({"kind": "feature", "feature": "critique", "subject": {"paper": "p1"}})
+        );
+        let community = Subject::Community { run: "r1".to_owned(), community: "c0.1".to_owned() };
+        assert_eq!(
+            made(Finished::Feature { feature: Feature::CitationKinds, subject: community }),
+            serde_json::json!({"kind": "feature", "feature": "citation_kinds", "subject": {"community": {"run": "r1", "community": "c0.1"}}})
+        );
+        assert_eq!(made(Finished::Nothing), serde_json::json!({"kind": "nothing"}));
     }
 
     #[test]

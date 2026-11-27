@@ -7,7 +7,8 @@
 //! POST /api/runs/{run}/extraction/table      {scope}: the table as kept, every quote checked again ([`Table`]);
 //!                                            nothing is asked
 //! POST /api/runs/{run}/extraction/estimate   {scope, part}: what asking would cost ([`Costing`]); nothing is sent
-//! POST /api/runs/{run}/extraction/run        {scope, part, budget_usd}: ask, as one job, within that budget
+//! POST /api/runs/{run}/extraction/run        {scope, part, provider, model, budget_usd | budget_tokens}: ask, as
+//!                                            one job, within that budget (in tokens for a model with no price)
 //! POST /api/runs/{run}/extraction/forget     {papers}: forget these papers' cells, to ask them again (a redo)
 //! ```
 //!
@@ -34,17 +35,18 @@ use crate::analysis::extraction::{
     default_columns, extrapolate, kept_cells, prompt_text,
 };
 use crate::evidence::PaperText;
-use crate::jobs::Tracker;
+use crate::jobs::{Finished, Tracker};
 use crate::library::store::read_json;
 use crate::library::{Feature, Library, PaperReading, Subject};
 use crate::model::batch::{Asking, IN_FLIGHT};
-use crate::model::language::{Budget, Counting, Https, Limit};
-use crate::settings;
-use crate::usage::{Tokens, Usd};
+use crate::model::chosen::{Accepted, Refused, Terms, budget};
+use crate::model::language::{Estimate, Provider};
 
 /// The most a run of the table may be given to spend, in US dollars: a bound on what is accepted, far above
 /// what a table costs.
 pub const MOST_BUDGET_USD: f64 = 500.0;
+/// The same for a model with no price, in tokens: a table of a few hundred whole papers.
+pub const MOST_BUDGET_TOKENS: u64 = 500_000_000;
 /// How long a paper's text is taken to be when no paper of the sample has been read yet, in characters: a
 /// conference paper of about 25 pages.
 pub const TYPICAL_CHARACTERS: u64 = 90_000;
@@ -72,6 +74,17 @@ enum Scope {
     Papers(Vec<String>),
 }
 
+impl Scope {
+    /// What a finished table job is about, for the interface to tell its own: the community, or the run (for
+    /// papers marked by hand).
+    fn subject(&self, run: &str) -> Subject {
+        match self {
+            Scope::Community(tree_path) => Subject::Community { run: run.to_owned(), community: tree_path.clone() },
+            Scope::Papers(_) => Subject::Run(run.to_owned()),
+        }
+    }
+}
+
 /// Which of a scope's papers are asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -95,8 +108,12 @@ struct Costed {
 struct Started {
     scope: Scope,
     part: Part,
-    /// What the user agreed to spend at most, in US dollars.
-    budget_usd: f64,
+    /// What the user agreed to spend at most: in US dollars, or in tokens for a model with no price.
+    budget_usd: Option<f64>,
+    budget_tokens: Option<u64>,
+    /// The model whose estimate the user saw, and its provider.
+    model: Option<String>,
+    provider: Option<Provider>,
 }
 
 #[derive(Deserialize)]
@@ -196,11 +213,6 @@ fn part_of(ordered: &[String], part: Part) -> &[String] {
     }
 }
 
-/// The model the person chose in the settings (the one that writes descriptions and overviews).
-fn model_of(engine: &Shared) -> Result<String, ApiError> {
-    Ok(settings::load(&engine.settings_file(), &engine.choices)?.describe_model)
-}
-
 /// The run's columns: those kept, or the defaults.
 fn columns_of(library: &Library, run: &str) -> Result<Vec<Column>, ApiError> {
     Ok(library
@@ -279,7 +291,8 @@ pub struct Row {
 #[derive(Serialize)]
 pub struct Table {
     pub columns: Vec<Column>,
-    /// The model whose answers these are.
+    /// The model whose answers these are, and its provider.
+    pub provider: Provider,
     pub model: String,
     /// Most central first: the sample's papers come first.
     pub rows: Vec<Row>,
@@ -298,11 +311,11 @@ fn year_of(published: &str, id: &str) -> Option<u16> {
 fn table_of(engine: &Shared, run: &str, scope: &Scope) -> Result<Table, ApiError> {
     let (graph, ordered) = papers_of(engine, run, scope)?;
     let library = engine.library()?;
-    let model = model_of(engine)?;
+    let chosen = engine.chosen()?;
     let columns = columns_of(&library, run)?;
     let ids = borrowed(&ordered);
     let records = library.papers(&ids)?;
-    let kept = kept_cells(&library, &model, &columns, &ids)?;
+    let kept = kept_cells(&library, &chosen, &columns, &ids)?;
     // only the papers with something kept are read: their quotes are checked against their text
     let answered = |cells: &[Option<_>]| cells.iter().any(Option::is_some);
     let asked: Vec<&str> = ids.iter().zip(&kept).filter(|(_, cells)| answered(cells)).map(|(id, _)| *id).collect();
@@ -346,7 +359,14 @@ fn table_of(engine: &Shared, run: &str, scope: &Scope) -> Result<Table, ApiError
             }
         })
         .collect();
-    Ok(Table { columns, model, rows, sample: ordered.len().min(SAMPLE), left_out })
+    Ok(Table {
+        columns,
+        provider: chosen.provider(),
+        model: chosen.model().to_owned(),
+        rows,
+        sample: ordered.len().min(SAMPLE),
+        left_out,
+    })
 }
 
 async fn read_table(
@@ -379,12 +399,11 @@ pub struct Costing {
     pub papers: usize,
     /// Of those, the papers with a cell to ask; the others are kept (or not in the library).
     pub to_ask: usize,
-    pub model: String,
-    /// Likely, and at most; `None` when the model's price is not known.
-    pub usd: Option<Usd>,
-    pub most_usd: Option<Usd>,
-    pub tokens: Tokens,
-    pub counting: Counting,
+    /// What asking them would cost, at the chosen provider's prices (no dollars for a model with no price).
+    #[serde(flatten)]
+    pub cost: Estimate,
+    /// Whether the model can be asked at all (its provider's key is set); never the key.
+    pub api_key_set: bool,
     pub basis: Basis,
 }
 
@@ -395,25 +414,20 @@ fn length(text: &str) -> u64 {
 fn costing(engine: &Shared, run: &str, scope: &Scope, part: Part) -> Result<Costing, ApiError> {
     let (_, ordered) = papers_of(engine, run, scope)?;
     let library = engine.library()?;
-    let model = model_of(engine)?;
+    let chosen = engine.chosen()?;
     let columns = columns_of(&library, run)?;
     let sample = borrowed(part_of(&ordered, Part::Sample));
     let readings = library.paper_texts(&sample)?;
     let papers = part_of(&ordered, part).len();
     if part == Part::Sample {
         let pairs: Vec<(&str, &PaperReading)> = sample.iter().copied().zip(&readings).collect();
-        let estimate = Plan::new(&library, &model, &columns, &pairs)?.estimate(&library)?;
-        let tokens = estimate.by_model.iter().fold(Tokens::default(), |sum, one| sum + one.tokens);
-        let counting = estimate.by_model.first().map_or(Counting::ASSUMED, |one| one.counting);
+        let estimate = Plan::new(&library, &chosen, &columns, &pairs)?.estimate(&library)?;
         return Ok(Costing {
             part,
             papers,
             to_ask: estimate.to_ask,
-            model,
-            usd: estimate.usd,
-            most_usd: estimate.most_usd,
-            tokens,
-            counting,
+            cost: estimate.cost,
+            api_key_set: chosen.can_ask(),
             basis: Basis::Texts,
         });
     }
@@ -433,7 +447,7 @@ fn costing(engine: &Shared, run: &str, scope: &Scope, part: Part) -> Result<Cost
         _ => (TYPICAL_CHARACTERS, Basis::Typical { characters: TYPICAL_CHARACTERS }),
     };
     let rest = borrowed(part_of(&ordered, Part::Rest));
-    let kept = kept_cells(&library, &model, &columns, &rest)?;
+    let kept = kept_cells(&library, &chosen, &columns, &rest)?;
     let records = library.papers(&rest)?;
     let mut characters = Vec::new();
     for ((id, cells), record) in rest.iter().zip(&kept).zip(records) {
@@ -448,16 +462,12 @@ fn costing(engine: &Shared, run: &str, scope: &Scope, part: Part) -> Result<Cost
             prompt_text(&reading).map_or(0, |text| length(&text))
         });
     }
-    let estimate = extrapolate(&model, &columns, &characters);
     Ok(Costing {
         part,
         papers,
         to_ask: characters.len(),
-        model,
-        usd: estimate.usd,
-        most_usd: estimate.most_usd,
-        tokens: estimate.tokens,
-        counting: estimate.counting,
+        cost: extrapolate(&chosen, &columns, &characters),
+        api_key_set: chosen.can_ask(),
         basis,
     })
 }
@@ -471,11 +481,9 @@ async fn estimate(
     Ok(Json(on_the_side(move || costing(&engine, &run, &scope, part)).await?))
 }
 
-/// Dollars as a budget holds them.
-fn dollars(usd: f64) -> Usd {
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let picodollars = (usd * 1e12).round() as u64;
-    Usd::from_picodollars(picodollars)
+/// A budget refused, told to whoever sent it.
+fn refused(why: Refused) -> ApiError {
+    ApiError::Invalid(why.to_string())
 }
 
 /// The job's number, for following it in `/api/status` and stopping it.
@@ -490,28 +498,38 @@ async fn start(
     Path(run): Path<String>,
     body: Result<Json<Started>, JsonRejection>,
 ) -> Result<Json<Begun>, ApiError> {
-    let Json(Started { scope, part, budget_usd }) = body?;
-    if !(budget_usd.is_finite() && budget_usd > 0.0 && budget_usd <= MOST_BUDGET_USD) {
-        return Err(ApiError::Invalid(format!("the budget is more than 0 and at most {MOST_BUDGET_USD} US dollars")));
-    }
+    let Json(started) = body?;
+    // a budget is needed: the user sets it, up to the bound, after seeing the estimate
+    let accepted = match Accepted::of(started.budget_usd, started.budget_tokens).map_err(refused)? {
+        Accepted::Shown => return Err(ApiError::Invalid("give the budget the run may spend".to_owned())),
+        accepted => accepted,
+    };
+    let Started { scope, part, model, provider, .. } = started;
     let id = on_the_side(move || {
-        let endpoint = engine.endpoint().map_err(|why| ApiError::Invalid(why.to_string()))?;
+        let chosen = engine.chosen()?;
+        let endpoint = chosen.endpoint().map_err(|why| ApiError::Invalid(why.to_string()))?;
+        if let Some(model) = &model {
+            chosen.as_shown(provider, model).map_err(|why| ApiError::Invalid(why.to_string()))?;
+        }
+        // in dollars for a model with a price, in tokens for one without, as the estimate was shown
+        let shown = costing(&engine, &run, &scope, part)?;
+        let terms = Terms::AtMost { usd: MOST_BUDGET_USD, tokens: MOST_BUDGET_TOKENS };
+        let budget = budget(&shown.cost, accepted, terms).map_err(refused)?;
         let (_, ordered) = papers_of(&engine, &run, &scope)?;
         let papers = part_of(&ordered, part).to_vec();
-        let model = model_of(&engine)?;
         let library = engine.library()?;
         let columns = columns_of(&library, &run)?;
-        let budget = Budget::new(Limit::Dollars(dollars(budget_usd)));
+        let transport = engine.transport.clone();
+        let subject = scope.subject(&run);
         let work = move |tracker: &Tracker<'_>| {
             let ids = borrowed(&papers);
             let readings = library.paper_texts(&ids).map_err(|error| error.to_string())?;
             let pairs: Vec<(&str, &PaperReading)> = ids.iter().copied().zip(&readings).collect();
-            let plan = Plan::new(&library, &model, &columns, &pairs).map_err(|error| error.to_string())?;
-            tracker.log(&format!("Asking the model about {} of {} papers", plan.papers(), papers.len()));
-            let transport = Https::default();
+            let plan = Plan::new(&library, &chosen, &columns, &pairs).map_err(|error| error.to_string())?;
+            tracker.log(&format!("Asking {chosen} about {} of {} papers", plan.papers(), papers.len()));
             let asking = Asking {
                 library: &library,
-                transport: &transport,
+                transport: &*transport,
                 endpoint,
                 recorder: &*library,
                 in_flight: IN_FLIGHT,
@@ -526,8 +544,7 @@ async fn start(
             if let Some(why) = ran.stopped {
                 return Err(format!("{why}: {} of {} papers were not asked", ran.not_started, ran.papers));
             }
-            // a job's result names the run it was about, as a run's job does
-            Ok(run)
+            Ok(Finished::Feature { feature: Feature::Extraction, subject })
         };
         Ok(engine.job.start_tracked("the extraction table", work)?)
     })
@@ -626,7 +643,7 @@ mod tests {
         data
     }
 
-    fn served_at(data: &tempfile::TempDir, key: bool) -> (axum::Router, crate::jobs::Job<String>) {
+    fn served_at(data: &tempfile::TempDir, key: bool) -> (axum::Router, crate::jobs::Job<crate::jobs::Finished>) {
         let listen = Listen::from_environment(&Environment::from_pairs([
             ("CONSTELLATE_TOKEN", STRONG),
             ("CONSTELLATE_ORIGIN", "http://127.0.0.1:3000"),
@@ -668,7 +685,7 @@ mod tests {
         let column = default_columns().into_iter().find(|one| one.id == column).unwrap();
         let slot = Slot {
             feature: Feature::Extraction,
-            key: cell_key(MODEL, paper, &column),
+            key: cell_key(&crate::model::chosen::Chosen::claude(MODEL), paper, &column),
             subject: Subject::Paper(paper.to_owned()),
         };
         library.keep(&slot, MODEL, super::extraction::PROMPT, &said).unwrap();
@@ -681,6 +698,72 @@ mod tests {
             text: text.to_owned(),
             quotes: vec![quote.to_owned()],
             ..SaidCell::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn another_provider_is_priced_asked_in_its_own_shape_kept_and_asked_again_when_the_provider_changes() {
+        use super::super::other_providers::{
+            BUDGET, Chosen as Asked, MODEL, Scripted, accepting, call, choose, finished, priced_for, router, sent_to,
+        };
+
+        let data = data();
+        let cell = json!({"column": "task", "status": "stated", "text": "Image classification", "yes_no": "",
+            "number": "", "unit": "", "context": "", "items": [],
+            "quotes": ["We study image classification with sparse mixtures of experts in every layer"]});
+        let answer = json!({"cells": [cell]}).to_string();
+        let transport = Scripted::new(move |_| answer.clone());
+        let router = router(data.path(), Asked::OpenAi, &transport);
+        let scope = json!({"community": "c0.0"});
+        let mut sent = 0;
+        for chosen in [Asked::OpenAi, Asked::ThisComputer] {
+            choose(data.path(), chosen);
+            let estimate = json!({"scope": scope, "part": "sample"});
+            let (_, cost) = call(&router, "POST", "/api/runs/r1/extraction/estimate", Some(estimate.clone())).await;
+            assert_eq!((cost["to_ask"].clone(), cost["api_key_set"].clone()), (json!(3), json!(true)), "{cost}");
+            priced_for(&cost, chosen);
+            assert_eq!(transport.sent().len(), sent, "an estimate sends nothing");
+
+            let mut started = accepting(&cost, BUDGET);
+            started["scope"] = scope.clone();
+            started["part"] = json!("sample");
+            let (status, begun) = call(&router, "POST", "/api/runs/r1/extraction/run", Some(started)).await;
+            assert_eq!(status, StatusCode::OK, "{begun}");
+            let done = finished(&router, &begun["id"]).await;
+            assert_eq!(done["state"], "done", "{done}");
+            let made = json!({"kind": "feature", "feature": "extraction", "subject": {"community": {"run": "r1", "community": "c0.0"}}});
+            assert_eq!((done["outcome"].clone(), done["result"].clone()), (made, Value::Null), "no run to open");
+            let asked = transport.sent();
+            assert_eq!(asked.len() - sent, 3, "one call per paper");
+            sent_to(&asked[sent..], chosen);
+            sent = asked.len();
+
+            let (_, table) =
+                call(&router, "POST", "/api/runs/r1/extraction/table", Some(json!({"scope": scope}))).await;
+            assert_eq!(
+                (table["provider"].clone(), table["model"].clone()),
+                (json!(chosen.provider().id()), json!(MODEL))
+            );
+            let p01 = table["rows"].as_array().unwrap().iter().find(|row| row["paper"] == "p01").unwrap().clone();
+            assert_eq!(p01["cells"][0]["kind"], "stated", "{p01}");
+            assert_eq!(p01["cells"][0]["evidence"][0]["established"]["kind"], "verified");
+            let p02 = table["rows"].as_array().unwrap().iter().find(|row| row["paper"] == "p02").unwrap().clone();
+            assert_eq!(p02["cells"][0]["kind"], "not_verified", "a quote not in the paper is no value");
+
+            // kept: nothing left to ask, and a run asks nothing
+            let (_, again) = call(&router, "POST", "/api/runs/r1/extraction/estimate", Some(estimate)).await;
+            assert_eq!(again["to_ask"], 0, "{again}");
+            let enough = match chosen {
+                Asked::OpenAi => {
+                    json!({"scope": scope, "part": "sample", "budget_usd": 1.0, "provider": "openai", "model": MODEL})
+                }
+                Asked::ThisComputer => {
+                    json!({"scope": scope, "part": "sample", "budget_tokens": 100_000, "provider": "compatible", "model": MODEL})
+                }
+            };
+            let (_, begun) = call(&router, "POST", "/api/runs/r1/extraction/run", Some(enough)).await;
+            assert_eq!(finished(&router, &begun["id"]).await["state"], "done");
+            assert_eq!(transport.sent().len(), sent, "kept: not asked again");
         }
     }
 
@@ -793,7 +876,7 @@ mod tests {
                 while !tracker.cancelled() {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
-                Ok(String::new())
+                Ok(crate::jobs::Finished::Nothing)
             })
             .unwrap();
         let (status, told) = post(&router, "/api/runs/r1/extraction/run", started(1.0)).await;

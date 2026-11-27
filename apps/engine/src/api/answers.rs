@@ -4,7 +4,8 @@
 //! ```text
 //! GET    /api/runs/{run}/passages/found?q=..&community=..   the passages that match best (`PassagesFound`)
 //! GET    /api/runs/{run}/answers/estimate?q=..&community=.. what asking would cost, nothing sent (`AnswerEstimate`)
-//! POST   /api/runs/{run}/answers   {question, community?, accepted_usd}: start asking (`AnswerStarted`)
+//! POST   /api/runs/{run}/answers   {question, community?, provider, model, accepted_usd | accepted_tokens}:
+//!                                   start asking (`AnswerStarted`)
 //! GET    /api/runs/{run}/answers                            the questions asked of the run (`AnswerHistory`)
 //! GET    /api/runs/{run}/answers/{id}                       one, its kept answer checked again (`AnswerView`)
 //! DELETE /api/runs/{run}/answers/{id}                       forget it and its answer
@@ -17,13 +18,15 @@
 //! (`{"state": "indexing", "done", "of"}`), and asks again.
 //!
 //! Money is spent only by the POST, which the interface sends when the user clicks the button showing the
-//! estimate. It carries the most the user was shown (`accepted_usd`): if what the question would cost at most
-//! is now more (the passages or the model changed), nothing is asked and the estimate must be asked for again.
+//! estimate. It carries the most the user was shown (`accepted_usd`, or `accepted_tokens` for a model with no
+//! price): if what the question would cost at most is now more (the passages or the model changed), nothing is
+//! asked and the estimate must be asked for again.
 //! That worst case is the call's budget: no call is started that could pass it as the budget reckons it (prompt
 //! tokens from characters, at 3 a token, which errs high for English prose; text that tokenizes more densely, such
 //! as mathematics, can cost somewhat more, which is why the interface says it is an estimate). A request naming
-//! another model than the one estimated, or accepting dollars for a model whose price is not known, is refused.
-//! A model whose price is not known is capped in tokens instead, by the same worst case.
+//! another model or provider than the one estimated, or accepting dollars for a model whose price is not known,
+//! is refused. A model whose price is not known is capped in tokens instead, by the same worst case
+//! ([`crate::model::chosen::budget`]).
 //!
 //! Retrieval here is lexical: the engine has no embedding model loaded to embed a question with. When it has,
 //! the similarity of each paper's embedding to the question goes to `Index::search` as `Ranking::Embedded`.
@@ -41,7 +44,7 @@ use sha2::{Digest, Sha256};
 use super::reviews::papers_of;
 use super::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::evidence::{Cited, PaperText, Papers};
-use crate::jobs::{Phase, Tracker};
+use crate::jobs::{Finished, Phase, Tracker};
 use crate::library::questions::Asked;
 use crate::library::{Feature, Library, PaperReading};
 use crate::model::answers::{
@@ -49,8 +52,8 @@ use crate::model::answers::{
     Said, SaidOutcome, Scope, Statement,
 };
 use crate::model::batch::{Asking, IN_FLIGHT};
-use crate::model::language::{Budget, DEFAULT_MODEL, Estimate, Https, Limit};
-use crate::settings;
+use crate::model::chosen::{Accepted, Terms, budget};
+use crate::model::language::{Budget, Estimate, Provider};
 use crate::text::retrieval::{
     Builder, Coverage, Document, Got, Hit, Index, Indexes, LONGEST_QUERY, Ranking, Unit, Unread, Wait,
 };
@@ -88,10 +91,15 @@ struct Search {
 struct Request {
     question: String,
     community: Option<String>,
-    /// The model the estimate was for: a request for another one is refused.
+    /// The model the estimate was for, and its provider: a request for another one is refused.
+    #[serde(default)]
+    provider: Option<Provider>,
     model: String,
     /// The most it would cost, as the user was shown it; null when the model's price is not known.
     accepted_usd: Option<f64>,
+    /// For a model with no price: the most tokens it would take, as the user was shown it.
+    #[serde(default)]
+    accepted_tokens: Option<u64>,
 }
 
 /// A query or a question, trimmed, if it is not empty and not longer than `longest` characters.
@@ -225,12 +233,6 @@ async fn passages_found(
     Ok(Json(found))
 }
 
-/// The model chosen in the settings.
-fn model_of(engine: &Shared) -> Result<String, ApiError> {
-    let chosen = settings::load(&engine.settings_file(), &engine.choices)?.describe_model;
-    Ok(if chosen.trim().is_empty() { DEFAULT_MODEL.to_owned() } else { chosen })
-}
-
 /// A question prepared for its scope, with the passages found for it and the coverage of the search.
 enum Ready {
     Prepared { prepared: Box<Prepared>, coverage: Coverage },
@@ -238,10 +240,10 @@ enum Ready {
 }
 
 fn prepared(engine: &Shared, library: &Arc<Library>, scope: &Scope, question: &str) -> Result<Ready, ApiError> {
-    let model = model_of(engine)?;
+    let chosen = engine.chosen()?;
     Ok(match search(engine, library, scope, question)? {
         Searched::Ready { hits, coverage, texts } => {
-            let prepared = Box::new(answers::prepare(&model, scope, question, &hits, &texts));
+            let prepared = Box::new(answers::prepare(&chosen, scope, question, &hits, &texts));
             Ready::Prepared { prepared, coverage }
         }
         Searched::Indexing { done, of } => Ready::Indexing { done, of },
@@ -255,6 +257,7 @@ enum AnswerEstimate {
     Ready {
         /// The question's id once asked (the key its answer is kept under).
         id: String,
+        provider: Provider,
         model: String,
         /// Its answer is kept: asking costs nothing.
         kept: bool,
@@ -265,14 +268,14 @@ enum AnswerEstimate {
         /// The cap on the passages in the prompt, and on the answer, in tokens.
         prompt_cap_tokens: u64,
         max_answer_tokens: u32,
-        /// Likely tokens and dollars (`Estimate::counting` says how tokens were reckoned: an estimate either way);
+        /// What asking would cost (`AskingCost`: `counting` says how tokens were reckoned, an estimate either way);
         /// null when kept.
         cost: Option<Box<Estimate>>,
         /// The most it can cost, which is what the POST must accept; null when the price is not known.
         most_usd: Option<Usd>,
-        /// The most tokens it can take: the cap when the price is not known.
+        /// The most tokens it can take: what the POST accepts when the price is not known.
         most_tokens: u64,
-        /// Whether the model can be asked at all (a key is set): never the key.
+        /// Whether the model can be asked at all (its provider's key is set): never the key.
         api_key_set: bool,
     },
     Indexing {
@@ -297,17 +300,18 @@ async fn estimate(
                 let kept = estimate.to_ask == 0;
                 AnswerEstimate::Ready {
                     id: prepared.key.as_str().to_owned(),
-                    model: prepared.model.clone(),
+                    provider: prepared.chosen.provider(),
+                    model: prepared.chosen.model().to_owned(),
                     kept,
                     passages: prepared.given.len(),
                     papers: prepared.papers.len(),
                     coverage,
                     prompt_cap_tokens: PROMPT_TOKENS,
                     max_answer_tokens: MAX_TOKENS,
-                    cost: estimate.by_model.into_iter().next().map(Box::new),
-                    most_usd: estimate.most_usd,
-                    most_tokens: prepared.most_tokens(),
-                    api_key_set: engine.endpoint().is_ok(),
+                    most_usd: estimate.cost.most_usd,
+                    most_tokens: estimate.cost.most_tokens,
+                    api_key_set: prepared.chosen.can_ask(),
+                    cost: (!kept).then(|| Box::new(estimate.cost)),
                 }
             }
             Ready::Indexing { done, of } => AnswerEstimate::Indexing { done, of },
@@ -330,22 +334,16 @@ struct Started {
     job: Option<u64>,
 }
 
-/// The budget of a question: its worst case, if that is no more than the user accepted.
-fn budget_of(prepared: &Prepared, library: &Library, accepted: Option<f64>) -> Result<Budget, ApiError> {
+/// The budget of a question: its worst case, if that is no more than the user accepted (in dollars, or in tokens
+/// for a model with no price).
+fn budget_of(prepared: &Prepared, library: &Library, request: &Request) -> Result<Budget, ApiError> {
     let estimate = prepared.estimate(library)?;
-    match (estimate.most_usd, accepted) {
-        (Some(most), Some(accepted)) if accepted.is_finite() && most.dollars() <= accepted + 1e-9 => {
-            Ok(Budget::new(Limit::Dollars(most)))
-        }
-        (Some(_), _) | (None, Some(_)) => Err(ApiError::Invalid(
-            "what this question would cost has changed since it was shown: ask for the estimate again".to_owned(),
-        )),
-        // a model whose price is not known, as shown: capped in tokens, at the worst case shown
-        (None, None) => Ok(Budget::new(Limit::Tokens(prepared.most_tokens()))),
-    }
+    Accepted::of(request.accepted_usd, request.accepted_tokens)
+        .and_then(|accepted| budget(&estimate.cost, accepted, Terms::AsShown))
+        .map_err(|why| ApiError::Invalid(why.to_string()))
 }
 
-/// What the question's job does: ask it, and say what came of it.
+/// What the question's job does: ask it, and say in its log what came of it.
 fn answer(asking: Asking<'_>, prepared: &Prepared, budget: &Budget, tracker: &Tracker<'_>) -> Result<String, String> {
     match answers::ask(asking, prepared, budget, tracker) {
         Ok(said) if said.outcome == SaidOutcome::NotInPapers => Ok("the papers in scope do not say".to_owned()),
@@ -365,7 +363,7 @@ async fn start(
 ) -> Result<Json<Started>, ApiError> {
     let Json(request) = body?;
     let question = bounded(&request.question, LONGEST_QUESTION)?;
-    let scope = scope_of(run, request.community)?;
+    let scope = scope_of(run, request.community.clone())?;
     let started = on_the_side(move || {
         let library = engine.library()?;
         let (prepared, _) = match prepared(&engine, &library, &scope, &question)? {
@@ -374,12 +372,7 @@ async fn start(
                 return Err(ApiError::Invalid("the papers are still being indexed: try again in a moment".to_owned()));
             }
         };
-        if prepared.model != request.model {
-            return Err(ApiError::Invalid(
-                "the model chosen in the settings has changed since the cost was shown: ask for the estimate again"
-                    .to_owned(),
-            ));
-        }
+        prepared.chosen.as_shown(request.provider, &request.model).map_err(|why| ApiError::Invalid(why.to_string()))?;
         if prepared.given.is_empty() {
             return Err(ApiError::Invalid("no passage of these papers matches the question".to_owned()));
         }
@@ -388,7 +381,8 @@ async fn start(
             key: prepared.key.as_str().to_owned(),
             community: scope.community.clone(),
             question: question.clone(),
-            model: prepared.model.clone(),
+            provider: prepared.chosen.provider(),
+            model: prepared.chosen.model().to_owned(),
             passages: prepared.given.clone(),
             asked_at: String::new(),
         };
@@ -397,19 +391,22 @@ async fn start(
             library.keep_question(&asked)?;
             return Ok(Started { id, job: None });
         }
-        let endpoint = engine.endpoint().map_err(|why| ApiError::Invalid(why.to_string()))?;
-        let budget = budget_of(&prepared, &library, request.accepted_usd)?;
+        let endpoint = prepared.chosen.endpoint().map_err(|why| ApiError::Invalid(why.to_string()))?;
+        let budget = budget_of(&prepared, &library, &request)?;
         // listed before the call is started, so that a call paid for is never missing from the history
         let new = library.question(&scope.run, &id)?.is_none();
         library.keep_question(&asked)?;
         let worker = Arc::clone(&library);
         let line = asking_line(&id);
+        let transport = Arc::clone(&engine.transport);
+        let subject = prepared.subject.clone();
         let started = engine.job.start_tracked(JOB, move |tracker| {
             tracker.log(&line);
-            let transport = Https::default();
             let asking =
-                Asking { library: &worker, transport: &transport, endpoint, recorder: &*worker, in_flight: IN_FLIGHT };
-            answer(asking, &prepared, &budget, tracker)
+                Asking { library: &worker, transport: &*transport, endpoint, recorder: &*worker, in_flight: IN_FLIGHT };
+            let came = answer(asking, &prepared, &budget, tracker)?;
+            tracker.log(&format!("The model {came}."));
+            Ok(Finished::Feature { feature: Feature::Answers, subject })
         });
         match started {
             Ok(job) => Ok(Started { id, job: Some(job) }),
@@ -440,7 +437,7 @@ struct Summary {
 /// The scope of a question kept, and the key its answer would be kept under now.
 fn kept_answer(library: &Library, asked: &Asked) -> Result<Option<Said>, ApiError> {
     let scope = Scope { run: asked.run.clone(), community: asked.community.clone() };
-    let (key, _) = answers::key_of(&asked.model, &scope, &asked.question, &asked.passages);
+    let (key, _) = answers::key_of(asked.provider, &asked.model, &scope, &asked.question, &asked.passages);
     // asked with an older prompt: not this answer's key any more, so not answered as far as it goes
     if key.as_str() != asked.key {
         return Ok(None);
@@ -577,8 +574,9 @@ async fn redo(
         let library = engine.library()?;
         let asked = library.question(&run, &id)?.ok_or(ApiError::NotFound)?;
         let scope = Scope { run: asked.run.clone(), community: asked.community.clone() };
-        let (key, _) = answers::key_of(&asked.model, &scope, &asked.question, &asked.passages);
-        Ok(library.forget_answer(&key)?)
+        let (key, _) = answers::key_of(asked.provider, &asked.model, &scope, &asked.question, &asked.passages);
+        // that question's answer only: the run's other questions about the same scope keep theirs
+        Ok(library.forget_key(Feature::Answers, &key)?)
     })
     .await?;
     Ok(Json(serde_json::json!({ "ok": true, "forgotten": forgotten })))
@@ -733,6 +731,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn another_provider_is_priced_asked_in_its_own_shape_kept_and_asked_again_when_the_provider_changes() {
+        use super::super::other_providers::{
+            ACCEPTED, Chosen as Asked, MODEL, Scripted, accepting, call, choose, finished, priced_for, router, sent_to,
+        };
+
+        let data = data();
+        let transport = Scripted::new(|_| {
+            json!({"outcome": "answered", "statements": [{"statement": {"sentence": "Merging counts shared directions twice.", "about": "one_paper"},
+                "quotes": [{"paper": "2601.00001", "quote": "merging task vectors counts shared directions twice"}]}]})
+            .to_string()
+        });
+        let router = router(data.path(), Asked::OpenAi, &transport);
+        let estimate = format!("/api/runs/r1/answers/estimate?q={}&community=c0", query(QUESTION));
+        let mut sent = 0;
+        let mut ids = Vec::new();
+        for chosen in [Asked::OpenAi, Asked::ThisComputer] {
+            choose(data.path(), chosen);
+            let (_, told) = call(&router, "GET", &estimate, None).await;
+            assert_eq!(
+                (told["state"].clone(), told["kept"].clone(), told["api_key_set"].clone()),
+                (json!("ready"), json!(false), json!(true)),
+                "{told}"
+            );
+            assert_eq!(
+                (told["provider"].clone(), told["model"].clone()),
+                (json!(chosen.provider().id()), json!(MODEL))
+            );
+            priced_for(&told["cost"], chosen);
+            assert_eq!(told["most_tokens"], told["cost"]["most_tokens"]);
+            assert_eq!(transport.sent().len(), sent, "an estimate sends nothing");
+
+            let mut asked = accepting(&told["cost"], ACCEPTED);
+            asked["question"] = json!(QUESTION);
+            asked["community"] = json!("c0");
+            let (status, started) = call(&router, "POST", "/api/runs/r1/answers", Some(asked.clone())).await;
+            assert_eq!(status, StatusCode::OK, "{started}");
+            let done = finished(&router, &started["job"]).await;
+            assert_eq!(done["state"], "done", "{done}");
+            let made = json!({"kind": "feature", "feature": "answers", "subject": {"community": {"run": "r1", "community": "c0"}}});
+            assert_eq!((done["outcome"].clone(), done["result"].clone()), (made, Value::Null), "no run to open");
+            let all = transport.sent();
+            sent_to(&all[sent..], chosen);
+            sent = all.len();
+
+            let id = started["id"].as_str().unwrap().to_owned();
+            let (_, view) = call(&router, "GET", &format!("/api/runs/r1/answers/{id}"), None).await;
+            assert_eq!(view["state"], "answered", "{view}");
+            assert_eq!(view["statements"][0]["evidence"][0]["established"]["kind"], "verified");
+            let (_, again) = call(&router, "POST", "/api/runs/r1/answers", Some(asked)).await;
+            assert_eq!((again["id"].as_str(), again["job"].clone()), (Some(id.as_str()), Value::Null), "kept: no job");
+            assert_eq!(transport.sent().len(), sent, "kept: not asked again");
+            ids.push(id);
+        }
+        assert_ne!(ids[0], ids[1], "one question asked of two providers is two answers");
+        // each is listed, and its own answer found, whichever provider is chosen now
+        let (_, listed) = call(&router, "GET", "/api/runs/r1/answers", None).await;
+        assert!(listed.as_array().unwrap().iter().all(|asked| asked["answered"] == true), "{listed}");
+    }
+
+    #[tokio::test]
     async fn the_estimate_says_what_one_call_would_cost_and_sends_nothing() {
         let data = data();
         let router = router(engine(&data));
@@ -788,7 +846,7 @@ mod tests {
                 while !waiting.is_cancelled() {
                     std::thread::sleep(Duration::from_millis(1));
                 }
-                Ok("done".to_owned())
+                Ok(crate::jobs::Finished::Nothing)
             })
             .unwrap();
         let busy = self::router(busy);
@@ -820,7 +878,8 @@ mod tests {
                 key: prepared.key.as_str().to_owned(),
                 community: scope.community.clone(),
                 question: QUESTION.to_owned(),
-                model: prepared.model.clone(),
+                provider: prepared.chosen.provider(),
+                model: prepared.chosen.model().to_owned(),
                 passages: prepared.given.clone(),
                 asked_at: String::new(),
             })
@@ -839,7 +898,7 @@ mod tests {
             ],
         };
         let slot = Slot { feature: Feature::Answers, key: prepared.key.clone(), subject: prepared.subject.clone() };
-        library.keep(&slot, &prepared.model, answers::PROMPT, &said).unwrap();
+        library.keep(&slot, prepared.chosen.model(), answers::PROMPT, &said).unwrap();
 
         let router = router(engine(&data));
         let path = format!("/api/runs/r1/answers/{}", prepared.key.as_str());

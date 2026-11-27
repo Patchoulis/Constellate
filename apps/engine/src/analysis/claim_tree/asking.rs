@@ -23,7 +23,8 @@ use super::tree::{self, SaidTree, Tree};
 use crate::jobs::Tracker;
 use crate::library::{AnswerKey, Feature, Library, LibraryError, PaperReading, Slot, Subject};
 use crate::model::batch::{self, Asking, BatchEstimate, Item, Outcome};
-use crate::model::language::{Ask, Budget, Counting, Effort, Endpoint, Form, Recorder, Transport};
+use crate::model::chosen::Chosen;
+use crate::model::language::{Ask, Budget, Endpoint, Form, Recorder, Transport};
 use crate::text::passages::{Kind, Part, Passages};
 
 /// Raise when the tree's prompt or answer changes: kept trees are then asked again.
@@ -100,17 +101,17 @@ pub fn paper_prompt(passages: &Passages) -> PaperPrompt {
     PaperPrompt { text, passages: passages.passages.len(), sent }
 }
 
-pub fn tree_key(model: &str, paper: &str) -> AnswerKey {
-    AnswerKey::new(Feature::ClaimTree, model, TREE_PROMPT, &[paper], "claim tree")
+pub fn tree_key(chosen: &Chosen, paper: &str) -> AnswerKey {
+    chosen.key(Feature::ClaimTree, TREE_PROMPT, &[paper], "claim tree")
 }
 
-pub fn mapping_key(model: &str, paper: &str, question: &str) -> AnswerKey {
-    AnswerKey::new(Feature::ClaimTree, model, MAPPING_PROMPT, &[paper], &format!("reviews mapped\n{question}"))
+pub fn mapping_key(chosen: &Chosen, paper: &str, question: &str) -> AnswerKey {
+    chosen.key(Feature::ClaimTree, MAPPING_PROMPT, &[paper], &format!("reviews mapped\n{question}"))
 }
 
 /// What the two calls are made of for one paper.
 pub struct Questions<'a> {
-    pub model: &'a str,
+    pub chosen: &'a Chosen,
     pub paper: &'a str,
     /// [`paper_prompt`]'s text.
     pub shared: &'a str,
@@ -125,16 +126,16 @@ impl<'a> Questions<'a> {
 
     pub fn tree(&self) -> Item<'a> {
         Item {
-            slot: self.slot(tree_key(self.model, self.paper)),
+            slot: self.slot(tree_key(self.chosen, self.paper)),
             prompt: TREE_PROMPT,
             ask: Ask {
                 purpose: "claim tree",
-                model: self.model,
+                model: self.chosen.model(),
                 system: SYSTEM,
                 shared: Some(self.shared),
                 question: TREE_QUESTION,
                 form: Form::Json(self.tree_schema),
-                effort: Effort::Medium,
+                effort: self.chosen.effort(),
                 max_tokens: TREE_MAX_TOKENS,
             },
             likely_tokens: TREE_LIKELY_TOKENS,
@@ -149,12 +150,12 @@ impl<'a> Questions<'a> {
             prompt: MAPPING_PROMPT,
             ask: Ask {
                 purpose: "reviews mapped onto claims",
-                model: self.model,
+                model: self.chosen.model(),
                 system: SYSTEM,
                 shared: Some(self.shared),
                 question,
                 form: Form::Json(self.mapping_schema),
-                effort: Effort::Low,
+                effort: self.chosen.effort(),
                 max_tokens: MAPPING_MAX_TOKENS,
             },
             likely_tokens: MAPPING_BASE_TOKENS.saturating_add(MAPPING_TOKENS_PER_POINT.saturating_mul(points)),
@@ -183,7 +184,7 @@ pub fn estimate(
     match mapping {
         Mapping::Nothing => {}
         Mapping::Known(question, points) => {
-            let key = mapping_key(questions.model, questions.paper, question);
+            let key = mapping_key(questions.chosen, questions.paper, question);
             items.push(questions.mapping(question, key, points));
         }
         Mapping::Guessed(points) => {
@@ -191,11 +192,11 @@ pub fn estimate(
                 points.iter().map(|point| point.text.chars().count() + 40).sum::<usize>() + TREE_CHARS_GUESS;
             stand_in = " ".repeat(length);
             // a key that is never kept: the estimate counts it as to be asked
-            let key = mapping_key(questions.model, questions.paper, "an estimate before the tree is made");
+            let key = mapping_key(questions.chosen, questions.paper, "an estimate before the tree is made");
             items.push(questions.mapping(&stand_in, key, points.len()));
         }
     }
-    batch::estimate_batch::<Value>(library, &items, Counting::ASSUMED)
+    batch::estimate_batch::<Value>(library, &items, questions.chosen)
 }
 
 /// What came of one of the two calls.
@@ -265,11 +266,11 @@ pub fn checked_tree(said: &SaidTree, paper: &str, passages: &Passages) -> Result
     tree::build(said, paper, &crate::evidence::PaperText::Read(passages.clone()))
 }
 
-/// Ask what is not kept about `paper` with `model`, within `budget`: the tree, then the mapping of its reviews.
+/// Ask what is not kept about `paper` of `chosen`, within `budget`: the tree, then the mapping of its reviews.
 pub fn ask(
     askers: &Askers<'_>,
     paper: &str,
-    model: &str,
+    chosen: &Chosen,
     budget: &Budget,
     tracker: &Tracker<'_>,
 ) -> Result<Done, AskingError> {
@@ -281,7 +282,7 @@ pub fn ask(
     let prompt = paper_prompt(&passages);
     let (tree_schema, mapping_schema) = (tree::schema(), mapping::schema());
     let questions =
-        Questions { model, paper, shared: &prompt.text, tree_schema: &tree_schema, mapping_schema: &mapping_schema };
+        Questions { chosen, paper, shared: &prompt.text, tree_schema: &tree_schema, mapping_schema: &mapping_schema };
     tracker.log(&format!("Reading the claims of {paper}: {} of {} passages sent", prompt.sent, prompt.passages));
     let outcome = batch::ask_all::<SaidTree>(askers.asking(), &[questions.tree()], budget, tracker)?.pop();
     let (tree_asked, said) = asked(outcome);
@@ -308,7 +309,7 @@ pub fn ask(
         return Ok(Done { tree: tree_asked, mapping: Asked::Skipped(why) });
     }
     let question = mapping::question(&tree, &points);
-    let item = questions.mapping(&question, mapping_key(model, paper, &question), points.len());
+    let item = questions.mapping(&question, mapping_key(chosen, paper, &question), points.len());
     let outcome = batch::ask_all::<SaidMapping>(askers.asking(), &[item], budget, tracker)?.pop();
     let (mapping_asked, _) = asked(outcome);
     Ok(Done { tree: tree_asked, mapping: mapping_asked })
@@ -453,7 +454,7 @@ Decision: Accept (poster)
         let progress = |_: Progress| {};
         let tracker = Tracker::new(&log, &progress, &cancel);
         let askers = Askers { library, transport: fake, endpoint: endpoint(), recorder: &calls };
-        ask(&askers, PAPER, MODEL, &plenty(), &tracker)
+        ask(&askers, PAPER, &Chosen::claude(MODEL), &plenty(), &tracker)
     }
 
     fn question_of(sent: &crate::model::language::fake::Sent) -> String {
@@ -555,8 +556,9 @@ Decision: Accept (poster)
         let PaperReading::Read(passages) = library.paper_texts(&[PAPER]).unwrap().pop().unwrap() else { panic!() };
         let prompt = paper_prompt(&passages);
         let (tree_schema, mapping_schema) = (tree::schema(), mapping::schema());
+        let chosen = Chosen::claude(MODEL);
         let questions = Questions {
-            model: MODEL,
+            chosen: &chosen,
             paper: PAPER,
             shared: &prompt.text,
             tree_schema: &tree_schema,
@@ -565,15 +567,15 @@ Decision: Accept (poster)
         let points = review_points(&library.reviews(PAPER).unwrap().unwrap().discussion).points;
         let before = estimate(&library, &questions, Mapping::Guessed(&points)).unwrap();
         assert_eq!((before.items, before.to_ask, before.kept), (2, 2, 0));
-        assert!(before.usd.unwrap() > Usd::ZERO && before.usd.unwrap() < before.most_usd.unwrap());
+        assert!(before.cost.usd.unwrap() > Usd::ZERO && before.cost.usd.unwrap() < before.cost.most_usd.unwrap());
         // the second call is reckoned as reading the first's cache
-        assert!(before.by_model[0].tokens.cache_read > 0);
+        assert!(before.cost.tokens.cache_read > 0);
         let fake = Fake::new(vec![reply(&tree_answer()), reply(&mapping_answer())]);
         run(&library, &fake).unwrap();
         let tree = checked_tree(&serde_json::from_value(tree_answer()).unwrap(), PAPER, &passages).unwrap();
         let question = mapping::question(&tree, &points);
         let after = estimate(&library, &questions, Mapping::Known(&question, points.len())).unwrap();
-        assert_eq!((after.to_ask, after.kept, after.usd), (0, 2, Some(Usd::ZERO)));
+        assert_eq!((after.to_ask, after.kept, after.cost.usd), (0, 2, Some(Usd::ZERO)));
         assert_eq!(fake.sent().len(), 2, "estimating sent nothing");
     }
 

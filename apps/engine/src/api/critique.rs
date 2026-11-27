@@ -4,10 +4,12 @@
 //! ```text
 //! GET    /api/papers/{id}/critique   the reviewers' part and the model's part (`Critique`): the reading kept, or
 //!                                    what asking would cost (nothing is sent), or why it cannot be asked
-//! POST   /api/papers/{id}/critique   {model?, budget_usd?}: ask, as the one job (progress and stop in /api/status),
-//!                                    refused when `model` (the one whose estimate was shown) is no longer chosen;
-//!                                    `{outcome: "started", job}`, or `{outcome: "kept"}` when it was read before.
-//!                                    The budget is the estimate's worst case unless a lower or higher one is given
+//! POST   /api/papers/{id}/critique   {provider?, model?, budget_usd? | budget_tokens?}: ask, as the one job
+//!                                    (progress and stop in /api/status), refused when `provider` and `model` (those
+//!                                    whose estimate was shown) are no longer chosen; `{outcome: "started", job}`, or
+//!                                    `{outcome: "kept"}` when it was read before. The budget is the estimate's worst
+//!                                    case unless a lower or higher one is given: in dollars for a model with a
+//!                                    price, in tokens for one without
 //! DELETE /api/papers/{id}/critique   forget the model's reading (a redo): `{forgotten}`
 //! ```
 //!
@@ -25,16 +27,17 @@ use serde::{Deserialize, Serialize};
 use super::routes::{ApiError, Shared, on_the_side};
 use crate::analysis::critique::{Plan, Reading, ReviewersPart, read, reviewers};
 use crate::evidence::{PaperText, Papers};
-use crate::jobs::Tracker;
+use crate::jobs::{Finished, Tracker};
 use crate::library::{Feature, Library, PaperReading, Subject};
 use crate::model::batch::{Asking, BatchEstimate, IN_FLIGHT, Outcome, Stopped};
-use crate::model::language::{Budget, DEFAULT_MODEL, Endpoint, Https, Limit, Transport};
-use crate::settings;
-use crate::usage::Usd;
+use crate::model::chosen::{Accepted, Terms, budget};
+use crate::model::language::{Budget, Endpoint, Provider, Transport};
 
 /// The most one paper's reading may be allowed to cost, in US dollars, whatever is asked: one call, however long
 /// the paper, costs well under this.
 pub const MOST_USD: f64 = 5.0;
+/// The same for a model with no price, in tokens: a whole paper and a whole answer, several times over.
+pub const MOST_TOKENS: u64 = 2_000_000;
 /// The longest paper id taken: longer is no paper's.
 const LONGEST_ID: usize = 300;
 
@@ -53,10 +56,11 @@ pub enum ModelPart {
     Unreadable,
     /// Not asked yet (or asked for a question since changed, such as new reviews): what asking would cost.
     NotAsked {
-        /// The model chosen in the settings, which would be asked.
+        /// The model chosen in the settings, which would be asked, and its provider.
+        provider: Provider,
         model: String,
         estimate: BatchEstimate,
-        /// Whether the model can be asked at all (a key is set); never the key.
+        /// Whether the model can be asked at all (its provider's key is set); never the key.
         api_key_set: bool,
         points_asked: usize,
         /// Where the paper's text would be cut, in characters, when it is too long to send whole.
@@ -95,8 +99,11 @@ pub enum Started {
 #[derive(Default, Deserialize)]
 struct Start {
     budget_usd: Option<f64>,
-    /// The model whose estimate the user saw.
+    /// For a model with no price: the most it may take, in tokens.
+    budget_tokens: Option<u64>,
+    /// The model whose estimate the user saw, and its provider.
     model: Option<String>,
+    provider: Option<Provider>,
 }
 
 #[derive(Serialize)]
@@ -123,11 +130,10 @@ fn paper(engine: &Shared, id: &str) -> Result<Paper, ApiError> {
     library.paper(id)?.ok_or(ApiError::NotFound)?;
     let kept = library.reviews(id)?;
     let page = library.review_page(id)?;
-    let model = settings::load(&engine.settings_file(), &engine.choices)?.describe_model;
-    let model = if model.is_empty() { DEFAULT_MODEL.to_owned() } else { model };
+    let chosen = engine.chosen()?;
     let text = match library.paper_texts(&[id])?.pop() {
         Some(PaperReading::Read(passages)) => {
-            let plan = Plan::new(id, &model, &passages, kept.as_ref().map(|kept| &kept.discussion));
+            let plan = Plan::new(id, &chosen, &passages, kept.as_ref().map(|kept| &kept.discussion));
             Ok((plan, PaperText::Read(passages)))
         }
         Some(PaperReading::NoPdf { .. }) => Err(ModelPart::NoPdf),
@@ -143,7 +149,6 @@ fn paper(engine: &Shared, id: &str) -> Result<Paper, ApiError> {
 
 async fn view(State(engine): State<Shared>, Path(id): Path<String>) -> Result<Json<Critique>, ApiError> {
     let critique = on_the_side(move || {
-        let api_key_set = engine.endpoint().is_ok();
         let Paper { library, id, reviewers, text } = paper(&engine, &id)?;
         let model = match text {
             Err(part) => part,
@@ -161,8 +166,9 @@ async fn view(State(engine): State<Shared>, Path(id): Path<String>) -> Result<Js
                 }
                 None => ModelPart::NotAsked {
                     estimate: plan.estimate(&library)?,
-                    model: plan.model,
-                    api_key_set,
+                    provider: plan.chosen.provider(),
+                    model: plan.chosen.model().to_owned(),
+                    api_key_set: plan.chosen.can_ask(),
                     points_asked: plan.points.len(),
                     cut: plan.cut,
                 },
@@ -175,27 +181,10 @@ async fn view(State(engine): State<Shared>, Path(id): Path<String>) -> Result<Js
 }
 
 /// The budget of one paper's call: as asked, or the estimate's worst case; in tokens when the model has no price.
-fn budget_of(asked: Option<f64>, estimate: &BatchEstimate) -> Result<Budget, ApiError> {
-    if let Some(usd) = asked {
-        if !(usd.is_finite() && usd > 0.0) {
-            return Err(ApiError::Invalid("the budget must be more than nothing".to_owned()));
-        }
-        if usd > MOST_USD {
-            return Err(ApiError::Invalid(format!("the budget is too large: at most USD {MOST_USD} for one paper")));
-        }
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // positive and at most MOST_USD
-        let picodollars = (usd * 1e12).round() as u64;
-        return Ok(Budget::new(Limit::Dollars(Usd::from_picodollars(picodollars))));
-    }
-    Ok(match estimate.most_usd {
-        Some(most) => Budget::new(Limit::Dollars(most)),
-        // a model with no known price: its worst case in tokens (the prompt written to the cache, a whole answer)
-        None => {
-            let worst =
-                estimate.by_model.iter().map(|model| model.tokens.input + model.tokens.cache_write_5m).sum::<u64>();
-            Budget::new(Limit::Tokens(worst + u64::from(crate::analysis::critique::MAX_TOKENS)))
-        }
-    })
+fn budget_of(asked: &Start, estimate: &BatchEstimate) -> Result<Budget, ApiError> {
+    let invalid = |why: crate::model::chosen::Refused| ApiError::Invalid(why.to_string());
+    let accepted = Accepted::of(asked.budget_usd, asked.budget_tokens).map_err(invalid)?;
+    budget(&estimate.cost, accepted, Terms::AtMost { usd: MOST_USD, tokens: MOST_TOKENS }).map_err(invalid)
 }
 
 async fn start(State(engine): State<Shared>, Path(id): Path<String>, body: Bytes) -> Result<Json<Started>, ApiError> {
@@ -218,17 +207,15 @@ async fn start(State(engine): State<Shared>, Path(id): Path<String>, body: Bytes
             return Ok(Started::Kept);
         }
         let endpoint =
-            engine.endpoint().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
+            plan.chosen.endpoint().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
         // the estimate the user saw was for this model: one changed in the settings since is not asked unseen
-        if asked.model.as_ref().is_some_and(|model| *model != plan.model) {
-            return Err(ApiError::Invalid(format!(
-                "the model chosen in the settings is now {}: look at its estimate before asking",
-                plan.model
-            )));
+        if let Some(model) = &asked.model {
+            plan.chosen.as_shown(asked.provider, model).map_err(|why| ApiError::Invalid(why.to_string()))?;
         }
-        let budget = budget_of(asked.budget_usd, &plan.estimate(&library)?)?;
+        let budget = budget_of(&asked, &plan.estimate(&library)?)?;
+        let transport = engine.transport.clone();
         let job = engine.job.start_tracked("a paper's weaknesses", move |tracker| {
-            work(&library, &Https::default(), endpoint, &plan, &budget, tracker)
+            work(&library, &*transport, endpoint, &plan, &budget, tracker)
         })?;
         Ok(Started::Started { job })
     })
@@ -236,7 +223,8 @@ async fn start(State(engine): State<Shared>, Path(id): Path<String>, body: Bytes
     Ok(Json(started))
 }
 
-/// The job: ask about one paper through `transport`, and say what came of it.
+/// The job: ask about one paper through `transport`, say in its log what came of it, and hand back the paper whose
+/// weaknesses were read (nothing when it was stopped before).
 fn work(
     library: &Library,
     transport: &dyn Transport,
@@ -244,15 +232,18 @@ fn work(
     plan: &Plan,
     budget: &Budget,
     tracker: &Tracker<'_>,
-) -> Result<String, String> {
+) -> Result<Finished, String> {
     let asking = Asking { library, transport, endpoint, recorder: library, in_flight: IN_FLIGHT };
-    match plan.ask(asking, budget, tracker).map_err(|error| error.to_string())? {
-        Outcome::Answered(_) => Ok("The model read the paper for weaknesses.".to_owned()),
-        Outcome::Kept(_) => Ok("The paper was read for weaknesses before: nothing was asked.".to_owned()),
-        Outcome::Failed(why) => Err(why.to_string()),
-        Outcome::NotStarted(Stopped::Cancelled) => Ok("Stopped before the model was asked.".to_owned()),
-        Outcome::NotStarted(why) => Err(why.to_string()),
-    }
+    let read = Finished::Feature { feature: Feature::Critique, subject: Subject::Paper(plan.paper.clone()) };
+    let (said, finished) = match plan.ask(asking, budget, tracker).map_err(|error| error.to_string())? {
+        Outcome::Answered(_) => ("The model read the paper for weaknesses.", read),
+        Outcome::Kept(_) => ("The paper was read for weaknesses before: nothing was asked.", read),
+        Outcome::Failed(why) => return Err(why.to_string()),
+        Outcome::NotStarted(Stopped::Cancelled) => ("Stopped before the model was asked.", Finished::Nothing),
+        Outcome::NotStarted(why) => return Err(why.to_string()),
+    };
+    tracker.log(said);
+    Ok(finished)
 }
 
 async fn redo(State(engine): State<Shared>, Path(id): Path<String>) -> Result<Json<Forgotten>, ApiError> {
@@ -282,6 +273,7 @@ mod tests {
     use crate::library::papers::tests::paper as record;
     use crate::library::passages::fixtures::pdf_with;
     use crate::library::{Known, Ratings};
+    use crate::model::chosen::Chosen;
     use crate::settings::Choices;
     use crate::text::discussion::fixtures::ICLR_2024;
     use crate::text::discussion::read_discussion;
@@ -379,7 +371,7 @@ mod tests {
         );
         assert_eq!((model["estimate"]["to_ask"].clone(), model["points_asked"].clone()), (json!(1), json!(3)));
         assert!(model["estimate"]["usd"].as_f64().unwrap() > 0.0);
-        assert_eq!(model["estimate"]["by_model"][0]["counting"]["kind"], "assumed");
+        assert_eq!(model["estimate"]["counting"]["kind"], "assumed");
     }
 
     #[tokio::test]
@@ -433,7 +425,7 @@ mod tests {
                 while !tracker.cancelled() {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
-                Ok("stopped".to_owned())
+                Ok(crate::jobs::Finished::Nothing)
             })
             .unwrap();
         let job = engine.job.clone();
@@ -453,7 +445,7 @@ mod tests {
                 panic!()
             };
             let discussion = library.reviews("iclr-2024-1").unwrap().unwrap().discussion;
-            let plan = Plan::new("iclr-2024-1", "claude-opus-5-5", &passages, Some(&discussion));
+            let plan = Plan::new("iclr-2024-1", &Chosen::claude("claude-opus-5-5"), &passages, Some(&discussion));
             let answer = json!({
                 "points": [
                     {"point": "p1", "located": "passage", "quote": "We test it on two small models only and leave larger ones to future work", "paper_says": ""},
@@ -488,16 +480,16 @@ mod tests {
         let data = data();
         let library = Library::open(&data.path().join("library")).unwrap();
         let Some(PaperReading::Read(passages)) = library.paper_texts(&["2601.00002"]).unwrap().pop() else { panic!() };
-        let plan = Plan::new("2601.00002", "claude-opus-5-5", &passages, None);
+        let plan = Plan::new("2601.00002", &Chosen::claude("claude-opus-5-5"), &passages, None);
         let endpoint = || with_key(&data).language.unwrap();
-        let budget = || budget_of(None, &plan.estimate(&library).unwrap()).unwrap();
+        let budget = || budget_of(&Start::default(), &plan.estimate(&library).unwrap()).unwrap();
         let (log, progress) = (|_: &str| {}, |_: Progress| {});
 
         let cancel = Cancel::new();
         cancel.cancel();
         let stopped = Fake::new(Vec::new());
         let told = work(&library, &stopped, endpoint(), &plan, &budget(), &Tracker::new(&log, &progress, &cancel));
-        assert_eq!(told, Ok("Stopped before the model was asked.".to_owned()));
+        assert_eq!(told, Ok(Finished::Nothing), "stopped before the model was asked");
         assert!(stopped.sent().is_empty());
 
         let answer = json!({"points": [], "weaknesses": []}).to_string();
@@ -505,11 +497,83 @@ mod tests {
         let fake = Fake::new(vec![Ok(ok(&message("claude-opus-5-5", &answer, "end_turn", usage)))]);
         let going = Cancel::new();
         let told = work(&library, &fake, endpoint(), &plan, &budget(), &Tracker::new(&log, &progress, &going));
-        assert_eq!(told, Ok("The model read the paper for weaknesses.".to_owned()));
+        let read = Finished::Feature { feature: Feature::Critique, subject: Subject::Paper("2601.00002".to_owned()) };
+        assert_eq!(told, Ok(read.clone()));
         assert_eq!(fake.sent().len(), 1);
         assert!(plan.kept(&library).unwrap().is_some());
         let again = work(&library, &fake, endpoint(), &plan, &budget(), &Tracker::new(&log, &progress, &going));
-        assert_eq!(again, Ok("The paper was read for weaknesses before: nothing was asked.".to_owned()));
+        assert_eq!(again, Ok(read), "kept from before: nothing was asked");
         assert_eq!(fake.sent().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn another_provider_is_priced_asked_in_its_own_shape_kept_and_asked_again_when_the_provider_changes() {
+        use super::super::other_providers::{
+            BUDGET, Chosen as Asked, Scripted, accepting, call, choose, finished, priced_for, router, sent_to,
+        };
+
+        let data = data();
+        let answer = json!({
+            "points": [{"point": "p1", "located": "passage", "quote": "We test it on two small models only and leave larger ones to future work", "paper_says": ""}],
+            "weaknesses": []
+        })
+        .to_string();
+        let transport = Scripted::new(move |_| answer.clone());
+        let router = router(data.path(), Asked::OpenAi, &transport);
+        let path = "/api/papers/iclr-2024-1/critique";
+        let mut sent = 0;
+        for chosen in [Asked::OpenAi, Asked::ThisComputer] {
+            choose(data.path(), chosen);
+            let (_, told) = call(&router, "GET", path, None).await;
+            assert_eq!(
+                (told["model"]["state"].clone(), told["model"]["api_key_set"].clone()),
+                (json!("not_asked"), json!(true)),
+                "{told}"
+            );
+            assert_eq!(told["model"]["provider"], chosen.provider().id());
+            let estimate = told["model"]["estimate"].clone();
+            priced_for(&estimate, chosen);
+            assert_eq!(transport.sent().len(), sent, "an estimate sends nothing");
+
+            let (status, started) = call(&router, "POST", path, Some(accepting(&estimate, BUDGET))).await;
+            assert_eq!((status, started["outcome"].clone()), (StatusCode::OK, json!("started")), "{started}");
+            let done = finished(&router, &started["job"]).await;
+            assert_eq!(done["state"], "done", "{done}");
+            assert_eq!(
+                done["outcome"],
+                json!({"kind": "feature", "feature": "critique", "subject": {"paper": "iclr-2024-1"}})
+            );
+            assert_eq!(done["result"], Value::Null, "no run to open");
+            let asked = transport.sent();
+            sent_to(&asked[sent..], chosen);
+            sent = asked.len();
+
+            let (_, told) = call(&router, "GET", path, None).await;
+            assert_eq!(told["model"]["state"], "answered", "{told}");
+            assert_eq!(
+                told["model"]["reading"]["points"][0]["location"]["evidence"]["established"]["kind"],
+                "verified"
+            );
+            assert_eq!(
+                call(&router, "POST", path, Some(accepting(&estimate, BUDGET))).await.1,
+                json!({"outcome": "kept"})
+            );
+            assert_eq!(transport.sent().len(), sent, "kept: not asked again");
+        }
+        // the same model id at the first provider again: its answer is still kept, apart from the other's
+        choose(data.path(), Asked::OpenAi);
+        assert_eq!(call(&router, "GET", path, None).await.1["model"]["state"], "answered");
+        // an estimate shown for one provider is not taken for the other's
+        let (_, shown) = call(&router, "GET", "/api/papers/2601.00002/critique", None).await;
+        choose(data.path(), Asked::ThisComputer);
+        let refused = call(
+            &router,
+            "POST",
+            "/api/papers/2601.00002/critique",
+            Some(accepting(&shown["model"]["estimate"], BUDGET)),
+        )
+        .await;
+        assert_eq!(refused.0, StatusCode::BAD_REQUEST, "{}", refused.1);
+        assert_eq!(transport.sent().len(), sent);
     }
 }

@@ -21,10 +21,9 @@
 //! ([`Question::garbled`]).
 //!
 //! What the model answered is kept ([`Library::keep`] under [`Feature::Explanation`]) by paper, passage address,
-//! model, prompt version and question, so reopening it is free; its quotes are checked again each time it is
-//! shown. A redo puts a [`Redone`] marker in its place, which does not read as an answer, so the next request asks
-//! again (and [`Library::forget`], which clears by paper, would take every other explanation of the paper with
-//! it).
+//! provider and model, prompt version and question, so reopening it is free; its quotes are checked again each time
+//! it is shown. A redo forgets that one answer by its key ([`Library::forget_key`]: [`Library::forget`], which
+//! clears by paper, would take every other explanation of the paper with it), so the next request asks again.
 
 pub mod definitions;
 pub mod related;
@@ -34,9 +33,10 @@ use serde_json::{Value, json};
 
 use crate::evidence::{self, Claim, Evidence, PaperText, Papers, Rules};
 use crate::jobs::Tracker;
-use crate::library::{AnswerKey, Feature, Library, LibraryError, Slot, Subject};
+use crate::library::{Feature, Library, LibraryError, Slot, Subject};
 use crate::model::batch::{self, Asking, BatchEstimate, Failure, Item, Outcome, Stopped};
-use crate::model::language::{Ask, Budget, Counting, Effort, Form, Limit};
+use crate::model::chosen::{self, Accepted, Chosen, Terms};
+use crate::model::language::{Ask, Budget, Form, Limit};
 use crate::text::passages::{Address, Kind, Passages};
 use definitions::Definition;
 
@@ -159,12 +159,6 @@ pub enum Source {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Said {
     pub statements: Vec<Value>,
-}
-
-/// What a redo keeps in an explanation's place: it does not read as [`Said`], so the next request asks again.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-pub struct Redone {
-    pub redone: bool,
 }
 
 /// A statement as the model writes it (`statement` of a [`Claim`]).
@@ -416,51 +410,45 @@ pub fn question_key(address: &Address, question: Question) -> String {
     json!({"passage": address, "question": question.name()}).to_string()
 }
 
-/// Where the explanation of a passage of `paper` written by `model` is kept.
-pub fn slot(paper: &str, model: &str, address: &Address, question: Question) -> Slot {
+/// Where the explanation of a passage of `paper` written by `chosen` is kept.
+pub fn slot(paper: &str, chosen: &Chosen, address: &Address, question: Question) -> Slot {
     Slot {
         feature: Feature::Explanation,
-        key: AnswerKey::new(Feature::Explanation, model, PROMPT, &[paper], &question_key(address, question)),
+        key: chosen.key(Feature::Explanation, PROMPT, &[paper], &question_key(address, question)),
         subject: Subject::Paper(paper.to_owned()),
     }
 }
 
 /// The one question of an explanation, as a batch of one.
-pub fn item<'a>(slot: Slot, model: &'a str, prompt: &'a Prompt, schema: &'a Value) -> Item<'a> {
+pub fn item<'a>(slot: Slot, chosen: &'a Chosen, prompt: &'a Prompt, schema: &'a Value) -> Item<'a> {
     Item {
         slot,
         prompt: PROMPT,
         ask: Ask {
             purpose: PURPOSE,
-            model,
+            model: chosen.model(),
             system: SYSTEM,
             shared: Some(&prompt.shared),
             question: &prompt.question,
             form: Form::Json(schema),
-            effort: Effort::Medium,
+            effort: chosen.effort(),
             max_tokens: MAX_TOKENS,
         },
         likely_tokens: LIKELY_TOKENS,
     }
 }
 
-/// What explaining would cost (nothing when it is kept), before anything is sent.
-pub fn estimate(library: &Library, item: &Item<'_>) -> Result<BatchEstimate, LibraryError> {
-    batch::estimate_batch::<Said>(library, std::slice::from_ref(item), Counting::ASSUMED)
+/// What explaining would cost when asked of `chosen` (nothing when it is kept), before anything is sent.
+pub fn estimate(library: &Library, item: &Item<'_>, chosen: &Chosen) -> Result<BatchEstimate, LibraryError> {
+    batch::estimate_batch::<Said>(library, std::slice::from_ref(item), chosen)
 }
 
 /// The budget of one explanation: at most what the estimate said it could cost at worst, in dollars when the
-/// model's price is known, in tokens when not (a model the engine has no price for).
-pub fn budget(item: &Item<'_>, estimate: &BatchEstimate) -> Budget {
-    match estimate.most_usd {
-        Some(most) => Budget::new(Limit::Dollars(most)),
-        None => {
-            // the worst case as the client reckons it: the whole prompt, and an answer of `max_tokens`
-            let prompt = estimate.by_model.iter().map(|model| model.tokens.prompt()).sum::<u64>();
-            let most = prompt + u64::from(item.ask.max_tokens);
-            Budget::new(Limit::Tokens(most))
-        }
-    }
+/// model's price is known, in tokens when not ([`chosen::budget`] of the worst case shown).
+pub fn budget(estimate: &BatchEstimate) -> Budget {
+    // the worst case shown, accepted as shown, is never refused
+    let accepted = estimate.cost.most_usd.map_or(Accepted::Shown, |most| Accepted::Dollars(most.dollars()));
+    chosen::budget(&estimate.cost, accepted, Terms::AsShown).unwrap_or_else(|_| Budget::new(Limit::Tokens(0)))
 }
 
 /// Why an explanation was not written.
@@ -503,7 +491,7 @@ pub(crate) mod tests {
     use crate::library::Known;
     use crate::library::papers::tests::paper as record;
     use crate::model::language::fake::{Fake, error, message, ok};
-    use crate::model::language::{Endpoint, KEY_VARIABLE, NoAnswer};
+    use crate::model::language::{Effort, Endpoint, KEY_VARIABLE, NoAnswer, Provider, Unavailable};
     use crate::text::passages::read_passages;
     use crate::usage::Call;
 
@@ -729,16 +717,18 @@ update.\n\nTable 1. Accuracy of merged models on eight vision tasks, with and wi
         let prompt = prompt(PAPER, "Spectral Merging", "We study merging.", &passages, equation, &[]);
         let schema = schema();
         let model = "claude-opus-5-5";
+        let chosen = Chosen::claude(model);
         let address = &passages.passages[equation].address;
-        let item = item(slot(PAPER, model, address, Question::Equation), model, &prompt, &schema);
+        let item = item(slot(PAPER, &chosen, address, Question::Equation), &chosen, &prompt, &schema);
 
         let transport = Fake::new(vec![answered(&answer())]);
-        let before = estimate(&library, &item).unwrap();
+        let before = estimate(&library, &item, &chosen).unwrap();
         assert!(transport.sent().is_empty(), "the estimate sends nothing");
         assert_eq!((before.to_ask, before.kept), (1, 0));
-        assert!(before.usd.unwrap() > crate::usage::Usd::ZERO && before.usd <= before.most_usd);
+        assert!(before.cost.usd.unwrap() > crate::usage::Usd::ZERO && before.cost.usd <= before.cost.most_usd);
+        assert!(crate::model::language::strict_ready(&schema), "every object closed and every property required");
 
-        let budget = budget(&item, &before);
+        let budget = budget(&before);
         let first = ask(&library, &transport, &item, &budget);
         assert_eq!(first.said.unwrap(), answer());
         assert_eq!(first.calls.len(), 1, "recorded in the ledger");
@@ -753,15 +743,15 @@ update.\n\nTable 1. Accuracy of merged models on eight vision tasks, with and wi
         assert_eq!(body["output_config"]["format"]["schema"], schema);
         assert_eq!(body["max_tokens"], MAX_TOKENS);
 
-        let after = estimate(&library, &item).unwrap();
-        assert_eq!((after.to_ask, after.kept, after.usd), (0, 1, Some(crate::usage::Usd::ZERO)));
+        let after = estimate(&library, &item, &chosen).unwrap();
+        assert_eq!((after.to_ask, after.kept, after.cost.usd), (0, 1, Some(crate::usage::Usd::ZERO)));
         let again = ask(&library, &transport, &item, &budget);
         assert_eq!(again.said.unwrap(), answer());
         assert_eq!(transport.sent().len(), 1, "kept: not asked again");
 
-        // a redo puts a marker in its place, which is not an answer: the next request asks again
-        library.keep(&item.slot, model, PROMPT, &Redone { redone: true }).unwrap();
-        assert_eq!(estimate(&library, &item).unwrap().to_ask, 1);
+        // a redo forgets that one answer: the next request asks again
+        assert!(library.forget_key(Feature::Explanation, &item.slot.key).unwrap());
+        assert_eq!(estimate(&library, &item, &chosen).unwrap().to_ask, 1);
         assert!(library.kept::<Said>(Feature::Explanation, &item.slot.key).unwrap().is_none());
     }
 
@@ -771,15 +761,12 @@ update.\n\nTable 1. Accuracy of merged models on eight vision tasks, with and wi
         let passages = passages();
         let prompt = prompt(PAPER, "t", "a", &passages, 2, &[]);
         let schema = schema();
-        let item = item(
-            slot(PAPER, "claude-opus-5-5", &passages.passages[2].address, Question::Passage),
-            "claude-opus-5-5",
-            &prompt,
-            &schema,
-        );
+        let chosen = Chosen::claude("claude-opus-5-5");
+        let item =
+            item(slot(PAPER, &chosen, &passages.passages[2].address, Question::Passage), &chosen, &prompt, &schema);
         let usage = json!({"input_tokens": 10, "output_tokens": 10});
         let transport = Fake::new(vec![Ok(ok(&message("claude-opus-5-5", "not json at all", "end_turn", usage)))]);
-        let budget = budget(&item, &estimate(&library, &item).unwrap());
+        let budget = budget(&estimate(&library, &item, &chosen).unwrap());
         let asked = ask(&library, &transport, &item, &budget);
         assert!(matches!(asked.said, Err(NotExplained::Failed(Failure::NoAnswer(NoAnswer::NotJson(_))))));
         assert_eq!(asked.calls.len(), 1, "paid for, so recorded");
@@ -796,7 +783,7 @@ update.\n\nTable 1. Accuracy of merged models on eight vision tasks, with and wi
             Err(NotExplained::Stopped(Stopped::OverBudget(_)))
         ));
         assert!(failing.sent().is_empty());
-        let fresh = super::budget(&item, &estimate(&library, &item).unwrap());
+        let fresh = super::budget(&estimate(&library, &item, &chosen).unwrap());
         assert!(matches!(ask(&library, &failing, &item, &fresh).said, Err(NotExplained::Failed(Failure::NoAnswer(_)))));
         assert!(library.kept::<Said>(Feature::Explanation, &item.slot.key).unwrap().is_none());
     }
@@ -807,19 +794,16 @@ update.\n\nTable 1. Accuracy of merged models on eight vision tasks, with and wi
         let passages = passages();
         let prompt = prompt(PAPER, "t", "a", &passages, 2, &[]);
         let schema = schema();
-        let item = item(
-            slot(PAPER, "claude-opus-5-5", &passages.passages[2].address, Question::Passage),
-            "claude-opus-5-5",
-            &prompt,
-            &schema,
-        );
+        let chosen = Chosen::claude("claude-opus-5-5");
+        let item =
+            item(slot(PAPER, &chosen, &passages.passages[2].address, Question::Passage), &chosen, &prompt, &schema);
         let transport = Fake::new(vec![answered(&answer())]);
         let asked = ask(&library, &transport, &item, &Budget::new(Limit::Tokens(100)));
         assert!(matches!(asked.said, Err(NotExplained::Stopped(Stopped::OverBudget(_)))));
         assert!(transport.sent().is_empty());
         // the budget of an explanation is what its estimate said at most
-        let estimate = estimate(&library, &item).unwrap();
-        let budget = budget(&item, &estimate);
+        let estimate = estimate(&library, &item, &chosen).unwrap();
+        let budget = budget(&estimate);
         assert!(ask(&library, &Fake::new(vec![answered(&answer())]), &item, &budget).said.is_ok());
     }
 
@@ -830,13 +814,16 @@ update.\n\nTable 1. Accuracy of merged models on eight vision tasks, with and wi
         assert_eq!(Question::of(Kind::Heading), None);
         assert!(Question::garbled(Kind::Equation) && !Question::garbled(Kind::Text));
         let address = passages().passages[2].address.clone();
-        let one = slot(PAPER, "m", &address, Question::Passage);
-        assert_ne!(one.key, slot(PAPER, "other model", &address, Question::Passage).key);
+        let (m, other) = (Chosen::claude("m"), Chosen::claude("other model"));
+        let one = slot(PAPER, &m, &address, Question::Passage);
+        assert_ne!(one.key, slot(PAPER, &other, &address, Question::Passage).key);
+        let elsewhere = Chosen::of(Provider::OpenRouter, "m", Effort::Medium, Err(Unavailable::NoKey));
+        assert_ne!(one.key, slot(PAPER, &elsewhere, &address, Question::Passage).key, "another provider's m");
         assert_ne!(
             one.key,
-            slot(PAPER, "m", &Address { start: address.start + 1, ..address.clone() }, Question::Passage).key
+            slot(PAPER, &m, &Address { start: address.start + 1, ..address.clone() }, Question::Passage).key
         );
-        assert_ne!(one.key, slot(PAPER, "m", &address, Question::Equation).key);
+        assert_ne!(one.key, slot(PAPER, &m, &address, Question::Equation).key);
         assert_eq!(one.subject, Subject::Paper(PAPER.to_owned()));
     }
 }

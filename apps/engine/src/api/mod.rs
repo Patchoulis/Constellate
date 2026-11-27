@@ -25,6 +25,8 @@ pub mod explanation;
 pub mod extraction;
 pub mod login;
 pub mod models;
+#[cfg(test)]
+pub(crate) mod other_providers;
 pub mod passages;
 pub mod reviews;
 pub mod routes;
@@ -211,7 +213,7 @@ fn patient(builder: &mut Builder<TokioExecutor>) {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
-mod tests {
+pub(crate) mod tests {
     use super::config::tests::{STRONG, certificate_in};
     use super::config::{Environment, Listen};
     use super::routes::{Engine, routes};
@@ -463,7 +465,7 @@ mod tests {
                 log("[1/2] download");
                 log("[2/2] embed");
                 wait.recv().map_err(|error| error.to_string())?;
-                Ok("neurips2025".to_owned())
+                Ok(crate::jobs::Finished::Run { run: "neurips2025".to_owned() })
             })
             .unwrap();
         let at = "192.0.2.7:8765";

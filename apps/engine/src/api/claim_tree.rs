@@ -3,13 +3,16 @@
 //!
 //! ```text
 //! GET    /api/papers/{id}/claims    what is kept, checked again, and what asking the rest would cost (`ClaimsView`)
-//! POST   /api/papers/{id}/claims    {budget_usd}: ask what is not kept, as the job; answers {job}
+//! POST   /api/papers/{id}/claims    {provider, model, budget_usd | budget_tokens}: ask what is not kept, as the
+//!                                   job, within that budget (in tokens for a model with no price); answers {job}
 //! DELETE /api/papers/{id}/claims    forget the paper's tree and mapping (a redo); answers {forgotten}
 //! GET    /api/runs/{run}/communities/{community}/claims/contested   per paper, its contested claims (`Contested`)
 //! ```
 //!
 //! The GET asks nothing: the interface shows its estimate, and the user starts the work with a click (the POST),
-//! capped at the budget the user agreed to. The model is the one chosen in the settings.
+//! capped at the budget the user agreed to. The model is the one chosen in the settings, of its provider.
+
+use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
@@ -21,15 +24,16 @@ use super::reviews::papers_of;
 use super::routes::{ApiError, Shared, on_the_side};
 use crate::analysis::claim_tree::asking::{Asked, Askers, AskingError, ask};
 use crate::analysis::claim_tree::{self, ClaimsView, Contested};
-use crate::jobs::{Busy, Phase};
+use crate::jobs::{Busy, Finished, Phase};
 use crate::library::{Feature, PaperReading, Subject};
-use crate::model::language::{Budget, DEFAULT_MODEL, Endpoint, Https, Limit, Transport};
-use crate::settings;
-use crate::usage::Usd;
+use crate::model::chosen::{Accepted, Terms, budget};
+use crate::model::language::{Provider, Transport};
 
 /// The most one paper's two calls may be allowed to spend, in US dollars: far above what they take (a few cents
 /// to a dollar), so that a mistyped budget is refused rather than spent.
 pub const MOST_BUDGET_USD: f64 = 10.0;
+/// The same for a model with no price, in tokens.
+pub const MOST_BUDGET_TOKENS: u64 = 5_000_000;
 /// What the job is called in `/api/status`.
 const KIND: &str = "reading a paper's claims";
 /// A paper id longer than this is no paper's.
@@ -46,8 +50,16 @@ pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
 /// `ClaimsStart` in the contracts.
 #[derive(Deserialize)]
 pub struct Start {
-    /// The most the calls may spend, in US dollars: what the user agreed to after seeing the estimate.
-    budget_usd: f64,
+    /// The most the calls may spend, in US dollars, or in tokens for a model with no price: what the user agreed
+    /// to after seeing the estimate.
+    budget_usd: Option<f64>,
+    #[serde(default)]
+    budget_tokens: Option<u64>,
+    /// The model whose estimate was shown, and its provider.
+    #[serde(default)]
+    provider: Option<Provider>,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -65,17 +77,11 @@ fn paper_id(id: &str) -> Result<&str, ApiError> {
     if id.is_empty() || id.len() > LONGEST_ID { Err(ApiError::NotFound) } else { Ok(id) }
 }
 
-/// The model chosen in the settings, the default when none is.
-fn chosen_model(engine: &Shared) -> Result<String, ApiError> {
-    let chosen = settings::load(&engine.settings_file(), &engine.choices)?.describe_model;
-    Ok(if chosen.trim().is_empty() { DEFAULT_MODEL.to_owned() } else { chosen })
-}
-
 pub async fn read(State(engine): State<Shared>, Path(id): Path<String>) -> Result<Json<ClaimsView>, ApiError> {
     paper_id(&id)?;
     let view = on_the_side(move || {
-        let model = chosen_model(&engine)?;
-        claim_tree::view(&*engine.library()?, &id, &model)?.ok_or(ApiError::NotFound)
+        let chosen = engine.chosen()?;
+        claim_tree::view(&*engine.library()?, &id, &chosen)?.ok_or(ApiError::NotFound)
     })
     .await?;
     Ok(Json(view))
@@ -97,29 +103,33 @@ pub async fn start(
     body: Result<Json<Start>, JsonRejection>,
 ) -> Result<Json<Started>, ApiError> {
     paper_id(&id)?;
-    let Json(Start { budget_usd }) = body?;
-    if !budget_usd.is_finite() || budget_usd <= 0.0 || budget_usd > MOST_BUDGET_USD {
-        return Err(ApiError::Invalid(format!(
-            "the budget must be more than 0 and at most {MOST_BUDGET_USD} US dollars"
-        )));
-    }
-    let endpoint = engine.endpoint().map_err(|why| ApiError::Invalid(why.to_string()))?;
-    let job = on_the_side(move || begin(&engine, id, budget_usd, endpoint, Https::default)).await?;
+    let Json(asked) = body?;
+    let accepted = match Accepted::of(asked.budget_usd, asked.budget_tokens) {
+        Ok(Accepted::Shown) => return Err(ApiError::Invalid("give the budget the calls may spend".to_owned())),
+        Ok(accepted) => accepted,
+        Err(why) => return Err(ApiError::Invalid(why.to_string())),
+    };
+    let transport = Arc::clone(&engine.transport);
+    let job = on_the_side(move || begin(&engine, id, &asked, accepted, transport)).await?;
     Ok(Json(Started { job }))
 }
 
-/// Start the job that asks what is not kept about paper `id`, over the transport `transport` makes (the network,
-/// or the tests' fake). Answers the job's number.
-fn begin<T: Transport + 'static>(
+/// Start the job that asks what is not kept about paper `id` within what was `accepted`, over `transport` (the
+/// network, or the tests' fake). Answers the job's number.
+fn begin(
     engine: &Shared,
     id: String,
-    budget_usd: f64,
-    endpoint: Endpoint,
-    transport: impl FnOnce() -> T + Send + 'static,
+    asked: &Start,
+    accepted: Accepted,
+    transport: Arc<dyn Transport>,
 ) -> Result<u64, ApiError> {
     {
         let library = engine.library()?;
-        let model = chosen_model(engine)?;
+        let chosen = engine.chosen()?;
+        let endpoint = chosen.endpoint().map_err(|why| ApiError::Invalid(why.to_string()))?;
+        if let Some(model) = &asked.model {
+            chosen.as_shown(asked.provider, model).map_err(|why| ApiError::Invalid(why.to_string()))?;
+        }
         match library.paper_texts(&[id.as_str()])?.pop() {
             Some(PaperReading::Read(_)) => {}
             Some(PaperReading::NotInLibrary) | None => return Err(ApiError::NotFound),
@@ -127,12 +137,14 @@ fn begin<T: Transport + 'static>(
                 return Err(ApiError::Invalid(AskingError::NoPdf.to_string()));
             }
         }
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // checked above: 0 < budget <= 10
-        let budget = Budget::new(Limit::Dollars(Usd::from_picodollars((budget_usd * 1e12).round() as u64)));
+        // in dollars for a model with a price, in tokens for one without, as the estimate was shown
+        let view = claim_tree::view(&library, &id, &chosen)?.ok_or(ApiError::NotFound)?;
+        let cost = view.estimate.map(|estimate| estimate.cost).ok_or(ApiError::NotFound)?;
+        let terms = Terms::AtMost { usd: MOST_BUDGET_USD, tokens: MOST_BUDGET_TOKENS };
+        let budget = budget(&cost, accepted, terms).map_err(|why| ApiError::Invalid(why.to_string()))?;
         let job = engine.job.start_tracked(KIND, move |tracker| {
-            let transport = transport();
-            let askers = Askers { library: &library, transport: &transport, endpoint, recorder: &*library };
-            let done = ask(&askers, &id, &model, &budget, tracker).map_err(|error| error.to_string())?;
+            let askers = Askers { library: &library, transport: &*transport, endpoint, recorder: &*library };
+            let done = ask(&askers, &id, &chosen, &budget, tracker).map_err(|error| error.to_string())?;
             tracker.log(&format!("The claim tree: {}", told(&done.tree)));
             tracker.log(&format!("The reviews mapped onto it: {}", told(&done.mapping)));
             // a call that was asked and gave nothing usable, or was not started, fails the job: the interface
@@ -142,8 +154,7 @@ fn begin<T: Transport + 'static>(
                     return Err(format!("{what}: {}", told(asked)));
                 }
             }
-            // no run's name: the interface opens nothing when this is done
-            Ok(String::new())
+            Ok(Finished::Feature { feature: Feature::ClaimTree, subject: Subject::Paper(id) })
         })?;
         Ok(job)
     }
@@ -171,8 +182,8 @@ pub async fn community_contested(
 ) -> Result<Json<Contested>, ApiError> {
     let contested = on_the_side(move || {
         let papers = papers_of(&engine, &run, Some(&community))?;
-        let model = chosen_model(&engine)?;
-        Ok(claim_tree::contested(&*engine.library()?, &papers, &model)?)
+        let chosen = engine.chosen()?;
+        Ok(claim_tree::contested(&*engine.library()?, &papers, &chosen)?)
     })
     .await?;
     Ok(Json(contested))
@@ -280,6 +291,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn another_provider_is_priced_asked_in_its_own_shape_kept_and_asked_again_when_the_provider_changes() {
+        use super::super::other_providers::{
+            BUDGET, Chosen as Asked, MODEL, Scripted, accepting, call, choose, finished, priced_for, router, sent_to,
+        };
+
+        let (_, data) = engine(false);
+        let (tree, mapping) = (tree_answer().to_string(), mapping_answer().to_string());
+        let transport =
+            Scripted::new(
+                move |body: &str| if body.contains("TASK: the claim tree") { tree.clone() } else { mapping.clone() },
+            );
+        let router = router(data.path(), Asked::OpenAi, &transport);
+        let path = format!("/api/papers/{PAPER}/claims");
+        let mut sent = 0;
+        for chosen in [Asked::OpenAi, Asked::ThisComputer] {
+            choose(data.path(), chosen);
+            let (_, view) = call(&router, "GET", &path, None).await;
+            assert_eq!(
+                (view["provider"].clone(), view["model"].clone()),
+                (json!(chosen.provider().id()), json!(MODEL)),
+                "{view}"
+            );
+            assert_eq!(view["tree"]["state"], "not_asked");
+            let cost = view["estimate"].clone();
+            assert_eq!(cost["to_ask"], 2);
+            priced_for(&cost, chosen);
+            assert_eq!(transport.sent().len(), sent, "a view sends nothing");
+
+            let (status, started) = call(&router, "POST", &path, Some(accepting(&cost, BUDGET))).await;
+            assert_eq!(status, StatusCode::OK, "{started}");
+            let done = finished(&router, &started["job"]).await;
+            assert_eq!(done["state"], "done", "{done}");
+            let made = json!({"kind": "feature", "feature": "claim_tree", "subject": {"paper": PAPER}});
+            assert_eq!((done["outcome"].clone(), done["result"].clone()), (made, Value::Null), "no run to open");
+            let all = transport.sent();
+            assert_eq!(all.len() - sent, 2, "the tree, then the reviews' mapping");
+            sent_to(&all[sent..], chosen);
+            sent = all.len();
+
+            let (_, view) = call(&router, "GET", &path, None).await;
+            assert_eq!(
+                (view["tree"]["state"].clone(), view["mapping"]["state"].clone()),
+                (json!("made"), json!("made")),
+                "{view}"
+            );
+            assert_eq!(view["tree"]["nodes"][0]["evidence"][0]["established"]["kind"], "verified");
+            assert_eq!(view["estimate"]["to_ask"], 0, "kept: nothing left to ask");
+            let enough = match chosen {
+                Asked::OpenAi => json!({"budget_usd": 1.0, "provider": "openai", "model": MODEL}),
+                Asked::ThisComputer => json!({"budget_tokens": 100_000, "provider": "compatible", "model": MODEL}),
+            };
+            let (_, started) = call(&router, "POST", &path, Some(enough)).await;
+            assert_eq!(finished(&router, &started["job"]).await["state"], "done");
+            assert_eq!(transport.sent().len(), sent, "kept: not asked again");
+        }
+    }
+
+    #[tokio::test]
     async fn the_view_of_a_paper_says_what_is_kept_and_what_the_rest_would_cost() {
         let (engine, _data) = engine(false);
         let router = router(engine);
@@ -289,7 +358,7 @@ mod tests {
         assert_eq!(view["tree"]["state"], "not_asked");
         assert_eq!(view["mapping"]["state"], "no_tree");
         assert_eq!(view["estimate"]["to_ask"], 2);
-        assert_eq!(view["estimate"]["by_model"][0]["counting"]["kind"], "assumed");
+        assert_eq!(view["estimate"]["counting"]["kind"], "assumed");
         assert_eq!(view["reviews"]["points"].as_array().unwrap().len(), 5);
         let (_, no_pdf) = ask(&router, "GET", "/api/papers/2601.00002/claims", None).await;
         assert_eq!(
@@ -334,16 +403,22 @@ mod tests {
         let (release, wait) = mpsc::channel::<()>();
         engine
             .job
-            .start("a run", move |_| wait.recv().map(|()| String::new()).map_err(|error| error.to_string()))
+            .start("a run", move |_| {
+                wait.recv().map(|()| crate::jobs::Finished::Nothing).map_err(|error| error.to_string())
+            })
             .unwrap();
-        let refused =
-            start(State(Arc::clone(&engine)), Path(PAPER.to_owned()), Ok(Json(Start { budget_usd: 0.5 }))).await;
+        let refused = start(State(Arc::clone(&engine)), Path(PAPER.to_owned()), Ok(Json(half()))).await;
         assert!(matches!(refused, Err(ApiError::Busy(_))), "{:?}", refused.err());
         release.send(()).unwrap();
     }
 
+    /// A start that accepts half a dollar, with no model named.
+    fn half() -> Start {
+        Start { budget_usd: Some(0.5), budget_tokens: None, provider: None, model: None }
+    }
+
     /// Wait for the job to end, and say how it ended.
-    fn ended(engine: &Shared) -> crate::jobs::Snapshot<String> {
+    fn ended(engine: &Shared) -> crate::jobs::Snapshot<crate::jobs::Finished> {
         for _ in 0..500 {
             let job = engine.job.snapshot(0);
             if job.state != Phase::Running {
@@ -359,7 +434,8 @@ mod tests {
         let (engine, _data) = engine(true);
         let engine: Shared = Arc::new(engine);
         let answers = vec![reply(&tree_answer()), reply(&mapping_answer())];
-        let job = begin(&engine, PAPER.to_owned(), 0.5, nowhere(), move || Fake::new(answers)).unwrap();
+        let job =
+            begin(&engine, PAPER.to_owned(), &half(), Accepted::Dollars(0.5), Arc::new(Fake::new(answers))).unwrap();
         let done = ended(&engine);
         assert_eq!((done.id, done.kind.as_str(), done.state), (job, KIND, Phase::Done), "{:?}", done.log);
         let Json(view) = read(State(Arc::clone(&engine)), Path(PAPER.to_owned())).await.unwrap();
@@ -369,7 +445,9 @@ mod tests {
         let (release, wait) = mpsc::channel::<()>();
         engine
             .job
-            .start(KIND, move |_| wait.recv().map(|()| String::new()).map_err(|error| error.to_string()))
+            .start(KIND, move |_| {
+                wait.recv().map(|()| crate::jobs::Finished::Nothing).map_err(|error| error.to_string())
+            })
             .unwrap();
         let refused = forget(State(Arc::clone(&engine)), Path(PAPER.to_owned())).await;
         assert!(matches!(refused, Err(ApiError::Busy(_))));
@@ -384,9 +462,14 @@ mod tests {
     async fn a_job_whose_call_gave_nothing_usable_fails_and_says_why() {
         let (engine, _data) = engine(true);
         let engine: Shared = Arc::new(engine);
-        let job =
-            begin(&engine, PAPER.to_owned(), 0.5, nowhere(), || Fake::new(vec![reply(&json!({"not": "a tree"}))]))
-                .unwrap();
+        let job = begin(
+            &engine,
+            PAPER.to_owned(),
+            &half(),
+            Accepted::Dollars(0.5),
+            Arc::new(Fake::new(vec![reply(&json!({"not": "a tree"}))])),
+        )
+        .unwrap();
         let done = ended(&engine);
         assert_eq!((done.id, done.state), (job, Phase::Failed));
         assert!(done.error.unwrap().starts_with("The claim tree: no usable answer"));

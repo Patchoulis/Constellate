@@ -16,6 +16,7 @@ use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
 use super::{Library, LibraryError, now};
+use crate::model::language::{Provider, price_key};
 use crate::text::passages::READER;
 
 /// The features that keep answers. A variant's name is what is stored ([`Feature::name`]): it never changes once
@@ -63,8 +64,17 @@ impl Feature {
     }
 }
 
-/// What an answer is about, which is what a redo clears it by.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// A feature as the interface is told it: by its stored name ("citation_kinds").
+impl Serialize for Feature {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+/// What an answer is about, which is what a redo clears it by. Told to the interface as `{"paper": id}`,
+/// `{"run": name}` or `{"community": {"run", "community"}}` (a finished job's subject).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Subject {
     Paper(String),
     Run(String),
@@ -92,8 +102,8 @@ impl Subject {
 pub struct AnswerKey(String);
 
 impl AnswerKey {
-    /// The key of an answer of `feature`, written by `model` with version `prompt` of the feature's prompt, about
-    /// `papers`, to `question`, read with this version of the passages reader ([`READER`]).
+    /// The key of an answer of `feature`, written by `model` of `provider` with version `prompt` of the feature's
+    /// prompt, about `papers`, to `question`, read with this version of the passages reader ([`READER`]).
     ///
     /// `question` is everything else the answer depends on, as the feature writes it down: the question asked,
     /// the columns of a table (as JSON, in their order), the passage to explain (its address). Whatever it puts in
@@ -102,15 +112,38 @@ impl AnswerKey {
     ///
     /// The key is the SHA-256, in lower-case hex, of these fields in this order, each written as its length in
     /// bytes (eight bytes, little-endian) and then its UTF-8 bytes: `constellate answer key 1`, the feature's
-    /// name, the model, the prompt version and the reader version (in decimal), the number of distinct papers (in
-    /// decimal), each paper id in byte order, and the question. The lengths keep fields from running into one
+    /// name, the model as its price is kept ([`price_key`]: a Claude API model by its own id, any other provider's
+    /// as `provider:id`), the prompt version and the reader version (in decimal), the number of distinct papers
+    /// (in decimal), each paper id in byte order, and the question. The lengths keep fields from running into one
     /// another ("ab" + "c" is not "a" + "bc"). Changing any of this changes every key: answers kept before would
     /// no longer be found (and would be asked for again), so the first field's number is raised with it.
+    ///
+    /// The provider is part of the model's field rather than a field of its own so that the keys of the Claude
+    /// API's answers are byte for byte those made before there were other providers: nothing kept is orphaned.
+    /// Two providers serving one model id (OpenRouter and a gateway) keep their answers apart, since the models
+    /// behind the id may differ.
     ///
     /// A paper's PDF is not in the key: a paper whose PDF is replaced keeps its answers, whose quotes are checked
     /// again against the new text when they are loaded (those no longer found are dropped). A feature that must
     /// ask again then forgets the paper's answers ([`Library::forget`]).
-    pub fn new(feature: Feature, model: &str, prompt: u32, papers: &[&str], question: &str) -> Self {
+    pub fn new(
+        feature: Feature,
+        provider: Provider,
+        model: &str,
+        prompt: u32,
+        papers: &[&str],
+        question: &str,
+    ) -> Self {
+        Self::hashed(feature, &price_key(provider, model), prompt, papers, question)
+    }
+
+    /// The key of what a feature keeps of its own, written by no model (the list of a community's questions):
+    /// the key of [`AnswerKey::new`] with an empty model, as such keys always were.
+    pub fn of_feature(feature: Feature, version: u32, papers: &[&str], question: &str) -> Self {
+        Self::hashed(feature, "", version, papers, question)
+    }
+
+    fn hashed(feature: Feature, model: &str, prompt: u32, papers: &[&str], question: &str) -> Self {
         let mut papers = papers.to_vec();
         papers.sort_unstable();
         papers.dedup();
@@ -216,6 +249,13 @@ impl Library {
         })
     }
 
+    /// Forget the one answer `feature` kept under `key`: a redo of one answer, where its subject has others that
+    /// stay (one question of a run's many, one passage's explanation of a paper's). It is asked for again. False
+    /// when none was kept.
+    pub fn forget_key(&self, feature: Feature, key: &AnswerKey) -> Result<bool, LibraryError> {
+        self.write(|transaction| Ok(forget_key(transaction, feature, key.as_str())? > 0))
+    }
+
     /// Forget every answer `feature` kept about any of `subjects` (a redo): they are asked for again. Answers of
     /// other features, and about other subjects, stay. Returns how many were forgotten.
     pub fn forget(&self, feature: Feature, subjects: &[Subject]) -> Result<usize, LibraryError> {
@@ -229,6 +269,17 @@ impl Library {
             Ok(forgotten)
         })
     }
+}
+
+/// [`Library::forget_key`] in a transaction of the caller's, the key as stored (hex): how many rows went.
+pub(super) fn forget_key(
+    connection: &rusqlite::Connection,
+    feature: Feature,
+    key: &str,
+) -> Result<usize, LibraryError> {
+    Ok(connection
+        .prepare_cached("DELETE FROM kept_answers WHERE feature = ?1 AND answer_key = ?2")?
+        .execute(params![feature.name(), key])?)
 }
 
 #[cfg(test)]
@@ -253,7 +304,11 @@ mod tests {
     }
 
     fn slot(feature: Feature, subject: Subject, question: &str) -> Slot {
-        Slot { feature, key: AnswerKey::new(feature, "claude-opus-5-5", 1, &["p"], question), subject }
+        Slot {
+            feature,
+            key: AnswerKey::new(feature, Provider::Anthropic, "claude-opus-5-5", 1, &["p"], question),
+            subject,
+        }
     }
 
     #[test]
@@ -276,10 +331,86 @@ mod tests {
         assert_eq!(library.kept::<Vec<u32>>(Feature::Extraction, &slot.key).unwrap(), None);
     }
 
+    /// The key as it was made before there were providers other than the Claude API: written out again here, apart
+    /// from the code that makes keys now, so that a change there that would orphan the answers kept for Claude fails.
+    fn key_before_providers(feature: Feature, model: &str, prompt: u32, papers: &[&str], question: &str) -> String {
+        let mut papers = papers.to_vec();
+        papers.sort_unstable();
+        papers.dedup();
+        let mut hash = Sha256::new();
+        let count = papers.len().to_string();
+        let (prompt, reader) = (prompt.to_string(), READER.to_string());
+        let fields = ["constellate answer key 1", feature.name(), model, &prompt, &reader, &count];
+        for text in fields.into_iter().chain(papers).chain([question]) {
+            hash.update((text.len() as u64).to_le_bytes());
+            hash.update(text.as_bytes());
+        }
+        hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    #[test]
+    fn the_claude_apis_keys_are_byte_for_byte_those_made_before_there_were_other_providers() {
+        for feature in Feature::ALL {
+            for model in ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-2"] {
+                let now = AnswerKey::new(feature, Provider::Anthropic, model, 3, &["b", "a"], "a question");
+                assert_eq!(now.as_str(), key_before_providers(feature, model, 3, &["a", "b"], "a question"));
+            }
+        }
+        if READER == 1 {
+            // as kept in libraries already: the key of one answer, written down
+            let kept = AnswerKey::new(
+                Feature::Answers,
+                Provider::Anthropic,
+                "claude-opus-5-5",
+                1,
+                &["a", "b"],
+                "What is new?",
+            );
+            assert_eq!(kept.as_str(), "b03f1011ed6dc1dfbbaa131184f88fa329802546c1b0a7e5d502c54e28878644");
+        }
+        // what a feature keeps of its own (no model) is found where it was kept too
+        let list = AnswerKey::of_feature(Feature::Stances, 1, &[], "questions");
+        assert_eq!(list.as_str(), key_before_providers(Feature::Stances, "", 1, &[], "questions"));
+    }
+
+    #[test]
+    fn one_model_id_served_by_two_providers_keeps_two_answers() {
+        let by = |provider| AnswerKey::new(Feature::Critique, provider, "deepseek-v4-pro", 1, &["p"], "q");
+        let keys =
+            [by(Provider::DeepSeek), by(Provider::OpenRouter), by(Provider::Compatible), by(Provider::Anthropic)];
+        for (index, key) in keys.iter().enumerate() {
+            assert!(keys[index + 1..].iter().all(|other| other != key), "{index}");
+        }
+        assert_eq!(
+            keys[0].as_str(),
+            key_before_providers(Feature::Critique, "deepseek:deepseek-v4-pro", 1, &["p"], "q")
+        );
+    }
+
+    #[test]
+    fn a_redo_by_key_forgets_that_one_answer_only() {
+        let folder = tempfile::tempdir().unwrap();
+        let library = Library::open(folder.path()).unwrap();
+        let paper = Subject::Paper("p".to_owned());
+        let (first, second) =
+            (slot(Feature::Explanation, paper.clone(), "p. 1"), slot(Feature::Explanation, paper, "p. 2"));
+        for slot in [&first, &second] {
+            library.keep(slot, "claude-opus-5-5", 1, &claims("x")).unwrap();
+        }
+        assert!(library.forget_key(Feature::Explanation, &first.key).unwrap());
+        assert!(!library.forget_key(Feature::Explanation, &first.key).unwrap(), "nothing left to forget");
+        assert!(
+            !library.forget_key(Feature::Critique, &second.key).unwrap(),
+            "another feature's key is another answer"
+        );
+        assert_eq!(library.kept::<Vec<Claim<Cell>>>(Feature::Explanation, &first.key).unwrap(), None);
+        assert!(library.kept::<Vec<Claim<Cell>>>(Feature::Explanation, &second.key).unwrap().is_some());
+    }
+
     #[test]
     fn a_key_changes_with_everything_the_answer_depends_on_and_not_with_the_order_of_the_papers() {
         let key = |feature, model, prompt, papers: &[&str], question| {
-            AnswerKey::new(feature, model, prompt, papers, question)
+            AnswerKey::new(feature, Provider::Anthropic, model, prompt, papers, question)
         };
         let base = key(Feature::Answers, "claude-opus-5-5", 1, &["a", "b"], "What is new?");
         assert_eq!(base, key(Feature::Answers, "claude-opus-5-5", 1, &["b", "a", "b"], "What is new?"));
@@ -301,7 +432,14 @@ mod tests {
         );
         // fixed, so that a key made today finds an answer kept yesterday
         assert_eq!(base.as_str().len(), 64);
-        assert_eq!(base, AnswerKey::new(Feature::Answers, "claude-opus-5-5", 1, &["a", "b"], "What is new?"));
+        assert_eq!(
+            base,
+            AnswerKey::new(Feature::Answers, Provider::Anthropic, "claude-opus-5-5", 1, &["a", "b"], "What is new?")
+        );
+        assert_ne!(
+            base,
+            AnswerKey::new(Feature::Answers, Provider::OpenRouter, "claude-opus-5-5", 1, &["a", "b"], "What is new?")
+        );
     }
 
     #[test]

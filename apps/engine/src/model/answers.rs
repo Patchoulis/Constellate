@@ -43,7 +43,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::batch::{self, Asking, BatchEstimate, Failure, Item, Outcome as Asked, Stopped};
-use super::language::{Ask, Budget, CHARS_PER_TOKEN, Counting, Effort, Form};
+use super::chosen::Chosen;
+use super::language::{Ask, Budget, CHARS_PER_TOKEN, Form, Provider};
 use crate::evidence::{self, Cited, Claim, Established, Evidence, PaperText, Papers, Rules};
 use crate::jobs::Tracker;
 use crate::library::{AnswerKey, Feature, Library, LibraryError, Slot, Subject};
@@ -153,7 +154,8 @@ impl Scope {
 /// A question ready to be estimated and asked: the prompt, and what its answer is kept under.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Prepared {
-    pub model: String,
+    /// The model it is asked of, of its provider.
+    pub chosen: Chosen,
     pub question: String,
     /// The passages in the prompt, best first (those that did not fit are left out).
     pub given: Vec<Hit>,
@@ -198,19 +200,25 @@ fn cut(text: &str, most: usize) -> String {
 
 /// The key the answer to `question` about the passages `given` is kept under, and the papers they are from (in
 /// byte order). A question kept with an older [`PROMPT`] gets another key: it is not found, and is asked again.
-pub fn key_of(model: &str, scope: &Scope, question: &str, given: &[Hit]) -> (AnswerKey, Vec<String>) {
+pub fn key_of(
+    provider: Provider,
+    model: &str,
+    scope: &Scope,
+    question: &str,
+    given: &[Hit],
+) -> (AnswerKey, Vec<String>) {
     let papers: BTreeSet<&str> = given.iter().map(|hit| hit.paper.as_str()).collect();
     let papers: Vec<String> = papers.into_iter().map(str::to_owned).collect();
     let ids: Vec<&str> = papers.iter().map(String::as_str).collect();
     // everything the answer depends on besides the papers: the question, what it is asked of, which passages
     let units: Vec<(&str, Unit)> = given.iter().map(|hit| (hit.paper.as_str(), hit.unit)).collect();
     let depends = json!({"question": question, "scope": scope, "passages": units}).to_string();
-    (AnswerKey::new(Feature::Answers, model, PROMPT, &ids, &depends), papers)
+    (AnswerKey::new(Feature::Answers, provider, model, PROMPT, &ids, &depends), papers)
 }
 
-/// The question about `hits` (best first), asked of `model`: the passages that fit in [`PROMPT_TOKENS`], labelled
+/// The question about `hits` (best first), asked of `chosen`: the passages that fit in [`PROMPT_TOKENS`], labelled
 /// with their paper and place, in the order found; `texts` holds the papers' texts (as the library hands them).
-pub fn prepare(model: &str, scope: &Scope, question: &str, hits: &[Hit], texts: &Papers) -> Prepared {
+pub fn prepare(chosen: &Chosen, scope: &Scope, question: &str, hits: &[Hit], texts: &Papers) -> Prepared {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
     let room = (PROMPT_TOKENS as f64 * CHARS_PER_TOKEN) as usize;
     let mut shared = String::from("Passages from the papers in scope:\n");
@@ -224,9 +232,9 @@ pub fn prepare(model: &str, scope: &Scope, question: &str, hits: &[Hit], texts: 
         shared.push_str(&block);
         given.push(hit.clone());
     }
-    let (key, papers) = key_of(model, scope, question, &given);
+    let (key, papers) = key_of(chosen.provider(), chosen.model(), scope, question, &given);
     Prepared {
-        model: model.to_owned(),
+        chosen: chosen.clone(),
         question: question.to_owned(),
         key,
         subject: scope.subject(),
@@ -246,12 +254,12 @@ impl Prepared {
             prompt: PROMPT,
             ask: Ask {
                 purpose: PURPOSE,
-                model: &self.model,
+                model: self.chosen.model(),
                 system: SYSTEM,
                 shared: Some(&self.shared),
                 question: &self.asked,
                 form: Form::Json(&self.schema),
-                effort: Effort::Medium,
+                effort: self.chosen.effort(),
                 max_tokens: MAX_TOKENS,
             },
             likely_tokens: LIKELY_TOKENS,
@@ -260,18 +268,7 @@ impl Prepared {
 
     /// What asking it would cost (nothing when its answer is kept). Nothing is sent.
     pub fn estimate(&self, library: &Library) -> Result<BatchEstimate, LibraryError> {
-        batch::estimate_batch::<Said>(library, &[self.item()], Counting::ASSUMED)
-    }
-
-    /// The most tokens it can take, reckoned as the budget reckons them: every prompt token and an answer of
-    /// [`MAX_TOKENS`].
-    pub fn most_tokens(&self) -> u64 {
-        let tokens = |text: &str| {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
-            let tokens = (text.chars().count() as f64 / CHARS_PER_TOKEN).ceil() as u64;
-            tokens
-        };
-        tokens(&format!("{SYSTEM}{}", self.shared)) + tokens(&self.asked) + u64::from(MAX_TOKENS)
+        batch::estimate_batch::<Said>(library, &[self.item()], &self.chosen)
     }
 
     /// The prompt's passages, as sent: for the tests.
@@ -513,7 +510,7 @@ mod tests {
 
     fn prepared() -> Prepared {
         prepare(
-            MODEL,
+            &Chosen::claude(MODEL),
             &scope(),
             "Does merging count shared directions twice?",
             &hits("merging shared directions"),
@@ -546,7 +543,9 @@ mod tests {
         // another model, another question or another scope is another answer
         let texts = texts();
         let found = hits("merging shared directions");
-        let other = |model: &str, question: &str, scope: &Scope| prepare(model, scope, question, &found, &texts).key;
+        let other = |model: &str, question: &str, scope: &Scope| {
+            prepare(&Chosen::claude(model), scope, question, &found, &texts).key
+        };
         let question = "Does merging count shared directions twice?";
         assert_eq!(other(MODEL, question, &scope()), prepared.key);
         assert_ne!(other("claude-sonnet-5-5", question, &scope()), prepared.key);
@@ -557,6 +556,7 @@ mod tests {
     #[test]
     fn the_schema_asks_for_statements_with_quotes_and_allows_saying_the_papers_do_not_say() {
         let schema = schema();
+        assert!(crate::model::language::strict_ready(&schema), "every object closed and every property required");
         assert_eq!(schema["properties"]["outcome"]["enum"], json!(["answered", "not_in_papers"]));
         let claim = &schema["properties"]["statements"]["items"];
         assert_eq!(claim["required"], json!(["statement", "quotes"]));
@@ -590,7 +590,7 @@ mod tests {
             .collect();
         let hits: Vec<Hit> =
             (0..60).map(|n| Hit { paper: format!("p{n:02}"), unit: Unit::Record, score: 1.0 }).collect();
-        let prepared = prepare(MODEL, &scope(), "What?", &hits, &texts);
+        let prepared = prepare(&Chosen::claude(MODEL), &scope(), "What?", &hits, &texts);
         #[allow(clippy::cast_precision_loss)]
         let tokens = prepared.shared().chars().count() as f64 / CHARS_PER_TOKEN;
         assert!(tokens <= PROMPT_TOKENS as f64, "{tokens}");
@@ -644,7 +644,7 @@ mod tests {
 
     #[test]
     fn a_quote_from_the_wrong_paper_or_one_not_given_is_refused_and_a_shared_statement_needs_two_papers() {
-        let prepared = prepare(MODEL, &scope(), "q", &hits("distils teacher student"), &texts());
+        let prepared = prepare(&Chosen::claude(MODEL), &scope(), "q", &hits("distils teacher student"), &texts());
         assert_eq!(prepared.papers, ["2601.00002"]);
         let papers = citable(&texts(), &prepared.papers);
         let answer = checked(
@@ -762,7 +762,7 @@ mod tests {
         let prepared = prepared();
         let estimate = prepared.estimate(&library).unwrap();
         assert_eq!((estimate.to_ask, estimate.kept), (1, 0));
-        assert!(estimate.usd.unwrap() > Usd::ZERO && estimate.most_usd.unwrap() > estimate.usd.unwrap());
+        assert!(estimate.cost.usd.unwrap() > Usd::ZERO && estimate.cost.most_usd.unwrap() > estimate.cost.usd.unwrap());
         let reply = json!({"outcome": "answered", "statements": [claim("Merging counts shared directions twice.", "one_paper", &[("2601.00001", "merging task vectors counts shared directions twice")])]});
         let transport = answered(&reply.to_string());
         let said = asked(&library, &transport, &prepared, &plenty()).unwrap();
@@ -779,7 +779,7 @@ mod tests {
         assert_eq!(again, said);
         assert_eq!(transport.sent().len(), 1);
         let estimate = prepared.estimate(&library).unwrap();
-        assert_eq!((estimate.to_ask, estimate.kept, estimate.usd), (0, 1, Some(Usd::ZERO)));
+        assert_eq!((estimate.to_ask, estimate.kept, estimate.cost.usd), (0, 1, Some(Usd::ZERO)));
     }
 
     #[test]
@@ -801,14 +801,15 @@ mod tests {
         let library = Library::open(folder.path()).unwrap();
         let prepared = prepared();
         let transport = answered("{}");
-        let small = Budget::new(Limit::Tokens(prepared.most_tokens() - 100));
+        let estimate = prepared.estimate(&library).unwrap();
+        let small = Budget::new(Limit::Tokens(estimate.cost.most_tokens - 100));
         let refused = asked(&library, &transport, &prepared, &small);
         assert!(matches!(refused, Err(NotAnswered::Stopped(Stopped::OverBudget(_)))), "{refused:?}");
         assert!(transport.sent().is_empty());
         // exactly its worst case fits
         let reply = json!({"outcome": "not_in_papers", "statements": []}).to_string();
         let transport = answered(&reply);
-        let enough = Budget::new(Limit::Tokens(prepared.most_tokens()));
+        let enough = Budget::new(Limit::Tokens(estimate.cost.most_tokens));
         assert!(asked(&library, &transport, &prepared, &enough).is_ok());
     }
 }
