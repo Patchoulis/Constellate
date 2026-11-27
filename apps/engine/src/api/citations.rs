@@ -65,7 +65,7 @@ struct InRun {
 /// Why a request was not answered with a network: as [`ApiError`] says, or why the paper's PDF cannot be had
 /// (in the words of [`PdfOutcome::why_not`]), with its own status.
 #[derive(Debug)]
-enum Refusal {
+pub(super) enum Refusal {
     Api(ApiError),
     NoPdf { status: StatusCode, why: String },
 }
@@ -92,7 +92,7 @@ impl IntoResponse for Refusal {
 }
 
 /// The paper's id as asked, if it can be one.
-fn paper_id(id: &str) -> Result<&str, ApiError> {
+pub(super) fn paper_id(id: &str) -> Result<&str, ApiError> {
     if id.is_empty() || id.len() > LONGEST_ID || id.chars().any(char::is_control) {
         return Err(ApiError::NotFound);
     }
@@ -191,7 +191,7 @@ fn look_up_on_arxiv(list: &mut KeptReferences, seed: &str, linker: &Linker, fetc
 
 /// The refusal for a paper whose PDF cannot be had: not found when it is published nowhere a program may fetch
 /// it from, a bad gateway when its source failed.
-fn no_pdf(outcome: &PdfOutcome) -> Refusal {
+pub(super) fn no_pdf(outcome: &PdfOutcome) -> Refusal {
     let status = match outcome {
         PdfOutcome::NoAddress => StatusCode::NOT_FOUND,
         _ => StatusCode::BAD_GATEWAY,

@@ -327,7 +327,7 @@ impl Pdfs {
 }
 
 /// The library's record as the sources read it.
-fn as_source(record: &Paper) -> crate::sources::Paper {
+pub fn as_source(record: &Paper) -> crate::sources::Paper {
     crate::sources::Paper {
         id: record.id.clone(),
         title: record.title.clone(),

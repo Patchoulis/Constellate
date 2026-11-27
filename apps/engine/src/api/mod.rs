@@ -10,6 +10,7 @@
 //! | [`reviews`]  | a paper's reviews read from the page the user opened, and what they come to        |
 //! | [`passages`] | a paper's text from its PDF, and where a quote is in it                            |
 //! | [`citations`] | the citation network around a paper, from the reference lists read            |
+//! | [`papers`]   | a paper's record, its PDF (fetched when not kept), what its authors declare        |
 //! | [`stances`]  | where a community's papers agree and disagree on a question                        |
 //! | [`models`]   | the language models' providers and models, for the interface to choose from        |
 //! | [`usage`]    | what the language model has cost: in all, by model and purpose, and this session   |
@@ -30,6 +31,7 @@ pub mod login;
 pub mod models;
 #[cfg(test)]
 pub(crate) mod other_providers;
+pub mod papers;
 pub mod passages;
 pub mod reviews;
 pub mod routes;

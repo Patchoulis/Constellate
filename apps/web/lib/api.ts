@@ -93,8 +93,9 @@ export const api = {
 	models: () => call<ModelCatalog>("/api/models"),
 	/** the models the OpenAI-compatible server says it has */
 	endpointModels: () => call<{ models: string[] }>("/api/models/endpoint"),
-	paper: (id: string) => call<Paper>(`/api/papers/${id}`),
-	pdfUrl: (id: string) => `/api/pdf/${id}`,
+	paper: (id: string) => call<Paper>(`/api/papers/${encodeURIComponent(id)}`),
+	/** the paper's PDF: the kept one, or fetched now from where it is published */
+	pdfUrl: (id: string) => `/api/papers/${encodeURIComponent(id)}/pdf`,
 	/** the paper's text from its PDF, by page, section and paragraph (slow the first time: the PDF is read); fails
 	 *  with "not found" when the engine has no readable PDF of it */
 	passages: (id: string) => call<PaperPassages>(`/api/papers/${encodeURIComponent(id)}/passages`),
@@ -103,19 +104,12 @@ export const api = {
 	/** ask the running job (by its `Status.id`) to stop: it starts nothing new and finishes what is under way */
 	cancelJob: (id: number) => call<{ ok: true }>("/api/job/cancel", send("POST", { id })),
 	/** read what a paper's authors declare, from its PDF (slow the first time: the PDF is fetched) */
-	declarations: (id: string) => call<Declarations>(`/api/declarations/${id}`, { method: "POST" }),
+	declarations: (id: string) => call<Declarations>(`/api/papers/${encodeURIComponent(id)}/declarations`, { method: "POST" }),
 	/** the reviewers' scores of every paper whose reviews page has been opened, by paper id */
 	ratings: () => call<Record<string, Ratings>>("/api/reviews"),
 	/** hand over the text of a paper's reviews page and the page's address; answers the scores now kept (null if none) */
 	readRatings: (id: string, text: string, url: string) =>
-		readReviews(id, text, url).then(
-			(read) => (read.outcome === "not_its_page" ? null : read.ratings),
-			// the Python backend, which has no such route, until the engine serves /api: its scores-only route
-			(error: Error) => {
-				if (!/not found|answered 404/.test(error.message)) throw error;
-				return call<Ratings | null>(`/api/reviews/${encodeURIComponent(id)}`, send("POST", { text, url }));
-			},
-		),
+		readReviews(id, text, url).then((read) => (read.outcome === "not_its_page" ? null : read.ratings)),
 	readReviews,
 	/** a paper's kept discussion and what its scores come to; null until its reviews page has been opened */
 	paperReviews: (id: string) => call<PaperReviews | null>(`/api/papers/${encodeURIComponent(id)}/reviews`),
@@ -127,10 +121,12 @@ export const api = {
 	/** the citation network around a paper, from the reference lists read so far; with `inRun` (a run's name), it
 	 *  also counts the citing papers of that run */
 	citations: (id: string, inRun?: string) =>
-		call<CitationNetwork>(`/api/papers/${id}/citations${inRun ? `?run=${encodeURIComponent(inRun)}` : ""}`),
+		call<CitationNetwork>(`/api/papers/${encodeURIComponent(id)}/citations${inRun ? `?run=${encodeURIComponent(inRun)}` : ""}`),
 	/** read this paper's reference list from its PDF (slow the first time: the PDF is fetched); answers its network */
 	readReferences: (id: string, inRun?: string) =>
-		call<CitationNetwork>(`/api/papers/${id}/references${inRun ? `?run=${encodeURIComponent(inRun)}` : ""}`, { method: "POST" }),
+		call<CitationNetwork>(`/api/papers/${encodeURIComponent(id)}/references${inRun ? `?run=${encodeURIComponent(inRun)}` : ""}`, {
+			method: "POST",
+		}),
 	/** a paper's weaknesses: the reviewers' points, and the model's reading kept or what asking would cost (nothing is sent) */
 	critique: (id: string) => call<Critique>(`/api/papers/${encodeURIComponent(id)}/critique`),
 	/** ask the model to read the paper for weaknesses, as the one job; capped at the estimate's worst case */
