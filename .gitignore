@@ -16,6 +16,8 @@ apps/desktop/bin/
 
 # the library and runs: papers, embeddings, PDFs, what was spent
 data/
+# ...but not the prices and exchange rates compiled into the engine (scripts/update-prices.mjs)
+!apps/engine/data/
 
 # secrets and machine-local settings: never committed (see CLAUDE.md)
 .env

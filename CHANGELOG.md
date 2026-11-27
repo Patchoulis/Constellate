@@ -15,6 +15,9 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Mark papers to keep them in view: right-click a paper on the graph (or use the star in the reader and in a
   community's list) and it gets a yellow ring with its closest papers always linked and named; the Marked tab lists
   a run's marked papers, and marks are remembered for each run.
+- The engine has the model prices and the exchange rates built in, with the day each rate is from: once it
+  replaces the backend, the app no longer asks the internet for a rate. A weekly check compares the rates with the
+  European Central Bank's and, when one has moved by more than 1%, prepares a new version with the new rates.
 
 ### Changed
 

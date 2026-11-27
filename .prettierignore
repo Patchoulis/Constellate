@@ -3,6 +3,7 @@ node_modules
 .turbo
 dist
 data
+!apps/engine/data
 package-lock.json
 next-env.d.ts
 CHANGELOG.md

@@ -1,0 +1,124 @@
+name: Prices
+
+# Once a week, the exchange rates the engine converts costs with (apps/engine/data/prices.json, compiled into the
+# app) are compared with the European Central Bank's of the day. When one moved by more than 1%,
+# scripts/update-prices.mjs rewrites the file, raises the patch version and adds that version to CHANGELOG.md; this
+# workflow checks the result and opens a pull request with it, or updates the one already open. Merging it and
+# tagging the version (CLAUDE.md, "Release") ships it. Model prices are never fetched: they change by hand, with
+# `node scripts/update-prices.mjs --set-model <id> <input> <output>`.
+#
+# Two things a maintainer must know:
+#
+# 1. The repository setting "Allow GitHub Actions to create and approve pull requests" (Settings > Actions >
+#    General > Workflow permissions) must be on. Without it `gh pr create` below is refused and the run fails.
+# 2. A pull request opened with the job's own token (GITHUB_TOKEN) does not start any other workflow: CI does not
+#    run on it by itself. That is why this job runs the checks that matter for this change before it opens the
+#    pull request (the script's tests, and the engine's tests, which read the file). For CI's own checks to
+#    report on the pull request as well, close it and reopen it: a person doing so starts CI.
+#
+# A schedule runs only from the copy of this file on the default branch.
+
+on:
+  schedule:
+    # Mondays, 06:17 UTC: the bank publishes on working days, so this finds Friday's rates
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+# nothing by default; the one job asks for what it needs
+permissions: {}
+
+concurrency:
+  group: prices
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Update the exchange rates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the branch
+      pull-requests: write # open or update the pull request
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # always from main, also when started by hand from another branch: the pull request goes to main
+          ref: main
+          # the token that may push is not left on disk while the engine's dependencies build and run their tests;
+          # it is handed to git only in the last step
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Compare the rates with the bank's, and update them if one moved
+        id: update
+        # exits non-zero, and so fails the run, when the source answers something implausible: that needs a person
+        run: |
+          node scripts/update-prices.mjs
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git diff --stat
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/cache@v4
+        if: steps.update.outputs.changed == 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: engine-linux-${{ hashFiles('Cargo.lock') }}
+          restore-keys: engine-linux-
+
+      - name: Check the change (no other workflow will run on the pull request)
+        if: steps.update.outputs.changed == 'true'
+        # --locked: the version raised in Cargo.toml must be the one in Cargo.lock too
+        run: |
+          node --test scripts/update-prices.test.mjs
+          cargo test --quiet --locked
+
+      - name: Open the pull request, or update the one already open
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          date="$(node -p "require('./apps/engine/data/prices.json').rates.date")"
+          # both were just written by the script and checked; still, nothing else may reach a branch name
+          printf '%s' "$version" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'
+          printf '%s' "$date" | grep -Eqx '[0-9]{4}-[0-9]{2}-[0-9]{2}'
+          message="chore(release): v$version with exchange rates of $date"
+
+          # an earlier run's pull request that is still open is updated rather than joined by a second one; only a
+          # branch of this repository counts (anyone may open a pull request from a fork with any branch name)
+          existing="$(gh pr list --state open --base main --limit 200 --json headRefName,isCrossRepository \
+            --jq '[.[] | select(.isCrossRepository | not) | .headRefName | select(test("^chore/prices-[0-9]{4}-[0-9]{2}-[0-9]{2}$"))][0] // ""')"
+          branch="${existing:-chore/prices-$date}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
+          git switch --create "$branch"
+          git add apps/engine/data/prices.json package.json package-lock.json Cargo.toml Cargo.lock CHANGELOG.md
+          git commit --quiet --message "$message" \
+            --message "The exchange rates moved by more than 1% since the ones the app was built with. They are compiled into the engine, so the new rates are a release of their own."
+          # made again from main every time, so an older run's commit on the branch is replaced, not added to
+          # (and a commit someone added to it by hand is lost: this branch belongs to the workflow)
+          gh auth setup-git
+          git push --force origin "HEAD:refs/heads/$branch"
+
+          {
+            echo "The European Central Bank's reference rates of $date, against the US dollar, for the currencies the interface shows."
+            echo "Made by \`scripts/update-prices.mjs\`; the model prices are unchanged (they change by hand)."
+            echo
+            echo "This job ran the script's tests and \`cargo test\` on this change. CI does not start on a pull request"
+            echo "opened by a workflow: close and reopen this one to run it. After merging, tag \`v$version\` on main to release it."
+            echo
+            echo "If \`[Unreleased]\` in CHANGELOG.md has entries, they ship with this version too: move them under its heading before tagging."
+          } > body.md
+          if [ -n "$existing" ]; then
+            gh pr edit "$branch" --title "$message" --body-file body.md
+          else
+            gh pr create --base main --head "$branch" --title "$message" --body-file body.md
+          fi
