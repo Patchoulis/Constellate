@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, Sparkles, X } from "lucide-react";
+import { Loader2, PenLine, X } from "lucide-react";
 import type { OverviewPoint, OverviewStatus } from "@rp/contracts";
 import { CommunityDot } from "@/components/community-panel";
 import { MathText } from "@/components/math-text";
@@ -148,7 +148,7 @@ export function OverviewPanel({
 							</p>
 						) : (
 							<Button disabled={status === null && !error} onClick={write}>
-								<Sparkles />
+								<PenLine />
 								Write the overview
 							</Button>
 						)}

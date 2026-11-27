@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronLeft, Sparkles, Star, Trash2, X } from "lucide-react";
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronLeft, Star, Telescope, Trash2, X } from "lucide-react";
 import type { Community, GraphNode, RunResult } from "@rp/contracts";
 import { AcceptanceTag, AiTag } from "@/components/brand";
 import { MathText } from "@/components/math-text";
@@ -211,7 +211,7 @@ function Detail({
 	return (
 		<div className="flex flex-col gap-4 p-4">
 			<Button variant="outline" onClick={() => onOverview(node)}>
-				<Sparkles />
+				<Telescope />
 				Overview: methods, findings, directions
 			</Button>
 			{community.description ? (
