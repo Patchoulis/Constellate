@@ -33,7 +33,7 @@
  */
 import { select } from "d3-selection";
 import { zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from "d3-zoom";
-import { Glide, prefersLessMotion } from "@/lib/glide";
+import { Glide, prefersLessMotion, type Size, type View } from "@/lib/glide";
 import { GLOW_LAYER_MOST_PIXELS, glowLayerGeometry, inside, visibleWorld, type GlowLayerGeometry } from "@/lib/glow-layer";
 import type { MarkedPlace } from "@/lib/labels";
 import type { Box } from "@/lib/layout";
@@ -254,9 +254,12 @@ export class GraphCanvasRenderer {
 		const point = this.data?.points[index];
 		const { clientWidth: width, clientHeight: height } = this.canvas;
 		if (!point || !width || !height) return;
-		const free = width - right >= 160 ? width - right : width; // a sliver is no place to show it
 		const k = Math.max(this.transform.k, this.fitZoom * LEVEL_ZOOM[0]);
-		this.glideTo(zoomIdentity.translate(free / 2 - k * point.x, height / 2 - k * point.y).scale(k));
+		// worked out for the canvas's size, and again if it changes on the way
+		this.glideTo(({ width, height }) => {
+			const free = width - right >= 160 ? width - right : width; // a sliver is no place to show it
+			return { x: free / 2 - k * point.x, y: height / 2 - k * point.y, k };
+		});
 	}
 
 	private stopGliding() {
@@ -269,17 +272,16 @@ export class GraphCanvasRenderer {
 	 * system for less motion gets none. A new destination ends a glide in progress and starts from where the
 	 * camera is at that instant; so does the person taking hold of the graph.
 	 */
-	private glideTo(target: ZoomTransform, atOnce = false, arrived?: () => void) {
-		const show = ({ x, y, k }: { x: number; y: number; k: number }) =>
-			select(this.canvas).call(this.zoomBehavior.transform, zoomIdentity.translate(x, y).scale(k));
+	private glideTo(aim: (size: Size) => View, atOnce = false, arrived?: () => void) {
+		const show = ({ x, y, k }: View) => select(this.canvas).call(this.zoomBehavior.transform, zoomIdentity.translate(x, y).scale(k));
 		const { clientWidth: width, clientHeight: height } = this.canvas;
 		if (atOnce || prefersLessMotion() || !width || !height) {
 			this.glide.stop();
-			show(target);
+			show(aim({ width, height }));
 			arrived?.();
 			return;
 		}
-		this.glide.go(this.transform, target, { width, height }, show, arrived);
+		this.glide.go(this.transform, aim, { width, height }, show, arrived);
 	}
 
 	setFocus(focus: Set<number> | null) {
@@ -309,19 +311,19 @@ export class GraphCanvasRenderer {
 		const width = this.canvas.clientWidth;
 		const height = this.canvas.clientHeight;
 		if (!width || !height) return;
-		const k = this.zoomToFit(box);
 		if (this.whole) this.fitZoom = this.zoomToFit(this.whole);
-		const target = zoomIdentity
-			.translate(width / 2 - (k * (box.minX + box.maxX)) / 2, height / 2 - (k * (box.minY + box.maxY)) / 2)
-			.scale(k);
 		this.fitted = null; // on the way, the camera is fitted to nothing
-		this.glideTo(target, atOnce, () => (this.fitted = { box, transform: this.transform }));
+		// worked out for the canvas's size, and again if it changes on the way
+		const aim = (size: Size): View => {
+			const k = this.zoomToFit(box, size);
+			return { x: size.width / 2 - (k * (box.minX + box.maxX)) / 2, y: size.height / 2 - (k * (box.minY + box.maxY)) / 2, k };
+		};
+		this.glideTo(aim, atOnce, () => (this.fitted = { box, transform: this.transform }));
 	}
 
-	/** The zoom at which a world rectangle just fits the canvas, with a little margin. */
-	private zoomToFit(box: Box): number {
-		const { clientWidth: width, clientHeight: height } = this.canvas;
-		return Math.min(width / (box.maxX - box.minX || 1), height / (box.maxY - box.minY || 1)) * 0.9;
+	/** The zoom at which a world rectangle just fits the canvas (or a picture of `size`), with a little margin. */
+	private zoomToFit(box: Box, size: Size = { width: this.canvas.clientWidth, height: this.canvas.clientHeight }): number {
+		return Math.min(size.width / (box.maxX - box.minX || 1), size.height / (box.maxY - box.minY || 1)) * 0.9;
 	}
 
 	/** The level of detail the current zoom shows. */
@@ -416,6 +418,9 @@ export class GraphCanvasRenderer {
 		this.dpr = dpr;
 		this.canvas.width = Math.max(1, Math.round(this.canvas.clientWidth * dpr));
 		this.canvas.height = Math.max(1, Math.round(this.canvas.clientHeight * dpr));
+		// a glide under way was aimed for the old size: it ends at once where it now should (lib/glide.ts)
+		if (this.whole) this.fitZoom = this.zoomToFit(this.whole);
+		this.glide.resized({ width: this.canvas.clientWidth, height: this.canvas.clientHeight });
 		if (this.fitted && this.fitted.transform === this.transform) this.fit(this.fitted.box, false, true);
 		else if (this.whole) {
 			this.fitZoom = this.zoomToFit(this.whole);
