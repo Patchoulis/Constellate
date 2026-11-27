@@ -710,7 +710,54 @@ mod tests {
         }
     }
 
+    /// Two groups of 120 papers, each of two sub-groups of 60: the sub-groups' centres closer to their group's
+    /// than the groups are to each other, as topics within a field are.
+    fn nested_papers() -> (Array2<f32>, Array2<f32>) {
+        let mut random = crate::analysis::random::Random::new(17);
+        let groups = Array2::from_shape_simple_fn((2, 64), || 1.0 * random.normal());
+        let subs = Array2::from_shape_simple_fn((4, 64), || 0.6 * random.normal());
+        let points = Array2::from_shape_fn((240, 64), |(point, axis)| {
+            (groups[[point / 120, axis]] + subs[[point / 60, axis]] + 0.35 * random.normal()) as f32
+        });
+        let adjacency = adjacency_matrix(points.view(), true).unwrap();
+        let mut vectors = &points - &points.mean_axis(Axis(0)).unwrap();
+        make_unit(&mut vectors);
+        (adjacency, vectors)
+    }
+
+    #[test]
+    fn nested_groups_become_communities_with_sub_communities_under_the_default_limits() {
+        let (adjacency, vectors) = nested_papers();
+        let papers = Papers { adjacency: adjacency.view(), vectors: vectors.view() };
+        let truth: Vec<usize> = (0..240).map(|paper| paper / 120).collect();
+        let sub_truth: Vec<usize> = (0..240).map(|paper| paper / 60).collect();
+        for method in Method::ALL {
+            let partition = communities(method, papers, 2, Limits::default()).unwrap();
+            assert_eq!(partition.communities.len(), 2, "{method}");
+            assert!(same_grouping(&partition.labels(240), &truth), "{method}");
+            let mut leaves = vec![0; 240];
+            for (community, top) in partition.communities.iter().enumerate() {
+                let subs = top.sub_communities();
+                assert_eq!(subs.iter().map(|sub| sub.papers.len()).collect::<Vec<_>>(), [60, 60], "{method}");
+                assert!(matches!(top.parts, Parts::Halves { modularity, .. } if modularity >= 0.05), "{method}");
+                for (half, sub) in subs.iter().enumerate() {
+                    for &paper in &sub.papers {
+                        leaves[paper] = 2 * community + half;
+                    }
+                }
+            }
+            assert!(same_grouping(&leaves, &sub_truth), "{method}");
+        }
+    }
+
     /// How long a conference-sized run takes on this computer: `cargo test --release -- --ignored --nocapture`.
+    ///
+    /// The embeddings are noise, with no groups in them, so every cut of every community has a modularity of about
+    /// 0.01 to 0.03 (measured on 3,000 of them: 0.028 for the spectral and Fiedler cuts, 0.008 on nearest
+    /// neighbours), below the default [`Limits::min_split_modularity`] of 0.05: the methods that cut into k at
+    /// once give 24 communities and no sub-communities, and the Fiedler method, which keeps a cut only if it is
+    /// good enough, refuses its first and gives 1. That is the data, not the methods: on planted groups within
+    /// groups every method finds both levels (`nested_groups_become_communities_with_sub_communities_...`).
     #[test]
     #[ignore = "a measurement, not a check: 12,487 papers of 1,024 numbers each"]
     fn a_conference_sized_run_is_clustered_in_seconds() {
