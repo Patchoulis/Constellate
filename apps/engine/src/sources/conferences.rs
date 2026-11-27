@@ -188,10 +188,13 @@ pub fn read_entries(
             comment: field(entry, "decision").unwrap_or_default().to_owned(),
             primary_category: topic.to_owned(),
             categories: if topic.is_empty() { Vec::new() } else { vec![topic.to_owned()] },
-            url: field(entry, "paper_url").map_or_else(
-                || format!("https://{host}{}", field(entry, "virtualsite_url").unwrap_or_default()),
-                str::to_owned,
-            ),
+            // the list is the conference site's to write, and the address is opened from the window: only a web
+            // address on it, never `javascript:` or one that hides its host behind a user name
+            url: field(entry, "paper_url").and_then(super::web_address).unwrap_or_else(|| {
+                let page = field(entry, "virtualsite_url").unwrap_or_default();
+                let page = if page.starts_with('/') && !page.starts_with("//") { page } else { "" };
+                super::web_address(&format!("https://{host}{page}")).unwrap_or_default()
+            }),
             // a link for the reader to show; nothing here fetches from OpenReview
             pdf_url: forum.map(|forum| format!("https://openreview.net/pdf?id={forum}")),
         });
@@ -345,6 +348,32 @@ mod tests {
         let papers = read_entries(&entries, &Map::new(), "neurips.cc", "neurips", "2025");
         assert_eq!(papers[0].url, "https://neurips.cc/virtual/2025/poster/9");
         assert_eq!((papers[0].id.as_str(), papers[0].pdf_url.clone()), ("neurips-2025-x9", None));
+    }
+
+    #[test]
+    fn a_link_the_list_gives_is_kept_only_when_it_is_a_web_address_that_names_its_host() {
+        let entries = [
+            json!({"id": 1, "name": "A", "paper_url": "javascript:alert(document.domain)//openreview.net",
+                   "virtualsite_url": "/virtual/2025/poster/1"}),
+            json!({"id": 2, "name": "B", "paper_url": "https://openreview.net@evil.example/forum"}),
+            json!({"id": 3, "name": "C", "paper_url": "data:text/html,<script>alert(1)</script>"}),
+            json!({"id": 4, "name": "D", "virtualsite_url": "@evil.example/x"}),
+            json!({"id": 5, "name": "E", "virtualsite_url": "//evil.example/x"}),
+            json!({"id": 6, "name": "F", "paper_url": "https://openreview.net/forum?id=abc"}),
+        ];
+        let papers = read_entries(&entries, &Map::new(), "neurips.cc", "neurips", "2025");
+        let urls: Vec<&str> = papers.iter().map(|paper| paper.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://neurips.cc/virtual/2025/poster/1",
+                "https://neurips.cc/",
+                "https://neurips.cc/",
+                "https://neurips.cc/",
+                "https://neurips.cc/",
+                "https://openreview.net/forum?id=abc",
+            ]
+        );
     }
 
     #[test]

@@ -220,6 +220,18 @@ fn is_public_ip(ip: std::net::IpAddr) -> bool {
     }
 }
 
+/// `text` as an address a paper's record may keep and the window may open: `https` or `http`, with a host and no
+/// user name or password before it (`https://neurips.cc@evil.example/` names `evil.example`). Anything else a
+/// source wrote (`javascript:`, `data:`, `file:`) is no address at all.
+pub fn web_address(text: &str) -> Option<String> {
+    let address = Url::parse(text.trim()).ok()?;
+    let fine = matches!(address.scheme(), "https" | "http")
+        && address.host_str().is_some_and(|host| !host.is_empty())
+        && address.username().is_empty()
+        && address.password().is_none();
+    fine.then(|| address.to_string())
+}
+
 /// Does the address name a host on the public internet, by its name or its numbers?
 fn is_public(address: &Url) -> bool {
     match address.host() {
