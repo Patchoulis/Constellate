@@ -176,6 +176,7 @@ function ColumnsEditor({ run, given, onSaved }: { run: string; given: Extraction
 			<div className="flex flex-col gap-1 border-t pt-2">
 				<input
 					className="h-7 rounded-md border bg-transparent px-2"
+					aria-label="The new column's question"
 					placeholder="A question for every paper: Does it evaluate on out-of-distribution data?"
 					value={question}
 					maxLength={400}
@@ -184,12 +185,14 @@ function ColumnsEditor({ run, given, onSaved }: { run: string; given: Extraction
 				<div className="flex gap-1">
 					<input
 						className="h-7 min-w-0 flex-1 rounded-md border bg-transparent px-2"
+						aria-label="The new column's header"
 						placeholder="Its header (short)"
 						value={label}
 						maxLength={60}
 						onChange={(event) => setLabel(event.target.value)}
 					/>
 					<select
+						aria-label="What kind of answer the new column takes"
 						className="h-7 rounded-md border bg-card px-1"
 						value={kind}
 						onChange={(event) => setKind(event.target.value as ExtractionColumn["kind"])}
@@ -267,6 +270,7 @@ function Grid({
 			<div className="flex flex-wrap items-center gap-1.5 text-xs">
 				<span className="text-muted-foreground">Filter</span>
 				<select
+					aria-label="Filter by the column"
 					className="h-7 rounded-md border bg-card px-1"
 					value={filter?.column ?? ""}
 					onChange={(event) => setFilter(event.target.value === "" ? null : { column: Number(event.target.value), key: "stated" })}
@@ -280,6 +284,7 @@ function Grid({
 				</select>
 				{filter && (
 					<select
+						aria-label="Keep the papers whose cell is"
 						className="h-7 max-w-40 rounded-md border bg-card px-1"
 						value={filter.key}
 						onChange={(event) => setFilter({ ...filter, key: event.target.value })}
@@ -312,7 +317,11 @@ function Grid({
 								{count(shown.length, "paper")}
 							</th>
 							{columns.map((column, index) => (
-								<th key={column.id} className="w-48 border-b p-2 text-left align-top font-normal">
+								<th
+									key={column.id}
+									className="w-48 border-b p-2 text-left align-top font-normal"
+									aria-sort={sort?.column === index ? (sort.descending ? "descending" : "ascending") : "none"}
+								>
 									<button
 										type="button"
 										className="flex items-center gap-1 text-left text-foreground hover:underline"
