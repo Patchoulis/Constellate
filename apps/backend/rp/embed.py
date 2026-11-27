@@ -2,11 +2,15 @@
 
 Only papers the library has no vector for (same model, same id, same text) are embedded, unless `redo`.
 
-Models are loaded by hand: config -> empty model -> weights from the model's safetensors file.  The usual
-`from_pretrained` (and sentence-transformers, which calls it) crashes the interpreter on this machine's
-Python 3.15 build; the manual route gives the same weights.  What a hand-loaded model does not know is how its
-token vectors become one vector per text, so that is stated here per model (POOLING), as its model card gives it.
+Models are loaded the standard way, `AutoModel.from_pretrained`, with one setting: transformers normally copies
+a model's weights in worker threads, and PyTorch crashes in those threads on the newest Python on Windows (an
+access violation, no Python error), so that threading is switched off (HF_DEACTIVATE_ASYNC_LOAD) before
+transformers is imported.  Loading is a second or two either way.  sentence-transformers is not used: all it would
+add is how a model's token vectors become one vector per text, which is stated here per model (POOLING), as each
+model card gives it.
 """
+
+import os
 
 import numpy as np
 
@@ -28,53 +32,20 @@ POOLING = {
 _loaded = {}
 
 
-def _weights(name: str) -> dict:
-    """The model's tensors: from its safetensors file, or from the older pickle file when it has no other
-    (read with weights_only, which refuses anything that is not plain tensors)."""
-    import torch
-    from huggingface_hub import hf_hub_download
-    from huggingface_hub.errors import EntryNotFoundError
-    from safetensors.torch import load_file
-
-    try:
-        return load_file(hf_hub_download(name, "model.safetensors"))
-    except EntryNotFoundError:
-        return torch.load(hf_hub_download(name, "pytorch_model.bin"), map_location="cpu", weights_only=True)
-
-
 class Encoder:
     def __init__(self, name: str):
+        os.environ.setdefault("HF_DEACTIVATE_ASYNC_LOAD", "1")  # see the top of this file; must precede the import
         import torch
-        from transformers import AutoConfig, AutoModel, AutoTokenizer
+        from transformers import AutoModel, AutoTokenizer
 
         self.torch = torch
         self.pooling = POOLING.get(name, "mean")
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         # the last token is only the text's final token when padding goes on the left
         self.tokenizer = AutoTokenizer.from_pretrained(name, padding_side="left" if self.pooling == "last" else "right")
-        model = AutoModel.from_config(AutoConfig.from_pretrained(name))
-        weights = _weights(name)
-        wanted = set(model.state_dict())
-        # some checkpoints store the encoder under a prefix ("bert.embeddings..." for "embeddings...")
-        renamed = {
-            next(
-                (
-                    key[len(prefix) :]
-                    for prefix in ("", "bert.", "roberta.", "model.", "0.auto_model.")
-                    if key.startswith(prefix) and key[len(prefix) :] in wanted
-                ),
-                key,
-            ): value.float()
-            for key, value in weights.items()
-        }
-        missing = [
-            key
-            for key in model.load_state_dict(renamed, strict=False).missing_keys
-            if "pooler" not in key and "position_ids" not in key
-        ]  # unused here / rebuilt by the model
-        if missing:
-            raise RuntimeError(f"{name}: weights missing for {missing[:5]}")
-        self.model = (model.half() if self.device == "cuda" else model).to(self.device).eval()
+        # half precision on a graphics card: half the memory, and the embeddings agree to three decimals
+        dtype = torch.float16 if self.device == "cuda" else torch.float32
+        self.model = AutoModel.from_pretrained(name, dtype=dtype).to(self.device).eval()
 
     def _pool(self, hidden, mask):
         if self.pooling == "last":

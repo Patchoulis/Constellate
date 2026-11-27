@@ -82,8 +82,8 @@ descriptions, the changelog and code comments. The `commit-msg` hook rejects suc
 
 ## Things that look wrong but are deliberate
 
-- Models are loaded by hand in `rp/embed.py` (config, then weights) rather than with `from_pretrained`, which
-  crashes on the newest Python on Windows. Do not "simplify" that back.
+- `rp/embed.py` sets `HF_DEACTIVATE_ASYNC_LOAD` before importing transformers: without it, loading a model crashes
+  the interpreter on the newest Python on Windows (PyTorch in transformers' loader threads). Leave it.
 - OpenReview serves a bot challenge to programs. Do not work around it. Reviews are read only from the page the
   user opens in the reader.
 - The installed app does not use the machine's Python: it sets up its own on first start (`setup.cjs`).
