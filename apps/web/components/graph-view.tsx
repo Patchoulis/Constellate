@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { LocateFixed, Star } from "lucide-react";
+import { LocateFixed, Star, X } from "lucide-react";
 import type { GraphData, Ratings } from "@rp/contracts";
 import { AcceptanceTag, AiTag, RatingTags } from "@/components/brand";
 import { CommunityDot, MARK_HINT } from "@/components/community-panel";
@@ -14,7 +14,8 @@ import type { Marks } from "@/lib/marks";
 import { panelSize } from "@/lib/use-resizable";
 import { count } from "@/lib/units";
 import { countKinds, kindNotes, PAPER_KINDS, shownPapers, type PaperKind } from "@/lib/paper-filter";
-import { cn } from "@/lib/utils";
+import { canvasColouring, useGraphColouring } from "@/lib/graph-colouring";
+import { cn, hsl } from "@/lib/utils";
 import { boxOf, layoutGraph, type Layout } from "@/lib/layout";
 
 /** A paper's halo shrinks with the level, so the glows of smaller groups stay separate. */
@@ -166,6 +167,14 @@ export function GraphView({
 		rendererRef.current?.setMarked(marked.flatMap((id) => indexOf.get(id) ?? []));
 	}, [layout, indexOf, marked]);
 
+	// A feature's groups of papers, drawn in their hues instead of the communities' (lib/graph-colouring.ts).
+	const colourings = useGraphColouring();
+	const colouring = colourings?.colouring ?? null;
+	const painted = useMemo(() => (colouring ? canvasColouring(colouring, indexOf, graph.nodes.length) : null), [colouring, indexOf, graph]);
+	useEffect(() => {
+		rendererRef.current?.setColouring(painted);
+	}, [layout, painted]);
+
 	// Bring a paper into the middle of what the reader, which it opens in, leaves of the graph.
 	// Only a new request moves the camera: a new graph is fitted, not moved to an old request.
 	const indexRef = useRef(indexOf);
@@ -271,6 +280,39 @@ export function GraphView({
 					</button>
 				))}
 			</div>
+			{colouring && painted && (
+				<div className="absolute bottom-14 left-3 z-[7] flex max-w-72 flex-col gap-1 rounded-md border bg-card/95 px-2.5 py-2 text-xs shadow-md">
+					<div className="flex items-start gap-2">
+						<span className="min-w-0 flex-1 font-medium text-foreground">Coloured by {colouring.title}</span>
+						<Button
+							variant="ghost"
+							size="icon"
+							className="size-5"
+							title="Colour the graph by its communities again"
+							onClick={() => colourings?.clear(colouring.owner)}
+						>
+							<X />
+						</Button>
+					</div>
+					<ul className="flex flex-col gap-0.5 tabular-nums">
+						{painted.legend.map((entry) => (
+							<li key={entry.name} className="flex items-center gap-1.5 text-muted-foreground">
+								<span
+									className="size-2 shrink-0 rounded-full"
+									style={{ background: entry.hue === null ? "rgba(190, 190, 190, 0.75)" : hsl(entry.hue, 74) }}
+								/>
+								<span className="min-w-0 flex-1 truncate text-foreground" title={entry.name}>
+									{entry.name}
+								</span>
+								<span title={entry.elsewhere > 0 ? `${count(entry.elsewhere, "paper")} of this group not in this run` : undefined}>
+									{count(entry.shown, "paper")}
+								</span>
+							</li>
+						))}
+					</ul>
+					<span className="text-muted-foreground">Every other paper is dimmed.</span>
+				</div>
+			)}
 			{/* Back to what is being looked at, after dragging or zooming away from it. */}
 			<Button variant="outline" className="absolute right-3 bottom-3 gap-1.5 bg-card" title={recentre.title} onClick={recentre.go}>
 				<LocateFixed />

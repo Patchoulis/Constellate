@@ -7,7 +7,7 @@
  * Nothing is shown when the engine has no such route (the Python backend).
  */
 import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Download, Plus, RotateCcw, Square, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Download, Palette, Plus, RotateCcw, Square, X } from "lucide-react";
 import type {
 	ExtractionCell,
 	ExtractionColumn,
@@ -25,6 +25,7 @@ import { Button, Heading } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import {
 	cellText,
+	columnColouring,
 	columnId,
 	coverage,
 	filterOptions,
@@ -39,9 +40,11 @@ import {
 } from "@/lib/extraction";
 import { choiceKey, currentEstimate, useChosenModel } from "@/lib/chosen-model";
 import { budgetOf, costWords, shownModel } from "@/lib/cost";
+import { useColouringBy } from "@/lib/graph-colouring";
 import { ready, useAsync } from "@/lib/use-async";
 import { elsewhereLine, notAskedLine, useFollowedJob } from "@/lib/use-followed-job";
 import { count, money, tokens } from "@/lib/units";
+import { cn } from "@/lib/utils";
 
 const USD = { code: "USD", rate: 1, date: null };
 const usd = (amount: number) => money(amount, USD);
@@ -240,14 +243,18 @@ function ColumnsEditor({ run, given, onSaved }: { run: string; given: Extraction
 function Grid({
 	run,
 	table,
+	colouredAs,
 	onOpenPaper,
 	onForgotten,
 }: {
 	run: string;
 	table: Table;
+	/** who this table is when it colours the graph by a column (lib/graph-colouring.ts) */
+	colouredAs: string;
 	onOpenPaper: (id: string) => void;
 	onForgotten: () => void;
 }) {
+	const colouring = useColouringBy(colouredAs);
 	const [sort, setSort] = useState<{ column: number; descending: boolean } | null>(null);
 	const [filter, setFilter] = useState<{ column: number; key: string } | null>(null);
 	const columns = table.columns;
@@ -335,6 +342,25 @@ function Grid({
 										{column.label}
 										{sort?.column === index && (sort.descending ? <ArrowDown className="size-3" /> : <ArrowUp className="size-3" />)}
 									</button>
+									{colouring && (
+										<button
+											type="button"
+											aria-pressed={colouring.shown === column.id}
+											className={cn(
+												"mt-1 flex items-center gap-1 text-muted-foreground hover:text-foreground",
+												colouring.shown === column.id && "text-foreground",
+											)}
+											title={
+												colouring.shown === column.id
+													? "Colour the graph by its communities again"
+													: "Colour the graph by this column's values: its most common values each in a colour, every other paper dimmed"
+											}
+											onClick={() => colouring.toggle(column.id, () => columnColouring(table.rows, index, column.label))}
+										>
+											<Palette className="size-3" />
+											{colouring.shown === column.id ? "on the graph" : "colour the graph"}
+										</button>
+									)}
 								</th>
 							))}
 						</tr>
@@ -589,6 +615,7 @@ function Opened({
 					key={shownTable.columns.map((column) => column.id).join(" ")}
 					run={run}
 					table={shownTable}
+					colouredAs={`extraction:${run}:${where}`}
 					onOpenPaper={onOpenPaper}
 					onForgotten={again}
 				/>

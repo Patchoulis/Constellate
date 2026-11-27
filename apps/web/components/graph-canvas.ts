@@ -100,6 +100,8 @@ const NODE_R = 2.4; // world units
 const PICK_MARGIN_PX = 5;
 const SPRITE = 96;
 const DIM = "rgba(120, 120, 120, 0.16)";
+/** A feature's group with no hue of its own ("not stated", "not verified"): shown, but in no colour. */
+const GREY = "rgba(190, 190, 190, 0.75)";
 const MARKED_LINK = "rgba(255, 255, 255, 0.8)";
 /** A marked paper's ring and links: the --mark colour of globals.css. Yellow is no community's dot colour at full
  *  strength next to white, and reads on the dark background. */
@@ -169,6 +171,8 @@ export class GraphCanvasRenderer {
 	private hovered: number | null = null;
 	/** the marked papers, newest first */
 	private marked: number[] = [];
+	/** papers drawn by a feature's groups instead of their communities (lib/graph-colouring.ts); null: by community */
+	private colouring: { of: Int16Array; hues: (number | null)[] } | null = null;
 	/** the glows of the levels seen under the current focus, oldest first (glowLayerOf) */
 	private glowLayers: GlowLayer[] = [];
 	/** the dots of one level, focus and size (dotsOf) */
@@ -225,6 +229,7 @@ export class GraphCanvasRenderer {
 		this.data = data;
 		this.hovered = null;
 		this.marked = [];
+		this.colouring = null; // its papers were the last data's
 		this.sprites.clear();
 		this.dropGlowLayers(this.glowLayers);
 		this.glowLayers = [];
@@ -238,6 +243,20 @@ export class GraphCanvasRenderer {
 		this.updateLevel();
 		this.tellHover(); // the paper hovered before is not one of these
 		this.tellMarked();
+		this.markDirty();
+	}
+
+	/**
+	 * Draw the papers by a feature's groups (`of[paper]`, -1 for none; a group's hue, null for grey) instead of by
+	 * their communities, or by their communities again (null). The glow layers and the dots' paths were drawn in
+	 * the old colours: they are all dropped and drawn again for the new ones.
+	 */
+	setColouring(colouring: { of: Int16Array; hues: (number | null)[] } | null) {
+		if (colouring === this.colouring) return;
+		this.colouring = colouring;
+		this.dropGlowLayers(this.glowLayers);
+		this.glowLayers = [];
+		this.dotPaths = null;
 		this.markDirty();
 	}
 
@@ -369,9 +388,10 @@ export class GraphCanvasRenderer {
 		layer.setTransform(scale, 0, 0, scale, -box.minX * scale, -box.minY * scale);
 		layer.globalCompositeOperation = "lighter";
 		const radius = level.glow;
+		const paint = this.paintOf(level);
 		data.points.forEach((point, index) => {
-			if (this.lit(index))
-				layer.drawImage(this.sprite(level.groups[level.of[index]].hue), point.x - radius, point.y - radius, radius * 2, radius * 2);
+			const hue = this.glowHue(paint, index);
+			if (hue !== null) layer.drawImage(this.sprite(hue), point.x - radius, point.y - radius, radius * 2, radius * 2);
 		});
 		const made = { level, focus: this.focus, geometry, canvas, context: layer };
 		this.glowLayers = [...kept, made];
@@ -390,16 +410,35 @@ export class GraphCanvasRenderer {
 	private dotsOf(level: CanvasLevel, data: CanvasData, radius: number) {
 		const kept = this.dotPaths;
 		if (kept && kept.level === level && kept.focus === this.focus && kept.radius === radius) return kept;
-		const dots = level.groups.map(() => new Path2D());
+		const paint = this.paintOf(level);
+		const dots = paint.hues.map(() => new Path2D());
 		const dimmed = new Path2D();
 		data.points.forEach((point, index) => {
-			const path = this.lit(index) ? dots[level.of[index]] : dimmed;
+			const group = paint.of[index];
+			const path = this.lit(index) && group >= 0 ? dots[group] : dimmed;
 			const size = radius * data.sizes[index];
 			path.moveTo(point.x + size, point.y);
 			path.arc(point.x, point.y, size, 0, Math.PI * 2);
 		});
 		this.dotPaths = { level, focus: this.focus, radius, dots, dimmed };
 		return this.dotPaths;
+	}
+
+	/** Which group each paper is drawn in (-1: dimmed) and each group's hue (null: grey): its community's at this
+	 *  level, or the feature's colouring when one is set. */
+	private paintOf(level: CanvasLevel): { of: ArrayLike<number>; hues: (number | null)[] } {
+		if (this.colouring) return this.colouring;
+		let hues = this.levelHues.get(level);
+		if (!hues) this.levelHues.set(level, (hues = level.groups.map((group) => group.hue)));
+		return { of: level.of, hues };
+	}
+
+	private levelHues = new WeakMap<CanvasLevel, number[]>();
+
+	/** The hue of a paper's halo, or null for none: out of focus, in no group, or in a grey one. */
+	private glowHue(paint: { of: ArrayLike<number>; hues: (number | null)[] }, index: number): number | null {
+		const group = paint.of[index];
+		return this.lit(index) && group >= 0 ? (paint.hues[group] ?? null) : null;
 	}
 
 	private lit(index: number): boolean {
@@ -532,17 +571,25 @@ export class GraphCanvasRenderer {
 			ctx.drawImage(layer.canvas, box.minX, box.minY, box.maxX - box.minX, box.maxY - box.minY);
 		} else {
 			const reach = visibleWorld(this.transform, this.canvas.clientWidth, this.canvas.clientHeight, level.glow);
-			data.points.forEach((point, index) => inside(reach, point.x, point.y) && this.lit(index) && glow(index, level.glow));
+			const paint = this.paintOf(level);
+			data.points.forEach((point, index) => {
+				if (!inside(reach, point.x, point.y)) return;
+				const hue = this.glowHue(paint, index);
+				if (hue !== null) ctx.drawImage(this.sprite(hue), point.x - level.glow, point.y - level.glow, level.glow * 2, level.glow * 2);
+			});
 		}
 		ctx.globalCompositeOperation = "source-over";
 
-		// 2. Papers: one path per group plus one for everything out of focus. Never under ~1px on screen.
+		// 2. Papers: one path per group (a community, or a feature's group) plus one for everything out of focus or
+		// in no group. Never under ~1px on screen.
 		const radius = dotRadius(k);
 		const { dots, dimmed } = this.dotsOf(level, data, radius);
+		const { hues } = this.paintOf(level);
 		ctx.fillStyle = DIM;
 		ctx.fill(dimmed);
 		dots.forEach((path, group) => {
-			ctx.fillStyle = hsl(level.groups[group].hue, 74);
+			const hue = hues[group];
+			ctx.fillStyle = hue === null ? GREY : hsl(hue, 74);
 			ctx.fill(path);
 		});
 

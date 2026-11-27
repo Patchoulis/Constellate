@@ -4,7 +4,8 @@
  * of papers each group holds, for the graph. Never one verdict: a placement is the model's reading of one paper,
  * and every paper counts once, whatever its design.
  */
-import type { Acceptance, GraphNode, StanceCostEstimate, StanceFilter, StanceGroup, StanceResult, StanceRow } from "@rp/contracts";
+import type { Acceptance, StanceCostEstimate, StanceFilter, StanceGroup, StanceResult, StanceRow } from "@rp/contracts";
+import type { Colouring } from "@/lib/graph-colouring";
 import { costWords } from "@/lib/cost";
 import { count, type Currency } from "@/lib/units";
 
@@ -35,7 +36,7 @@ export const GROUP_NOTE: Record<StanceGroup, string> = {
 	unusable: "The model's answer was not one the question allows (a mixed stance without its condition): ask again with Redo.",
 };
 
-/** The hue each group is drawn in, on the panel and (for an integrator's hook) on the graph; null for grey. */
+/** The hue each group is drawn in, on the panel and on the graph (stanceColouring); null for grey. */
 export const GROUP_HUE: Record<StanceGroup, number | null> = {
 	supports: 145,
 	mixed: 42,
@@ -146,18 +147,19 @@ export function starter(term: string): string {
 	return `Does ${term} help?`;
 }
 
-/** The papers of each group as indexes into the run's graph nodes: what a graph highlight would colour. */
-export function groupSets(rows: StanceRow[], nodes: GraphNode[]): Map<StanceGroup, Set<number>> {
-	const at = new Map(nodes.map((node, index) => [node.id, index]));
-	const sets = new Map<StanceGroup, Set<number>>();
-	for (const row of rows) {
-		const index = at.get(row.paper);
-		if (index === undefined) continue;
-		const set = sets.get(row.placed.group) ?? new Set<number>();
-		set.add(index);
-		sets.set(row.placed.group, set);
-	}
-	return sets;
+/**
+ * The graph coloured by where the papers stand (lib/graph-colouring.ts): each group that has papers, in the order
+ * shown, in its hue (grey for those not counted for or against). The graph finds the papers by id; those not in
+ * the run are counted apart in its legend.
+ */
+export function stanceColouring(question: string, rows: StanceRow[]): Colouring {
+	return {
+		title: `“${question}” (the model's reading)`,
+		groups: [...COUNTED, ...APART].flatMap((group) => {
+			const papers = rows.filter((row) => row.placed.group === group).map((row) => row.paper);
+			return papers.length > 0 ? [{ name: GROUP_LABEL[group], hue: GROUP_HUE[group], papers }] : [];
+		}),
+	};
 }
 
 /** The rows of one group, most central first (the engine's order). */
