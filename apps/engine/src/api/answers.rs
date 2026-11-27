@@ -32,8 +32,9 @@
 //! Retrieval here is lexical: the engine has no embedding model loaded to embed a question with. When it has,
 //! the similarity of each paper's embedding to the question goes to `Index::search` as `Ranking::Embedded`.
 
-use std::sync::{Arc, LazyLock};
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, SystemTime};
 
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, QueryRejection};
@@ -46,6 +47,7 @@ use super::reviews::papers_of;
 use super::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::evidence::{Cited, PaperText, Papers};
 use crate::jobs::{Finished, Phase, Tracker};
+use crate::library::passages::PDF_FOLDER;
 use crate::library::questions::Asked;
 use crate::library::{AnswerKey, Feature, Library, PaperReading};
 use crate::model::answers::{
@@ -69,6 +71,38 @@ const JOB: &str = "answering a question";
 
 /// The indexes of this engine, by library, run, scope and members.
 static INDEXES: LazyLock<Indexes> = LazyLock::new(Indexes::default);
+
+/// By index name: the modification time of the library's PDF folder when that index's papers were last seen to
+/// be as it has them (none when there is no folder). Keeping a PDF (a download, a replacement) changes the
+/// folder's time; only then are the papers an index has without a PDF looked at one by one ([`up_to_date`]).
+static SEEN: LazyLock<Mutex<HashMap<String, Option<SystemTime>>>> = LazyLock::new(Mutex::default);
+
+fn seen() -> MutexGuard<'static, HashMap<String, Option<SystemTime>>> {
+    SEEN.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// When a PDF was last kept in (or taken from) the library, as its PDF folder's time says.
+fn pdfs_changed_at(library: &Library) -> Option<SystemTime> {
+    std::fs::metadata(library.path().with_file_name(PDF_FOLDER)).and_then(|folder| folder.modified()).ok()
+}
+
+/// Does `index` (kept under `name`) still have the papers as the library has them? Not once a paper it has by its
+/// abstract, because no PDF of it was kept, has a PDF: that paper's full text would be searched by an index built
+/// now, whether or not its abstract matches anything.
+fn up_to_date(library: &Library, name: &str, index: &Index) -> bool {
+    let now = pdfs_changed_at(library);
+    if seen().get(name) == Some(&now) {
+        return true;
+    }
+    let fresh = index.without_pdf().all(|paper| !library.pdf_file(paper).exists());
+    if fresh {
+        let kept = INDEXES.kept();
+        let mut seen = seen();
+        seen.retain(|scope, _| kept.binary_search(scope).is_ok());
+        seen.insert(name.to_owned(), now);
+    }
+    fresh
+}
 
 /// The routes of this module, for [`super::routes::table`].
 pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
@@ -125,9 +159,14 @@ fn index_of(engine: &Shared, library: &Arc<Library>, scope: &Scope) -> Result<(G
     let members: String = Sha256::digest(ids.join("\n").as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect();
     let name =
         format!("{}\n{}\n{}\n{members}", library.path().display(), scope.run, scope.community.as_deref().unwrap_or(""));
-    let library = Arc::clone(library);
-    let got =
-        INDEXES.get(&name, Wait::AtMost(WAIT), move |progress| build(&library, &ids, progress)).map_err(|why| {
+    let (library, building) = (Arc::clone(library), name.clone());
+    let got = INDEXES
+        .get(&name, Wait::AtMost(WAIT), move |progress| {
+            // before anything is read: a PDF kept while the papers are read is then a change seen after
+            seen().insert(building, pdfs_changed_at(&library));
+            build(&library, &ids, progress)
+        })
+        .map_err(|why| {
             eprintln!("answers: an index could not be built: {why}");
             ApiError::Files
         })?;
@@ -184,8 +223,9 @@ enum Searched {
     Indexing { done: usize, of: usize },
 }
 
-/// The passages that match `query`, with their papers' texts. An index found out of date is dropped and built
-/// again (the request then waits for it, or is told how far it has got).
+/// The passages that match `query`, with their papers' texts. An index found out of date (a paper it has by its
+/// abstract has a PDF now, or a passage found is of a text its paper no longer has) is dropped and built again
+/// (the request then waits for it, or is told how far it has got).
 fn search(engine: &Shared, library: &Arc<Library>, scope: &Scope, query: &str) -> Result<Searched, ApiError> {
     for _ in 0..2 {
         let (got, name) = index_of(engine, library, scope)?;
@@ -193,6 +233,10 @@ fn search(engine: &Shared, library: &Arc<Library>, scope: &Scope, query: &str) -
             Got::Ready(index) => index,
             Got::Building { done, of } => return Ok(Searched::Indexing { done, of }),
         };
+        if !up_to_date(library, &name, &index) {
+            INDEXES.forget(&name);
+            continue;
+        }
         let hits = index.search(query, Ranking::Lexical);
         let texts = texts_of(library, &hits)?;
         if hits.iter().all(|hit| current(hit, &texts)) {
@@ -716,6 +760,25 @@ mod tests {
         let (_, record) = ask(&router, "GET", "/api/runs/r1/passages/found?q=spectrum", None).await;
         assert_eq!(record["passages"][0]["evidence"]["paper"], "icml-2026-3");
         assert_eq!(record["passages"][0]["evidence"]["established"]["kind"], "abstract");
+    }
+
+    #[tokio::test]
+    async fn a_pdf_kept_after_the_index_was_built_is_searched_even_when_its_abstract_matched_nothing() {
+        let data = data();
+        let router = router(engine(&data));
+        let path = format!("/api/runs/r1/passages/found?q={}", query("calibrate thermometers"));
+        let (_, before) = ask(&router, "GET", &path, None).await;
+        assert_eq!((before["state"].clone(), before["coverage"]["no_pdf"].clone()), (json!("ready"), json!(1)));
+        assert!(before["passages"].as_array().unwrap().is_empty(), "{before}");
+
+        let library = Library::open(&data.path().join("library")).unwrap();
+        let read = ["Method", "We calibrate the thermometers before every merging experiment we report."];
+        library.keep_pdf("icml-2026-3", &pdf_with(&read)).unwrap();
+        let (_, after) = ask(&router, "GET", &path, None).await;
+        assert_eq!(after["state"], "ready", "{after}");
+        assert_eq!((after["coverage"]["full_text"].clone(), after["coverage"]["no_pdf"].clone()), (json!(3), json!(0)));
+        assert_eq!(after["passages"][0]["evidence"]["paper"], "icml-2026-3", "{after}");
+        assert_eq!(after["passages"][0]["evidence"]["established"]["kind"], "verified");
     }
 
     #[tokio::test]
