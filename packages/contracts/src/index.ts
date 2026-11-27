@@ -680,7 +680,7 @@ export interface Declarations {
 	flags: string[];
 }
 
-/** A statistical estimate, not proof: see rp/detect.py. */
+/** A statistical estimate, not proof: see the engine's detector/mod.rs. */
 export interface AiVerdict {
 	/** higher = more machine-like */
 	score: number;
@@ -879,8 +879,8 @@ export interface ReaderTarget {
 export interface Library {
 	papers: number;
 	embeddings: Record<string, number>;
-	/** whether abstracts get scored in the next run, and why (rp/detect.py `availability`) */
-	ai_detector: { state: "off" | "untrained" | "ready"; why: string };
+	/** whether abstracts get scored in the next run, and why (engine detector/mod.rs `Availability`) */
+	ai_detector: { state: DetectorState; why: string };
 	/** what this computer can do: its NVIDIA graphics card, if any, and what that means for embedding */
 	machine: { gpu: string | null; embedding: string };
 	/** what was measured about the AI-text detector on papers it was not trained on; null until it is trained */
@@ -890,10 +890,10 @@ export interface Library {
 		held_out: number;
 		/** share of human abstracts flagged, by construction of the threshold */
 		false_alarms: number;
-		/** share caught of abstracts a model wrote from the title */
-		written_caught: number;
-		/** share caught of human abstracts a model polished */
-		polished_caught: number;
+		/** share caught of abstracts a model wrote from the title; null when none was held out */
+		written_caught: number | null;
+		/** share caught of human abstracts a model polished; null when none was held out */
+		polished_caught: number | null;
 		/** the words that most point to a model */
 		machine_words: string[];
 		/** share of arXiv abstracts flagged in a week of each year, if that check was run */
@@ -1911,4 +1911,65 @@ export interface RunPage {
 	total: number;
 	offset: number;
 	rows: RunRow[];
+}
+
+// ---- AI-text detector (engine detector/, api/detector.rs) ----
+
+/** off: switched off; untrained: nothing built, nothing flagged; building: the job is under way; ready: trained by
+ * this version; stale: trained by an earlier version of the app (it still scores; training again is free). */
+export type DetectorState = "off" | "untrained" | "building" | "ready" | "stale";
+
+/** What was measured on held-out papers: shares of held-out abstracts, from 0 to 1. */
+export interface DetectorMeasured {
+	/** detector scores above this are flagged */
+	threshold: number;
+	written_caught: number | null;
+	polished_caught: number | null;
+	auc: number | null;
+}
+
+/** `GET /api/detector`: the state and why, and what was measured about it. */
+export interface DetectorInfo {
+	state: DetectorState;
+	/** while building: abstracts written so far, of how many at most */
+	done?: number;
+	of?: number;
+	/** ready or stale: when it was trained (UTC) */
+	trained_at?: string;
+	why: string;
+	validation: Library["ai_validation"];
+	report: {
+		trained_at: string;
+		/** the models whose text it learnt, and how many of the abstracts trained on each wrote */
+		written_by: { name: string; provider: ProviderId | null; model: string; mirrors: number }[];
+		trained_on: number;
+		held_out: number;
+		false_alarms: number;
+		measured: DetectorMeasured;
+		rounds: { round: number; humans: number; written_caught: number | null; polished_caught: number | null }[];
+		machine_words: string[];
+		human_words: string[];
+	} | null;
+}
+
+/** `GET /api/detector/estimate`: what building would ask and cost with the chosen model; nothing is sent. */
+export interface DetectorEstimate {
+	provider: ProviderId;
+	model: string;
+	api_key_set: boolean;
+	/** 2019 abstracts kept, of how many the training set needs */
+	pool_kept: number;
+	pool: number;
+	mirrors_kept: number;
+	/** the most abstracts a build could still ask a model to write */
+	to_generate: number;
+	/** built before: building again asks nothing and trains it again */
+	built: boolean;
+	cost: BatchCost;
+}
+
+/** `POST /api/detector/build` and `POST /api/detector/years`. */
+export interface DetectorStarted {
+	outcome: "started";
+	job: number;
 }

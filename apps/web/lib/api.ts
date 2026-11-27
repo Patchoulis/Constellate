@@ -298,6 +298,19 @@ export const api = {
 		for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== "") asked.set(key, String(value));
 		return call<import("@rp/contracts").RunPage>(`/api/runs?${asked.toString() || "offset=0"}`);
 	},
+	/** the AI-text detector's state and what was measured about it */
+	detector: () => call<import("@rp/contracts").DetectorInfo>("/api/detector"),
+	/** what building the detector would cost with the chosen model; nothing is sent */
+	detectorEstimate: () => call<import("@rp/contracts").DetectorEstimate>("/api/detector/estimate"),
+	/** build it, accepting the estimate as shown or within a budget of one's own: starts the job (training again
+	 * what is built asks nothing and needs neither) */
+	buildDetector: (
+		request: import("@rp/contracts").ShownModel & (import("@rp/contracts").AcceptedCost | import("@rp/contracts").BudgetOf),
+	) => call<import("@rp/contracts").DetectorStarted>("/api/detector/build", send("POST", request)),
+	/** score a week of arXiv in each year (arXiv only, free): starts the job */
+	checkDetectorYears: () => call<import("@rp/contracts").DetectorStarted>("/api/detector/years", { method: "POST" }),
+	/** a paper's AI-text verdict: null when it was never scored or is too short */
+	paperAi: (id: string) => call<import("@rp/contracts").AiVerdict | null>(`/api/papers/${encodeURIComponent(id)}/ai`),
 };
 
 type StanceScope = import("@rp/contracts").StanceScope;

@@ -7,6 +7,7 @@
 //! |-------------|-------------------------------------------------------------------------------|
 //! | [`analysis`] | the similarity graph over papers, who cites whom, and what is worked out from them |
 //! | [`api`]     | what the interface asks, over HTTP, answered only to the app itself            |
+//! | [`detector`] | the AI-text estimate: which abstracts read the way language models write      |
 //! | [`evidence`] | "this statement rests on that place in that paper": quotes checked before they are shown |
 //! | [`library`] | what is kept on disk: the SQLite library, and the file store for a run's results |
 //! | [`jobs`]    | the one background job at a time, as an explicit state machine                  |
@@ -20,11 +21,12 @@
 //! | [`text`]    | what is read out of text: passages, authors' declarations, reviewers' scores, references |
 //! | [`threads`] | how many threads the engine computes on, and many papers' work run on them    |
 //!
-//! Still to come as the Python backend (`apps/backend`) is ported: the AI-text estimate and the language model's
-//! descriptions (each a step of a run, connected in `pipeline/seams.rs`), and the rest of `api`'s routes.
+//! Still to come as the Python backend (`apps/backend`) is removed: connecting the AI-text estimate and the language
+//! model's descriptions as steps of a run (`pipeline/seams.rs`), and the routes about one paper.
 
 pub mod analysis;
 pub mod api;
+pub mod detector;
 pub mod evidence;
 pub mod explanation;
 pub mod jobs;

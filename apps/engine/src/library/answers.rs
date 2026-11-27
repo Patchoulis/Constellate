@@ -41,10 +41,13 @@ pub enum Feature {
     Describing,
     /// A community's overview, with every point's quotes ([`crate::writing::overview`]).
     Overview,
+    /// What a model wrote for the AI-text detector's training set (a 2019 abstract written from its title, or
+    /// polished): kept here as it arrives, so that none is paid for twice (`crate::detector`).
+    Detector,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 9] = [
+    pub const ALL: [Feature; 10] = [
         Feature::Extraction,
         Feature::CitationKinds,
         Feature::Stances,
@@ -54,6 +57,7 @@ impl Feature {
         Feature::ClaimTree,
         Feature::Describing,
         Feature::Overview,
+        Feature::Detector,
     ];
 
     /// As stored.
@@ -68,6 +72,7 @@ impl Feature {
             Feature::ClaimTree => "claim_tree",
             Feature::Describing => "describing",
             Feature::Overview => "overview",
+            Feature::Detector => "ai_detector",
         }
     }
 }

@@ -276,6 +276,55 @@ pub const MIGRATIONS: &[&str] = &[
         usage TEXT NOT NULL
     );
     ",
+    // 11 (the AI-text detector, library/detector.rs): its training set and the classifier fitted on it
+    r"
+    -- Human abstracts from arXiv kept to learn from: the 2019 pool ('pool') and the samples of the year check (the
+    -- year, '2021'). These are not papers of the library, so nothing refers to `papers`.
+    CREATE TABLE detector_humans (
+        sample   TEXT NOT NULL,
+        paper_id TEXT NOT NULL,
+        position BIGINT NOT NULL,
+        title    TEXT NOT NULL,
+        abstract TEXT NOT NULL,
+        PRIMARY KEY (sample, paper_id)
+    );
+    -- The days of arXiv fetched for a sample: none is fetched twice.
+    CREATE TABLE detector_days (
+        sample     TEXT NOT NULL,
+        day        TEXT NOT NULL,
+        papers     BIGINT NOT NULL,
+        fetched_at TEXT NOT NULL,
+        PRIMARY KEY (sample, day)
+    );
+    -- What a model wrote for a pool paper, and which provider and model wrote it (no provider: not recorded).
+    CREATE TABLE detector_mirrors (
+        paper_id TEXT NOT NULL,
+        kind     TEXT NOT NULL CHECK (kind IN ('written', 'polished')),
+        provider TEXT,
+        model    TEXT NOT NULL,
+        text     TEXT NOT NULL,
+        position BIGINT NOT NULL,
+        kept_at  TEXT NOT NULL,
+        PRIMARY KEY (paper_id, kind)
+    );
+    -- The training set as built (JSON): the pool papers trained on, in the order added, and how many were in after
+    -- each round of mining; and what the year check found, when it was run.
+    CREATE TABLE detector_training (
+        id       BIGINT PRIMARY KEY CHECK (id = 1),
+        train    TEXT NOT NULL,
+        rounds   TEXT NOT NULL,
+        by_year  TEXT,
+        built_at TEXT NOT NULL
+    );
+    -- The classifier fitted on it (JSON), with the versions of the features and the training that fitted it.
+    CREATE TABLE detector_model (
+        id         BIGINT PRIMARY KEY CHECK (id = 1),
+        features   BIGINT NOT NULL,
+        training   BIGINT NOT NULL,
+        content    TEXT NOT NULL,
+        trained_at TEXT NOT NULL
+    );
+    ",
 ];
 
 /// Bring `connection` to the last of `migrations`. Refuses a database newer than the list.

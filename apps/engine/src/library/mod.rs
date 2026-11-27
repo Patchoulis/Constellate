@@ -19,6 +19,7 @@
 //! | [`reviews`]     | a paper's reviews page as the reader showed it, and its notes as read     |
 //! | [`passages`]    | a paper's PDF, and its passages as read once per version of the reader    |
 //! | [`answers`]     | what the language model answered for a feature, so none is paid twice    |
+//! | [`detector`]    | the AI-text detector's training set and the classifier fitted on it      |
 //! | [`writings`]    | community descriptions and overviews, keyed by model and members          |
 //! | [`ledger`]      | one row per call to the Claude API; totals are queries                    |
 //! | [`preferences`] | settings and exchange rates                                               |
@@ -74,6 +75,7 @@
 
 pub mod answers;
 pub mod citation_contexts;
+pub mod detector;
 pub mod embeddings;
 pub mod extraction;
 pub mod import;
