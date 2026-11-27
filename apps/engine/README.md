@@ -266,7 +266,7 @@ other route sends nothing to any provider.
 | `POST /api/runs/{run}/extraction/table`                                   | The table as kept, every quote checked again; nothing is asked.                                       |
 | `POST /api/runs/{run}/extraction/estimate`                                | What asking the sample or the rest would cost; nothing is sent.                                       |
 | `POST /api/runs/{run}/extraction/run`                                     | Asks, as the job, within the budget given.                                                            |
-| `POST /api/runs/{run}/extraction/forget`                                  | Forgets these papers' cells (a redo).                                                                 |
+| `POST /api/runs/{run}/extraction/forget`                                  | Forgets the chosen model's cells of these papers (a redo).                                            |
 | **Explain a passage**                                                     |                                                                                                       |
 | `POST /api/papers/{id}/explanation/prepare`                               | The passage, the paper's definitions of what it uses, the kept explanation or what asking would cost. |
 | `POST /api/papers/{id}/explanation`                                       | Asks for the explanation, as the job.                                                                 |
@@ -283,7 +283,7 @@ other route sends nothing to any provider.
 | `POST /api/runs/{run}/citation-contexts`                                  | Reads the citing sentences of every paper of the run, as the job (no model).                          |
 | `GET /api/runs/{run}/citation-kinds`                                      | What the kinds of a community's citations come to.                                                    |
 | `POST /api/runs/{run}/citation-kinds`                                     | Asks the model for the kinds, as the job, within the budget given.                                    |
-| `DELETE /api/runs/{run}/citation-kinds`                                   | Forgets the kinds read for the papers a community cites (a redo).                                     |
+| `DELETE /api/runs/{run}/citation-kinds`                                   | Forgets the chosen model's readings of a community's citing sentences (a redo).                       |
 | `GET /api/runs/{run}/citation-kinds/estimate`                             | What reading a sample or the rest would cost; nothing is sent.                                        |
 | **Cited answers**                                                         |                                                                                                       |
 | `GET /api/runs/{run}/passages/found`                                      | The passages that match a search best (no model).                                                     |
