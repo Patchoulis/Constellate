@@ -38,11 +38,16 @@ exports.default = async function afterPack({ appOutDir }) {
 	if (!fs.existsSync(path.join(from, "node_modules"))) throw new Error(`The interface is not built (${from}). Run: npm run build`);
 	fs.rmSync(path.join(resources, "web"), { recursive: true, force: true });
 	fs.cpSync(from, path.join(resources, "web"), { recursive: true, dereference: true });
+	// The image library is traced in although the interface resizes no images (next.config.ts: unoptimized), and
+	// it brings LGPL code along: it is not shipped.
+	for (const unused of ["sharp", "@img"]) {
+		fs.rmSync(path.join(resources, "web", "node_modules", unused), { recursive: true, force: true });
+	}
 
 	const licences = path.join(resources, "licenses");
 	// what the server runs on, plus what is compiled into the pages (the bundler keeps no licence files either)
 	const shipped = new Set([
-		...packagesIn(path.join(from, "node_modules")),
+		...packagesIn(path.join(resources, "web", "node_modules")),
 		"katex",
 		"d3-force",
 		"d3-zoom",
@@ -55,7 +60,19 @@ exports.default = async function afterPack({ appOutDir }) {
 		const found = [path.join(repo, "node_modules", name), path.join(from, "node_modules", name)].some((folder) =>
 			copyLicences(folder, path.join(licences, name)),
 		);
-		if (!found) without.push(name);
+		if (found) continue;
+		// a package without a licence file still names its licence in its package.json: that much travels with it
+		const manifest = [path.join(repo, "node_modules", name), path.join(from, "node_modules", name)]
+			.map((folder) => path.join(folder, "package.json"))
+			.find((file) => fs.existsSync(file));
+		const licence = manifest && JSON.parse(fs.readFileSync(manifest, "utf8")).license;
+		if (!licence) {
+			without.push(name);
+			continue;
+		}
+		fs.mkdirSync(path.join(licences, name), { recursive: true });
+		const note = `${name} is distributed under the ${licence} licence (from its package.json; it ships no licence file).\n`;
+		fs.writeFileSync(path.join(licences, name, "LICENSE.txt"), note);
 	}
 	copyLicences(path.join(__dirname, "bin"), path.join(licences, "uv"));
 	fs.copyFileSync(path.join(repo, "THIRD_PARTY_NOTICES.md"), path.join(licences, "THIRD_PARTY_NOTICES.md"));
