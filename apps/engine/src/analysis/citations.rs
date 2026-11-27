@@ -181,6 +181,10 @@ impl<'a> Linker<'a> {
 
     fn by_exact_title(&self, title: &str, year: Option<u16>) -> Option<usize> {
         let key = title_key(title);
+        // a title in another script has no key: every such title would be "the same"
+        if key.is_empty() {
+            return None;
+        }
         let candidates = self.by_key.get(&key)?;
         // the same title twice in the library is one paper twice (its preprint and its proceedings): the year
         // closest to the reference's is the one it cites
@@ -200,7 +204,8 @@ impl<'a> Linker<'a> {
         // one of those need comparing
         let mut rarest: Vec<&String> = words.iter().collect();
         rarest.sort_by_key(|word| self.postings.get(*word).map_or(0, Vec::len));
-        let needed = ((1.0 - SIMILAR_TITLES) * words.len() as f64).floor() as usize + 1;
+        // (the tolerance keeps 0.1 x 10 from coming out as 0.99999 and losing the second word)
+        let needed = ((1.0 - SIMILAR_TITLES) * words.len() as f64 + 1e-9).floor() as usize + 1;
         let candidates: HashSet<usize> =
             rarest.iter().take(needed).filter_map(|word| self.postings.get(*word)).flatten().copied().collect();
         let mut best: Option<(f64, usize)> = None;
@@ -242,10 +247,20 @@ pub fn work_key(reference: &LinkedReference) -> String {
         Link::OnArxiv { arxiv } => format!("arxiv:{arxiv}"),
         Link::Unresolved => match (&reference.reference.doi, &reference.reference.title) {
             (Some(doi), _) => format!("doi:{}", doi.to_lowercase()),
-            (None, Some(title)) => format!("title:{}", title_key(title)),
-            (None, None) => format!("entry:{}", title_key(&reference.reference.raw)),
+            (None, Some(title)) => format!("title:{}", letters(title)),
+            (None, None) => format!("entry:{}", letters(&reference.reference.raw)),
         },
     }
+}
+
+/// A text by its letters and digits: [`title_key`], or for a text in another script (which that leaves empty)
+/// its own letters, so that two different titles in Cyrillic are never one work.
+fn letters(text: &str) -> String {
+    let key = title_key(text);
+    if !key.is_empty() {
+        return key;
+    }
+    text.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 
 fn paper_key(id: &str) -> String {
@@ -697,6 +712,25 @@ mod tests {
         assert_eq!(linker.link(&cited(between, 2024)), Link::Unresolved, "11 of 12 words for both");
         let one = "Learning to Rank Research Papers with Graph Neural Networks for Search Today!";
         assert_eq!(linker.link(&cited(one, 2024)), Link::InLibrary { paper: "a".to_owned() });
+    }
+
+    #[test]
+    fn a_close_title_is_found_even_when_its_missing_word_is_its_rarest() {
+        let papers = vec![paper("p", "alpha beta gamma delta epsilon zeta eta theta iota kappa", 2024)];
+        let linker = Linker::new(&papers);
+        // 9 of 10 words, and "lambda" (in no title of the library) is the word looked at first
+        let reference = cited("alpha beta gamma delta epsilon zeta eta theta iota lambda", 2024);
+        assert_eq!(linker.link(&reference), Link::InLibrary { paper: "p".to_owned() });
+    }
+
+    #[test]
+    fn titles_in_another_script_are_neither_linked_nor_merged_by_their_missing_latin_letters() {
+        let papers = vec![paper("p", "Нейронные сети", 2023)];
+        let linker = Linker::new(&papers);
+        let first =
+            linker.read("seed", vec![cited("Глубокое обучение", 2023), cited("Обучение с подкреплением", 2023)]);
+        assert!(first.references.iter().all(|linked| linked.link == Link::Unresolved));
+        assert_ne!(work_key(&first.references[0]), work_key(&first.references[1]));
     }
 
     /// seed cites 1 and an outside work; 2 cites the seed and 1; 4 cites the seed, 1 and 2.

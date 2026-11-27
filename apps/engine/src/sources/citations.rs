@@ -33,6 +33,8 @@ const ARXIV_API: &str = "https://export.arxiv.org/api/query";
 pub const PAUSE: Duration = Duration::from_secs(3);
 /// How long to wait after a refusal that says nothing about when to come back; doubled each time.
 const FIRST_BACK_OFF: Duration = Duration::from_secs(30);
+/// The longest wait a refusal is taken to ask for.
+const LONGEST_WAIT: Duration = Duration::from_secs(3600);
 /// Refusals in a row before giving up for now.
 const MOST_REFUSALS: u32 = 3;
 /// Answers asked for per title search: the same title is near the top or not there.
@@ -256,7 +258,8 @@ impl Pacer {
                     return Ok(response.body);
                 }
                 429 | 503 => {
-                    let wait = response.retry_after.unwrap_or(FIRST_BACK_OFF * 2u32.pow(refusals));
+                    // the answer says how long; an hour at most, whatever it says
+                    let wait = response.retry_after.unwrap_or(FIRST_BACK_OFF * 2u32.pow(refusals)).min(LONGEST_WAIT);
                     self.pace = Pace::BackingOff { until: now + wait, refusals: refusals + 1 };
                     if refusals + 1 >= MOST_REFUSALS {
                         return Err(LookupError::RateLimited { retry_after: wait });
