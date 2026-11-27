@@ -44,7 +44,7 @@ pub struct Settings {
     /// Ask the language model to describe every community.
     pub describe: bool,
     /// The provider of the language model (a [`Provider`]'s id): `anthropic`, `openai`, `compatible`, ...
-    pub describe_provider: String,
+    pub describe_provider: Provider,
     /// One of that provider's models: for the Claude API one of [`Choices::describe_models`]; for a provider whose
     /// ids may be typed, any plain id it accepts.
     pub describe_model: String,
@@ -68,7 +68,7 @@ impl Default for Settings {
             acceptance_filter: "all".to_owned(),
             exclude_flags: Vec::new(),
             describe: true,
-            describe_provider: "anthropic".to_owned(),
+            describe_provider: Provider::Anthropic,
             describe_model: "claude-opus-5-5".to_owned(),
             describe_effort: Effort::Medium,
         }
@@ -165,7 +165,7 @@ impl Settings {
         }
         if changes.contains_key("describe_provider") || changes.contains_key("describe_model") {
             let switched = next.describe_provider != self.describe_provider;
-            next.describe_model = model(&next.describe_provider, &next.describe_model, switched, changes, choices)?;
+            next.describe_model = model(next.describe_provider, &next.describe_model, switched, changes, choices)?;
         }
         Ok(next)
     }
@@ -239,23 +239,21 @@ fn efforts() -> Vec<String> {
     ["low", "medium", "high", "xhigh", "max"].map(str::to_owned).to_vec()
 }
 
-fn provider(key: &'static str, value: &Value) -> Result<String, Invalid> {
+fn provider(key: &'static str, value: &Value) -> Result<Provider, Invalid> {
     let known = || Invalid::NotAChoice { key, known: Provider::ALL.iter().map(|one| one.id().to_owned()).collect() };
-    let provider = value.as_str().and_then(Provider::from_id).ok_or_else(known)?;
-    Ok(provider.id().to_owned())
+    value.as_str().and_then(Provider::from_id).ok_or_else(known)
 }
 
 /// The model kept for `provider`: `model` when the provider has it; when the provider was `switched` without a
 /// model, that provider's first model rather than another provider's (and for one that lists none, a refusal:
 /// its model must be given).
 fn model(
-    provider: &str,
+    provider: Provider,
     model: &str,
     switched: bool,
     changes: &Map<String, Value>,
     choices: &Choices,
 ) -> Result<String, Invalid> {
-    let provider = Provider::from_id(provider).unwrap_or(Provider::Anthropic);
     let about = provider.about();
     let model = match (switched && !changes.contains_key("describe_model"), about.models.first()) {
         (true, Some(first)) => first.id,
@@ -451,7 +449,7 @@ mod tests {
                 &choices(),
             )
             .unwrap();
-        assert_eq!((openai.describe_provider.as_str(), openai.describe_model.as_str()), ("openai", "gpt-6.2-sol"));
+        assert_eq!((openai.describe_provider.id(), openai.describe_model.as_str()), ("openai", "gpt-6.2-sol"));
         assert_eq!(openai.describe_effort, Effort::High);
         // a provider whose ids may be typed takes an id it does not list; the Claude API only its own
         let typed = before
@@ -486,7 +484,7 @@ mod tests {
         let stored =
             changes(json!({"describe_provider": "openai", "describe_model": "gpt-gone", "describe_effort": "extreme"}));
         let stored = Settings::from_stored(&stored, &Choices { describe_models: Vec::new(), ..choices() });
-        assert_eq!((stored.describe_provider.as_str(), stored.describe_model.as_str()), ("openai", "gpt-gone"));
+        assert_eq!((stored.describe_provider.id(), stored.describe_model.as_str()), ("openai", "gpt-gone"));
         let removed = changes(
             json!({"describe_provider": "anthropic", "describe_model": "claude-gone", "describe_effort": "low"}),
         );
@@ -497,8 +495,28 @@ mod tests {
         save(&file, &changes(json!({"describe_provider": "gemini"})), &choices()).unwrap();
         save(&file, &changes(json!({"describe_effort": "low"})), &choices()).unwrap();
         let loaded = load(&file, &choices()).unwrap();
-        assert_eq!((loaded.describe_provider.as_str(), loaded.describe_model.as_str()), ("gemini", "gemini-4-carbon"));
+        assert_eq!((loaded.describe_provider.id(), loaded.describe_model.as_str()), ("gemini", "gemini-4-carbon"));
         assert_eq!(loaded.describe_effort, Effort::Low);
+    }
+
+    #[test]
+    fn the_provider_can_only_be_one_of_the_providers_and_is_told_by_its_id() {
+        let chosen = Settings::default().apply(&changes(json!({"describe_provider": "openai"})), &choices()).unwrap();
+        assert_eq!(chosen.describe_provider, Provider::OpenAi);
+        let told = serde_json::to_value(&chosen).unwrap();
+        assert_eq!(told["describe_provider"], "openai");
+        assert_eq!(serde_json::from_value::<Settings>(told.clone()).unwrap(), chosen);
+        // a name that is not a provider's id is no provider: not in a change, not read back, not in another case
+        for not_one in ["OpenAI", "claude", "", "openai "] {
+            let refused = Settings::default().apply(&changes(json!({"describe_provider": not_one})), &choices());
+            assert!(refused.is_err(), "{not_one:?}");
+            let mut stored = told.clone();
+            stored["describe_provider"] = json!(not_one);
+            assert!(serde_json::from_value::<Settings>(stored).is_err(), "{not_one:?}");
+        }
+        // a stored file that names no provider keeps the default one, the Claude API
+        let stored = Settings::from_stored(&changes(json!({"describe_provider": "OpenAI"})), &choices());
+        assert_eq!(stored.describe_provider, Provider::Anthropic);
     }
 
     #[test]
