@@ -18,7 +18,7 @@ use rayon::prelude::*;
 use super::eigen::EigenError;
 use super::kmeans::kmeans;
 use super::links::{KNN, knn_graph};
-use super::spectral::{Graph, fiedler_side, leading_eigenvectors};
+use super::spectral::{Graph, fiedler_side, joined_pieces, leading_eigenvectors};
 use crate::analysis::graph::{make_unit, modularity};
 
 /// The seed every random choice of a clustering starts from, so that a run can be repeated exactly.
@@ -330,10 +330,10 @@ pub fn communities(method: Method, papers: Papers, count: usize, limits: Limits)
 /// A community label per paper, for the methods that cut into `count` at once.
 fn partition(method: AtOnce, papers: Papers, count: usize, seed: u64) -> Result<Vec<usize>, ClusterError> {
     Ok(match method {
-        AtOnce::Spectral => spectral_labels(Graph::Dense(papers.adjacency), count, seed)?,
+        AtOnce::Spectral => spectral_labels(Graph::Dense(papers.adjacency), papers.adjacency, count, seed)?,
         AtOnce::SpectralKnn => {
             let neighbours = knn_graph(papers.adjacency, KNN);
-            spectral_labels(Graph::Sparse(&neighbours), count, seed)?
+            spectral_labels(Graph::Sparse(&neighbours), papers.adjacency, count, seed)?
         }
         AtOnce::KMeans => kmeans(papers.vectors, count, seed).labels,
     })
@@ -341,7 +341,19 @@ fn partition(method: AtOnce, papers: Papers, count: usize, seed: u64) -> Result<
 
 /// Normalised spectral clustering: k-means on the rows of the top `count` eigenvectors, each row scaled to length
 /// one, so that a paper is placed by the direction of its row and not by how strongly it is linked.
-fn spectral_labels(graph: Graph, count: usize, seed: u64) -> Result<Vec<usize>, EigenError> {
+///
+/// A graph in more pieces than `count` has no such eigenvectors to speak of (any of many would do, and rounding
+/// picks one, differently on different processors): its communities are its pieces, joined by their similarity in
+/// the whole graph `similarity` ([`joined_pieces`]).
+fn spectral_labels(
+    graph: Graph,
+    similarity: ArrayView2<f32>,
+    count: usize,
+    seed: u64,
+) -> Result<Vec<usize>, EigenError> {
+    if let Some(labels) = joined_pieces(graph, similarity, count) {
+        return Ok(labels);
+    }
     let spectrum = leading_eigenvectors(graph, count)?;
     let mut rows = spectrum.vectors.mapv(|value| value as f32);
     make_unit(&mut rows);
@@ -770,17 +782,49 @@ mod tests {
 
     /// Two groups of 120 papers, each of two sub-groups of 60: the sub-groups' centres closer to their group's
     /// than the groups are to each other, as topics within a field are.
-    fn nested_papers() -> (Array2<f32>, Array2<f32>) {
+    fn nested_points() -> Array2<f32> {
         let mut random = crate::analysis::graph::random::Random::new(17);
         let groups = Array2::from_shape_simple_fn((2, 64), || 1.0 * random.normal());
         let subs = Array2::from_shape_simple_fn((4, 64), || 0.6 * random.normal());
-        let points = Array2::from_shape_fn((240, 64), |(point, axis)| {
+        Array2::from_shape_fn((240, 64), |(point, axis)| {
             (groups[[point / 120, axis]] + subs[[point / 60, axis]] + 0.35 * random.normal()) as f32
-        });
+        })
+    }
+
+    /// The graph and the mean-centred unit vectors of some embeddings.
+    fn papers_of(points: &Array2<f32>) -> (Array2<f32>, Array2<f32>) {
         let adjacency = adjacency_matrix(points.view(), true).unwrap();
-        let mut vectors = &points - &points.mean_axis(Axis(0)).unwrap();
+        let mut vectors = points - &points.mean_axis(Axis(0)).unwrap();
         make_unit(&mut vectors);
         (adjacency, vectors)
+    }
+
+    fn nested_papers() -> (Array2<f32>, Array2<f32>) {
+        papers_of(&nested_points())
+    }
+
+    /// The nested groups' communities and sub-communities are the planted ones, by every method.
+    fn finds_the_nested_groups(adjacency: &Array2<f32>, vectors: &Array2<f32>, case: &str) {
+        let papers = Papers { adjacency: adjacency.view(), vectors: vectors.view() };
+        let truth: Vec<usize> = (0..240).map(|paper| paper / 120).collect();
+        let sub_truth: Vec<usize> = (0..240).map(|paper| paper / 60).collect();
+        for method in Method::ALL {
+            let partition = communities(method, papers, 2, Limits::default()).unwrap();
+            assert_eq!(partition.communities.len(), 2, "{method} {case}");
+            assert!(same_grouping(&partition.labels(240), &truth), "{method} {case}");
+            let mut leaves = vec![0; 240];
+            for (community, top) in partition.communities.iter().enumerate() {
+                let subs = top.sub_communities();
+                assert_eq!(subs.iter().map(|sub| sub.papers.len()).collect::<Vec<_>>(), [60, 60], "{method} {case}");
+                assert!(matches!(top.parts, Parts::Halves { modularity, .. } if modularity >= 0.05), "{method} {case}");
+                for (half, sub) in subs.iter().enumerate() {
+                    for &paper in &sub.papers {
+                        leaves[paper] = 2 * community + half;
+                    }
+                }
+            }
+            assert!(same_grouping(&leaves, &sub_truth), "{method} {case}");
+        }
     }
 
     #[test]
@@ -812,6 +856,126 @@ mod tests {
                 }
             }
             assert!(same_grouping(&leaves, &sub_truth), "{method}");
+        }
+    }
+
+    /// Another processor rounds differently: the stand-in is noise of one part in ten million on every number of
+    /// every embedding, about what float32 rounding leaves. Before the pieces of a graph were cut along, the
+    /// nearest-neighbour graph of these papers (in 4 pieces, one per sub-group) was grouped wrongly in 13 of 20.
+    #[test]
+    fn every_method_finds_the_same_communities_and_sub_communities_when_rounding_moves_the_embeddings() {
+        let points = nested_points();
+        for seed in 0..20 {
+            let mut random = crate::analysis::graph::random::Random::new(1_000 + seed);
+            let moved = points.mapv(|value| (f64::from(value) * (1.0 + 1e-7 * random.normal())) as f32);
+            let (adjacency, vectors) = papers_of(&moved);
+            finds_the_nested_groups(&adjacency, &vectors, &format!("with noise seed {seed}"));
+        }
+    }
+
+    /// Six tight clusters of 20 papers, in three pairs of clusters close to each other: the nearest-neighbour graph
+    /// is in six pieces, one per cluster. Paper 120 is an empty embedding, similar to nobody.
+    fn pairs_of_clusters() -> (Array2<f32>, Array2<f32>) {
+        let mut random = crate::analysis::graph::random::Random::new(29);
+        let pairs = Array2::from_shape_simple_fn((3, 32), || 3.0 * random.normal());
+        let clusters =
+            Array2::from_shape_fn((6, 32), |(cluster, axis)| pairs[[cluster / 2, axis]] + 1.2 * random.normal());
+        let points = Array2::from_shape_fn((121, 32), |(point, axis)| {
+            (clusters[[(point / 20).min(5), axis]] + 0.05 * random.normal()) as f32
+        });
+        let (mut adjacency, mut vectors) = papers_of(&points);
+        // what an embedding with nothing in it gives: no similarity to any paper
+        adjacency.row_mut(120).fill(0.0);
+        adjacency.column_mut(120).fill(0.0);
+        vectors.row_mut(120).fill(0.0);
+        (adjacency, vectors)
+    }
+
+    #[test]
+    fn a_graph_in_more_pieces_than_communities_is_cut_along_them_joined_by_their_similarity() {
+        let (adjacency, vectors) = pairs_of_clusters();
+        let neighbours = knn_graph(adjacency.view(), KNN);
+        let (piece, pieces) = Graph::Sparse(&neighbours).pieces();
+        assert_eq!(pieces, 7, "six clusters and the paper similar to nobody");
+        assert!((0..120).all(|paper| piece[paper] == paper / 20));
+        let papers = Papers { adjacency: adjacency.view(), vectors: vectors.view() };
+        let pair: Vec<usize> = (0..120).map(|paper| paper / 40).collect();
+        let cluster: Vec<usize> = (0..120).map(|paper| paper / 20).collect();
+        // fewer communities than pieces: whole clusters, the close ones together; the stray joins the smallest
+        let three = communities(Method::SpectralKnn, papers, 3, loose(0)).unwrap();
+        assert!(same_grouping(&three.labels(121)[..120], &pair));
+        let sizes: Vec<usize> = three.communities.iter().map(|community| community.papers.len()).collect();
+        assert_eq!(sizes, [41, 40, 40]);
+        let two = communities(Method::SpectralKnn, papers, 2, loose(0)).unwrap().labels(121);
+        assert!((0..120).all(|paper| two[paper] == two[paper / 40 * 40]), "pairs stay together: {two:?}");
+        // as many as there are pieces of linked papers: the clusters
+        let six = communities(Method::SpectralKnn, papers, 6, loose(0)).unwrap();
+        assert!(same_grouping(&six.labels(121)[..120], &cluster));
+        // more communities than pieces: no community reaches across two clusters
+        let nine = communities(Method::SpectralKnn, papers, 9, loose(0)).unwrap();
+        assert_eq!(nine.communities.len(), 9);
+        for community in &nine.communities {
+            let inside: HashSet<usize> =
+                community.papers.iter().filter(|&&paper| paper < 120).map(|&paper| paper / 20).collect();
+            assert!(inside.len() <= 1, "{:?}", community.papers);
+        }
+        // the same on one thread and on many, and from any seed: no random start is involved
+        let (one, many) = crate::threads::on_one_and_many(|| communities(Method::SpectralKnn, papers, 3, loose(1)));
+        assert_eq!(one, many);
+        for seed in 0..3 {
+            assert_eq!(labels(Method::SpectralKnn, papers, 3, loose(0), seed).unwrap(), three.labels(121));
+        }
+    }
+
+    /// Twelve loose groups of 25 whose nearest-neighbour graph is connected, and so is every community's own.
+    fn connected_groups() -> (Array2<f32>, Array2<f32>) {
+        let mut random = crate::analysis::graph::random::Random::new(21);
+        let centres = Array2::from_shape_simple_fn((12, 20), || 3.0 * random.normal());
+        let points = Array2::from_shape_fn((300, 20), |(point, axis)| {
+            (centres[[point % 12, axis]] + 2.5 * random.normal()) as f32
+        });
+        papers_of(&points)
+    }
+
+    /// FNV-1a of every paper's place in the tree (`c3.0.1`), in the papers' order.
+    fn tree_digest(partition: &Partition, papers: usize) -> u64 {
+        fn leaves(community: &Community, into: &mut [String]) {
+            if community.sub_communities().is_empty() {
+                for &paper in &community.papers {
+                    into[paper] = community.path.to_string();
+                }
+            }
+            for half in community.sub_communities() {
+                leaves(half, into);
+            }
+        }
+        let mut places = vec![String::new(); papers];
+        for community in &partition.communities {
+            leaves(community, &mut places);
+        }
+        places
+            .join(" ")
+            .bytes()
+            .fold(0xcbf2_9ce4_8422_2325, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
+    }
+
+    /// The communities and sub-communities of a connected graph are the ones every method made before graphs in
+    /// pieces were cut along their pieces: the digests were recorded from the engine as it was then.
+    #[test]
+    fn a_connected_graph_is_cut_exactly_as_before() {
+        let (adjacency, vectors) = connected_groups();
+        assert_eq!(Graph::Sparse(&knn_graph(adjacency.view(), KNN)).pieces().1, 1);
+        let papers = Papers { adjacency: adjacency.view(), vectors: vectors.view() };
+        let limits = Limits { min_community_size: 4, min_split_modularity: 0.0, sub_levels: 3 };
+        let recorded = [
+            (Method::Spectral, 0x3b1e_a573_f5fb_e701_u64),
+            (Method::SpectralKnn, 0x66c3_03b8_d4e8_ffa0),
+            (Method::KMeans, 0x80a3_a21d_5f92_e52f),
+            (Method::Fiedler, 0x7dc8_d852_2035_9ecb),
+        ];
+        for (method, digest) in recorded {
+            let partition = communities(method, papers, 6, limits).unwrap();
+            assert_eq!(tree_digest(&partition, 300), digest, "{method}");
         }
     }
 

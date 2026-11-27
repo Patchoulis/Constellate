@@ -177,6 +177,10 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Spectral clustering (on nearest neighbours, and on all papers) gives the same communities on every computer when
+  the papers' similarity graph falls apart into more separate pieces than the communities asked for: the pieces
+  are now joined by how similar they are, where before which pieces ended up together could differ between two
+  computers. Runs on such graphs can come out with other communities when made again; others are unchanged.
 - What was spent shows no amount at all, only the calls and their tokens, when none of the calls had a known price.
 - Answers that say nothing, claim trees whose claims were all left out, quotes a model gave that were not found,
   papers not in the library, unreadable PDFs and lookups of cited works that stopped early are each said in words,
