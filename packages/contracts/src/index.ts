@@ -1285,7 +1285,8 @@ export interface DefinedTerm {
 }
 
 export type ExplanationPrepared =
-	| {
+	/** ready: the explanation kept from before (shown at no cost), or, not asked yet, what asking would cost */
+	| ({
 			state: "ready";
 			paper: string;
 			passage: { kind: PassageKind; address: PassageAddress };
@@ -1297,17 +1298,19 @@ export type ExplanationPrepared =
 			model: string;
 			api_key_set: boolean;
 			definitions: DefinedTerm[];
-			/** kept from before: shown at no cost */
-			explained: Explanation | null;
-			/** null when an explanation is kept */
-			estimate: ExplanationEstimate | null;
-	  }
+	  } & ({ explained: Explanation; estimate: null } | { explained: null; estimate: ExplanationEstimate }))
 	| { state: "no_text"; why: "no_pdf" | "unreadable" };
 
 /** `POST /api/papers/<id>/explanation`: the job that asks, when one was started (none when one is kept). */
 export interface ExplanationStarted {
 	started: boolean;
 	job: number | null;
+}
+
+/** `DELETE /api/papers/<id>/explanation`: whether there was an explanation of the passage (by the model chosen) to
+ *  forget; the paper's other explanations stay. */
+export interface ExplanationRedone {
+	redone: boolean;
 }
 
 /** `GET /api/papers/<id>/explanations`: the passages with an explanation kept for the model chosen. */
