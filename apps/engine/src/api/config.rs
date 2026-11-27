@@ -1065,8 +1065,9 @@ pub(crate) mod tests {
             assert!(listed.contains(variable), "{variable} is read but not in .env.example");
             assert!(readme.contains(&format!("`{variable}`")), "{variable} is read but not in apps/engine/README.md");
         }
-        // read elsewhere, from the process environment only: the Python backend's model download
-        let elsewhere = ["HF_ENDPOINT"];
+        // read elsewhere, from the process environment only: the Python backend's model download, and the names
+        // the interface's own server answers under (apps/web/proxy.ts)
+        let elsewhere = ["HF_ENDPOINT", "CONSTELLATE_WEB_HOSTS"];
         for variable in listed {
             assert!(
                 read.contains(&variable) || elsewhere.contains(&variable),
