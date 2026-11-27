@@ -46,7 +46,8 @@ import {
 } from "@/lib/claim-tree";
 import { budgetWords, shownModel } from "@/lib/cost";
 import { ready, useAsync } from "@/lib/use-async";
-import { useFollowedJob } from "@/lib/use-followed-job";
+import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
+import { elsewhereLine, notAskedLine, useFollowedJob } from "@/lib/use-followed-job";
 import { count, knownMoney, onScale, scaleName, spreadPoints } from "@/lib/units";
 import { cn } from "@/lib/utils";
 
@@ -63,46 +64,69 @@ function Rating({ reviewer }: { reviewer: ClaimReviewer | undefined }) {
 }
 
 /** The estimate, the button that starts the work, its progress and its stop button. */
-function Ask({ id, what, estimate, onDone }: { id: string; what: string; estimate: ClaimsEstimate; onDone: () => void }) {
-	const [starting, setStarting] = useState(false);
-	// what was kept is read again once the job is over, whichever way it ended
-	const { job, start } = useFollowedJob(() => onDone());
+function Ask({
+	id,
+	what,
+	estimate,
+	current,
+	onDone,
+}: {
+	id: string;
+	what: string;
+	estimate: ClaimsEstimate;
+	/** the estimate is answered for the model chosen now: false while it is asked for again */
+	current: boolean;
+	onDone: () => void;
+}) {
+	// what was kept is read again once the job is over, whichever way it ended; the job is followed again when the
+	// tab was left and opened again meanwhile
+	const { job, elsewhere, start } = useFollowedJob(() => onDone(), `claims:${id}`);
 	const budget = budgetFor(estimate);
-	const begin = async () => {
-		setStarting(true);
-		await start(() => api.startClaims(id, { ...budget, ...shownModel(estimate) }).then(({ job }) => job));
-		setStarting(false);
-	};
+	const begin = () => void start(() => api.startClaims(id, { ...budget, ...shownModel(estimate) }).then(({ job }) => job));
+	const starting = job.state === "starting";
 	const progress = job.state === "running" ? job.progress : null;
 	const spent = progress ? knownMoney(progress.usd > 0 ? progress.usd : null, USD) : null;
 	return (
 		<div className="flex flex-col items-start gap-1.5 rounded-md border px-3 py-2 font-ui text-xs">
 			<span className="text-foreground">{what}</span>
-			<span className="text-muted-foreground tabular-nums" title={ESTIMATE_NOTE}>
-				{estimateLine(estimate)}, with {estimate.model}
-			</span>
+			{job.state !== "running" && (
+				<span className="text-muted-foreground tabular-nums" title={ESTIMATE_NOTE}>
+					{current ? `${estimateLine(estimate)}, with ${estimate.model}` : "Working out the cost for the model chosen now…"}
+				</span>
+			)}
 			{job.state === "running" ? (
 				<div className="flex items-center gap-2">
 					<Loader2 className="size-3.5 animate-spin" />
 					<span className="tabular-nums">
 						{progress ? `${progress.done} of ${count(progress.of, "call")} done${spent ? `, ${spent} so far` : ""}` : "Asking the model"}
+						{job.unanswered && ` (${job.unanswered}: looking again.)`}
 					</span>
-					<Button variant="ghost" size="icon" title="Stop: nothing new is asked" onClick={() => void api.cancelJob(job.id)}>
+					<Button
+						variant="ghost"
+						size="icon"
+						title="Stop: nothing new is asked"
+						onClick={() => void api.cancelJob(job.id).catch(() => undefined)}
+					>
 						<Square />
 					</Button>
 				</div>
 			) : (
 				<Button
 					variant="outline"
-					disabled={starting || estimate.to_ask === 0}
+					disabled={!current || starting || estimate.to_ask === 0 || elsewhere !== null}
 					title={`${budgetWords(budget)} is spent.`.replace(/^at most/, "At most")}
-					onClick={() => void begin()}
+					onClick={begin}
 				>
 					{starting ? <Loader2 className="animate-spin" /> : <ListTree />}
 					Ask the model
 				</Button>
 			)}
-			{job.state === "failed" && <span className="text-destructive">{job.error}</span>}
+			{elsewhere && job.state !== "running" && <span className="text-muted-foreground">{elsewhereLine(elsewhere)}</span>}
+			{job.state === "failed" && (
+				<span className="text-destructive">
+					{job.id === null ? `Not asked: ${job.error}` : `${job.error} ${notAskedLine(job, "call") ?? ""}`}
+				</span>
+			)}
 		</div>
 	);
 }
@@ -510,7 +534,10 @@ function Gaps({ view, nodes }: { view: View; nodes: ClaimNode[] }) {
 
 /** The Claims tab of one paper. `onOpenReviews` opens its Reviews tab, where its reviews are read. */
 export function ClaimsView({ id, onOpenReviews }: { id: string; onOpenReviews?: () => void }) {
-	const loaded = useAsync(() => api.claims(id), [id]);
+	const chosen = useChosenModel();
+	// read again when the model chosen changes (the estimate is that model's), the tree staying in view meanwhile
+	const loaded = useAsync(() => api.claims(id), [id, choiceKey(chosen)]);
+	const [redoError, setRedoError] = useState<string | null>(null);
 	const view = ready(loaded);
 	if (!view) {
 		if (loaded.status === "loading") return <p className="font-ui text-sm text-muted-foreground">Loading…</p>;
@@ -521,9 +548,16 @@ export function ClaimsView({ id, onOpenReviews }: { id: string; onOpenReviews?: 
 	const mapping = view.mapping.state === "made" ? view.mapping.mapping : null;
 	const nodes = tree.state === "made" ? tree.nodes : [];
 	const leftOut = tree.state === "made" ? leftOutLine(tree.left_out) : null;
-	const redo = async () => {
-		await api.forgetClaims(id).catch(() => null);
-		loaded.reload();
+	const current = loaded.status === "ready" && (view.estimate === null || isFor(view.estimate, chosen));
+	const redo = () => {
+		if (
+			!window.confirm(
+				"Forget this paper's claim tree and where its reviewers' points were placed?\n\nIt cannot be undone, and asking again costs again. The cost is shown before anything is sent.",
+			)
+		)
+			return;
+		setRedoError(null);
+		api.forgetClaims(id).then(loaded.reload, (error: Error) => setRedoError(error.message));
 	};
 	return (
 		<div className="mx-auto flex max-w-[80ch] flex-col gap-4 font-sans">
@@ -545,6 +579,7 @@ export function ClaimsView({ id, onOpenReviews }: { id: string; onOpenReviews?: 
 							: "Find this paper's claims and the evidence it offers for each"
 					}
 					estimate={view.estimate}
+					current={current}
 					onDone={loaded.reload}
 				/>
 			)}
@@ -569,6 +604,7 @@ export function ClaimsView({ id, onOpenReviews }: { id: string; onOpenReviews?: 
 					id={id}
 					what={`Place ${count(reviews?.points.length ?? 0, "reviewer's point", "reviewers' points")} on these claims`}
 					estimate={view.estimate}
+					current={current}
 					onDone={loaded.reload}
 				/>
 			)}
@@ -614,6 +650,7 @@ export function ClaimsView({ id, onOpenReviews }: { id: string; onOpenReviews?: 
 					</Button>
 				</div>
 			)}
+			{redoError && <p className="font-ui text-xs text-destructive">{redoError}</p>}
 		</div>
 	);
 }

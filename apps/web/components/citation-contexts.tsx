@@ -7,7 +7,7 @@
  * the model was asked, what kind of citation it is, with the words that show it (components/citation-kinds.tsx asks).
  * Nothing is shown when the engine has no such route (the Python backend).
  */
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import { BookOpenText, Loader2, Square } from "lucide-react";
 import type { CitationContextsOf, CitationKind, CitingSentenceShown, PaperCitationContexts } from "@rp/contracts";
 import { EvidenceLink } from "@/components/evidence-link";
@@ -31,7 +31,7 @@ import {
 } from "@/lib/citation-kinds";
 import { count, money } from "@/lib/units";
 import { ready, useAsync } from "@/lib/use-async";
-import { type FollowedJob, useFollowedJob } from "@/lib/use-followed-job";
+import { type FollowedJob, elsewhereLine, notAskedLine, useFollowedJob } from "@/lib/use-followed-job";
 import { cn, hsl } from "@/lib/utils";
 
 const TAG = "inline-flex items-center rounded-sm border px-1.5 py-px font-ui text-xs";
@@ -176,9 +176,18 @@ function Between({ between, onOpen }: { between: CitationContextsOf; onOpen: (id
 	);
 }
 
-/** "412 of 739 done, USD 0.21 so far", and a stop button. */
-export function JobStrip({ job, what }: { job: FollowedJob; what: string }) {
-	if (job.state === "failed") return <p className="font-ui text-xs text-destructive">{job.error}</p>;
+/** "412 of 739 papers done, USD 0.21 so far", and a stop button; why it stopped, and how many were not done. */
+export function JobStrip({ job, what, noun }: { job: FollowedJob; what: string; noun: string }) {
+	if (job.state === "failed")
+		return (
+			<p className="font-ui text-xs text-destructive">
+				{job.id === null ? `Not started: ${job.error}` : `${job.error} What was done is kept. ${notAskedLine(job, noun) ?? ""}`}
+			</p>
+		);
+	if (job.state === "done") {
+		const short = notAskedLine(job, noun);
+		return short ? <p className="font-ui text-xs text-muted-foreground">Stopped. {short}</p> : null;
+	}
 	if (job.state !== "running") return null;
 	const progress = job.progress;
 	return (
@@ -186,10 +195,15 @@ export function JobStrip({ job, what }: { job: FollowedJob; what: string }) {
 			<Loader2 className="size-3.5 animate-spin" />
 			<span>
 				{what}
-				{progress ? `: ${progress.done.toLocaleString()} of ${progress.of.toLocaleString()} done` : "…"}
+				{progress ? `: ${progress.done.toLocaleString()} of ${count(progress.of, noun)} done` : "…"}
 				{progress && progress.usd > 0 ? `, ${money(progress.usd, USD)} spent so far` : ""}
+				{job.unanswered && ` (${job.unanswered}: looking again.)`}
 			</span>
-			<Button variant="ghost" title="Stop: nothing new is started; what is under way finishes" onClick={() => void api.cancelJob(job.id)}>
+			<Button
+				variant="ghost"
+				title="Stop: nothing new is started; what is under way finishes"
+				onClick={() => void api.cancelJob(job.id).catch(() => undefined)}
+			>
 				<Square />
 				Stop
 			</Button>
@@ -202,13 +216,14 @@ export function JobStrip({ job, what }: { job: FollowedJob; what: string }) {
  * run's papers cite it.
  */
 export function CitationSentences({ paper, run, onOpen }: { paper: string; run?: string; onOpen: (id: string) => void }) {
-	const [version, setVersion] = useState(0);
-	const contexts = ready(useAsync(() => contextsOf(paper, run), [paper, run, version]));
-	const reload = useCallback(() => {
+	const loaded = useAsync(() => contextsOf(paper, run), [paper, run], { keep: false });
+	const contexts = ready(loaded);
+	const reload = () => {
 		forgetAsked();
-		setVersion((value) => value + 1);
-	}, []);
-	const { job, start } = useFollowedJob(reload);
+		loaded.reload();
+	};
+	// the run's reading of citing sentences, followed until it ends, also when the tab was left and opened again
+	const { job, elsewhere, start } = useFollowedJob(reload, `citation-contexts:${run ?? ""}`);
 	if (!contexts) return null;
 	const { coverage } = contexts;
 	return (
@@ -240,10 +255,11 @@ export function CitationSentences({ paper, run, onOpen }: { paper: string; run?:
 						: "No paper whose citing sentences were read cites it."}
 					{coverage && ` ${coverageLine(coverage)}.`}
 				</p>
-				{run && coverage && moreToRead(coverage) && job.state !== "running" && (
+				{run && coverage && moreToRead(coverage) && job.state !== "running" && job.state !== "starting" && (
 					<Button
 						variant="outline"
 						className="self-start"
+						disabled={elsewhere !== null}
 						title="Reads the reference list and citing sentences of each of the run's papers whose PDF is kept, once. No model is asked: it costs nothing."
 						onClick={() => void start(() => api.readCitationContexts(run).then((begun) => begun.id))}
 					>
@@ -251,7 +267,10 @@ export function CitationSentences({ paper, run, onOpen }: { paper: string; run?:
 						Read the citing sentences of this run&apos;s papers
 					</Button>
 				)}
-				<JobStrip job={job} what="Reading citing sentences" />
+				<JobStrip job={job} what="Reading citing sentences" noun="paper" />
+				{elsewhere && run && coverage && moreToRead(coverage) && (
+					<p className="font-ui text-xs text-muted-foreground">{elsewhereLine(elsewhere)}</p>
+				)}
 				<ol className="flex flex-col gap-3">
 					{contexts.cited_by.map((between) => (
 						<Between key={between.paper} between={between} onOpen={onOpen} />

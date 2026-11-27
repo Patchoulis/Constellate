@@ -6,6 +6,7 @@ import { SettingsDialog } from "@/components/settings-dialog";
 import { Sidebar } from "@/components/sidebar";
 import { ActivityLog, Notice, Workspace } from "@/components/workspace";
 import { api } from "@/lib/api";
+import { ChosenModelContext, chosenModelOf } from "@/lib/chosen-model";
 import { serverOwned } from "@/lib/engine";
 import { forgetMarks } from "@/lib/marks";
 import { choosableOf, engineCatalog } from "@/lib/models";
@@ -108,9 +109,12 @@ export default function Home() {
 				onOpenSettings={() => setSettingsOpen(true)}
 			/>
 			{current ? (
-				<Workspace key={`${current}#${finishedRuns}`} name={current} catalog={ready(catalog)} model={settings?.describe_model}>
-					{log}
-				</Workspace>
+				// every estimate on screen is for the model chosen now (lib/chosen-model.ts)
+				<ChosenModelContext value={chosenModelOf(settings)}>
+					<Workspace key={`${current}#${finishedRuns}`} name={current} catalog={ready(catalog)} model={settings?.describe_model}>
+						{log}
+					</Workspace>
+				</ChosenModelContext>
 			) : (
 				<main className="relative min-w-0 flex-1">
 					<Notice>

@@ -6,17 +6,9 @@
  * reading of the paper, every statement of it with the paper's words it rests on. There is no score and no verdict
  * anywhere in it. Nothing is shown when the engine has no such route (an older backend).
  */
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import { Loader2, RotateCcw, Sparkles, Square } from "lucide-react";
-import type {
-	Critique,
-	CritiqueModelPart,
-	CritiqueReviewer,
-	CritiqueReviewers,
-	ModelWeakness,
-	PointReading,
-	ShownModel,
-} from "@rp/contracts";
+import type { Critique, CritiqueModelPart, CritiqueReviewer, CritiqueReviewers, ModelWeakness, PointReading } from "@rp/contracts";
 import { EvidenceLink, EvidenceLinks } from "@/components/evidence-link";
 import { Button, Heading } from "@/components/ui/button";
 import { api } from "@/lib/api";
@@ -36,9 +28,10 @@ import {
 	scoreLine,
 	scoreTitle,
 } from "@/lib/critique";
-import { shownModel } from "@/lib/cost";
+import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
+import { budgetOf, shownModel } from "@/lib/cost";
 import { ready, useAsync } from "@/lib/use-async";
-import { useFollowedJob } from "@/lib/use-followed-job";
+import { elsewhereLine, useFollowedJob } from "@/lib/use-followed-job";
 import { count, knownMoney } from "@/lib/units";
 import { cn } from "@/lib/utils";
 
@@ -211,31 +204,33 @@ function Weakness({ weakness }: { weakness: ModelWeakness }) {
 
 function ModelPart({
 	part,
+	current,
 	shown,
 	onShow,
 	onChanged,
 	id,
 }: {
 	part: CritiqueModelPart;
+	/** the estimate is answered for the model chosen now: false while it is asked for again */
+	current: boolean;
 	shown: boolean;
 	onShow: (shown: boolean) => void;
 	onChanged: () => void;
 	id: string;
 }) {
-	const [starting, setStarting] = useState(false);
-	// the job is followed until it ends; then what is kept is read again
-	const { job, start } = useFollowedJob(() => onChanged());
-	const ask = async (shown: ShownModel) => {
-		setStarting(true);
-		await start(async () => {
-			const started = await api.readCritique(id, shownModel(shown));
+	// the job is followed until it ends, also when the reader's tab was left and opened again; then what is kept is
+	// read again
+	const { job, elsewhere, start } = useFollowedJob(() => onChanged(), `critique:${id}`);
+	const ask = (asked: Extract<CritiqueModelPart, { state: "not_asked" }>) =>
+		void start(async () => {
+			// the model and the most shown go with the request: the engine refuses if either changed
+			const started = await api.readCritique(id, shownModel(asked), budgetOf(asked.estimate));
 			if (started.outcome === "started") return started.job;
 			onChanged(); // read before: nothing was asked
 			return null;
 		});
-		setStarting(false);
-	};
-	const asking = { running: job.state === "running", starting };
+	const asking = { running: job.state === "running", starting: job.state === "starting" };
+	const [forgetError, setForgetError] = useState<string | null>(null);
 
 	const heading = <Heading title={MODEL_NOTE}>The model&apos;s reading, not a review</Heading>;
 	if (part.state === "no_pdf")
@@ -267,16 +262,19 @@ function ModelPart({
 					<div className="flex items-center gap-2 text-xs text-muted-foreground">
 						<Loader2 className="size-3.5 animate-spin" />
 						The model is reading the paper{spent ? ` (${spent} spent so far)` : ""}
+						{job.unanswered && ` (${job.unanswered}: looking again.)`}
 						<Button variant="ghost" size="icon" title="Stop" onClick={() => void api.cancelJob(job.id).catch(() => undefined)}>
 							<Square />
 						</Button>
 					</div>
+				) : !current ? (
+					<p className="text-xs text-muted-foreground">Working out the cost for the model chosen now…</p>
 				) : (
 					<Button
 						variant="outline"
-						disabled={!part.api_key_set || running}
+						disabled={!part.api_key_set || running || elsewhere !== null}
 						title={estimateTitle(part.estimate)}
-						onClick={() => void ask(part)}
+						onClick={() => ask(part)}
 					>
 						{asking.starting ? <Loader2 className="animate-spin" /> : <Sparkles />}
 						{`Ask the model (${part.model}): ${cost}, an estimate`}
@@ -285,7 +283,8 @@ function ModelPart({
 				{!part.api_key_set && (
 					<p className="text-xs text-muted-foreground">The chosen provider&apos;s key is not set, so the model cannot be asked.</p>
 				)}
-				{job.state === "failed" && <p className="text-xs text-destructive">{job.error}</p>}
+				{elsewhere && !running && <p className="text-xs text-muted-foreground">{elsewhereLine(elsewhere)}</p>}
+				{job.state === "failed" && <p className="text-xs text-destructive">{job.id === null ? `Not asked: ${job.error}` : job.error}</p>}
 			</div>
 		);
 	}
@@ -326,17 +325,22 @@ function ModelPart({
 						<Button
 							variant="ghost"
 							title="Forget this reading: the model can then be asked again, at the cost shown then."
-							onClick={() =>
-								void api
-									.forgetCritique(id)
-									.then(onChanged)
-									.catch(() => undefined)
-							}
+							onClick={() => {
+								if (
+									!window.confirm(
+										"Forget the model's reading of this paper's weaknesses?\n\nIt cannot be undone, and asking again costs again. The cost is shown before anything is sent.",
+									)
+								)
+									return;
+								setForgetError(null);
+								void api.forgetCritique(id).then(onChanged, (error: Error) => setForgetError(error.message));
+							}}
 						>
 							<RotateCcw />
 							Forget it
 						</Button>
 					</div>
+					{forgetError && <p className="text-xs text-destructive">{forgetError}</p>}
 				</>
 			)}
 		</div>
@@ -345,19 +349,32 @@ function ModelPart({
 
 /** The Weaknesses section of a paper. `onReviews` opens the reader's Reviews tab, where reviews are read. */
 export function Weaknesses({ id, onReviews, className }: { id: string; onReviews?: () => void; className?: string }) {
-	const [version, setVersion] = useState(0);
 	const [shown, setShown] = useState(false);
-	const changed = useCallback(() => setVersion((value) => value + 1), []);
-	const critique = ready(useAsync(() => api.critique(id), [id, version]));
+	const chosen = useChosenModel();
+	// read again when the model chosen changes (its estimate is the model's) or after asking; the reviewers' part
+	// stays in view meanwhile, and the estimate cannot be accepted until it is the new one
+	const loaded = useAsync(() => api.critique(id), [id, choiceKey(chosen)]);
+	const critique = ready(loaded);
 	if (!critique) return null;
+	const model = critique.model;
+	const current = loaded.status === "ready" && (model.state !== "not_asked" || isFor(model, chosen));
 	return (
-		<WeaknessesOf critique={critique} shown={shown} onShow={setShown} onChanged={changed} onReviews={onReviews} className={className} />
+		<WeaknessesOf
+			critique={critique}
+			current={current}
+			shown={shown}
+			onShow={setShown}
+			onChanged={loaded.reload}
+			onReviews={onReviews}
+			className={className}
+		/>
 	);
 }
 
 /** The section drawn from what the engine answered (apart, so that it can be drawn without the engine). */
 export function WeaknessesOf({
 	critique,
+	current = true,
 	shown,
 	onShow,
 	onChanged,
@@ -365,6 +382,8 @@ export function WeaknessesOf({
 	className,
 }: {
 	critique: Critique;
+	/** the estimate in it is answered for the model chosen now (false while it is asked for again) */
+	current?: boolean;
 	shown: boolean;
 	onShow: (shown: boolean) => void;
 	onChanged: () => void;
@@ -376,7 +395,7 @@ export function WeaknessesOf({
 		<section className={cn("flex flex-col gap-4 font-ui", className)}>
 			<Heading className="text-foreground">Weaknesses</Heading>
 			<ReviewersPart part={critique.reviewers} readings={readings} onReviews={onReviews} />
-			<ModelPart part={critique.model} shown={shown} onShow={onShow} onChanged={onChanged} id={critique.paper_id} />
+			<ModelPart part={critique.model} current={current} shown={shown} onShow={onShow} onChanged={onChanged} id={critique.paper_id} />
 		</section>
 	);
 }

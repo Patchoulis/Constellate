@@ -7,9 +7,17 @@
  * with its own words, the counts with what they are counts of, by acceptance tier and by year. Never one verdict.
  * Nothing is shown when the engine has no such route (the Python backend).
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { RotateCcw, Sparkles, Square } from "lucide-react";
-import type { JobProgress, StancePlan, StanceProposalPlan, StanceProposals, StanceResult, StanceRow, StanceScope } from "@rp/contracts";
+import type {
+	StancePartEstimate,
+	StancePlan,
+	StanceProposalPlan,
+	StanceProposals,
+	StanceResult,
+	StanceRow,
+	StanceScope,
+} from "@rp/contracts";
 import { AcceptanceTag } from "@/components/brand";
 import { EvidenceLinks } from "@/components/evidence-link";
 import { MathText } from "@/components/math-text";
@@ -36,27 +44,33 @@ import {
 } from "@/lib/stances";
 import { accepting, shownModel } from "@/lib/cost";
 import { ready, useAsync } from "@/lib/use-async";
-import { useFollowedJob } from "@/lib/use-followed-job";
+import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
+import { elsewhereLine, notAskedLine, useFollowedJob, type FollowedJob } from "@/lib/use-followed-job";
 import { cn, hsl } from "@/lib/utils";
 import { count, currencyOf, money, type Currency } from "@/lib/units";
 
 const DOLLAR: Currency = { code: "USD", rate: 1, date: null };
 
-/** Where asking a question stands: one of these at a time. */
+/** Where choosing a question stands, before its job (lib/use-followed-job.ts has the job): one at a time. */
 type Step =
 	| { kind: "choosing" }
 	| { kind: "estimating"; question: string; includeUnrelated: boolean }
 	| { kind: "estimated"; plan: StancePlan; includeUnrelated: boolean }
-	| { kind: "asking"; job: number; id: string }
 	| { kind: "failed"; error: string };
 
-/** Where proposing questions stands. */
+/** Where proposing questions stands, before its job. */
 type Proposing =
 	| { kind: "idle" }
 	| { kind: "estimating" }
 	| { kind: "estimated"; plan: StanceProposalPlan; fresh: boolean }
-	| { kind: "asking"; job: number }
 	| { kind: "failed"; error: string };
+
+/** Why the job's start was refused, or how it ended badly, with how many were not asked; null otherwise. */
+function jobTrouble(job: FollowedJob, noun: string): string | null {
+	if (job.state !== "failed") return null;
+	if (job.id === null) return `Not asked: ${job.error}`;
+	return [job.error, "What was answered is kept.", notAskedLine(job, noun)].filter(Boolean).join(" ");
+}
 
 /** The user's currency, at the rate the engine knows; US dollars until it answers. */
 function useCurrency(): { currency: Currency; locale?: string } {
@@ -65,32 +79,21 @@ function useCurrency(): { currency: Currency; locale?: string } {
 	return { currency: usage?.currency ?? DOLLAR, locale };
 }
 
-/** Follow job `job` until it is no longer running, then call `onEnd` once. Its progress meanwhile. */
-function useJobProgress(job: number | null, onEnd: (error: string | null) => void): JobProgress | null {
-	const ended = useRef(onEnd);
-	ended.current = onEnd;
-	// the one way a feature follows a job: only what is new is asked for while it runs
-	const { job: followed, follow, reset } = useFollowedJob((end) => ended.current(end.state === "failed" ? end.error : null));
-	useEffect(() => {
-		if (job === null) reset();
-		else follow(job);
-	}, [job, follow, reset]);
-	return followed.state === "running" ? followed.progress : null;
-}
-
-function Running({ job, progress, what, onDone }: { job: number; progress: JobProgress | null; what: string; onDone?: () => void }) {
+function Running({ job, what }: { job: Extract<FollowedJob, { state: "running" }>; what: string }) {
 	const { currency, locale } = useCurrency();
+	const progress = job.progress;
 	return (
 		<div className="flex items-center gap-2 text-xs text-muted-foreground tabular-nums">
 			<span className="flex-1">
 				{progress
 					? `${progress.done} of ${count(progress.of, what)} done${progress.usd > 0 ? ` · ${money(progress.usd, currency, locale)} spent so far` : ""}`
 					: "Starting…"}
+				{job.unanswered && ` (${job.unanswered}: looking again.)`}
 			</span>
 			<Button
 				variant="outline"
 				title="Stop: nothing new is sent, what is under way finishes, and every answer so far is kept"
-				onClick={() => void api.cancelJob(job).then(onDone, onDone)}
+				onClick={() => void api.cancelJob(job.id).catch(() => undefined)}
 			>
 				<Square />
 				Stop
@@ -267,12 +270,15 @@ function ResultView({
 function PlanView({
 	plan,
 	includeUnrelated,
+	busy,
 	onInclude,
 	onAsk,
 	onCancel,
 }: {
 	plan: StancePlan;
 	includeUnrelated: boolean;
+	/** a job is being started or runs: nothing more is started */
+	busy: boolean;
 	onInclude: (include: boolean) => void;
 	onAsk: (part: "sample" | "all") => void;
 	onCancel: () => void;
@@ -281,6 +287,9 @@ function PlanView({
 	const skipped = skippedLine(plan.filter);
 	const rest = plan.all.estimate.to_ask;
 	const sample = plan.sample.estimate.to_ask;
+	// nothing is paid for without the provider's key: the engine would refuse, and the user is told why first
+	const noKey = !plan.api_key_set && (sample > 0 || rest > 0);
+	const off = (part: StancePartEstimate) => busy || part.papers === 0 || (noKey && part.estimate.to_ask > 0);
 	return (
 		<div className="flex flex-col gap-2 text-xs">
 			<p className="font-sans text-base text-foreground">{plan.question}</p>
@@ -296,11 +305,11 @@ function PlanView({
 				the abstract only. One call per paper.
 			</p>
 			<div className="flex flex-col gap-1.5">
-				<Button disabled={plan.sample.papers === 0} title={costNote(plan.sample.estimate)} onClick={() => onAsk("sample")}>
+				<Button disabled={off(plan.sample)} title={costNote(plan.sample.estimate)} onClick={() => onAsk("sample")}>
 					Ask the {count(plan.sample.papers, "most central paper")} first: {costLine(plan.sample.estimate, currency, locale)}
 				</Button>
 				{plan.all.papers > plan.sample.papers && (
-					<Button variant="outline" title={costNote(plan.all.estimate)} onClick={() => onAsk("all")}>
+					<Button variant="outline" disabled={off(plan.all)} title={costNote(plan.all.estimate)} onClick={() => onAsk("all")}>
 						Ask all {count(plan.all.papers, "paper")}: {costLine(plan.all.estimate, currency, locale)}
 					</Button>
 				)}
@@ -309,6 +318,11 @@ function PlanView({
 				</Button>
 			</div>
 			{sample === 0 && rest === 0 && <p className="text-muted-foreground">Every answer is kept: asking costs nothing.</p>}
+			{noKey && (
+				<p className="text-muted-foreground">
+					The chosen provider&apos;s key is not set (Settings, Language model, names the variable), so the model cannot be asked.
+				</p>
+			)}
 		</div>
 	);
 }
@@ -329,14 +343,7 @@ function Proposals({
 }) {
 	const [step, setStep] = useState<Proposing>({ kind: "idle" });
 	const { currency, locale } = useCurrency();
-	const end = useCallback(
-		(error: string | null) => {
-			setStep(error ? { kind: "failed", error } : { kind: "idle" });
-			onChanged();
-		},
-		[onChanged],
-	);
-	const progress = useJobProgress(step.kind === "asking" ? step.job : null, end);
+	const { job, elsewhere, start } = useFollowedJob(onChanged, `stance-proposals:${run}:${community}`);
 	// with proposals shown, proposing again is a fresh call: its cost is the one shown, and the proposals shown stay
 	// until the user clicks Propose
 	const estimate = () => {
@@ -347,6 +354,21 @@ function Proposals({
 			(error: Error) => setStep({ kind: "failed", error: error.message }),
 		);
 	};
+	// another model chosen while a cost is shown: that one's cost is worked out
+	const chosen = useChosenModel();
+	const shownPlan = step.kind === "estimated" ? step.plan : null;
+	useEffect(() => {
+		if (shownPlan && !isFor(shownPlan, chosen)) estimate();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [choiceKey(chosen)]);
+	const propose = (plan: StanceProposalPlan, fresh: boolean) =>
+		void start(async () => {
+			const started = await api.stances.propose(run, community, fresh, { ...shownModel(plan), ...accepting(plan.estimate) });
+			setStep({ kind: "idle" });
+			return started.job;
+		});
+	const running = job.state === "running" || job.state === "starting";
+	const trouble = jobTrouble(job, "call");
 	return (
 		<div className="flex flex-col gap-1.5">
 			{proposals && proposals.questions.length > 0 && (
@@ -368,10 +390,11 @@ function Proposals({
 					{count(proposals.left_out, "proposed question")} left out: their quotes were not found in the abstracts of two papers.
 				</p>
 			)}
-			{step.kind === "idle" && (
+			{step.kind === "idle" && !running && (
 				<Button
 					variant="ghost"
 					className="self-start"
+					disabled={elsewhere !== null}
 					title="The model reads the abstracts of the most central papers and proposes questions they take positions on. The cost is shown before anything is sent."
 					onClick={estimate}
 				>
@@ -380,29 +403,34 @@ function Proposals({
 				</Button>
 			)}
 			{step.kind === "estimating" && <p className="text-xs text-muted-foreground">Working out the cost…</p>}
-			{step.kind === "estimated" && (
+			{step.kind === "estimated" && !isFor(step.plan, chosen) && (
+				<p className="text-xs text-muted-foreground">Working out the cost for the model chosen now…</p>
+			)}
+			{step.kind === "estimated" && isFor(step.plan, chosen) && (
 				<div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
 					<span className="w-full tabular-nums">
 						One call over the abstracts of {count(step.plan.papers, "paper")} with {step.plan.model}:{" "}
 						{costLine(step.plan.estimate, currency, locale)}
 					</span>
-					<Button
-						title={costNote(step.plan.estimate)}
-						onClick={() =>
-							api.stances.propose(run, community, step.fresh, { ...shownModel(step.plan), ...accepting(step.plan.estimate) }).then(
-								(started) => setStep({ kind: "asking", job: started.job }),
-								(error: Error) => setStep({ kind: "failed", error: error.message }),
-							)
-						}
-					>
-						Propose
-					</Button>
+					{!step.plan.api_key_set && step.plan.estimate.to_ask > 0 ? (
+						<span className="w-full">The chosen provider&apos;s key is not set, so the model cannot be asked.</span>
+					) : (
+						<Button
+							title={costNote(step.plan.estimate)}
+							disabled={running || elsewhere !== null}
+							onClick={() => propose(step.plan, step.fresh)}
+						>
+							Propose
+						</Button>
+					)}
 					<Button variant="ghost" onClick={() => setStep({ kind: "idle" })}>
 						Not now
 					</Button>
 				</div>
 			)}
-			{step.kind === "asking" && <Running job={step.job} progress={progress} what="call" />}
+			{job.state === "running" && <Running job={job} what="call" />}
+			{trouble && <p className="text-xs text-destructive">{trouble}</p>}
+			{elsewhere && !running && <p className="text-xs text-muted-foreground">{elsewhereLine(elsewhere)}</p>}
 			{step.kind === "failed" && (
 				<p className="text-xs text-destructive">
 					{step.error}{" "}
@@ -440,15 +468,31 @@ export function CommunityStances({ run, scope, onOpenPaper }: { run: string; sco
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 		[run, scopeKey],
 	);
-	const end = useCallback(
-		(error: string | null) => {
-			setStep(error ? { kind: "failed", error } : { kind: "choosing" });
-			setVersion((value) => value + 1);
-			reload();
-		},
-		[reload],
-	);
-	const progress = useJobProgress(step.kind === "asking" ? step.job : null, end);
+	// the job asking a question, followed until it ends, also when the section was closed and opened again
+	const { job, elsewhere, start } = useFollowedJob((ended) => {
+		setVersion((value) => value + 1);
+		reload();
+		if (ended.about) setOpen(ended.about);
+	}, `stances:${run}:${scopeKey}`);
+	const running = job.state === "running" || job.state === "starting";
+	// another model chosen while a cost is shown: that one's cost is worked out, the old one goes
+	const chosen = useChosenModel();
+	const shownPlan = step.kind === "estimated" ? step : null;
+	useEffect(() => {
+		if (shownPlan && !isFor(shownPlan.plan, chosen)) estimate(shownPlan.plan.question, shownPlan.includeUnrelated);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [choiceKey(chosen)]);
+	const ask = (plan: StancePlan, includeUnrelated: boolean, part: "sample" | "all") =>
+		void start(async () => {
+			const started = await api.stances.ask(run, scope, plan.question, includeUnrelated, part, {
+				...shownModel(plan),
+				...accepting((part === "sample" ? plan.sample : plan.all).estimate),
+			});
+			setOpen(started.id);
+			setStep({ kind: "choosing" });
+			return { id: started.job, about: started.id };
+		});
+	const trouble = jobTrouble(job, "paper");
 
 	const found = ready(listing);
 	if (!found) return null; // not loaded yet, or an engine without these routes: nothing to show
@@ -471,7 +515,7 @@ export function CommunityStances({ run, scope, onOpenPaper }: { run: string; sco
 				<Button
 					type="submit"
 					variant="outline"
-					disabled={question.trim().length < 10 || step.kind === "asking"}
+					disabled={question.trim().length < 10 || running}
 					title="See what asking would cost; nothing is sent yet"
 				>
 					Cost…
@@ -492,35 +536,26 @@ export function CommunityStances({ run, scope, onOpenPaper }: { run: string; sco
 					))}
 				</div>
 			)}
-			{"community" in scope && step.kind === "choosing" && (
+			{"community" in scope && step.kind === "choosing" && !running && (
 				<Proposals run={run} community={scope.community} proposals={found.proposals} onPick={setQuestion} onChanged={reload} />
 			)}
 			{step.kind === "estimating" && <p className="text-xs text-muted-foreground">Working out which papers to ask and the cost…</p>}
-			{step.kind === "estimated" && (
+			{step.kind === "estimated" && !isFor(step.plan, chosen) && (
+				<p className="text-xs text-muted-foreground">Working out the cost for the model chosen now…</p>
+			)}
+			{step.kind === "estimated" && isFor(step.plan, chosen) && (
 				<PlanView
 					plan={step.plan}
 					includeUnrelated={step.includeUnrelated}
+					busy={running || elsewhere !== null}
 					onInclude={(include) => estimate(step.plan.question, include)}
 					onCancel={() => setStep({ kind: "choosing" })}
-					onAsk={(part) =>
-						api.stances
-							.ask(run, scope, step.plan.question, step.includeUnrelated, part, {
-								...shownModel(step.plan),
-								...accepting((part === "sample" ? step.plan.sample : step.plan.all).estimate),
-							})
-							.then(
-								(started) => {
-									setOpen(started.id);
-									setStep({ kind: "asking", job: started.job, id: started.id });
-								},
-								(error: Error) => setStep({ kind: "failed", error: error.message }),
-							)
-					}
+					onAsk={(part) => ask(step.plan, step.includeUnrelated, part)}
 				/>
 			)}
-			{step.kind === "asking" && (
-				<Running job={step.job} progress={progress} what="paper" onDone={() => setVersion((value) => value + 1)} />
-			)}
+			{job.state === "running" && <Running job={job} what="paper" />}
+			{trouble && <p className="text-xs text-destructive">{trouble}</p>}
+			{elsewhere && !running && <p className="text-xs text-muted-foreground">{elsewhereLine(elsewhere)}</p>}
 			{step.kind === "failed" && (
 				<p className="text-xs text-destructive">
 					{step.error}{" "}
@@ -552,7 +587,7 @@ export function CommunityStances({ run, scope, onOpenPaper }: { run: string; sco
 					scope={scope}
 					id={open}
 					version={version}
-					busy={step.kind === "asking"}
+					busy={running || elsewhere !== null}
 					onOpenPaper={onOpenPaper}
 					onAskRest={(result) => estimate(result.question, result.filter.include_unrelated)}
 					onRedo={(result) =>
