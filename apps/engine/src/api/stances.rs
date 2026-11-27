@@ -381,7 +381,6 @@ fn checked(question: &str) -> Result<String, ApiError> {
 /// The papers about which the pre-filter decided, said so the user can judge it.
 #[derive(Serialize)]
 pub struct Filtered {
-    /// The scope's papers the library has: `related` and `unrelated` add up to it.
     pub papers: usize,
     /// Papers sharing a distinctive word with the question.
     pub related: usize,
@@ -1216,6 +1215,7 @@ pub(super) mod tests {
         let (status, plan) =
             call(&router, "POST", &format!("{C0}/estimate"), Some(json!({"question": QUESTION}))).await;
         assert_eq!(status, StatusCode::OK, "{plan}");
+        crate::api::contract::assert_fits("StancePlan", &plan, &[]);
         assert_eq!(
             (plan["filter"]["papers"].clone(), plan["filter"]["related"].clone(), plan["filter"]["unrelated"].clone()),
             (json!(3), json!(2), json!(1)),
@@ -1255,6 +1255,7 @@ pub(super) mod tests {
 
         let (status, result) = call(&router, "GET", &format!("{C0}/{id}"), None).await;
         assert_eq!(status, StatusCode::OK);
+        crate::api::contract::assert_fits("StanceResult", &result, &[]);
         assert_eq!((result["answered"].clone(), result["to_ask"].clone()), (json!(2), json!(2)));
         let rows = result["rows"].as_array().unwrap();
         assert_eq!(
@@ -1282,10 +1283,12 @@ pub(super) mod tests {
         assert_eq!(posts() - before, 2);
 
         let (_, listing) = call(&router, "GET", C0, None).await;
+        crate::api::contract::assert_fits("StanceListing", &listing, &[]);
         assert_eq!(listing["questions"][0]["question"], QUESTION);
         assert_eq!(listing["proposals"], Value::Null);
 
         let (status, redone) = call(&router, "POST", &format!("{C0}/{id}/redo"), None).await;
+        crate::api::contract::assert_fits("StanceAsked", &redone, &[]);
         assert_eq!((status, redone["round"].clone()), (StatusCode::OK, json!(1)));
         let (_, result) = call(&router, "GET", &format!("{C0}/{id}"), None).await;
         assert_eq!(result["answered"], 0, "a redo asks again");
@@ -1399,6 +1402,9 @@ pub(super) mod tests {
         let (status, proposals) =
             call(&router, "POST", &format!("{C0}/proposals/estimate"), Some(json!({"fresh": false}))).await;
         assert_eq!((status, proposals["papers"].clone()), (StatusCode::OK, json!(3)));
+        crate::api::contract::assert_fits("StanceProposalPlan", &proposals, &[]);
         assert_eq!(proposals["estimate"]["to_ask"], 1);
+        crate::api::contract::assert_fits("StanceListing", &listing, &[]);
+        crate::api::contract::assert_fits("StancePlan", &plan, &[]);
     }
 }
