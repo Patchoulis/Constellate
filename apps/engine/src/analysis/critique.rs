@@ -1069,7 +1069,8 @@ pub(crate) mod tests {
         assert_eq!((told["location"].clone(), told["paper_says"]["paper"].clone()), (Value::Null, json!("p")));
         let placed = PointReading::of("p2".into(), Some(Location::NoPassage), None).unwrap();
         assert_eq!((placed.location(), placed.paper_says()), (Some(&Location::NoPassage), None));
-        let both = PointReading::of("p3".into(), Some(Location::Passage { evidence: response.clone() }), Some(response));
+        let both =
+            PointReading::of("p3".into(), Some(Location::Passage { evidence: response.clone() }), Some(response));
         assert!(matches!(both.unwrap().found, PointFound::Placed { paper_says: Some(_), .. }));
     }
 

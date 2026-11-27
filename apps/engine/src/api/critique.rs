@@ -230,9 +230,10 @@ async fn start(State(engine): State<Shared>, Path(id): Path<String>, body: Bytes
         let endpoint =
             plan.chosen.endpoint().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
         // the estimate the user saw was for this model: one changed in the settings since is not asked unseen
-        let model = asked.model.as_deref().ok_or_else(|| {
-            ApiError::Invalid("say which model's estimate was shown (provider and model)".to_owned())
-        })?;
+        let model = asked
+            .model
+            .as_deref()
+            .ok_or_else(|| ApiError::Invalid("say which model's estimate was shown (provider and model)".to_owned()))?;
         plan.chosen.as_shown(asked.provider, model).map_err(|why| ApiError::Invalid(why.to_string()))?;
         let budget = budget_of(&asked, &plan.estimate(&library)?)?;
         let transport = engine.transport.clone();
