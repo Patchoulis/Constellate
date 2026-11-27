@@ -748,8 +748,9 @@ export interface CitationTally {
 /** One citing sentence: the sentence itself as evidence of the citing paper, its neighbours and what it is. */
 export interface CitingSentenceShown {
 	evidence: Evidence;
-	before: string | null;
-	after: string | null;
+	/** the sentences on either side, also evidence of the citing paper (null when there is none or it was not found) */
+	before: Evidence | null;
+	after: Evidence | null;
 	section: CitationSection;
 	grouping: CitationGrouping;
 	/** the citation as the sentence writes it: "[3, 7-9]", "Vaswani et al., 2017" */
@@ -852,4 +853,7 @@ export interface ClassifyCitationsRequest {
 	scope: CitationKindsScope;
 	/** the most the job may spend, in US dollars */
 	budget_usd: number;
+	/** the model and the sentences to ask of the estimate shown: anything else is refused (estimate again) */
+	model: string;
+	to_ask: number;
 }

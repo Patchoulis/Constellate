@@ -26,12 +26,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::citation_contexts::{Context, Grouping, Section};
-use crate::evidence::Evidence;
+use crate::evidence::{Evidence, SHORTEST_QUOTE};
 use crate::jobs::Tracker;
 use crate::library::{AnswerKey, Feature, Library, LibraryError, Slot, Subject};
 use crate::model::batch::{self, Asking, Item, Outcome};
 use crate::model::language::{Ask, Budget, Effort, Form};
-use crate::text::passages::{Address, Passages, letters_in, locate_in};
+use crate::text::passages::{Address, Match, Passages, letters_in, locate_in};
 
 /// The version of the prompt and the answer's shape. Raise it when either changes: kept readings are asked again.
 pub const PROMPT: u32 = 1;
@@ -39,8 +39,9 @@ pub const PROMPT: u32 = 1;
 pub const PER_CALL: usize = 25;
 /// The cited papers a first, sample run is about: the most cited of the community.
 pub const SAMPLE: usize = 20;
-/// Letters and digits a justifying quote needs: fewer ("uses") could be found anywhere.
-pub const SHORTEST_JUSTIFICATION: usize = 10;
+/// Letters and digits a justifying quote needs: what any quote needs to be evidence ([`SHORTEST_QUOTE`]); fewer
+/// ("uses") could be found anywhere.
+pub const SHORTEST_JUSTIFICATION: usize = SHORTEST_QUOTE;
 /// Characters of the cited paper's abstract put in the question: enough to know what it is.
 const ABSTRACT_CHARS: usize = 1_200;
 /// What one sentence's reading is likely to take, and at most, in tokens (thinking included).
@@ -133,7 +134,9 @@ pub fn judge(context: &Context, classified: Option<&Classified>) -> Verdict {
     context
         .window()
         .find_map(|(address, sentence)| {
-            let (span, _, _) = locate_in(sentence, &classified.quote)?;
+            // word for word only: the evidence made of it says it was found exactly
+            let (span, _, matched) = locate_in(sentence, &classified.quote)?;
+            (matched == Match::Exact).then_some(())?;
             Some(Address { start: address.start + span.start, end: address.start + span.end, ..address.clone() })
         })
         .map_or(Verdict::NotJustified { claimed }, |at| Verdict::Justified { kind: claimed, at })
@@ -212,7 +215,7 @@ abstract so that you know what is cited. Say what each citation does, as one of 
 - mention: anything else: background, related work, one of a list of examples\n\
 Most citations are mentions; choose another kind only when the words say so. For every kind other than mention, \
 copy into \"quote\" the words that show it, exactly as they are written in one of the given sentences (at least \
-three words, from one sentence only). For a mention, leave \"quote\" empty. Use only the text given. Answer for \
+four words, from one sentence only). For a mention, leave \"quote\" empty. Use only the text given. Answer for \
 every citation, by its id.";
 
 /// The JSON the answer must be.
@@ -618,7 +621,7 @@ mod tests {
         assert_eq!((kind, at.start, at.end), (CitationKind::Baseline, 103, 131));
         // in the sentence before
         assert!(matches!(
-            judge(&context, Some(&classified(CitationKind::UsesData, "evaluate on five tasks"))),
+            judge(&context, Some(&classified(CitationKind::UsesData, "We evaluate on five tasks"))),
             Verdict::Justified { at, .. } if at.start < 100
         ));
         // a fabricated quote, words from the cited paper's abstract, or a quote too short to show anything
@@ -631,6 +634,11 @@ mod tests {
                 "{quote}"
             );
         }
+        // close is not enough: the words must be the sentence's own
+        assert_eq!(
+            judge(&context, Some(&classified(CitationKind::Baseline, "compare against TIES mergng as our"))),
+            Verdict::NotJustified { claimed: CitationKind::Baseline }
+        );
         assert_eq!(judge(&context, Some(&classified(CitationKind::Mention, ""))), Verdict::Mention);
         assert_eq!(judge(&context, None), Verdict::NotClassified);
     }

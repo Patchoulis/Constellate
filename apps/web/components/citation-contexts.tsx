@@ -82,9 +82,9 @@ export function SentenceRow({ sentence, label }: { sentence: CitingSentenceShown
 	return (
 		<li className="flex flex-col gap-1 rounded-md border-l-2 border-border py-1 pl-3">
 			<p className="font-sans text-sm leading-relaxed" title={SENTENCES_NOTE}>
-				{sentence.before && <span className="text-muted-foreground">{sentence.before} </span>}
+				{sentence.before && <span className="text-muted-foreground">{sentence.before.quote} </span>}
 				<span className="text-foreground">{sentence.evidence.quote}</span>
-				{sentence.after && <span className="text-muted-foreground"> {sentence.after}</span>}
+				{sentence.after && <span className="text-muted-foreground"> {sentence.after.quote}</span>}
 			</p>
 			<div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-ui text-xs text-muted-foreground">
 				<EvidenceLink evidence={sentence.evidence} label={label} />

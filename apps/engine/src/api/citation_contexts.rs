@@ -31,9 +31,9 @@ use serde_json::{Value, json};
 
 use super::reviews::papers_of;
 use super::routes::{ApiError, Shared, on_the_side, one_name};
-use crate::analysis::citation_contexts::{Context, Grouping, PaperContexts, Section};
+use crate::analysis::citation_contexts::{Context, Grouping, Neighbour, PaperContexts, Section};
 use crate::analysis::citation_kinds::{
-    self, Case, CitationKind, CitedRecord, Classified, Judgement, Plan, Ranked, SAMPLE, Said, Tally, judge,
+    self, Case, CitationKind, CitedRecord, Classified, Judgement, Plan, Ranked, SAMPLE, Said, Tally, Verdict, judge,
     kept_readings, most_cited, ranked, tallies,
 };
 use crate::analysis::citations::Linker;
@@ -90,8 +90,9 @@ pub enum PaperState {
 pub struct Shown {
     /// The citing sentence, at its place in the citing paper.
     pub evidence: Evidence,
-    pub before: Option<String>,
-    pub after: Option<String>,
+    /// The sentences on either side, also made from their place in the citing paper (none when it was not found).
+    pub before: Option<Evidence>,
+    pub after: Option<Evidence>,
     pub section: Section,
     pub grouping: Grouping,
     pub written: String,
@@ -171,12 +172,24 @@ fn shown(
             continue;
         };
         let verdict = judge(&context, reading.as_ref());
-        tally.add(&verdict);
+        let judgement = Judgement::of(&verdict, citing, passages);
+        // counted as shown: words no longer had from the paper's pages make it not justified in the count too
+        let counted = match (&verdict, &judgement) {
+            (Verdict::Justified { kind, .. }, Judgement::NotJustified { .. }) => {
+                Verdict::NotJustified { claimed: *kind }
+            }
+            _ => verdict,
+        };
+        tally.add(&counted);
+        let around = |neighbour: Option<Neighbour>| {
+            let neighbour = neighbour?;
+            Evidence::at(citing, passages, &neighbour.address).filter(|evidence| evidence.quote() == neighbour.sentence)
+        };
         sentences.push(Shown {
-            judgement: Judgement::of(&verdict, citing, passages),
+            judgement,
             evidence,
-            before: context.before.map(|neighbour| neighbour.sentence),
-            after: context.after.map(|neighbour| neighbour.sentence),
+            before: around(context.before),
+            after: around(context.after),
             section: context.section,
             grouping: context.grouping,
             written: context.written,
@@ -216,20 +229,16 @@ fn contexts_of_paper(
     };
     let mut left_out = 0;
 
-    // what it cites: read now if it was not (one PDF), kept for next time
+    // what it cites
     let own = library.paper_texts(&[paper])?.pop();
     let (state, references_listed, cites) = match own {
         Some(PaperReading::Read(passages)) => {
-            let contexts = match library.kept_contexts(&[paper], Entries::InLibrary)?.remove(paper) {
-                Some(contexts) => contexts,
-                None => {
-                    let papers = library.link_papers()?;
-                    let linker = Linker::new(&papers);
-                    match library.citation_contexts(&[paper], &linker, &|| false, &|_| {})?.pop() {
-                        Some((_, ContextsReading::Read(contexts))) => contexts,
-                        _ => PaperContexts { citing: Citing::ByNumber, listed: 0, entries: vec![] },
-                    }
-                }
+            // read now if it was not (one PDF), or linked again: a paper added to the library since is found
+            let papers = library.link_papers()?;
+            let linker = Linker::new(&papers);
+            let contexts = match library.citation_contexts(&[paper], &linker, &|| false, &|_| {})?.pop() {
+                Some((_, ContextsReading::Read(contexts))) => contexts,
+                _ => PaperContexts { citing: Citing::ByNumber, listed: 0, entries: vec![] },
             };
             let linked = contexts.in_library();
             let ids: Vec<&str> = linked.iter().map(|(cited, _)| cited.as_str()).collect();
@@ -540,7 +549,7 @@ async fn estimate(
         let estimate = estimate_batch::<Said>(&library, &items, Counting::ASSUMED)?;
         Ok(KindsEstimate {
             scope,
-            sentences: plan.cases.len(),
+            sentences: plan.kept + plan.to_ask(),
             kept: plan.kept,
             to_ask: plan.to_ask(),
             model: plan.model.clone(),
@@ -559,6 +568,10 @@ struct ClassifyRequest {
     scope: Scope,
     /// The most the job may spend, in US dollars.
     budget_usd: f64,
+    /// The model and the number of sentences the estimate the person saw was for: asking another model, or more
+    /// sentences, is refused (estimate again).
+    model: String,
+    to_ask: usize,
 }
 
 fn budget_of(usd: f64) -> Result<Budget, ApiError> {
@@ -586,9 +599,16 @@ async fn classify_run(
         let library = engine.library()?;
         let community = tree_path(request.community.as_deref())?.map(str::to_owned);
         papers_of(&engine, &run, community.as_deref())?; // a run or community that is not there is not found now
+        if chosen_model(&engine)? != request.model {
+            return Err(ApiError::Invalid("the model chosen changed since the estimate was shown: estimate again".to_owned()));
+        }
         let shared = engine.clone();
         let id = engine.job.start_tracked("reading citation kinds", move |tracker| {
-            let plan = plan_of(&shared, &library, &run, community.as_deref(), request.scope).map_err(|error| error.to_string())?;
+            let plan = plan_of(&shared, &library, &run, community.as_deref(), request.scope)
+                .map_err(|error| error.to_string())?;
+            if plan.model != request.model || plan.to_ask() > request.to_ask {
+                return Err("What would be asked changed since the estimate was shown: estimate again.".to_owned());
+            }
             tracker.log(&format!(
                 "Reading the kinds of {} citing sentences with {} ({} read before), in {} calls.",
                 plan.to_ask(),
@@ -772,7 +792,8 @@ mod tests {
         assert_eq!(sentence["evidence"]["paper"], "seed");
         assert_eq!(sentence["evidence"]["quote"], "We compare against the merging of [2] as a baseline.");
         assert_eq!(sentence["evidence"]["established"]["kind"], "verified");
-        assert_eq!(sentence["after"], "It is weaker than [3].");
+        assert_eq!(sentence["after"]["quote"], "It is weaker than [3].");
+        assert_eq!(sentence["after"]["established"]["kind"], "verified");
         assert_eq!(sentence["section"], json!({"kind": "experiments"}));
         assert_eq!(sentence["judgement"], json!({"state": "not_classified"}));
         assert_eq!(cites[1]["tally"]["not_classified"], 1);
@@ -859,30 +880,35 @@ mod tests {
         assert_eq!(estimate["estimate"]["by_model"][0]["calls"], 2, "one call per cited paper");
         assert_eq!(estimate["can_ask"], false);
         assert!(estimate["estimate"]["usd"].as_f64().unwrap() > 0.0);
-        let body = json!({"scope": "sample", "budget_usd": 1.0}).to_string();
+        let body = json!({"scope": "sample", "budget_usd": 1.0, "model": MODEL, "to_ask": 2}).to_string();
         let (status, told) = ask(&router, "POST", "/api/runs/r1/citation-kinds", Some(body)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
         assert!(told["error"].as_str().unwrap().contains("cannot be asked"));
 
         let (router, _) = serve(&data, true);
         for budget in [0.0, -1.0, 1e9] {
-            let body = json!({"scope": "rest", "budget_usd": budget}).to_string();
+            let body = json!({"scope": "rest", "budget_usd": budget, "model": MODEL, "to_ask": 2}).to_string();
             assert_eq!(
                 ask(&router, "POST", "/api/runs/r1/citation-kinds", Some(body)).await.0,
                 StatusCode::BAD_REQUEST
             );
         }
-        let large = json!({"scope": "rest", "budget_usd": 1.0, "community": "x".repeat(5 * 1024 * 1024)}).to_string();
+        let large = json!({"scope": "rest", "budget_usd": 1.0, "model": MODEL, "to_ask": 2, "community": "x".repeat(5 * 1024 * 1024)}).to_string();
         assert_eq!(
             ask(&router, "POST", "/api/runs/r1/citation-kinds", Some(large)).await.0,
             StatusCode::PAYLOAD_TOO_LARGE
         );
-        let missing = json!({"scope": "rest", "budget_usd": 1.0, "community": "c9"}).to_string();
+        let missing =
+            json!({"scope": "rest", "budget_usd": 1.0, "model": MODEL, "to_ask": 2, "community": "c9"}).to_string();
         assert_eq!(ask(&router, "POST", "/api/runs/r1/citation-kinds", Some(missing)).await.0, StatusCode::NOT_FOUND);
         assert_eq!(
             ask(&router, "GET", "/api/runs/r1/citation-kinds/estimate?scope=most", None).await.0,
             StatusCode::BAD_REQUEST
         );
+        let other = json!({"scope": "rest", "budget_usd": 1.0, "model": "another-model", "to_ask": 2}).to_string();
+        let (status, told) = ask(&router, "POST", "/api/runs/r1/citation-kinds", Some(other)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+        assert!(told["error"].as_str().unwrap().contains("estimate again"));
     }
 
     #[tokio::test]

@@ -16,7 +16,7 @@ use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use rayon::prelude::*;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
 use super::{Library, LibraryError, PaperReading, json_column, now, placeholders};
@@ -161,13 +161,19 @@ impl Library {
             .collect())
     }
 
-    /// The papers whose kept contexts cite `cited`, with in how many sentences: the most first, then by id.
+    /// The papers whose kept contexts (that still hold) cite `cited`, with in how many sentences: the most first,
+    /// then by id.
     pub fn citing_papers(&self, cited: &str) -> Result<Vec<(String, usize)>, LibraryError> {
         self.read(|connection| {
             let mut statement = connection.prepare_cached(
-                "SELECT citing, sentences FROM citation_links WHERE cited = ?1 ORDER BY sentences DESC, citing",
+                "SELECT l.citing, l.sentences FROM citation_links l
+                 JOIN citation_contexts c ON c.paper_id = l.citing
+                 JOIN paper_passages p ON p.paper_id = c.paper_id
+                 WHERE l.cited = ?1 AND c.reader = ?2 AND c.version = ?3 AND p.reader = c.reader
+                     AND p.pdf_hash = c.pdf_hash
+                 ORDER BY l.sentences DESC, l.citing",
             )?;
-            let rows = statement.query_map([cited], |row| {
+            let rows = statement.query_map(params![cited, READER, CONTEXTS], |row| {
                 Ok((row.get::<_, String>(0)?, usize::try_from(row.get::<_, i64>(1)?).unwrap_or(0)))
             })?;
             Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -190,7 +196,15 @@ impl Library {
             let mut forget = transaction.prepare_cached("DELETE FROM citation_links WHERE citing = ?1")?;
             let mut link = transaction
                 .prepare_cached("INSERT INTO citation_links (citing, cited, sentences) VALUES (?1, ?2, ?3)")?;
+            let mut passages_of = transaction
+                .prepare_cached("SELECT pdf_hash FROM paper_passages WHERE paper_id = ?1 AND reader = ?2")?;
             for (paper_id, hash, read) in kept {
+                // read from another PDF than the passages were (the file replaced in between): not kept, read again
+                let of_passages: Option<String> =
+                    passages_of.query_row(params![paper_id, READER], |row| row.get(0)).optional()?;
+                if of_passages.as_deref() != Some(*hash) {
+                    continue;
+                }
                 let content = serde_json::to_string(read)?;
                 let linked = serde_json::to_string(&in_library(read))?;
                 contexts.execute(params![paper_id, READER, CONTEXTS, hash, content, linked, now()])?;
@@ -233,20 +247,7 @@ impl Library {
             let to_read: Vec<&str> = round.iter().copied().filter(|id| !kept.contains_key(*id)).collect();
             let readings: Vec<PaperReading> =
                 to_read.iter().map(|id| readings.remove(id).unwrap_or(PaperReading::NotInLibrary)).collect();
-            // on every core, in the order asked whatever the number of threads
-            let read: Vec<(Option<String>, ContextsReading)> = to_read
-                .par_iter()
-                .zip(readings.par_iter())
-                .map(|(id, reading)| match reading {
-                    PaperReading::Read(passages) => match read_one(self, id, passages, linker) {
-                        Ok((hash, contexts)) => (Some(hash), ContextsReading::Read(contexts)),
-                        Err(failed) => (None, failed),
-                    },
-                    PaperReading::NoPdf { .. } => (None, ContextsReading::NoPdf),
-                    PaperReading::Unreadable { why, .. } => (None, ContextsReading::Unreadable(why.clone())),
-                    PaperReading::NotInLibrary => (None, ContextsReading::NotInLibrary),
-                })
-                .collect();
+            let read = self.read_round(&to_read, &readings, linker);
             let mut to_keep: Vec<(&str, &str, &PaperContexts)> = to_read
                 .iter()
                 .zip(&read)
@@ -273,6 +274,30 @@ impl Library {
             done(answer.len());
         }
         Ok(answer)
+    }
+
+    /// Read the contexts of `to_read`, whose passages are `readings`, on every core, in the order asked whatever
+    /// the number of threads; each read one with the hash of the PDF it was read from. It touches no database:
+    /// the passages were had before.
+    fn read_round(
+        &self,
+        to_read: &[&str],
+        readings: &[PaperReading],
+        linker: &Linker,
+    ) -> Vec<(Option<String>, ContextsReading)> {
+        to_read
+            .par_iter()
+            .zip(readings.par_iter())
+            .map(|(id, reading)| match reading {
+                PaperReading::Read(passages) => match read_one(self, id, passages, linker) {
+                    Ok((hash, contexts)) => (Some(hash), ContextsReading::Read(contexts)),
+                    Err(failed) => (None, failed),
+                },
+                PaperReading::NoPdf { .. } => (None, ContextsReading::NoPdf),
+                PaperReading::Unreadable { why, .. } => (None, ContextsReading::Unreadable(why.clone())),
+                PaperReading::NotInLibrary => (None, ContextsReading::NotInLibrary),
+            })
+            .collect()
     }
 
     /// Of `paper_ids`, those whose citing sentences are kept and still hold.
@@ -420,16 +445,18 @@ mod tests {
         wanted.reverse();
         let papers = library.link_papers().unwrap();
         let linker = Linker::new(&papers);
-        // a test with no other caller of the library: nothing else can be waiting on these readings
+        let readings = library.paper_texts(&wanted).unwrap();
+        // only the parallel part runs in each pool: the passages were had outside it
         let on = |threads: usize| {
-            library.connection().execute("DELETE FROM citation_contexts", []).unwrap();
             let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
-            pool.install(|| library.citation_contexts(&wanted, &linker, &|| false, &|_| {}).unwrap())
+            pool.install(|| library.read_round(&wanted, &readings, &linker))
         };
         let one = on(1);
-        assert_eq!(one.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), wanted);
+        assert_eq!(one.len(), wanted.len());
         assert_eq!(one, on(4));
         assert_eq!(one, on(7));
+        let read = library.citation_contexts(&wanted, &linker, &|| false, &|_| {}).unwrap();
+        assert_eq!(read.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), wanted, "in the order asked");
         assert_eq!(library.citing_papers("arith").unwrap().len(), 6);
     }
 

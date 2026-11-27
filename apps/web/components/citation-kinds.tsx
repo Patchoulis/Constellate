@@ -99,7 +99,7 @@ function Asking({
 	busy,
 }: {
 	estimate: CitationKindsEstimate;
-	onStart: (scope: CitationKindsScope, budget: number) => void;
+	onStart: (estimate: CitationKindsEstimate, budget: number) => void;
 	busy: boolean;
 }) {
 	const cap = budgetFor(estimate);
@@ -127,7 +127,7 @@ function Asking({
 					<Button
 						variant="outline"
 						disabled={busy}
-						onClick={() => onStart(estimate.scope, cap)}
+						onClick={() => onStart(estimate, cap)}
 						title="Starts a job you can follow and stop; it never spends more than the cap"
 					>
 						<Sparkles />
@@ -202,7 +202,15 @@ export function CommunityCitationKinds({
 					estimate={estimate}
 					busy={running}
 					onStart={(chosen, budget) =>
-						void start(() => api.classifyCitations(run, { community: treePath, scope: chosen, budget_usd: budget }))
+						void start(() =>
+							api.classifyCitations(run, {
+								community: treePath,
+								scope: chosen.scope,
+								budget_usd: budget,
+								model: chosen.model,
+								to_ask: chosen.to_ask,
+							}),
+						)
 					}
 				/>
 			)}
@@ -211,7 +219,10 @@ export function CommunityCitationKinds({
 				<div className="flex items-center gap-2 font-ui text-xs text-muted-foreground">
 					{forgetting ? (
 						<>
-							<span>Forget the kinds read for the papers this community cites? Reading them again costs again.</span>
+							<span>
+								Forget the kinds read for every paper this community cites, also those read for other communities and runs? Reading them
+								again costs again.
+							</span>
 							<Button
 								variant="outline"
 								onClick={() => {
