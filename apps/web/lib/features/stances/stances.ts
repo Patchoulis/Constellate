@@ -5,7 +5,7 @@
  * and every paper counts once, whatever its design.
  */
 import type { Acceptance, StanceCostEstimate, StanceFilter, StanceGroup, StanceResult, StanceRow } from "@rp/contracts";
-import type { Colouring } from "@/lib/graph-colouring";
+import type { Colouring } from "@/lib/graph/graph-colouring";
 import { costWords } from "@/lib/cost";
 import { count, type Currency } from "@/lib/units";
 
@@ -165,7 +165,7 @@ export function starter(term: string): string {
 }
 
 /**
- * The graph coloured by where the papers stand (lib/graph-colouring.ts): each group that has papers, in the order
+ * The graph coloured by where the papers stand (lib/graph/graph-colouring.ts): each group that has papers, in the order
  * shown, in its hue (grey for those not counted for or against). The graph finds the papers by id; those not in
  * the run are counted apart in its legend.
  */

@@ -2,19 +2,19 @@
  * The single-canvas graph renderer.
  *
  *  - A dumb draw function over plain data: papers with world-space positions, and the groups to colour them by.
- *    Layout (lib/layout.ts) happens outside; this module never computes a position.
+ *    Layout (lib/graph/layout.ts) happens outside; this module never computes a position.
  *  - ONE canvas, ONE requestAnimationFrame loop with a dirty flag. Input and data changes only mutate state and
  *    mark dirty; a frame is scheduled only then, so an idle graph costs nothing. Every layer is drawn under the
  *    same camera (glows -> papers -> marked papers and the hovered paper's links -> labels), so nothing can
  *    lag anything else.
  *  - Camera: d3-zoom supplies pan / zoom-to-cursor / pinch (screen = world * k + [x, y]).
- *  - Picking: the nearest paper whose dot (plus a few pixels) is under the pointer (lib/pick.ts); a
+ *  - Picking: the nearest paper whose dot (plus a few pixels) is under the pointer (lib/graph/pick.ts); a
  *    scan of every paper, about a tenth of a millisecond at 12,500 papers (tests/perf.bench.ts).
  *
  * The glow shows what belongs together. Every paper adds a soft radial halo in its group's hue, composited
  * additively ("lighter"). One halo is faint; where a group is dense the halos add up, so each group glows in its
  * own colour, brightest at its core. Halos are pre-rendered once per hue as sprites, and the glows of a level are
- * added up once into a layer of their own (lib/glow-layer.ts), so a frame draws one image for them, not one per
+ * added up once into a layer of their own (lib/graph/glow-layer.ts), so a frame draws one image for them, not one per
  * paper. The dots are kept as paths in the same way while the zoom leaves their size alone.
  *
  * Links show what one paper is closest to, and only on request: hovering a paper draws lines to its few most
@@ -33,11 +33,11 @@
  */
 import { select } from "d3-selection";
 import { zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from "d3-zoom";
-import { Glide, prefersLessMotion, type Size, type View } from "@/lib/glide";
-import { GLOW_LAYER_MOST_PIXELS, glowLayerGeometry, inside, visibleWorld, type GlowLayerGeometry } from "@/lib/glow-layer";
-import type { MarkedPlace } from "@/lib/labels";
-import type { Box } from "@/lib/layout";
-import { nearestPaper } from "@/lib/pick";
+import { Glide, prefersLessMotion, type Size, type View } from "@/lib/graph/glide";
+import { GLOW_LAYER_MOST_PIXELS, glowLayerGeometry, inside, visibleWorld, type GlowLayerGeometry } from "@/lib/graph/glow-layer";
+import type { MarkedPlace } from "@/lib/graph/labels";
+import type { Box } from "@/lib/graph/layout";
+import { nearestPaper } from "@/lib/graph/pick";
 import { hsl } from "@/lib/utils";
 
 export interface CanvasGroup {
@@ -70,7 +70,7 @@ export interface CanvasData {
 	levels: CanvasLevel[];
 }
 
-/** The glows of one level under one focus, drawn once (lib/glow-layer.ts); no canvas when it would be too large. */
+/** The glows of one level under one focus, drawn once (lib/graph/glow-layer.ts); no canvas when it would be too large. */
 type GlowLayer =
 	| {
 			level: CanvasLevel;
@@ -171,7 +171,7 @@ export class GraphCanvasRenderer {
 	private hovered: number | null = null;
 	/** the marked papers, newest first */
 	private marked: number[] = [];
-	/** papers drawn by a feature's groups instead of their communities (lib/graph-colouring.ts); null: by community */
+	/** papers drawn by a feature's groups instead of their communities (lib/graph/graph-colouring.ts); null: by community */
 	private colouring: { of: Int16Array; hues: (number | null)[] } | null = null;
 	/** the glows of the levels seen under the current focus, oldest first (glowLayerOf) */
 	private glowLayers: GlowLayer[] = [];
@@ -286,7 +286,7 @@ export class GraphCanvasRenderer {
 	}
 
 	/**
-	 * Take the camera to `target` and call `arrived` there. It glides (lib/glide.ts) unless told to go at once:
+	 * Take the camera to `target` and call `arrived` there. It glides (lib/graph/glide.ts) unless told to go at once:
 	 * the first view of a graph and a canvas that changed size are not journeys, and someone who asked their
 	 * system for less motion gets none. A new destination ends a glide in progress and starts from where the
 	 * camera is at that instant; so does the person taking hold of the graph.
@@ -457,7 +457,7 @@ export class GraphCanvasRenderer {
 		this.dpr = dpr;
 		this.canvas.width = Math.max(1, Math.round(this.canvas.clientWidth * dpr));
 		this.canvas.height = Math.max(1, Math.round(this.canvas.clientHeight * dpr));
-		// a glide under way was aimed for the old size: it ends at once where it now should (lib/glide.ts)
+		// a glide under way was aimed for the old size: it ends at once where it now should (lib/graph/glide.ts)
 		if (this.whole) this.fitZoom = this.zoomToFit(this.whole);
 		this.glide.resized({ width: this.canvas.clientWidth, height: this.canvas.clientHeight });
 		if (this.fitted && this.fitted.transform === this.transform) this.fit(this.fitted.box, false, true);

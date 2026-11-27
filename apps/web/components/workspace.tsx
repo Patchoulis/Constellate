@@ -6,13 +6,13 @@ import type { Catalog, Ratings, ReaderTarget } from "@rp/contracts";
 import { RunAsk } from "@/components/features/answers/ask";
 import { CommunityPanel } from "@/components/community-panel";
 import { EvidenceProvider, type EvidenceActions } from "@/components/evidence-link";
-import { GraphView } from "@/components/graph-view";
+import { GraphView } from "@/components/graph/graph-view";
 import { OverviewPanel } from "@/components/overview";
 import { PaperReader } from "@/components/paper-reader";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
 import { communityTree, type CommunityNode } from "@/lib/community";
-import { ANSWER_OWNER, GraphColouringContext, colouringStep, type GraphColouring, type PaperColouring } from "@/lib/graph-colouring";
+import { ANSWER_OWNER, GraphColouringContext, colouringStep, type GraphColouring, type PaperColouring } from "@/lib/graph/graph-colouring";
 import { useMarks } from "@/lib/marks";
 import type { Job } from "@/lib/use-job";
 import { ready, useAsync } from "@/lib/use-async";
@@ -119,7 +119,7 @@ export function Workspace({
 		}),
 		[known, goToPaper],
 	);
-	// the graph coloured by a feature's groups of papers (lib/graph-colouring.ts): none for a run just opened
+	// the graph coloured by a feature's groups of papers (lib/graph/graph-colouring.ts): none for a run just opened
 	const [colouring, colour] = useReducer(colouringStep, null);
 	// the same functions for as long as the run is open: a feature may clear its colouring when it goes away
 	const setColouring = useCallback((one: PaperColouring) => colour({ kind: "set", colouring: one }), []);

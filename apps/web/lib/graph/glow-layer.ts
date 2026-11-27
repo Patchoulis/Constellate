@@ -1,14 +1,14 @@
 /**
  * Where the graph's glows can be drawn once and reused, and which papers a frame needs to draw at all.
  *
- * Every paper adds a halo to its group's glow (components/graph-canvas.ts). Zoomed out, all 12,000 or so halos are
+ * Every paper adds a halo to its group's glow (components/graph/graph-canvas.ts). Zoomed out, all 12,000 or so halos are
  * on screen and each covers dozens of pixels: drawing them is most of a frame. The glows only change when the
  * level of detail or the focus does, so they are drawn once, in world space, into a canvas of their own (the glow
  * layer), and each frame draws that one image under the camera. The layer has as many pixels per world unit as
  * a halo's sprite has texels, so it is as sharp as the halos drawn one by one: a halo is never shown in more
  * detail than its sprite has.
  */
-import type { Box, Point } from "@/lib/layout";
+import type { Box, Point } from "@/lib/graph/layout";
 
 /** A glow layer larger than this many pixels is not kept (about 32 MB): the halos are drawn one by one instead. */
 export const GLOW_LAYER_MOST_PIXELS = 8_000_000;

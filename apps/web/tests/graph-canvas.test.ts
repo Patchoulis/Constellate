@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { glowLayerGeometry, inside, visibleWorld } from "@/lib/glow-layer";
-import { nearestPaper } from "@/lib/pick";
+import { glowLayerGeometry, inside, visibleWorld } from "@/lib/graph/glow-layer";
+import { nearestPaper } from "@/lib/graph/pick";
 import { randomFrom } from "./generated-run";
 
 test("the glow layer holds every halo whole, as sharp as its sprite", () => {

@@ -5,18 +5,18 @@ import { LocateFixed, Star, X } from "lucide-react";
 import type { GraphData, Ratings } from "@rp/contracts";
 import { AcceptanceTag, AiTag, RatingTags } from "@/components/brand";
 import { CommunityDot, MARK_HINT } from "@/components/community-panel";
-import { GraphCanvasRenderer, type CanvasData, type CanvasLevel } from "@/components/graph-canvas";
+import { GraphCanvasRenderer, type CanvasData, type CanvasLevel } from "@/components/graph/graph-canvas";
 import { MathText } from "@/components/math-text";
 import { Button } from "@/components/ui/button";
 import { communityLabel, groupsAt, treeDepth, type CommunityNode } from "@/lib/community";
-import { pickMarkedLabels, placeLabels, type MarkedPlace, type PaperPlace } from "@/lib/labels";
+import { pickMarkedLabels, placeLabels, type MarkedPlace, type PaperPlace } from "@/lib/graph/labels";
 import type { Marks } from "@/lib/marks";
 import { panelSize } from "@/lib/use-resizable";
 import { count } from "@/lib/units";
-import { countKinds, kindNotes, PAPER_KINDS, shownPapers, type PaperKind } from "@/lib/paper-filter";
-import { canvasColouring, legendNote, useGraphColouring } from "@/lib/graph-colouring";
+import { countKinds, kindNotes, PAPER_KINDS, shownPapers, type PaperKind } from "@/lib/graph/paper-filter";
+import { canvasColouring, legendNote, useGraphColouring } from "@/lib/graph/graph-colouring";
 import { cn, hsl } from "@/lib/utils";
-import { boxOf, layoutGraph, type Layout } from "@/lib/layout";
+import { boxOf, layoutGraph, type Layout } from "@/lib/graph/layout";
 
 /** A paper's halo shrinks with the level, so the glows of smaller groups stay separate. */
 const GLOW = [48, 34, 24, 17];
@@ -167,7 +167,7 @@ export function GraphView({
 		rendererRef.current?.setMarked(marked.flatMap((id) => indexOf.get(id) ?? []));
 	}, [layout, indexOf, marked]);
 
-	// A feature's groups of papers, drawn in their hues instead of the communities' (lib/graph-colouring.ts).
+	// A feature's groups of papers, drawn in their hues instead of the communities' (lib/graph/graph-colouring.ts).
 	const colourings = useGraphColouring();
 	const colouring = colourings?.colouring ?? null;
 	const painted = useMemo(() => (colouring ? canvasColouring(colouring, indexOf, graph.nodes.length) : null), [colouring, indexOf, graph]);

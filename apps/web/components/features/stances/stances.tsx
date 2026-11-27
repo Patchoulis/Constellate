@@ -45,7 +45,7 @@ import {
 	tally,
 } from "@/lib/features/stances/stances";
 import { accepting, shownModel } from "@/lib/cost";
-import { useColouringBy } from "@/lib/graph-colouring";
+import { useColouringBy } from "@/lib/graph/graph-colouring";
 import { ready, useAsync } from "@/lib/use-async";
 import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
 import { elsewhereLine, notAskedLine, runSubject, useFollowedJob, type FollowedJob } from "@/lib/use-followed-job";

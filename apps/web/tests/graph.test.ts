@@ -2,11 +2,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Community, GraphData } from "@rp/contracts";
-import { wrapLabel } from "@/components/graph-canvas";
+import { wrapLabel } from "@/components/graph/graph-canvas";
 import { communityLabel, communityTree, groupsAt, treeDepth } from "@/lib/community";
-import { pickMarkedLabels, placeLabels, type LabelBox, type MarkedPlace } from "@/lib/labels";
-import { countKinds, shownPapers } from "@/lib/paper-filter";
-import { layoutGraph } from "@/lib/layout";
+import { pickMarkedLabels, placeLabels, type LabelBox, type MarkedPlace } from "@/lib/graph/labels";
+import { countKinds, shownPapers } from "@/lib/graph/paper-filter";
+import { layoutGraph } from "@/lib/graph/layout";
 import { hsl, titleCase } from "@/lib/utils";
 
 /** A community of the given papers, optionally split into halves. */

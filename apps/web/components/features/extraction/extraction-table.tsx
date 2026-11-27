@@ -41,7 +41,7 @@ import {
 } from "@/lib/features/extraction/extraction";
 import { choiceKey, currentEstimate, useChosenModel } from "@/lib/chosen-model";
 import { budgetOf, costWords, shownModel } from "@/lib/cost";
-import { useColouringBy } from "@/lib/graph-colouring";
+import { useColouringBy } from "@/lib/graph/graph-colouring";
 import { ready, useAsync } from "@/lib/use-async";
 import { elsewhereLine, notAskedLine, runSubject, useFollowedJob } from "@/lib/use-followed-job";
 import { count, money, tokens } from "@/lib/units";
@@ -250,7 +250,7 @@ function Grid({
 }: {
 	run: string;
 	table: Table;
-	/** who this table is when it colours the graph by a column (lib/graph-colouring.ts) */
+	/** who this table is when it colours the graph by a column (lib/graph/graph-colouring.ts) */
 	colouredAs: string;
 	onOpenPaper: (id: string) => void;
 	onForgotten: () => void;

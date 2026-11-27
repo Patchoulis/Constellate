@@ -1,8 +1,8 @@
-/** Colouring the graph by a feature's groups of papers (lib/graph-colouring.ts), and the groups each feature makes. */
+/** Colouring the graph by a feature's groups of papers (lib/graph/graph-colouring.ts), and the groups each feature makes. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtractionRow } from "@rp/contracts";
-import { canvasColouring, colouringStep, legendNote, MOST_GROUPS, spreadHues, type PaperColouring } from "@/lib/graph-colouring";
+import { canvasColouring, colouringStep, legendNote, MOST_GROUPS, spreadHues, type PaperColouring } from "@/lib/graph/graph-colouring";
 import { columnColouring, NOT_STATED } from "@/lib/features/extraction/extraction";
 
 const table: PaperColouring = {

@@ -9,11 +9,11 @@
  * commit that added the glow layer.
  */
 import { communityTree, groupsAt } from "@/lib/community";
-import { glowLayerGeometry } from "@/lib/glow-layer";
-import { canvasColouring, MOST_GROUPS, spreadHues } from "@/lib/graph-colouring";
-import { pickMarkedLabels, placeLabels, type LabelBox, type MarkedPlace } from "@/lib/labels";
-import { layoutGraph } from "@/lib/layout";
-import { nearestPaper } from "@/lib/pick";
+import { glowLayerGeometry } from "@/lib/graph/glow-layer";
+import { canvasColouring, MOST_GROUPS, spreadHues } from "@/lib/graph/graph-colouring";
+import { pickMarkedLabels, placeLabels, type LabelBox, type MarkedPlace } from "@/lib/graph/labels";
+import { layoutGraph } from "@/lib/graph/layout";
+import { nearestPaper } from "@/lib/graph/pick";
 import { generatedRun, randomFrom } from "./generated-run";
 
 /** Run `work` `times` times after `warm` unmeasured runs; median and worst in milliseconds. */
@@ -56,8 +56,8 @@ for (const [level, glow] of [48, 34, 24].entries()) {
 }
 time("size the glow layer", () => glowLayerGeometry(layout.points, 48, 96));
 
-// Colouring the graph by a feature's groups (lib/graph-colouring.ts): worked out once per colouring, then each
-// frame of a pan where halos are drawn one by one chooses every paper's hue (components/graph-canvas.ts glowHue).
+// Colouring the graph by a feature's groups (lib/graph/graph-colouring.ts): worked out once per colouring, then each
+// frame of a pan where halos are drawn one by one chooses every paper's hue (components/graph/graph-canvas.ts glowHue).
 const ids = graph.nodes.map((node) => node.id);
 const indexOf = new Map(ids.map((id, index) => [id, index]));
 const colouring = {

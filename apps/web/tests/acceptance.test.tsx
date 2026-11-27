@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { AcceptanceTerm, GraphNode } from "@rp/contracts";
 import { AcceptanceTag } from "@/components/brand";
 import { tagText, tagTitle, termsOf } from "@/lib/acceptance";
-import { kindNotes } from "@/lib/paper-filter";
+import { kindNotes } from "@/lib/graph/paper-filter";
 
 // as the engine sends them (engine sources/acceptance.rs), for decisions seen in the conferences' lists
 const HIGHLIGHT: AcceptanceTerm = {

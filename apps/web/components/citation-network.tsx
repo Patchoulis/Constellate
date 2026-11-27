@@ -23,7 +23,7 @@ import {
 	type PlacedWork,
 	type WorkOrder,
 } from "@/lib/citations";
-import { placeLabels } from "@/lib/labels";
+import { placeLabels } from "@/lib/graph/labels";
 import { count } from "@/lib/units";
 import { ready, useAsync } from "@/lib/use-async";
 import { cn, hsl } from "@/lib/utils";

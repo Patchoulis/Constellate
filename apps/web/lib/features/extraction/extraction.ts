@@ -5,7 +5,7 @@
  * draws them.
  */
 import type { Evidence, ExtractionCell, ExtractionColumn, ExtractionRow, ExtractionTable, ExtractionValue } from "@rp/contracts";
-import { MOST_GROUPS, spreadHues, type Colouring } from "@/lib/graph-colouring";
+import { MOST_GROUPS, spreadHues, type Colouring } from "@/lib/graph/graph-colouring";
 import { count } from "@/lib/units";
 
 /** What a cell says when the paper does not say: an answer, not a gap. */
@@ -163,7 +163,7 @@ export function paperGroups(rows: ExtractionRow[], column: number): Map<string, 
 }
 
 /**
- * The graph coloured by a column (lib/graph-colouring.ts): its most common values, each in a hue of its own, the
+ * The graph coloured by a column (lib/graph/graph-colouring.ts): its most common values, each in a hue of its own, the
  * rest together as "other values", and "not stated" in grey last.
  */
 export function columnColouring(rows: ExtractionRow[], column: number, label: string): Colouring {

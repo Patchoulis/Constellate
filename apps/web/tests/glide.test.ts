@@ -1,7 +1,7 @@
 /** The camera's glide: where it is on the way, and that only one glide runs at a time. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ease, Glide, GLIDE_MS, viewBetween, type Frames, type View } from "@/lib/glide";
+import { ease, Glide, GLIDE_MS, viewBetween, type Frames, type View } from "@/lib/graph/glide";
 
 const size = { width: 800, height: 600 };
 /** The world point a view has in the middle of the picture. */

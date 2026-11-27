@@ -1,4 +1,4 @@
-import type { Point } from "@/lib/layout";
+import type { Point } from "@/lib/graph/layout";
 
 /**
  * The paper under a point of the world: the nearest one whose dot, `radius` x its size, plus `margin` (all in world
