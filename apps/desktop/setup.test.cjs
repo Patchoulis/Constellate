@@ -9,7 +9,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
-const { ensure, physical, state, torchFor, CUDA } = require("./setup.cjs");
+const { ensure, lockedVersion, physical, state, torchFor, CUDA } = require("./setup.cjs");
 
 const uv = process.env.RP_UV || "uv";
 const available = spawnSync(uv, ["--version"], { windowsHide: true }).status === 0;
@@ -49,6 +49,62 @@ test(
 		fs.rmSync(home, { recursive: true, force: true });
 	},
 );
+
+test(
+	"the lock decides the version installed, and a new lock sets Python up again with the version it names",
+	{ skip: !available, timeout: 600_000 },
+	async () => {
+		const home = fs.mkdtempSync(path.join(os.tmpdir(), "rp-setup-"));
+		const requirements = path.join(home, "requirements.txt");
+		const constraints = path.join(home, "requirements.lock.txt");
+		fs.writeFileSync(requirements, "six\n");
+		fs.writeFileSync(constraints, "six==1.16.0\n");
+		const options = { uv: uvPath, folder: path.join(home, "python"), requirements, constraints, torch: false };
+		const python = await ensure(options);
+		const version = () => spawnSync(python, ["-c", "import six; print(six.__version__)"]).stdout.toString().trim();
+		assert.equal(version(), "1.16.0");
+		assert.equal(state({ ...options, torchIndex: null }), "ready");
+
+		// an existing setup is not left on the old version: the lock is part of what a finished setup is recognised by
+		fs.writeFileSync(constraints, "six==1.17.0\n");
+		assert.equal(state({ ...options, torchIndex: null }), "needed");
+		await ensure(options);
+		assert.equal(version(), "1.17.0");
+		fs.rmSync(home, { recursive: true, force: true });
+	},
+);
+
+test("a lock gives PyTorch's step one version, or says what is wrong with it", () => {
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), "rp-setup-"));
+	const lock = path.join(home, "requirements.lock.txt");
+	fs.writeFileSync(lock, "# made by uv\nsympy==1.14.0\ntorch==2.14.1\ntorchvision==0.29.1\n");
+	assert.equal(lockedVersion(lock, "torch"), "2.14.1");
+	fs.writeFileSync(lock, "torch==2.14.1 ; sys_platform == 'win32'\ntorch==2.14.0 ; sys_platform == 'linux'\n");
+	assert.throws(() => lockedVersion(lock, "torch"), /exactly one version/);
+	fs.writeFileSync(lock, "sympy==1.14.0\n");
+	assert.throws(() => lockedVersion(lock, "torch"), /exactly one version/);
+	fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("the backend's lock pins every package the backend asks for, and one PyTorch for every system", () => {
+	const backend = path.join(__dirname, "..", "backend");
+	const lock = fs.readFileSync(path.join(backend, "requirements.lock.txt"), "utf8");
+	const normal = (name) => name.toLowerCase().replace(/[-_.]+/g, "-");
+	const pinned = new Set([...lock.matchAll(/^([A-Za-z0-9._-]+)==/gm)].map((match) => normal(match[1])));
+	const asked = fs
+		.readFileSync(path.join(backend, "requirements.txt"), "utf8")
+		.split(/\r?\n/)
+		.map((line) => line.replace(/#.*/, "").trim())
+		.filter(Boolean)
+		.map((line) => normal(/^[A-Za-z0-9._-]+/.exec(line)[0]));
+	assert.ok(asked.length > 5);
+	assert.deepEqual(
+		asked.filter((name) => !pinned.has(name)),
+		[],
+		"run: uv pip compile requirements.txt --universal --python-version 3.13 --no-annotate -o requirements.lock.txt",
+	);
+	assert.match(lockedVersion(path.join(backend, "requirements.lock.txt"), "torch"), /^\d+\.\d+\.\d+$/);
+});
 
 test("a step that fails says which step and why", { skip: !available, timeout: 600_000 }, async () => {
 	const home = fs.mkdtempSync(path.join(os.tmpdir(), "rp-setup-"));

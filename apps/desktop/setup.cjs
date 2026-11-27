@@ -7,11 +7,16 @@
  * gains or loses a usable NVIDIA graphics card) this:
  *
  *   1. makes a Python environment in the app's own data folder        uv venv --python 3.13
- *   2. installs PyTorch: the CUDA build on a machine with an NVIDIA    uv pip install torch [--index-url ...]
+ *   2. installs PyTorch: the CUDA build on a machine with an NVIDIA    uv pip install torch==X [--index-url ...]
  *      graphics card and a recent enough driver, otherwise the ordinary one
  *   3. installs the backend's other packages                           uv pip install -r requirements.txt
+ *                                                                          -c requirements.lock.txt
  *
- * and leaves a note of what it installed, so the next start goes straight on. Everything uv fetches (the Python
+ * The lock (requirements.lock.txt) names the exact version of every package, the ones checked for known
+ * vulnerabilities before a release; without it each machine would get whatever was newest the day it set up, and
+ * keep it. A new lock is a new setup, so a release that moves a package to a fixed version reaches every machine.
+ *
+ * It leaves a note of what it installed, so the next start goes straight on. Everything uv fetches (the Python
  * itself, its download cache) is kept under the app's data folder too, and the machine's own Pythons and uv
  * settings are ignored: the app must keep working when those change, and uninstalling must be able to remove
  * all of it.
@@ -99,13 +104,21 @@ function pythonIn(folder) {
 	return process.platform === "win32" ? path.join(folder, "Scripts", "python.exe") : path.join(folder, "bin", "python");
 }
 
-/** What a finished setup is recognised by: these exact requirements and this Python. */
-function stampOf(requirements) {
+/** What a finished setup is recognised by: these exact requirements, this lock (if any) and this Python. */
+function stampOf(requirements, constraints = null) {
+	const lock = constraints ? `\n${fs.readFileSync(constraints, "utf8")}` : "";
 	return crypto
 		.createHash("sha256")
-		.update(`${PYTHON}\n${fs.readFileSync(requirements, "utf8")}`)
+		.update(`${PYTHON}\n${fs.readFileSync(requirements, "utf8")}${lock}`)
 		.digest("hex")
 		.slice(0, 16);
+}
+
+/** The version a lock gives package `name` ("torch==2.14.1" -> "2.14.1"); an error if it gives none, or several. */
+function lockedVersion(constraints, name) {
+	const found = [...fs.readFileSync(constraints, "utf8").matchAll(new RegExp(`^${name}==([^\\s;]+)`, "gm"))].map((match) => match[1]);
+	if (new Set(found).size !== 1) throw new Error(`${path.basename(constraints)} must give ${name} exactly one version.`);
+	return found[0];
 }
 
 /** The note a finished setup leaves: {stamp, torch: the index its PyTorch came from, or "default"}; null if none. */
@@ -128,9 +141,9 @@ function intact(folder) {
 }
 
 /** "ready" or "needed", for the PyTorch build `torchIndex` (null = the ordinary one). */
-function state({ folder, requirements, torchIndex }) {
+function state({ folder, requirements, constraints = null, torchIndex }) {
 	const note = noteIn(folder);
-	const done = note && note.stamp === stampOf(requirements) && note.torch === (torchIndex ?? "default");
+	const done = note && note.stamp === stampOf(requirements, constraints) && note.torch === (torchIndex ?? "default");
 	return done && intact(folder) ? "ready" : "needed";
 }
 
@@ -180,18 +193,23 @@ function physical(folder) {
 /**
  * Make sure the environment in `folder` has what `requirements` lists; resolves to its Python.
  *   uv            path of the uv program
+ *   constraints   the lock: the exact version of every package (null: whatever is newest)
  *   torch         install PyTorch as its own step first (false in tests, which install something small)
  *   log           called with each line of progress; must not throw
  *   started       called with each process this starts, so the caller can stop the one that is running
  */
-async function ensure({ uv, folder, requirements, torch = true, log = () => {}, started = () => {} }) {
+async function ensure({ uv, folder, requirements, constraints = null, torch = true, log = () => {}, started = () => {} }) {
 	const wanted = torch ? await torchFor() : { index: null, why: "" };
 	// every address handed to uv, and the Python handed back, is where the folder really is (see `physical`)
 	const home = physical(path.dirname(folder));
 	folder = path.join(home, path.basename(folder));
 	const python = pythonIn(folder);
-	if (state({ folder, requirements, torchIndex: wanted.index }) === "ready") return python;
+	if (state({ folder, requirements, constraints, torchIndex: wanted.index }) === "ready") return python;
 	if (!fs.existsSync(uv)) throw new Error(`The installer's package tool is missing (${uv}). Reinstall Constellate.`);
+	// only torch itself is held to the lock in its own step: PyTorch's index does not carry every version of what
+	// torch needs, and the next step brings those to the lock's versions from PyPI
+	const torchSpec = torch && constraints ? `torch==${lockedVersion(constraints, "torch")}` : "torch";
+	const locked = constraints ? ["-c", constraints] : [];
 
 	const release = claim(path.join(home, "installing.lock"));
 	// uv keeps to this app: its own Python, its own cache, and no settings from the rest of the machine
@@ -211,19 +229,22 @@ async function ensure({ uv, folder, requirements, torch = true, log = () => {}, 
 			// a PyTorch of the other build already satisfies "torch", so it has to be replaced by name
 			const replace = before && before.torch !== (wanted.index ?? "default") ? ["--reinstall-package", "torch"] : [];
 			const from = wanted.index ? ["--index-url", wanted.index] : [];
-			await run(`Installing PyTorch (${wanted.why})`, ["pip", "install", "--python", python, "torch", ...from, ...replace]);
+			await run(`Installing PyTorch (${wanted.why})`, ["pip", "install", "--python", python, torchSpec, ...from, ...replace]);
 		}
-		await run("Installing the other packages", ["pip", "install", "--python", python, "-r", requirements]);
+		await run("Installing the other packages", ["pip", "install", "--python", python, "-r", requirements, ...locked]);
 	} catch (error) {
 		release();
 		error.message +=
 			"\n\nThe installation needs a connection to the internet. Constellate will carry on with it the next time it is opened.";
 		throw error;
 	}
-	fs.writeFileSync(path.join(folder, "installed.json"), JSON.stringify({ stamp: stampOf(requirements), torch: wanted.index ?? "default" }));
+	fs.writeFileSync(
+		path.join(folder, "installed.json"),
+		JSON.stringify({ stamp: stampOf(requirements, constraints), torch: wanted.index ?? "default" }),
+	);
 	release();
 	log("Ready.");
 	return python;
 }
 
-module.exports = { ensure, physical, state, torchFor, pythonIn, PYTHON, CUDA };
+module.exports = { ensure, lockedVersion, physical, state, torchFor, pythonIn, PYTHON, CUDA };

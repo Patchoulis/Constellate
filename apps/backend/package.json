@@ -6,7 +6,7 @@
 		"dev": "python -W ignore -m rp.server",
 		"pipeline": "python -W ignore -m rp.pipeline",
 		"compare": "python -W ignore -m rp.compare",
-		"setup": "python -m pip install -r requirements.txt",
+		"setup": "python -m pip install -r requirements.txt -c requirements.lock.txt",
 		"test": "python -W ignore -m pytest -q"
 	}
 }

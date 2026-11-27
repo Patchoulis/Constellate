@@ -1,5 +1,6 @@
 # torch is installed separately so the CUDA build can be chosen: https://pytorch.org/get-started/locally/
-torch
+# Below 2.15: the newest that PyTorch's CUDA 13.0 index (apps/desktop/setup.cjs) has, so both builds are one version.
+torch<2.15
 transformers
 sentence-transformers
 safetensors
