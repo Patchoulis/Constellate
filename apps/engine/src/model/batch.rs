@@ -383,10 +383,18 @@ fn ask_one<T: DeserializeOwned + Serialize>(
     let outcome = match asked {
         Ok(Ok(answered)) => {
             // the answer and what it cost, kept together: never a call paid for whose answer is lost
-            let content = serde_json::to_string(&answered.answer).map_err(LibraryError::from);
-            let kept = content.and_then(|content| {
-                asking.recorder.keep_paid(asking.library, &item.slot, &answered.model, item.prompt, &content, calls)
-            });
+            let kept = match serde_json::to_string(&answered.answer) {
+                Ok(content) => {
+                    asking.recorder.keep_paid(asking.library, &item.slot, &answered.model, item.prompt, &content, calls)
+                }
+                Err(error) => {
+                    // nothing to keep, but the calls were paid for
+                    for call in calls {
+                        asking.recorder.record(call);
+                    }
+                    Err(error.into())
+                }
+            };
             if let Err(error) = kept {
                 // the answer is still handed back; it is asked for again next time
                 eprintln!("library: an answer for {} could not be kept: {error}", item.slot.feature.name());
@@ -896,6 +904,38 @@ mod tests {
         // API does not bill: nothing of it reaches the ledger as tokens
         let spending = library.spending().unwrap();
         assert_eq!(spending.total.calls, 3, "one row per answered call, written with its answer");
+    }
+
+    #[test]
+    fn an_answer_that_cannot_be_written_down_still_has_its_call_recorded() {
+        /// Read from the answer like any other, but refuses to be written back as JSON.
+        #[derive(Clone, Debug, PartialEq, Deserialize)]
+        struct Unwritable {
+            #[allow(dead_code)]
+            said: String,
+        }
+        impl Serialize for Unwritable {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("not this one"))
+            }
+        }
+        let (_folder, library) = library();
+        let (questions, papers) = numbered(1);
+        let schema = schema();
+        let items = items(&questions, &papers, &schema);
+        let run = Run::new();
+        let (log, progress) = (|_: &str| {}, |_: Progress| {});
+        let tracker = Tracker::new(&log, &progress, &run.cancel);
+        let asking = Asking {
+            library: &library,
+            transport: &Echo { took: (40, 20), ..Echo::default() },
+            endpoint: endpoint(),
+            recorder: &run.calls,
+            in_flight: 1,
+        };
+        let outcomes = ask_all::<Unwritable>(asking, &items, &plenty(), &tracker).unwrap();
+        assert!(matches!(outcomes[0], Outcome::Answered(_)));
+        assert_eq!(run.calls.lock().unwrap().len(), 1, "paid for, so recorded");
     }
 
     #[test]
