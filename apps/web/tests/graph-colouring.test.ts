@@ -23,6 +23,17 @@ test("a colouring set replaces the one before, whoever set it", () => {
 	assert.equal(colouringStep(table, { kind: "set", colouring: stances }), stances);
 });
 
+test("a colouring a feature shows unasked never replaces one the user chose, and leaves it as it was when it goes", () => {
+	const cited = (papers: string[]): PaperColouring => ({ owner: "answer", title: "cited", groups: [{ name: "cited", hue: 48, papers }] });
+	assert.equal(colouringStep(table, { kind: "offer", colouring: cited(["a"]) }), table, "the user's column stays");
+	assert.equal(colouringStep(table, { kind: "offer", colouring: cited([]) }), table, "the answer closed: still the column");
+	const shown = colouringStep(null, { kind: "offer", colouring: cited(["a"]) });
+	assert.equal(shown?.owner, "answer", "nothing else on the graph: shown");
+	assert.equal(colouringStep(shown, { kind: "offer", colouring: cited(["b"]) })?.groups[0].papers[0], "b", "its own, updated");
+	assert.equal(colouringStep(shown, { kind: "offer", colouring: cited([]) }), null, "and cleared when it goes");
+	assert.equal(colouringStep(shown, { kind: "set", colouring: table }), table, "the user's choice replaces it");
+});
+
 test("only its owner clears a colouring; clearing another's changes nothing", () => {
 	assert.equal(colouringStep(stances, { kind: "clear", owner: table.owner }), stances, "the table going away keeps the stances'");
 	assert.equal(colouringStep(stances, { kind: "clear", owner: stances.owner }), null);

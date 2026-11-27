@@ -124,7 +124,7 @@ export function Workspace({
 	const onCitedPapers = useCallback(
 		(papers: string[]) =>
 			colour({
-				kind: "set",
+				kind: "offer", // never in place of a colouring the user chose
 				colouring: { owner: ANSWER_OWNER, title: "The papers the answer cites", groups: [{ name: "cited", hue: 48, papers }] },
 			}),
 		[],

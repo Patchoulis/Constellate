@@ -35,11 +35,20 @@ export interface PaperColouring {
 /** A colouring as a feature works it out from its data; its owner and variant are the section's (`useColouringBy`). */
 export type Colouring = Omit<PaperColouring, "owner" | "variant">;
 
-export type ColouringEvent = { kind: "set"; colouring: PaperColouring } | { kind: "clear"; owner: string } | { kind: "clear_all" };
+export type ColouringEvent =
+	| { kind: "set"; colouring: PaperColouring }
+	/** set only when the graph is coloured by nothing else: what a feature shows unasked (an answer's cited papers)
+	 *  never replaces a colouring the user chose */
+	| { kind: "offer"; colouring: PaperColouring }
+	| { kind: "clear"; owner: string }
+	| { kind: "clear_all" };
 
 /** The one place the colouring changes. Clearing someone else's colouring changes nothing. */
 export function colouringStep(current: PaperColouring | null, event: ColouringEvent): PaperColouring | null {
 	switch (event.kind) {
+		case "offer":
+			if (current !== null && current.owner !== event.colouring.owner) return current;
+			return colouringStep(current, { kind: "set", colouring: event.colouring });
 		case "set":
 			return event.colouring.groups.some((group) => group.papers.length > 0)
 				? event.colouring
@@ -129,6 +138,8 @@ export function useGraphColouring(): GraphColouring | null {
 export function useColouringBy(owner: string): {
 	shown: string | null;
 	toggle: (variant: string, build: () => Colouring) => void;
+	/** the section's data changed: what it shows on the graph, if it is `variant`, is worked out again */
+	refresh: (variant: string, build: () => Colouring) => void;
 } | null {
 	const colourings = useGraphColouring();
 	const clear = colourings?.clear;
@@ -139,5 +150,6 @@ export function useColouringBy(owner: string): {
 	return {
 		shown,
 		toggle: (variant, build) => (shown === variant ? colourings.clear(owner) : colourings.set({ ...build(), owner, variant })),
+		refresh: (variant, build) => shown === variant && colourings.set({ ...build(), owner, variant }),
 	};
 }
