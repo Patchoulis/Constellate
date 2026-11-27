@@ -3,6 +3,7 @@
 //! ```text
 //! cargo run --release -p constellate --example compare -- neurips2025_icml2026
 //! cargo run --release -p constellate --example compare -- neurips2025_icml2026 --k 12 24 48 --model Qwen/Qwen3-Embedding-0.6B
+//! cargo run --release -p constellate --example compare -- neurips2025_icml2026 --k 24 --subsamples 10
 //! ```
 //!
 //! The data folder is `CONSTELLATE_DATA` (or the engine's default). Every method clusters the same papers into the
@@ -21,6 +22,8 @@
 //!   stability                    Seeds: clustered again from other random starts. Subsamples: 80% of the papers
 //!                                clustered afresh; agreement (ARI) on the papers two subsamples share.
 //!   shape                        Smallest and largest community.
+//!   the run as made              The run's own top-level communities (the Python's, for a run it made), scored the
+//!                                same way, and each method's agreement (ARI) with them: what remaking it changes.
 //! ```
 //!
 //! It writes `clustering_comparison.md` (or `clustering_comparison_<model>.md` for another model) beside the run,
@@ -51,6 +54,7 @@ use constellate::pipeline::steps::Board;
 use constellate::pipeline::vocabulary::Vocabulary;
 
 const SEEDS: u64 = 5;
+/// Subsamples of 80% clustered afresh, unless `--subsamples` says how many.
 const SUBSAMPLES: usize = 3;
 const TOP_TERMS: usize = 10;
 const SILHOUETTE_SAMPLE: usize = 4_000;
@@ -185,13 +189,14 @@ fn rows(
     vocabulary: &Vocabulary,
     k: usize,
     setup: &Setup,
+    subsamples: usize,
 ) -> Result<Vec<Vec<(String, f64)>>, String> {
     eprintln!("k = {k}: {SEEDS} random starts ...");
     let (runs, adjacency, vectors) = labelings(embeddings, k, setup, SEEDS)?;
-    eprintln!("k = {k}: {SUBSAMPLES} subsamples of 80% ...");
+    eprintln!("k = {k}: {subsamples} subsamples of 80% ...");
     let mut random = Random::new(0);
     let kept: Vec<Vec<usize>> =
-        (0..SUBSAMPLES).map(|_| sample(papers.len(), papers.len() * 4 / 5, &mut random)).collect();
+        (0..subsamples).map(|_| sample(papers.len(), papers.len() * 4 / 5, &mut random)).collect();
     let subsampled = kept
         .iter()
         .map(|rows| labelings(&embeddings.select(Axis(0), rows), k, setup, 1).map(|(found, _, _)| found))
@@ -226,6 +231,55 @@ fn rows(
     Ok(table)
 }
 
+/// The run as it was made (by the Python, or by this engine), scored like the methods, and how far each method's
+/// first random start at the run's k agrees with it (ARI): what remaking the run would change. Empty when the
+/// run's communities do not cover its papers as the library has them.
+fn as_made(
+    result: &Value,
+    papers: &[Paper],
+    embeddings: &Array2<f32>,
+    vocabulary: &Vocabulary,
+    setup: &Setup,
+) -> Result<Vec<String>, String> {
+    let communities = result["communities"].as_array().cloned().unwrap_or_default();
+    let mut labels = vec![usize::MAX; papers.len()];
+    for (index, community) in communities.iter().enumerate() {
+        for member in community["members"].as_array().into_iter().flatten() {
+            match member.as_u64().map(|member| member as usize) {
+                Some(member) if member < labels.len() => labels[member] = index,
+                _ => return Ok(Vec::new()),
+            }
+        }
+    }
+    if communities.is_empty() || labels.contains(&usize::MAX) {
+        return Ok(Vec::new());
+    }
+    let k = communities.len();
+    eprintln!("the run as made: k = {k} ...");
+    let (found, adjacency, vectors) = labelings(embeddings, k, setup, 1)?;
+    let silhouette_rows = sample(papers.len(), SILHOUETTE_SAMPLE, &mut Random::new(1));
+    let scores = score(&labels, papers, vocabulary, &vectors, &adjacency, &silhouette_rows);
+    let clustering = result["clustering"].as_str().unwrap_or("?");
+    let mut lines = vec![
+        format!("The run as it was made ({clustering}, {k} communities, before sub-communities):"),
+        String::new(),
+        "| AMI fine | AMI coarse | coherence | silhouette | modularity | smallest | largest |".to_owned(),
+        "|---|---|---|---|---|---|---|".to_owned(),
+        format!(
+            "| {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.0} | {:.0} |",
+            scores[0], scores[1], scores[2], scores[3], scores[4], scores[5], scores[6]
+        ),
+        String::new(),
+        format!("Agreement (ARI) of each method's first random start at k = {k} with the run as made:"),
+        String::new(),
+    ];
+    for (method, labelings) in &found {
+        lines.push(format!("- {}: {:.3}", method.id(), adjusted_rand_index(&labels, &labelings[0])));
+    }
+    lines.push(String::new());
+    Ok(lines)
+}
+
 /// Mean rank of each method over every k, on the scores fair to all methods (1 = best).
 fn ranking(table: &[Vec<(String, f64)>]) -> Vec<(f64, Method)> {
     let fair = ["AMI fine", "AMI coarse", "coherence", "subsample stability"];
@@ -253,7 +307,7 @@ fn ranking(table: &[Vec<(String, f64)>]) -> Vec<(f64, Method)> {
     ranked
 }
 
-fn compare(name: &str, ks: Vec<usize>, model: Option<String>) -> Result<String, String> {
+fn compare(name: &str, ks: Vec<usize>, model: Option<String>, subsamples: usize) -> Result<String, String> {
     let data = place::data_folder(std::env::var("CONSTELLATE_DATA").ok()).map_err(|error| error.to_string())?;
     let folder = files::folder_of(&data, name).map_err(|error| error.to_string())?;
     let stored: Value =
@@ -269,14 +323,12 @@ fn compare(name: &str, ks: Vec<usize>, model: Option<String>) -> Result<String, 
             sub_levels: 0,
         },
     };
-    let ks = if ks.is_empty() {
-        let result: Value =
-            store::read_json(&folder.join(files::COMMUNITIES)).map_err(|error| error.to_string())?.unwrap_or_default();
-        vec![result["communities"].as_array().map_or(0, Vec::len)]
-    } else {
-        ks
-    };
+    let result: Value =
+        store::read_json(&folder.join(files::COMMUNITIES)).map_err(|error| error.to_string())?.unwrap_or_default();
+    let ks = if ks.is_empty() { vec![result["communities"].as_array().map_or(0, Vec::len)] } else { ks };
     let library = Library::open(&data.join("library")).map_err(|error| error.to_string())?;
+    // a data folder the Python made: its files-based library moved in first, as the engine does at its first open
+    library.import_once(&data.join("library")).map_err(|error| error.to_string())?;
     let ids = files::paper_ids(&folder).map_err(|error| error.to_string())?;
     let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
     let papers: Vec<Paper> = library.papers(&ids).map_err(|error| error.to_string())?.into_iter().flatten().collect();
@@ -298,8 +350,9 @@ fn compare(name: &str, ks: Vec<usize>, model: Option<String>) -> Result<String, 
     eprintln!("{} papers, {with_topic} with a topic, embeddings: {model}", papers.len());
     let mut table = Vec::new();
     for k in ks {
-        table.extend(rows(&papers, &embeddings, &vocabulary, k, &setup)?);
+        table.extend(rows(&papers, &embeddings, &vocabulary, k, &setup, subsamples)?);
     }
+    let made = as_made(&result, &papers, &embeddings, &vocabulary, &setup)?;
     let columns: Vec<String> = table[0].iter().map(|(column, _)| column.clone()).collect();
     let cell = |column: &str, value: f64| match column {
         "method" => Method::ALL[value as usize].id().to_owned(),
@@ -313,7 +366,7 @@ fn compare(name: &str, ks: Vec<usize>, model: Option<String>) -> Result<String, 
         format!(
             "{} papers, embeddings from `{model}`. Scores are means over {SEEDS} random starts; \"spread\" is the standard \
              deviation of AMI fine between starts. Stability is the mean adjusted Rand index between those starts, and \
-             between {SUBSAMPLES} subsamples of 80% of the papers (on the papers two subsamples share). What each score \
+             between {subsamples} subsamples of 80% of the papers (on the papers two subsamples share). What each score \
              means and what it cannot tell is in apps/engine/examples/compare.rs.",
             papers.len()
         ),
@@ -336,6 +389,7 @@ fn compare(name: &str, ks: Vec<usize>, model: Option<String>) -> Result<String, 
         lines.push(format!("- {}: {rank:.2}", method.id()));
     }
     lines.push(String::new());
+    lines.extend(made);
     let text = lines.join("\n");
     let suffix =
         if model == run_model { String::new() } else { format!("_{}", model.rsplit('/').next().unwrap_or(&model)) };
@@ -347,10 +401,10 @@ fn compare(name: &str, ks: Vec<usize>, model: Option<String>) -> Result<String, 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let Some(name) = arguments.first().cloned() else {
-        eprintln!("usage: compare <run> [--k 12 24 48] [--model <embedding model>]");
+        eprintln!("usage: compare <run> [--k 12 24 48] [--model <embedding model>] [--subsamples 3]");
         return ExitCode::from(2);
     };
-    let (mut ks, mut model, mut reading_ks) = (Vec::new(), None, false);
+    let (mut ks, mut model, mut reading_ks, mut subsamples) = (Vec::new(), None, false, SUBSAMPLES);
     let mut rest = arguments.iter().skip(1);
     while let Some(argument) = rest.next() {
         match argument.as_str() {
@@ -358,6 +412,16 @@ fn main() -> ExitCode {
             "--model" => {
                 reading_ks = false;
                 model = rest.next().cloned();
+            }
+            "--subsamples" => {
+                reading_ks = false;
+                match rest.next().and_then(|count| count.parse::<usize>().ok()).filter(|count| *count >= 2) {
+                    Some(count) => subsamples = count,
+                    None => {
+                        eprintln!("--subsamples takes a whole number of at least 2");
+                        return ExitCode::from(2);
+                    }
+                }
             }
             number if reading_ks => match number.parse::<usize>() {
                 Ok(k) => ks.push(k),
@@ -372,7 +436,7 @@ fn main() -> ExitCode {
             }
         }
     }
-    match compare(&name, ks, model) {
+    match compare(&name, ks, model, subsamples) {
         Ok(text) => {
             println!("{text}");
             ExitCode::SUCCESS
