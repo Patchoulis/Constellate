@@ -12,7 +12,7 @@ next-env.d.ts
 dist/
 target/
 apps/desktop/icon.png
-apps/desktop/bin/
+apps/desktop/engine/
 
 # the library and runs: papers, embeddings, PDFs, what was spent
 data/
