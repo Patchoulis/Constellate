@@ -59,7 +59,10 @@ jobs:
       - name: Nothing shaped like a key in the files or their history
         run: |
           pattern='sk-ant-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|hf_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
-          if git log -p --all | grep -En "$pattern" | cut -c1-80; then
-            echo "::error::something shaped like a secret is in the repository's history: revoke it and rewrite the history"
+          found="$(git log -p --all | grep -Ec "$pattern" || true)"
+          if [ "$found" != "0" ]; then
+            # where, but not what: the log of a public repository's run is public too
+            git log -p --all | grep -En "$pattern" | cut -c1-24
+            echo "::error::$found lines shaped like a secret are in the repository's history: revoke the key and rewrite the history"
             exit 1
           fi

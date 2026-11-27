@@ -1,0 +1,4 @@
+# One line ending everywhere, whatever the machine: the formatters check for it.
+* text=auto eol=lf
+*.png binary
+*.ico binary
