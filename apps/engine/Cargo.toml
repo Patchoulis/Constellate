@@ -10,17 +10,28 @@ publish = false
 workspace = true
 
 [dependencies]
+# The HTTP layer (src/api) is axum on tokio. TLS goes through rustls with the ring provider, so that neither a
+# system OpenSSL (Linux) nor the build tools aws-lc needs are required.
+axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }
+axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+getrandom = "0.3"
 half = "2"
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 # matrix products through matrixmultiply on every core: the similarity matrix is one n x n product
 ndarray = { version = "0.17", features = ["matrixmultiply-threading"] }
 ort = { version = "=2.0.0-rc.15", features = ["half"] }
 regex = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10"
+sha2 = "0.10"
+subtle = "2"
 thiserror = "2"
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros", "time", "sync"] }
+tower-http = { version = "0.6", features = ["limit", "timeout"] }
 
 # The embedding model runs under ONNX Runtime on whatever graphics card the computer has, of any maker, and on the
 # processor where there is none. Each system has its own way to reach any card:
@@ -33,4 +44,9 @@ ort = { version = "=2.0.0-rc.15", features = ["directml"] }
 ort = { version = "=2.0.0-rc.15", features = ["webgpu"] }
 
 [dev-dependencies]
+# a self-signed certificate made at test time: no certificate or key is ever kept in the repository
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "crypto"] }
 tempfile = "3"
+tokio = { version = "1", features = ["io-util"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tower = { version = "0.5", features = ["util"] }
