@@ -86,6 +86,12 @@ impl PdfOutcome {
     }
 }
 
+/// The longest a site's `Retry-After` is obeyed for, as the batch downloader caps it.
+const LONGEST_BACK_OFF: Duration = Duration::from_secs(3600);
+/// The longest a fetch waits for its turn: past that it is told the site asked to be left alone, rather than
+/// holding a reader (or a job's cancel) for as long as the site asked.
+const LONGEST_TURN_WAIT: Duration = Duration::from_secs(30);
+
 /// One site's turn-taking.
 struct Site {
     rule: Rule,
@@ -135,8 +141,9 @@ impl Gate {
         if site == "arxiv.org" { ARXIV } else { PUBLISHER }
     }
 
-    /// Wait for a turn at the site of `address`.
-    fn turn(&self, address: &str) -> Turn<'_> {
+    /// Wait for a turn at the site of `address`; or, when the site asked to be left alone for longer than
+    /// [`LONGEST_TURN_WAIT`], say how much longer instead of waiting (a reader must not hang on it).
+    fn turn(&self, address: &str) -> Result<Turn<'_>, Duration> {
         let name = site_of(address);
         let mut sites = self.sites.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
@@ -145,7 +152,10 @@ impl Gate {
                 sites.entry(name.clone()).or_insert_with(|| Site { rule: Self::rule_for(&name), busy: 0, next: now });
             if site.busy < site.rule.at_once && site.next <= now {
                 site.busy += 1;
-                return Turn { gate: self, site: name, back_off: None };
+                return Ok(Turn { gate: self, site: name, back_off: None });
+            }
+            if site.next > now + LONGEST_TURN_WAIT {
+                return Err(site.next - now);
             }
             let wait = if site.next > now { site.next - now } else { Duration::from_millis(100) };
             sites = self.changed.wait_timeout(sites, wait).unwrap_or_else(PoisonError::into_inner).0;
@@ -161,12 +171,17 @@ struct Gated<'a> {
 
 impl Fetch for Gated<'_> {
     fn get(&self, url: &str, limits: Limits) -> Result<Response, FetchError> {
-        let mut turn = self.gate.turn(url);
+        let mut turn = self.gate.turn(url).map_err(|left| {
+            FetchError::Unreachable(
+                url.to_owned(),
+                format!("it asked to be left alone for {} more seconds", left.as_secs()),
+            )
+        })?;
         let answer = self.fetch.get(url, limits);
         if let Ok(response) = &answer
             && matches!(response.status, 429 | 503)
         {
-            turn.back_off = Some(response.retry_after.unwrap_or(FIRST_BACK_OFF));
+            turn.back_off = Some(response.retry_after.unwrap_or(FIRST_BACK_OFF).min(LONGEST_BACK_OFF));
         }
         answer
     }
@@ -213,6 +228,9 @@ impl Drop for Claim<'_> {
     }
 }
 
+/// One conference's index as last read, behind a lock of its own (fetching it holds up no other conference).
+type IndexSlot = Arc<Mutex<Option<Arc<IndexState>>>>;
+
 /// Papers' PDFs on demand, shared by every request and job of the engine.
 pub struct Pdfs {
     fetch: Arc<dyn Fetch + Send + Sync>,
@@ -220,7 +238,7 @@ pub struct Pdfs {
     claimed: Mutex<HashMap<String, Arc<Pending>>>,
     /// The conferences' indexes as last read from the library, so that a request does not decode thousands of
     /// titles again; and the lock that lets one index be fetched at a time.
-    indexes: Mutex<HashMap<String, Arc<IndexState>>>,
+    indexes: Mutex<HashMap<String, IndexSlot>>,
 }
 
 /// The network, in the program; nothing at all in tests, which give their own fake when they fetch.
@@ -301,8 +319,12 @@ impl Pdfs {
             PdfSource::Nowhere => return Ok(None),
             PdfSource::Proceedings { publisher, slug, year } => (publisher, format!("{slug}-{year}"), year),
         };
-        let mut indexes = self.indexes.lock().unwrap_or_else(PoisonError::into_inner);
-        let state = match indexes.get(&conference) {
+        // one lock per conference, so that fetching one index holds up no other
+        let slot = Arc::clone(
+            self.indexes.lock().unwrap_or_else(PoisonError::into_inner).entry(conference.clone()).or_default(),
+        );
+        let mut kept = slot.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = match kept.as_ref() {
             Some(state) => Arc::clone(state),
             None => Arc::new(library.proceedings_index(&conference)?),
         };
@@ -315,14 +337,27 @@ impl Pdfs {
         } else {
             state
         };
-        indexes.insert(conference, Arc::clone(&state));
-        drop(indexes);
+        *kept = Some(Arc::clone(&state));
+        drop(kept);
         Ok(state.address_of(&paper.title).map(str::to_owned))
     }
 
-    /// Can the paper's PDF be had: kept, or with an address to fetch it from (Python's `readable`)?
+    /// Can the paper's PDF be had: kept, on arXiv, or in its conference's proceedings as far as is known now
+    /// (Python's `readable`). Nothing is fetched to tell, so a paper's record never waits on the network: an
+    /// index not fetched yet counts as having the paper, and asking for the PDF then says why not if it does not.
     pub fn readable(&self, library: &Library, record: &Paper) -> Result<bool, LibraryError> {
-        Ok(library.pdf_file(&record.id).is_file() || self.address(library, record)?.is_some())
+        if library.pdf_file(&record.id).is_file() {
+            return Ok(true);
+        }
+        let paper = as_source(record);
+        Ok(match proceedings::pdf_source(&paper) {
+            PdfSource::Arxiv(_) => true,
+            PdfSource::Nowhere => false,
+            PdfSource::Proceedings { slug, year, .. } => {
+                let state = library.proceedings_index(&format!("{slug}-{year}"))?;
+                state.titles().is_none() || state.address_of(&paper.title).is_some()
+            }
+        })
     }
 }
 
@@ -499,11 +534,12 @@ mod tests {
         let file = "https://proceedings.neurips.cc/paper_files/paper/2025/file/abc-Paper-Conference.pdf";
         let fake = Arc::new(Fake::new().with(listing, ok("text/html", entry)).with(file, pdf("neurips")));
         let pdfs = Pdfs::new(fake.clone());
-        assert!(pdfs.readable(&library, &neurips).unwrap());
-        assert!(!pdfs.readable(&library, &other).unwrap());
+        // before its index is fetched, a conference paper may have a PDF; telling so fetches nothing
+        assert!(pdfs.readable(&library, &other).unwrap() && fake.asked().is_empty());
         assert!(matches!(pdfs.pdf(&library, "neurips-2025-1").unwrap(), PdfOutcome::FetchedNow(_)));
         assert_eq!(pdfs.pdf(&library, "neurips-2025-2").unwrap(), PdfOutcome::NoAddress);
         assert_eq!(fake.asked(), [listing, file], "the index asked for once");
+        assert!(pdfs.readable(&library, &neurips).unwrap() && !pdfs.readable(&library, &other).unwrap());
         // kept: another engine (a restart) does not ask for it again
         let again = Pdfs::new(Arc::new(Fake::new()));
         assert_eq!(again.address(&library, &neurips).unwrap().as_deref(), Some(file));
@@ -513,15 +549,15 @@ mod tests {
     fn a_site_that_refuses_is_left_alone_for_as_long_as_it_asks() {
         let gate = Gate::default();
         {
-            let mut turn = gate.turn("https://proceedings.mlr.press/v1/a.pdf");
+            let mut turn = gate.turn("https://proceedings.mlr.press/v1/a.pdf").unwrap();
             turn.back_off = Some(Duration::from_millis(300));
         }
         let started = Instant::now();
-        drop(gate.turn("https://proceedings.mlr.press/v1/b.pdf"));
+        drop(gate.turn("https://proceedings.mlr.press/v1/b.pdf").unwrap());
         assert!(started.elapsed() >= Duration::from_millis(250), "{:?}", started.elapsed());
         // another site is not held up by it
         let started = Instant::now();
-        drop(gate.turn("https://openaccess.thecvf.com/x.pdf"));
+        drop(gate.turn("https://openaccess.thecvf.com/x.pdf").unwrap());
         assert!(started.elapsed() < Duration::from_millis(100));
     }
 }

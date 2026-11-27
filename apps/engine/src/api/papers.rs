@@ -204,7 +204,8 @@ fn refusal(declared: Declared) -> Result<Declarations, Refusal> {
 async fn declarations(State(engine): State<Shared>, Path(id): Path<String>) -> Result<Json<Declarations>, Refusal> {
     let read = tokio::task::spawn_blocking(move || {
         let library = engine.library()?;
-        refusal(declarations_of(&library, &engine.pdfs, paper_id(&id)?)?)
+        library.paper(paper_id(&id)?)?.ok_or(ApiError::NotFound)?;
+        refusal(declarations_of(&library, &engine.pdfs, &id)?)
     });
     Ok(Json(read.await.map_err(|_| Refusal::from(ApiError::Internal))??))
 }
@@ -319,7 +320,7 @@ mod tests {
         }
         let run = data.path().join("runs").join("r1");
         std::fs::create_dir_all(&run).unwrap();
-        let nodes = json!({"nodes": [{"id": "hep-th/9901001"}, {"id": "2601.00001"}, {"id": "iclr-2026-2"}, {"id": "2601.00404"}], "edges": []});
+        let nodes = json!({"nodes": [{"id": "hep-th/9901001"}, {"id": "2601.00001"}, {"id": "iclr-2026-2"}, {"id": "2601.00404"}, {"id": "gone-from-the-library"}], "edges": []});
         std::fs::write(run.join("graph.json"), nodes.to_string()).unwrap();
         let fake = Arc::new(
             Fake::new()
@@ -465,9 +466,10 @@ mod tests {
         };
         assert_eq!(status["state"], "done", "{status}");
         assert_eq!(status["result"], "r1");
-        assert_eq!((status["papers"]["done"].clone(), status["papers"]["of"].clone()), (json!(4), json!(4)));
+        assert_eq!((status["papers"]["done"].clone(), status["papers"]["of"].clone()), (json!(5), json!(5)));
         let log = status["log"].to_string();
         assert!(log.contains("2 read now") && log.contains("2 have no PDF"), "{log}");
+        assert!(log.contains("1 could not be read"), "a paper the library no longer has stops nothing: {log}");
         let library = Library::open(&data.path().join("library")).unwrap();
         assert_eq!(library.kept_declarations(&["2601.00001", "hep-th/9901001"], PARSER).unwrap().len(), 2);
         for bad in ["/api/runs/nothing/declarations", "/api/runs/..%2Fx/declarations"] {

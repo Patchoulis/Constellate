@@ -57,9 +57,12 @@ pub const MAX_PDF_BYTES: usize = 80 * 1024 * 1024;
 /// The argument that makes the engine's program read one PDF from standard input and say its pages as JSON on
 /// standard output, then stop. Not meant for people, so not in `--help` (there is none).
 pub const CHILD_ARGUMENT: &str = "--read-one-pdf";
-/// The most a child may allocate. The real papers measured peak well under a tenth of this (see the module's
-/// benchmark), so a child that needs more is reading something that is not a paper.
+/// The most a child may allocate: a PDF of a paper (at most [`MAX_PDF_BYTES`]) with its streams inflated fits in
+/// it many times over, so a child that needs more is reading something that is not a paper. As many children run
+/// as the engine's pool has threads, so this is per thread.
 pub const CHILD_HEAP: usize = 1024 * 1024 * 1024;
+/// The exit code of a child whose own input, output or thread failed: a fault of this computer, not of the PDF.
+const CHILD_TROUBLE: u8 = 3;
 /// How long a child may take to read one PDF. Real papers take well under a second each.
 pub const TIME_LIMIT: Duration = Duration::from_secs(60);
 /// The most a child may answer: a paper's text as JSON is a few hundred kilobytes, a book's a few megabytes.
@@ -172,7 +175,7 @@ pub fn serve_one_reading() -> ExitCode {
     // one byte more than allowed, to tell "too large" from "exactly the largest"
     let limit = u64::try_from(MAX_PDF_BYTES).unwrap_or(u64::MAX).saturating_add(1);
     if io::stdin().lock().take(limit).read_to_end(&mut bytes).is_err() {
-        return ExitCode::FAILURE;
+        return ExitCode::from(CHILD_TROUBLE);
     }
     // on a thread of its own, for a stack of a known size whatever the system gives the main thread
     let reading = std::thread::Builder::new().stack_size(CHILD_STACK).spawn(move || read_in_this_process(&bytes));
@@ -180,12 +183,12 @@ pub fn serve_one_reading() -> ExitCode {
         Ok(Ok(Ok(pages))) => ChildAnswer::Pages(pages),
         Ok(Ok(Err(why))) => ChildAnswer::Unreadable(why),
         Ok(Err(_)) => ChildAnswer::Unreadable(Unreadable::Unhandled),
-        Err(_) => return ExitCode::FAILURE,
+        Err(_) => return ExitCode::from(CHILD_TROUBLE),
     };
     let mut out = io::stdout().lock();
     match serde_json::to_writer(&mut out, &answer).map_err(io::Error::from).and_then(|()| out.flush()) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(_) => ExitCode::FAILURE,
+        Err(_) => ExitCode::from(CHILD_TROUBLE),
     }
 }
 
@@ -241,6 +244,13 @@ fn wait_until(child: &mut Reaped, deadline: Instant) -> Option<ExitStatus> {
 pub fn read_in_child(program: &Path, bytes: &[u8], time: Duration) -> Result<Vec<String>, Unreadable> {
     let mut command = crate::api::config::child_process(program);
     command.arg(CHILD_ARGUMENT).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // a group of its own: Ctrl-C in the engine's terminal stops the engine, which stops its children, rather than
+    // reaching them first and being taken for something the PDF did
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -283,10 +293,15 @@ fn why_it_stopped(status: ExitStatus, said: &str) -> Unreadable {
     } else if said.contains("overflowed its stack") {
         Unreadable::Crashed("objects nested too deeply".to_owned())
     } else {
-        Unreadable::Crashed(match status.code() {
-            Some(code) => format!("exit code {code}"),
-            None => "ended by a signal".to_owned(),
-        })
+        match status.code() {
+            Some(code) if code == i32::from(CHILD_TROUBLE) => {
+                Unreadable::ReaderUnavailable("the reader's own input or output failed".to_owned())
+            }
+            Some(code) => Unreadable::Crashed(format!("exit code {code}")),
+            // stopped from outside (a signal the engine did not send: its own kill is the time limit, told
+            // apart before this): nothing is known of the PDF
+            None => Unreadable::ReaderUnavailable("the reader was stopped from outside".to_owned()),
+        }
     }
 }
 

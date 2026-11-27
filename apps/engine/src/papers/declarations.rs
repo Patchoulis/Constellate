@@ -151,7 +151,17 @@ fn read_with_origin(
         });
         let mut files: HashMap<&str, PdfOutcome> = HashMap::new();
         for (id, outcome) in fetched.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner) {
-            files.insert(id, outcome?);
+            match outcome {
+                Ok(outcome) => {
+                    files.insert(id, outcome);
+                }
+                // a run can name a paper the library no longer has: that paper is said, the others are read
+                Err(LibraryError::UnknownPaper(_)) => {
+                    answers
+                        .insert((*id).to_owned(), (Declared::Unreadable("not a paper of the library".into()), false));
+                }
+                Err(error) => return Err(error),
+            }
         }
 
         // what is kept and still of this PDF; the rest is read
@@ -160,6 +170,9 @@ fn read_with_origin(
         });
         let mut to_read: Vec<(&str, String)> = Vec::new();
         for (id, hash) in batch.iter().zip(hashes) {
+            if answers.contains_key(*id) {
+                continue;
+            }
             let hash = match hash {
                 Outcome::Done(hash) => hash,
                 Outcome::Panicked(_) | Outcome::Cancelled => None,
