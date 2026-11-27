@@ -113,6 +113,6 @@ exports.default = async function afterPack({ appOutDir }) {
 		fs.writeFileSync(path.join(licences, name, "LICENSE.txt"), note);
 	}
 	copyLicences(path.join(__dirname, "bin"), path.join(licences, "uv"));
-	fs.copyFileSync(path.join(repo, "THIRD_PARTY_NOTICES.md"), path.join(licences, "THIRD_PARTY_NOTICES.md"));
+	fs.copyFileSync(path.join(repo, "docs", "licenses", "third-party-notices.md"), path.join(licences, "THIRD_PARTY_NOTICES.md"));
 	if (without.length) console.log(`  licences: none found for ${without.join(", ")}`);
 };
