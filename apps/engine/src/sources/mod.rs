@@ -158,9 +158,48 @@ pub enum GetError {
     Fetch(#[from] FetchError),
 }
 
-/// Any https address: what lists, pages and the arXiv API are fetched from. A redirect to plain http is refused.
+/// Any https address on the public internet: what lists, pages and the arXiv API are fetched from. A redirect to
+/// plain http is refused, and so is one to this computer or its local network (`localhost`, `127.0.0.1`,
+/// `192.168.x.x`, `169.254.169.254`...): a site answering with such a redirect must not make the engine ask the
+/// user's own machines anything. (A public name that resolves to a private address is not caught here.)
 pub fn any_https(address: &Url) -> bool {
-    address.scheme() == "https"
+    address.scheme() == "https" && is_public(address)
+}
+
+/// Does the address name a host on the public internet, by its name or its numbers?
+fn is_public(address: &Url) -> bool {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    let public_v4 = |ip: Ipv4Addr| {
+        let [first, second, ..] = ip.octets();
+        let shared = first == 100 && (64..128).contains(&second); // carrier-grade NAT, 100.64.0.0/10
+        !(ip.is_private()
+            || ip.is_loopback()
+            || ip.is_link_local()
+            || ip.is_unspecified()
+            || ip.is_broadcast()
+            || ip.is_documentation()
+            || shared
+            || first == 0)
+    };
+    let public_v6 = |ip: Ipv6Addr| {
+        let first = ip.segments()[0];
+        let unique_local = (first & 0xfe00) == 0xfc00;
+        let link_local = (first & 0xffc0) == 0xfe80;
+        match ip.to_ipv4_mapped() {
+            Some(v4) => public_v4(v4),
+            None => !(ip.is_loopback() || ip.is_unspecified() || unique_local || link_local),
+        }
+    };
+    match address.host() {
+        Some(url::Host::Domain(name)) => {
+            let name = name.trim_end_matches('.').to_ascii_lowercase();
+            let local = ["localhost", "local", "internal", "home.arpa"];
+            !name.is_empty() && !local.iter().any(|end| name == *end || name.ends_with(&format!(".{end}")))
+        }
+        Some(url::Host::Ipv4(ip)) => public_v4(ip),
+        Some(url::Host::Ipv6(ip)) => public_v6(ip),
+        None => false,
+    }
 }
 
 /// The answer at `address`, with redirects followed by hand: every hop, the first included, is checked with
@@ -460,6 +499,37 @@ mod tests {
         let refused = get_following(&fake, "https://example.org/a", LIMITS, &any_https);
         assert_eq!(refused, Err(GetError::NotAllowed("http://example.org/a".to_owned())));
         assert_eq!(fake.asked(), ["https://example.org/a"]);
+    }
+
+    #[test]
+    fn a_redirect_to_this_computer_or_its_network_is_refused_before_it_is_fetched() {
+        for inside in [
+            "https://localhost/api/runs",
+            "https://LOCALHOST./x",
+            "https://app.localhost/x",
+            "https://127.0.0.1:8765/api/runs",
+            "https://10.0.0.7/x",
+            "https://192.168.1.1/admin",
+            "https://172.16.4.2/x",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://100.64.0.1/x",
+            "https://0.0.0.0/x",
+            "https://[::1]/x",
+            "https://[fd00::1]/x",
+            "https://[fe80::1]/x",
+            "https://[::ffff:127.0.0.1]/x",
+            "https://printer.local/x",
+            "https://router.home.arpa/x",
+        ] {
+            let fake = Fake::new().with("https://example.org/a", redirect(302, inside));
+            let refused = get_following(&fake, "https://example.org/a", LIMITS, &any_https);
+            assert!(matches!(refused, Err(GetError::NotAllowed(_))), "{inside}: {refused:?}");
+            assert_eq!(fake.asked(), ["https://example.org/a"], "{inside}");
+        }
+        for outside in ["https://arxiv.org/x", "https://8.8.8.8/x", "https://[2606:4700::1]/x", "https://neurips.cc./x"]
+        {
+            assert!(any_https(&Url::parse(outside).unwrap()), "{outside}");
+        }
     }
 
     #[test]
