@@ -79,8 +79,12 @@ export const api = {
 	graph: (name: string) => call<GraphData>(`${run(name)}/graph`),
 	rename: (name: string, title: string) => call<{ title: string }>(run(name), send("PATCH", { title })),
 	remove: (name: string) => call<{ ok: true }>(run(name), { method: "DELETE" }),
-	overview: (name: string, treePath: string, write = false) =>
-		call<OverviewStatus>(`${run(name)}/overview/${encodeURIComponent(treePath)}`, { method: write ? "POST" : "GET" }),
+	/** where a community's overview stands; with `write`, write it within the most of the estimate shown */
+	overview: (name: string, treePath: string, write?: import("@rp/contracts").OverviewRequest | true) =>
+		call<OverviewStatus>(
+			`${run(name)}/overview/${encodeURIComponent(treePath)}`,
+			write === undefined ? { method: "GET" } : write === true ? { method: "POST" } : send("POST", write),
+		),
 	start: (request: RunRequest) => call<{ ok: true }>("/api/runs", send("POST", request)),
 	status: (since: number) => call<Status>(`/api/status?since=${since}`),
 	settings: () => call<Settings>("/api/settings"),
@@ -280,6 +284,14 @@ export const api = {
 	/** forget its answer only, so that it is asked again (at the cost shown again) */
 	redoAnswer: (name: string, id: string) =>
 		call<{ ok: true; forgotten: boolean }>(`${run(name)}/answers/${encodeURIComponent(id)}/redo`, { method: "POST" }),
+	/** what naming a run made with the settings would cost at most, before it is made: nothing is sent */
+	describeBeforeRun: () => call<import("@rp/contracts").DescribeBeforeRun>("/api/describe/estimate"),
+	/** what naming a made run's communities (all again with `redo`) would cost: nothing is sent */
+	describeEstimate: (name: string, redo = false) =>
+		call<import("@rp/contracts").DescribeEstimate>(`${run(name)}/describe/estimate${redo ? "?redo=true" : ""}`),
+	/** name them within the most shown, as the one job */
+	describeRun: (name: string, request: import("@rp/contracts").DescribeRequest) =>
+		call<import("@rp/contracts").DescribeStarted>(`${run(name)}/describe`, send("POST", request)),
 };
 
 type StanceScope = import("@rp/contracts").StanceScope;
