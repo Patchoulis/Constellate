@@ -217,13 +217,80 @@ web build forwards `/api`), so no other origin may ever read an answer.
 
 ### Routes
 
-| Route                      | What it answers                                                                                                                                                                                                                                 |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/status?since=N`  | The background job: `id`, `kind`, `state`, `result`, `error`, its `log` from line N on, `total` lines, `warnings` about how the engine listens, `mode` (`local` or `network`) and `server_owned`, the settings the interface may not change.    |
-| `GET /api/settings`        | The settings (`Settings` in `packages/contracts`).                                                                                                                                                                                              |
-| `PUT /api/settings`        | Changes some: a JSON object of the ones to change. A bad value changes nothing and is answered `400` with what is wrong; a server-owned one `403`.                                                                                              |
-| `GET /api/models`          | Every language model provider: whether its key is set (never the key), the host it is reached at, why it cannot be used ("set OPENAI_API_KEY"), what it cannot do, its models with their efforts and prices; and the model the settings choose. |
-| `GET /api/models/endpoint` | The models the OpenAI-compatible endpoint says it has (`GET <address>/models`).                                                                                                                                                                 |
+| Route                      | What it answers                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/status?since=N`  | The background job: `id`, `kind`, `state`, `outcome` (what a finished job made: a run, a feature's answers about a subject, or nothing), `result` (the name of a run made, else null), `error`, its `log` from line N on, `total` lines, `progress` and `papers` (n of m done), `warnings` about how the engine listens, `mode` (`local` or `network`), `server_owned`, the settings the interface may not change, and `api_key_set`. |
+| `POST /api/job/cancel`     | `{ "id": N }`: asks the running job to stop; it finishes what is under way.                                                                                                                                                                                                                                                                                                                                                           |
+| `GET /api/settings`        | The settings (`Settings` in `packages/contracts`).                                                                                                                                                                                                                                                                                                                                                                                    |
+| `PUT /api/settings`        | Changes some: a JSON object of the ones to change. A bad value changes nothing and is answered `400` with what is wrong; a server-owned one `403`.                                                                                                                                                                                                                                                                                    |
+| `GET /api/models`          | Every language model provider: whether its key is set (never the key), the host it is reached at, why it cannot be used ("set OPENAI_API_KEY"), what it cannot do, its models with their efforts and prices; and the model the settings choose.                                                                                                                                                                                       |
+| `GET /api/models/endpoint` | The models the OpenAI-compatible endpoint says it has (`GET <address>/models`).                                                                                                                                                                                                                                                                                                                                                       |
+
+The features' routes, by feature. A route that asks the language model starts the one background job (followed in
+`/api/status`, stopped with `/api/job/cancel`) only after its estimate was shown: the request names the provider
+and model the estimate was for and accepts its most, in US dollars, or in tokens for a model with no price. Every
+other route sends nothing to any provider.
+
+| Route                                                                     | What it does                                                                                          |
+| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| **Reviews**                                                               |                                                                                                       |
+| `GET /api/papers/{id}/reviews`                                            | The reviews kept for a paper, as read from the page the user opened.                                  |
+| `POST /api/papers/{id}/reviews`                                           | `{ text, url }`: the text of the reviews page the reader opened, read and kept.                       |
+| `GET /api/runs/{run}/reviews/summary`                                     | What the reviews of a run's papers come to.                                                           |
+| `GET /api/runs/{run}/communities/{community}/reviews/summary`             | The same for one community.                                                                           |
+| **A paper's text**                                                        |                                                                                                       |
+| `GET /api/papers/{id}/passages`                                           | The paper's PDF as addressable passages.                                                              |
+| `POST /api/papers/{id}/locate`                                            | `{ "quote" }`: where a quote is in the paper, if it is.                                               |
+| **Weaknesses (critique)**                                                 |                                                                                                       |
+| `GET /api/papers/{id}/critique`                                           | The reviewers' points, and the model's reading kept or what asking would cost.                        |
+| `POST /api/papers/{id}/critique`                                          | Asks the model for the paper's weaknesses, as the job.                                                |
+| `DELETE /api/papers/{id}/critique`                                        | Forgets the model's reading (a redo).                                                                 |
+| **Agree and disagree (stances)**                                          |                                                                                                       |
+| `GET /api/runs/{run}/communities/{community}/stances`                     | The community's questions, terms its papers keep using, and the model's proposals.                    |
+| `POST /api/runs/{run}/communities/{community}/stances/estimate`           | What asking a question would cost; nothing is sent.                                                   |
+| `POST /api/runs/{run}/communities/{community}/stances/ask`                | Asks where the papers stand on a question, as the job.                                                |
+| `POST /api/runs/{run}/communities/{community}/stances/proposals/estimate` | What proposing questions would cost.                                                                  |
+| `POST /api/runs/{run}/communities/{community}/stances/proposals`          | Asks the model to propose questions, as the job.                                                      |
+| `GET /api/runs/{run}/communities/{community}/stances/{id}`                | What is known so far about a question.                                                                |
+| `POST /api/runs/{run}/communities/{community}/stances/{id}/redo`          | Asks a question again from scratch.                                                                   |
+| `POST /api/runs/{run}/marked/stances/list`                                | The questions of a set of marked papers (`papers` in the body).                                       |
+| `POST /api/runs/{run}/marked/stances/estimate`                            | What asking about marked papers would cost.                                                           |
+| `POST /api/runs/{run}/marked/stances/ask`                                 | Asks about marked papers, as the job.                                                                 |
+| `GET /api/runs/{run}/marked/stances/{id}`                                 | What is known so far about a question of marked papers.                                               |
+| `POST /api/runs/{run}/marked/stances/{id}/redo`                           | Asks it again from scratch.                                                                           |
+| **Extraction table**                                                      |                                                                                                       |
+| `GET /api/runs/{run}/extraction/columns`                                  | The run's columns: kept, or the defaults.                                                             |
+| `PUT /api/runs/{run}/extraction/columns`                                  | Keeps these columns (checked first).                                                                  |
+| `POST /api/runs/{run}/extraction/table`                                   | The table as kept, every quote checked again; nothing is asked.                                       |
+| `POST /api/runs/{run}/extraction/estimate`                                | What asking the sample or the rest would cost; nothing is sent.                                       |
+| `POST /api/runs/{run}/extraction/run`                                     | Asks, as the job, within the budget given.                                                            |
+| `POST /api/runs/{run}/extraction/forget`                                  | Forgets these papers' cells (a redo).                                                                 |
+| **Explain a passage**                                                     |                                                                                                       |
+| `POST /api/papers/{id}/explanation/prepare`                               | The passage, the paper's definitions of what it uses, the kept explanation or what asking would cost. |
+| `POST /api/papers/{id}/explanation`                                       | Asks for the explanation, as the job.                                                                 |
+| `DELETE /api/papers/{id}/explanation`                                     | Forgets that explanation (a redo); says whether there was one.                                        |
+| `GET /api/papers/{id}/explanations`                                       | The passages with an explanation kept for the model chosen.                                           |
+| `POST /api/runs/{run}/papers/{id}/related`                                | Passages of nearby papers sharing the passage's words (no model).                                     |
+| **Claim tree**                                                            |                                                                                                       |
+| `GET /api/papers/{id}/claims`                                             | The paper's claim tree and its reviews mapped onto it, as kept, and what asking the rest would cost.  |
+| `POST /api/papers/{id}/claims`                                            | Asks what is not kept, as the job, within the budget given.                                           |
+| `DELETE /api/papers/{id}/claims`                                          | Forgets the paper's tree and mapping (a redo).                                                        |
+| `GET /api/runs/{run}/communities/{community}/claims/contested`            | Per paper of the community, how many of its claims reviewers contested.                               |
+| **Citing sentences and citation kinds**                                   |                                                                                                       |
+| `GET /api/papers/{id}/citation-contexts`                                  | Where the paper cites papers of the library, and where they cite it, sentence by sentence.            |
+| `POST /api/runs/{run}/citation-contexts`                                  | Reads the citing sentences of every paper of the run, as the job (no model).                          |
+| `GET /api/runs/{run}/citation-kinds`                                      | What the kinds of a community's citations come to.                                                    |
+| `POST /api/runs/{run}/citation-kinds`                                     | Asks the model for the kinds, as the job, within the budget given.                                    |
+| `DELETE /api/runs/{run}/citation-kinds`                                   | Forgets the kinds read for the papers a community cites (a redo).                                     |
+| `GET /api/runs/{run}/citation-kinds/estimate`                             | What reading a sample or the rest would cost; nothing is sent.                                        |
+| **Cited answers**                                                         |                                                                                                       |
+| `GET /api/runs/{run}/passages/found`                                      | The passages that match a search best (no model).                                                     |
+| `GET /api/runs/{run}/answers/estimate`                                    | What asking a question would cost; nothing is sent.                                                   |
+| `GET /api/runs/{run}/answers`                                             | The questions asked of the run.                                                                       |
+| `POST /api/runs/{run}/answers`                                            | Asks a question, as the job.                                                                          |
+| `GET /api/runs/{run}/answers/{id}`                                        | One question and its kept answer, checked again.                                                      |
+| `DELETE /api/runs/{run}/answers/{id}`                                     | Forgets a question and its answer.                                                                    |
+| `POST /api/runs/{run}/answers/{id}/redo`                                  | Forgets its answer only; says whether there was one.                                                  |
 
 Across a network, also (the first six answer anyone; the last two need the session):
 

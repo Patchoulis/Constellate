@@ -509,6 +509,18 @@ mod tests {
     }
 
     #[test]
+    fn every_route_of_the_table_is_documented_in_the_readme() {
+        let readme = include_str!("../../README.md");
+        let missing: Vec<&str> = table()
+            .iter()
+            .map(|(path, _)| *path)
+            // written as `METHOD path` in a row, the path ending at the backtick or at its query
+            .filter(|path| !readme.contains(&format!(" {path}`")) && !readme.contains(&format!(" {path}?")))
+            .collect();
+        assert!(missing.is_empty(), "routes not in apps/engine/README.md: {missing:?}");
+    }
+
+    #[test]
     fn every_error_is_told_with_its_status() {
         let busy = ApiError::from(Busy { kind: "a run".to_owned() });
         assert_eq!((busy.status(), busy.to_string().as_str()), (StatusCode::CONFLICT, "a run is already in progress"));
