@@ -284,3 +284,18 @@ test("papers are shown or dimmed by kind, within the focused community", () => {
 	assert.deepEqual([...shownPapers(nodes, new Set(["human"] as const), [2, 3])!], [3]);
 	assert.deepEqual([...shownPapers(nodes, new Set(["oral", "spotlight", "poster", "none"] as const), null)!], []);
 });
+
+test("a run with no papers lays out to a finite box, so the camera can be fitted to it", () => {
+	const { bounds, points } = layoutGraph({ nodes: [], edges: [] }, []);
+	assert.deepEqual(points, []);
+	for (const value of Object.values(bounds)) assert.ok(Number.isFinite(value), `${value} is not a finite coordinate`);
+});
+
+test("a run of one paper places it at the centre of its community's disc", () => {
+	const graph: GraphData = { nodes: [{ id: "a", title: "", community: 0, x: 0, y: 0, ai: false, acceptance: null }], edges: [] };
+	const tree = communityTree([community(0, [0])]);
+	const { bounds, points, discs } = layoutGraph(graph, tree);
+	assert.equal(points.length, 1);
+	for (const value of [...Object.values(bounds), points[0].x, points[0].y, discs.get(tree[0])!.r]) assert.ok(Number.isFinite(value));
+	assert.ok(bounds.maxX > bounds.minX && bounds.maxY > bounds.minY, "the box has a size");
+});

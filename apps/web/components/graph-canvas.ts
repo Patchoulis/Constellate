@@ -174,6 +174,11 @@ export class GraphCanvasRenderer {
 	/** the dots of one level, focus and size (dotsOf) */
 	private dotPaths: { level: CanvasLevel; focus: Set<number> | null; radius: number; dots: Path2D[]; dimmed: Path2D } | null = null;
 	private observer: ResizeObserver;
+	/** device pixels per CSS pixel the canvas's pixels were sized for: a frame draws at this, never at another */
+	private dpr = 1;
+	/** told when the device pixel ratio stops being `dpr` (the window moved to another screen, the page was
+	 *  zoomed), which changes no CSS size and so tells the ResizeObserver nothing */
+	private dprQuery: MediaQueryList | null = null;
 
 	constructor(
 		private canvas: HTMLCanvasElement,
@@ -205,6 +210,8 @@ export class GraphCanvasRenderer {
 		this.stopGliding();
 		cancelAnimationFrame(this.frame);
 		this.observer.disconnect();
+		this.dprQuery?.removeEventListener("change", this.onDprChange);
+		this.dprQuery = null;
 		select(this.canvas).on(".zoom", null);
 		this.canvas.removeEventListener("mousemove", this.onMove);
 		this.canvas.removeEventListener("mouseleave", this.onLeave);
@@ -229,6 +236,7 @@ export class GraphCanvasRenderer {
 			this.linked[b].push(a);
 		}
 		this.updateLevel();
+		this.tellHover(); // the paper hovered before is not one of these
 		this.tellMarked();
 		this.markDirty();
 	}
@@ -396,8 +404,16 @@ export class GraphCanvasRenderer {
 		return this.focus === null || this.focus.has(index);
 	}
 
+	private onDprChange = () => this.resize();
+
 	private resize() {
 		const dpr = window.devicePixelRatio || 1;
+		if (dpr !== this.dpr || !this.dprQuery) {
+			this.dprQuery?.removeEventListener("change", this.onDprChange);
+			this.dprQuery = window.matchMedia?.(`(resolution: ${dpr}dppx)`) ?? null;
+			this.dprQuery?.addEventListener("change", this.onDprChange);
+		}
+		this.dpr = dpr;
 		this.canvas.width = Math.max(1, Math.round(this.canvas.clientWidth * dpr));
 		this.canvas.height = Math.max(1, Math.round(this.canvas.clientHeight * dpr));
 		if (this.fitted && this.fitted.transform === this.transform) this.fit(this.fitted.box, false, true);
@@ -486,8 +502,7 @@ export class GraphCanvasRenderer {
 	};
 
 	private draw() {
-		const { ctx, data } = this;
-		const dpr = window.devicePixelRatio || 1;
+		const { ctx, data, dpr } = this;
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		ctx.clearRect(0, 0, this.canvas.clientWidth, this.canvas.clientHeight);
 		if (!data) return;
