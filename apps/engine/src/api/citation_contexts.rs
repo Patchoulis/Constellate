@@ -595,7 +595,9 @@ struct ClassifyRequest {
     community: Option<String>,
     scope: Scope,
     /// The most the job may spend: in US dollars, or in tokens for a model with no price.
+    #[serde(alias = "accepted_usd")]
     budget_usd: Option<f64>,
+    #[serde(alias = "accepted_tokens")]
     budget_tokens: Option<u64>,
     /// The model (of its provider) and the number of sentences the estimate the person saw was for: asking
     /// another model, or more sentences, is refused (estimate again).
@@ -820,6 +822,18 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "the job never finished");
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+    }
+
+    #[test]
+    fn a_start_takes_the_accepted_amount_under_either_name() {
+        let named = |body: Value| serde_json::from_value::<super::ClassifyRequest>(body).unwrap();
+        let old = named(json!({"scope": "sample", "model": "m", "to_ask": 1, "budget_usd": 1.5}));
+        let new = named(json!({"scope": "sample", "model": "m", "to_ask": 1, "accepted_usd": 1.5}));
+        assert_eq!((old.budget_usd, new.budget_usd), (Some(1.5), Some(1.5)));
+        assert_eq!(
+            named(json!({"scope": "rest", "model": "m", "to_ask": 1, "accepted_tokens": 9})).budget_tokens,
+            Some(9)
+        );
     }
 
     #[tokio::test]

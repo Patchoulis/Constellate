@@ -110,7 +110,9 @@ struct Started {
     scope: Scope,
     part: Part,
     /// What the user agreed to spend at most: in US dollars, or in tokens for a model with no price.
+    #[serde(alias = "accepted_usd")]
     budget_usd: Option<f64>,
+    #[serde(alias = "accepted_tokens")]
     budget_tokens: Option<u64>,
     /// The model whose estimate the user saw, and its provider.
     model: Option<String>,
@@ -740,6 +742,16 @@ mod tests {
             quotes: vec![quote.to_owned()],
             ..SaidCell::default()
         }
+    }
+
+    #[test]
+    fn a_start_takes_the_accepted_amount_under_either_name() {
+        let named = |body: Value| serde_json::from_value::<super::Started>(body).unwrap();
+        let old = named(json!({"scope": {"community": "c0"}, "part": "sample", "budget_usd": 1.5}));
+        let new = named(json!({"scope": {"community": "c0"}, "part": "sample", "accepted_usd": 1.5}));
+        assert_eq!((old.budget_usd, new.budget_usd), (Some(1.5), Some(1.5)));
+        let tokens = named(json!({"scope": {"community": "c0"}, "part": "sample", "accepted_tokens": 9}));
+        assert_eq!(tokens.budget_tokens, Some(9));
     }
 
     #[tokio::test]

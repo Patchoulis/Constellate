@@ -74,8 +74,10 @@ pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
 pub struct Start {
     /// The most the calls may spend, in US dollars, or in tokens for a model with no price: what the user agreed
     /// to after seeing the estimate.
+    #[serde(alias = "accepted_usd")]
     budget_usd: Option<f64>,
     #[serde(default)]
+    #[serde(alias = "accepted_tokens")]
     budget_tokens: Option<u64>,
     /// The model whose estimate was shown, and its provider.
     #[serde(default)]
@@ -322,6 +324,15 @@ mod tests {
         let status = response.status();
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    #[test]
+    fn a_start_takes_the_accepted_amount_under_either_name() {
+        let named = |body: serde_json::Value| serde_json::from_value::<super::Start>(body).unwrap();
+        let old = named(serde_json::json!({"budget_usd": 1.5}));
+        let new = named(serde_json::json!({"accepted_usd": 1.5}));
+        assert_eq!((old.budget_usd, new.budget_usd), (Some(1.5), Some(1.5)));
+        assert_eq!(named(serde_json::json!({"accepted_tokens": 9})).budget_tokens, Some(9));
     }
 
     #[tokio::test]
