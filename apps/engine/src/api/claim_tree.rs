@@ -21,14 +21,17 @@ use super::reviews::papers_of;
 use super::routes::{ApiError, Shared, on_the_side};
 use crate::analysis::claim_tree::asking::{Asked, Askers, AskingError, ask};
 use crate::analysis::claim_tree::{self, ClaimsView, Contested};
+use crate::jobs::{Busy, Phase};
 use crate::library::{Feature, PaperReading, Subject};
-use crate::model::language::{Budget, DEFAULT_MODEL, Https, Limit};
+use crate::model::language::{Budget, DEFAULT_MODEL, Endpoint, Https, Limit, Transport};
 use crate::settings;
 use crate::usage::Usd;
 
 /// The most one paper's two calls may be allowed to spend, in US dollars: far above what they take (a few cents
 /// to a dollar), so that a mistyped budget is refused rather than spent.
 pub const MOST_BUDGET_USD: f64 = 10.0;
+/// What the job is called in `/api/status`.
+const KIND: &str = "reading a paper's claims";
 /// A paper id longer than this is no paper's.
 const LONGEST_ID: usize = 200;
 
@@ -101,9 +104,22 @@ pub async fn start(
         )));
     }
     let endpoint = engine.language.clone().map_err(|why| ApiError::Invalid(why.to_string()))?;
-    let job = on_the_side(move || {
+    let job = on_the_side(move || begin(&engine, id, budget_usd, endpoint, Https::default)).await?;
+    Ok(Json(Started { job }))
+}
+
+/// Start the job that asks what is not kept about paper `id`, over the transport `transport` makes (the network,
+/// or the tests' fake). Answers the job's number.
+fn begin<T: Transport + 'static>(
+    engine: &Shared,
+    id: String,
+    budget_usd: f64,
+    endpoint: Endpoint,
+    transport: impl FnOnce() -> T + Send + 'static,
+) -> Result<u64, ApiError> {
+    {
         let library = engine.library()?;
-        let model = chosen_model(&engine)?;
+        let model = chosen_model(engine)?;
         match library.paper_texts(&[id.as_str()])?.pop() {
             Some(PaperReading::Read(_)) => {}
             Some(PaperReading::NotInLibrary) | None => return Err(ApiError::NotFound),
@@ -113,24 +129,34 @@ pub async fn start(
         }
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // checked above: 0 < budget <= 10
         let budget = Budget::new(Limit::Dollars(Usd::from_picodollars((budget_usd * 1e12).round() as u64)));
-        let job = engine.job.start_tracked("reading a paper's claims", move |tracker| {
-            let transport = Https::default();
+        let job = engine.job.start_tracked(KIND, move |tracker| {
+            let transport = transport();
             let askers = Askers { library: &library, transport: &transport, endpoint, recorder: &*library };
             let done = ask(&askers, &id, &model, &budget, tracker).map_err(|error| error.to_string())?;
             tracker.log(&format!("The claim tree: {}", told(&done.tree)));
             tracker.log(&format!("The reviews mapped onto it: {}", told(&done.mapping)));
+            // a call that was asked and gave nothing usable, or was not started, fails the job: the interface
+            // then says why, rather than offering the same button again as if nothing had happened
+            for (what, asked) in [("The claim tree", &done.tree), ("The reviews' mapping", &done.mapping)] {
+                if matches!(asked, Asked::Failed(_) | Asked::NotStarted(_)) {
+                    return Err(format!("{what}: {}", told(asked)));
+                }
+            }
             // no run's name: the interface opens nothing when this is done
             Ok(String::new())
         })?;
         Ok(job)
-    })
-    .await?;
-    Ok(Json(Started { job }))
+    }
 }
 
 pub async fn forget(State(engine): State<Shared>, Path(id): Path<String>) -> Result<Json<Forgotten>, ApiError> {
     paper_id(&id)?;
     let forgotten = on_the_side(move || {
+        // forgotten while the paper's claims are being asked, the answer would be kept again just after
+        let job = engine.job.snapshot(usize::MAX);
+        if job.state == Phase::Running && job.kind == KIND {
+            return Err(ApiError::Busy(Busy { kind: KIND.to_owned() }));
+        }
         let library = engine.library()?;
         library.paper(&id)?.ok_or(ApiError::NotFound)?;
         Ok(library.forget(Feature::ClaimTree, &[Subject::Paper(id)])?)
@@ -167,10 +193,13 @@ mod tests {
     use super::super::routes::Engine;
     use super::super::tests::served;
     use super::*;
-    use crate::analysis::claim_tree::asking::tests::{FORUM, LINES, PAPER, keep_reviews};
+    use crate::analysis::claim_tree::asking::tests::{
+        FORUM, LINES, PAPER, keep_reviews, mapping_answer, reply, tree_answer,
+    };
     use crate::library::papers::tests::paper;
     use crate::library::passages::fixtures::pdf_with;
     use crate::library::{Known, Library};
+    use crate::model::language::fake::Fake;
     use crate::model::language::{BASE_VARIABLE, Endpoint, KEY_VARIABLE};
     use crate::settings::Choices;
 
@@ -313,19 +342,54 @@ mod tests {
         release.send(()).unwrap();
     }
 
+    /// Wait for the job to end, and say how it ended.
+    fn ended(engine: &Shared) -> crate::jobs::Snapshot<String> {
+        for _ in 0..500 {
+            let job = engine.job.snapshot(0);
+            if job.state != Phase::Running {
+                return job;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the job did not end");
+    }
+
     #[tokio::test]
-    async fn a_started_job_is_tracked_and_a_redo_forgets_what_was_kept() {
+    async fn a_started_job_keeps_both_answers_and_a_redo_forgets_them_but_not_while_asking() {
         let (engine, _data) = engine(true);
-        let router = router(engine);
-        let path = format!("/api/papers/{PAPER}/claims");
-        let (status, started) = ask(&router, "POST", &path, Some(json!({"budget_usd": 0.5}).to_string())).await;
-        assert_eq!(status, StatusCode::OK, "{started}");
-        assert!(started["job"].as_u64().unwrap() >= 1);
-        let (_, status) = ask(&router, "GET", "/api/status", None).await;
-        assert_eq!(status["kind"], "reading a paper's claims");
-        let (status, forgotten) = ask(&router, "DELETE", &path, None).await;
-        assert_eq!((status, forgotten["forgotten"].clone()), (StatusCode::OK, json!(0)));
-        assert_eq!(ask(&router, "DELETE", "/api/papers/nowhere/claims", None).await.0, StatusCode::NOT_FOUND);
+        let engine: Shared = Arc::new(engine);
+        let answers = vec![reply(&tree_answer()), reply(&mapping_answer())];
+        let job = begin(&engine, PAPER.to_owned(), 0.5, nowhere(), move || Fake::new(answers)).unwrap();
+        let done = ended(&engine);
+        assert_eq!((done.id, done.kind.as_str(), done.state), (job, KIND, Phase::Done), "{:?}", done.log);
+        let Json(view) = read(State(Arc::clone(&engine)), Path(PAPER.to_owned())).await.unwrap();
+        assert!(matches!(view.tree, crate::analysis::claim_tree::TreeState::Made { .. }));
+        assert!(matches!(view.mapping, crate::analysis::claim_tree::MappingState::Made { .. }));
+
+        let (release, wait) = mpsc::channel::<()>();
+        engine
+            .job
+            .start(KIND, move |_| wait.recv().map(|()| String::new()).map_err(|error| error.to_string()))
+            .unwrap();
+        let refused = forget(State(Arc::clone(&engine)), Path(PAPER.to_owned())).await;
+        assert!(matches!(refused, Err(ApiError::Busy(_))));
+        release.send(()).unwrap();
+        ended(&engine);
+        let Json(forgotten) = forget(State(Arc::clone(&engine)), Path(PAPER.to_owned())).await.unwrap();
+        assert_eq!(forgotten.forgotten, 2);
+        assert!(matches!(forget(State(engine), Path("nowhere".to_owned())).await, Err(ApiError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn a_job_whose_call_gave_nothing_usable_fails_and_says_why() {
+        let (engine, _data) = engine(true);
+        let engine: Shared = Arc::new(engine);
+        let job =
+            begin(&engine, PAPER.to_owned(), 0.5, nowhere(), || Fake::new(vec![reply(&json!({"not": "a tree"}))]))
+                .unwrap();
+        let done = ended(&engine);
+        assert_eq!((done.id, done.state), (job, Phase::Failed));
+        assert!(done.error.unwrap().starts_with("The claim tree: no usable answer"));
     }
 
     #[tokio::test]

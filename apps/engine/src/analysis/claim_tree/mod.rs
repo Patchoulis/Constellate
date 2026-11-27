@@ -479,6 +479,16 @@ type Built<'a> = (&'a KeptReviews, Tree, Vec<Point>, String);
 /// [`Contested`] for `papers`, from kept answers of `model` only: nothing is asked. The trees are checked on every
 /// core; papers come out ordered by id whatever the number of threads.
 pub fn contested(library: &Library, papers: &[String], model: &str) -> Result<Contested, LibraryError> {
+    contested_on(library, papers, model, None)
+}
+
+/// [`contested`], the trees checked on `pool` when one is given (the tests' way of trying thread counts).
+fn contested_on(
+    library: &Library,
+    papers: &[String],
+    model: &str,
+    pool: Option<&rayon::ThreadPool>,
+) -> Result<Contested, LibraryError> {
     let ids: Vec<&str> = papers.iter().map(String::as_str).collect();
     let reviewed = library.reviews_of(&ids)?;
     let mut kept_trees: Vec<(&KeptReviews, SaidTree)> = Vec::new();
@@ -490,17 +500,23 @@ pub fn contested(library: &Library, papers: &[String], model: &str) -> Result<Co
     // read outside the pool: the library reads PDFs on every core itself
     let with_trees: Vec<&str> = kept_trees.iter().map(|(kept, _)| kept.paper_id.as_str()).collect();
     let readings = library.paper_texts(&with_trees)?;
-    let built: Vec<Option<Built<'_>>> = kept_trees
-        .par_iter()
-        .zip(readings.par_iter())
-        .map(|((kept, said), reading)| {
-            let passages = reading.passages()?;
-            let tree = tree::build(said, &kept.paper_id, &PaperText::Read(passages.clone())).ok()?;
-            let points = review_points(&kept.discussion).points;
-            let question = mapping::question(&tree, &points);
-            (!tree.nodes.is_empty() && !points.is_empty()).then_some((*kept, tree, points, question))
-        })
-        .collect();
+    let build = || -> Vec<Option<Built<'_>>> {
+        kept_trees
+            .par_iter()
+            .zip(readings.par_iter())
+            .map(|((kept, said), reading)| {
+                let passages = reading.passages()?;
+                let tree = tree::build(said, &kept.paper_id, &PaperText::Read(passages.clone())).ok()?;
+                let points = review_points(&kept.discussion).points;
+                let question = mapping::question(&tree, &points);
+                (!tree.nodes.is_empty() && !points.is_empty()).then_some((*kept, tree, points, question))
+            })
+            .collect()
+    };
+    let built = match pool {
+        Some(pool) => pool.install(build),
+        None => build(),
+    };
     let mut counts = Vec::new();
     for (kept, tree, points, question) in built.into_iter().flatten() {
         let Some(said) =
@@ -646,7 +662,7 @@ mod tests {
         let papers = vec![PAPER.to_owned(), "not-reviewed".to_owned()];
         let on = |threads: usize| {
             let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
-            pool.install(|| contested(&library, &papers, MODEL).unwrap())
+            contested_on(&library, &papers, MODEL, Some(&pool)).unwrap()
         };
         let one = on(1);
         assert_eq!(one, on(4));

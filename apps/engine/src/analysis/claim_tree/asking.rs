@@ -40,8 +40,9 @@ const MAPPING_MAX_TOKENS: u32 = 10_000;
 const TREE_LIKELY_TOKENS: u32 = 3_500;
 const MAPPING_BASE_TOKENS: u32 = 600;
 const MAPPING_TOKENS_PER_POINT: u32 = 70;
-/// Characters a tree's part of the mapping's question likely takes, for an estimate made before the tree is.
-const TREE_CHARS_GUESS: usize = 4_000;
+/// Characters a tree's part of the mapping's question may take, for an estimate made before the tree is: the
+/// largest tree, so that the budget sent with the estimate's most covers the mapping's call whatever the tree.
+const TREE_CHARS_GUESS: usize = tree::MAX_NODES * (tree::STATEMENT_LENGTH + 30);
 
 /// The same for both calls, so that the prompt cache written by the first is read by the second.
 pub const SYSTEM: &str = "You read one research paper, given in full below as numbered pages, and answer only from \
