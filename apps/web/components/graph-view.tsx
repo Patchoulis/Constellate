@@ -14,7 +14,7 @@ import type { Marks } from "@/lib/marks";
 import { panelSize } from "@/lib/use-resizable";
 import { count } from "@/lib/units";
 import { countKinds, kindNotes, PAPER_KINDS, shownPapers, type PaperKind } from "@/lib/paper-filter";
-import { canvasColouring, useGraphColouring } from "@/lib/graph-colouring";
+import { canvasColouring, legendNote, useGraphColouring } from "@/lib/graph-colouring";
 import { cn, hsl } from "@/lib/utils";
 import { boxOf, layoutGraph, type Layout } from "@/lib/layout";
 
@@ -304,8 +304,9 @@ export function GraphView({
 								<span className="min-w-0 flex-1 truncate text-foreground" title={entry.name}>
 									{entry.name}
 								</span>
-								<span title={entry.elsewhere > 0 ? `${count(entry.elsewhere, "paper")} of this group not in this run` : undefined}>
+								<span title={legendNote(entry)}>
 									{count(entry.shown, "paper")}
+									{entry.earlier > 0 && ` (+${entry.earlier.toLocaleString()} above)`}
 								</span>
 							</li>
 						))}

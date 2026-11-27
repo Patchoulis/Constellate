@@ -342,25 +342,27 @@ function Grid({
 										{column.label}
 										{sort?.column === index && (sort.descending ? <ArrowDown className="size-3" /> : <ArrowUp className="size-3" />)}
 									</button>
-									{colouring && (
-										<button
-											type="button"
-											aria-pressed={colouring.shown === column.id}
-											className={cn(
-												"mt-1 flex items-center gap-1 text-muted-foreground hover:text-foreground",
-												colouring.shown === column.id && "text-foreground",
-											)}
-											title={
-												colouring.shown === column.id
-													? "Colour the graph by its communities again"
-													: "Colour the graph by this column's values: its most common values each in a colour, every other paper dimmed"
-											}
-											onClick={() => colouring.toggle(column.id, () => columnColouring(table.rows, index, column.label))}
-										>
-											<Palette className="size-3" />
-											{colouring.shown === column.id ? "on the graph" : "colour the graph"}
-										</button>
-									)}
+									{/* only a column with something to colour by: a value read, or "not stated" */}
+									{colouring &&
+										table.rows.some((row) => row.cells[index]?.kind === "stated" || row.cells[index]?.kind === "not_stated") && (
+											<button
+												type="button"
+												aria-pressed={colouring.shown === column.id}
+												className={cn(
+													"mt-1 flex items-center gap-1 text-muted-foreground hover:text-foreground",
+													colouring.shown === column.id && "text-foreground",
+												)}
+												title={
+													colouring.shown === column.id
+														? "Colour the graph by its communities again"
+														: "Colour the graph by this column's values: its most common values each in a colour, every other paper dimmed"
+												}
+												onClick={() => colouring.toggle(column.id, () => columnColouring(table.rows, index, column.label))}
+											>
+												<Palette className="size-3" />
+												{colouring.shown === column.id ? "on the graph" : "colour the graph"}
+											</button>
+										)}
 								</th>
 							))}
 						</tr>

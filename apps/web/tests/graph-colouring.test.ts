@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtractionRow } from "@rp/contracts";
-import { canvasColouring, colouringStep, MOST_GROUPS, spreadHues, type PaperColouring } from "@/lib/graph-colouring";
+import { canvasColouring, colouringStep, legendNote, MOST_GROUPS, spreadHues, type PaperColouring } from "@/lib/graph-colouring";
 import { columnColouring, NOT_STATED } from "@/lib/extraction";
 
 const table: PaperColouring = {
@@ -55,9 +55,12 @@ test("each paper of the graph is drawn in its first group, the others in none, a
 	assert.deepEqual([...drawn.of], [0, 0, 1, -1], "b is in both: drawn in the first; d is in none");
 	assert.deepEqual(drawn.hues, [10, null]);
 	assert.deepEqual(drawn.legend, [
-		{ name: "first", hue: 10, shown: 2, elsewhere: 1 },
-		{ name: "second", hue: null, shown: 2, elsewhere: 0 },
+		{ name: "first", hue: 10, shown: 2, earlier: 0, elsewhere: 1 },
+		{ name: "second", hue: null, shown: 1, earlier: 1, elsewhere: 0 },
 	]);
+	assert.equal(legendNote(drawn.legend[0]), "1 paper of this group is not in this run.");
+	assert.equal(legendNote(drawn.legend[1]), "1 more paper of this group is drawn in the colour of a group above, which it is in too.");
+	assert.equal(legendNote({ name: "x", hue: 1, shown: 3, earlier: 0, elsewhere: 0 }), undefined);
 });
 
 test("hues for groups without a meaning of their own are all different", () => {

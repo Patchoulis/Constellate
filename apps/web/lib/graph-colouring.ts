@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect } from "react";
+import { count } from "@/lib/units";
 
 /**
  * Colouring the graph by groups of papers: one small mechanism every feature shares. A feature that has split
@@ -65,31 +66,45 @@ export const MOST_GROUPS = 8;
 
 /**
  * What the canvas draws: for each paper of the graph the group it is drawn in (-1: none, dimmed), the groups'
- * hues, and the legend: for each group, how many of its papers are on the graph and how many are not in this run.
- * A paper in several groups (a list's items) is drawn in the first.
+ * hues, and the legend. A paper in several groups (a list's items) is drawn in the first; the legend says, for
+ * each group, how many papers are drawn in its colour (`shown`), how many of its papers are drawn in an earlier
+ * group's (`earlier`), and how many are not in this run (`elsewhere`), so that no count is of papers the reader
+ * cannot find in that colour.
  */
 export interface CanvasColouring {
 	of: Int16Array;
 	hues: (number | null)[];
-	legend: { name: string; hue: number | null; shown: number; elsewhere: number }[];
+	legend: { name: string; hue: number | null; shown: number; earlier: number; elsewhere: number }[];
 }
 
 export function canvasColouring(colouring: Colouring, indexOf: ReadonlyMap<string, number>, papers: number): CanvasColouring {
 	const of = new Int16Array(papers).fill(-1);
 	const legend = colouring.groups.map((group, number) => {
 		let shown = 0;
+		let earlier = 0;
 		let elsewhere = 0;
 		for (const id of new Set(group.papers)) {
 			const index = indexOf.get(id);
 			if (index === undefined) elsewhere += 1;
-			else {
+			else if (of[index] === -1) {
+				of[index] = number;
 				shown += 1;
-				if (of[index] === -1) of[index] = number;
-			}
+			} else earlier += 1;
 		}
-		return { name: group.name, hue: group.hue, shown, elsewhere };
+		return { name: group.name, hue: group.hue, shown, earlier, elsewhere };
 	});
 	return { of, hues: colouring.groups.map((group) => group.hue), legend };
+}
+
+/** What a legend entry's count leaves out, on hover; undefined when nothing. */
+export function legendNote(entry: CanvasColouring["legend"][number]): string | undefined {
+	const notes = [
+		entry.earlier > 0
+			? `${count(entry.earlier, "more paper")} of this group ${entry.earlier === 1 ? "is" : "are"} drawn in the colour of a group above, which ${entry.earlier === 1 ? "it is" : "they are"} in too`
+			: null,
+		entry.elsewhere > 0 ? `${count(entry.elsewhere, "paper")} of this group ${entry.elsewhere === 1 ? "is" : "are"} not in this run` : null,
+	].filter((note) => note !== null);
+	return notes.length > 0 ? `${notes.join("; ")}.` : undefined;
 }
 
 /** The colouring as the workspace holds it, for the graph and for the features that set it. */
