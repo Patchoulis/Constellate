@@ -11,6 +11,7 @@
 //! | [`kmeans`]   | k-means++ seeding, Lloyd's rounds and Hartigan's moves                        |
 //! | [`cluster`]  | the clustering methods and the tree of sub-communities                        |
 //! | [`random`]   | the seeded random generator they share                                        |
+//! | [`reviews`]  | reviewers' ratings and words taken together: per paper, community and run     |
 
 pub mod citations;
 pub mod cluster;
@@ -19,4 +20,5 @@ pub mod graph;
 pub mod kmeans;
 pub mod links;
 pub mod random;
+pub mod reviews;
 pub mod spectral;
