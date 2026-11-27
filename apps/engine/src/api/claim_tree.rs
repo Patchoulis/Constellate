@@ -5,7 +5,8 @@
 //! GET    /api/papers/{id}/claims    what is kept, checked again, and what asking the rest would cost (`ClaimsView`)
 //! POST   /api/papers/{id}/claims    {provider, model, budget_usd | budget_tokens}: ask what is not kept, as the
 //!                                   job, within that budget (in tokens for a model with no price); answers {job}
-//! DELETE /api/papers/{id}/claims    forget the paper's tree and mapping (a redo); answers {forgotten}
+//! DELETE /api/papers/{id}/claims    forget the tree and mapping the GET shows, of the chosen model (a redo);
+//!                                   another model's stay; answers {forgotten}
 //! GET    /api/runs/{run}/communities/{community}/claims/contested   per paper, its contested claims (`Contested`)
 //! ```
 //!
@@ -170,7 +171,9 @@ pub async fn forget(State(engine): State<Shared>, Path(id): Path<String>) -> Res
         }
         let library = engine.library()?;
         library.paper(&id)?.ok_or(ApiError::NotFound)?;
-        Ok(library.forget(Feature::ClaimTree, &[Subject::Paper(id)])?)
+        // what the view shows, of the model chosen now: another model's tree of the paper stays
+        let chosen = engine.chosen()?;
+        Ok(claim_tree::forget(&library, &id, &chosen)?)
     })
     .await?;
     Ok(Json(Forgotten { forgotten }))

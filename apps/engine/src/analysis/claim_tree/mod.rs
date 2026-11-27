@@ -34,7 +34,7 @@ use self::points::{Point, ReviewPoints, review_points};
 use self::tree::{LeftOut, Malformed, Node, NodeKind, SaidTree, Tree};
 use crate::analysis::reviews::{PaperFigures, Reviewed, Scale, paper_figures, venue_of};
 use crate::evidence::{Evidence, PaperText};
-use crate::library::{Feature, KeptReviews, Library, LibraryError, PaperReading};
+use crate::library::{AnswerKey, Feature, KeptReviews, Library, LibraryError, PaperReading};
 use crate::model::batch::BatchEstimate;
 use crate::model::chosen::Chosen;
 use crate::model::language::Provider;
@@ -598,6 +598,29 @@ pub fn view(library: &Library, paper: &str, chosen: &Chosen) -> Result<Option<Cl
     }))
 }
 
+/// Forget what the Claims view of `paper` shows with `chosen` (a redo): its tree, and the mapping of the reviews
+/// onto that tree. What other models wrote about the paper stays: the view does not show it, and it was paid for.
+/// The mapping goes first, so that a stop between the two never leaves a mapping that a tree asked again (and
+/// answered the same) would find. Returns how many answers were forgotten.
+pub fn forget(library: &Library, paper: &str, chosen: &Chosen) -> Result<usize, LibraryError> {
+    let mut forgotten = 0;
+    if let Some(key) = shown_mapping_key(library, paper, chosen)? {
+        forgotten += usize::from(library.forget_key(Feature::ClaimTree, &key)?);
+    }
+    forgotten += usize::from(library.forget_key(Feature::ClaimTree, &tree_key(chosen, paper))?);
+    Ok(forgotten)
+}
+
+/// The key of the mapping the view would show: of the kept tree, checked again, and the kept reviews' points.
+fn shown_mapping_key(library: &Library, paper: &str, chosen: &Chosen) -> Result<Option<AnswerKey>, LibraryError> {
+    let Some(PaperReading::Read(passages)) = library.paper_texts(&[paper])?.pop() else { return Ok(None) };
+    let Some(kept) = library.kept::<SaidTree>(Feature::ClaimTree, &tree_key(chosen, paper))? else { return Ok(None) };
+    let Ok(tree) = tree::build(&kept.answer, paper, &PaperText::Read(passages)) else { return Ok(None) };
+    let Some(reviews) = library.reviews(paper)? else { return Ok(None) };
+    let points = review_points(&reviews.discussion).points;
+    Ok(mapping_question(&tree, &points).map(|question| mapping_key(chosen, paper, &question)))
+}
+
 /// How many of one paper's claims its reviewers contested, from what is kept.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PaperContested {
@@ -850,6 +873,42 @@ mod tests {
             assert!(view.node_reviews().is_empty() && view.gaps().is_empty());
             assert_eq!(view.paper(), PaperState::Read { passages: 9, sent: 8 });
         }
+    }
+
+    #[test]
+    fn a_redo_forgets_the_shown_models_tree_and_mapping_and_keeps_another_models() {
+        let (_folder, library) = library_with(true, true);
+        asked(&library, &[tree_answer(), mapping_answer()]);
+        let other = Chosen::claude("claude-opus-5-5");
+        let fake = Fake::new(vec![reply(&tree_answer()), reply(&mapping_answer())]);
+        let calls: Mutex<Vec<Call>> = Mutex::new(Vec::new());
+        let cancel = Cancel::new();
+        let (log, progress) = (|_: &str| {}, |_: Progress| {});
+        let tracker = Tracker::new(&log, &progress, &cancel);
+        let endpoint =
+            Endpoint::from_lookup(|name| (name == KEY_VARIABLE).then(|| "test-key-not-real".to_owned())).unwrap();
+        let askers = Askers { library: &library, transport: &fake, endpoint, recorder: &calls };
+        let budget = Budget::new(Limit::Dollars(Usd::from_picodollars(5_000_000_000_000)));
+        ask(&askers, PAPER, &other, &budget, &tracker).unwrap();
+
+        assert_eq!(forget(&library, PAPER, &Chosen::claude(MODEL)).unwrap(), 2, "its tree and its mapping");
+        let shown = view(&library, PAPER, &Chosen::claude(MODEL)).unwrap().unwrap();
+        assert_eq!((shown.tree(), shown.mapping()), (TreeState::NotAsked, MappingState::NoTree));
+        let kept = view(&library, PAPER, &other).unwrap().unwrap();
+        assert!(matches!(kept.mapping(), MappingState::Made { .. }), "the other model's answers were paid for");
+        assert_eq!(forget(&library, PAPER, &Chosen::claude(MODEL)).unwrap(), 0, "nothing left to forget");
+    }
+
+    #[test]
+    fn a_redone_tree_answered_the_same_does_not_find_the_forgotten_mapping() {
+        let (_folder, library) = library_with(true, true);
+        asked(&library, &[tree_answer(), mapping_answer()]);
+        forget(&library, PAPER, &Chosen::claude(MODEL)).unwrap();
+        // the tree asked again, and answered the same; the mapping's call gets no answer
+        asked(&library, &[tree_answer()]);
+        let view = view(&library, PAPER, &Chosen::claude(MODEL)).unwrap().unwrap();
+        assert!(matches!(view.tree(), TreeState::Made { .. }));
+        assert_eq!(view.mapping(), MappingState::NotAsked, "the forgotten placements are not shown again");
     }
 
     #[test]
