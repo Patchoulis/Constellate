@@ -191,7 +191,7 @@ fn failed(error: Option<&Value>) -> AskError {
     match code {
         "rate_limit_exceeded" => NoAnswer::RateLimited { retry_after: None }.into(),
         "server_error" | "" => NoAnswer::ServerError(500).into(),
-        _ => NoAnswer::Rejected(message.chars().take(300).collect()).into(),
+        _ => NoAnswer::Rejected(message.chars().take(super::RAW_MESSAGE_CHARS).collect()).into(),
     }
 }
 

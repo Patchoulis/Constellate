@@ -1304,6 +1304,66 @@ fn retry_after_header(reply: &Reply) -> Option<Duration> {
         .and_then(|seconds| Duration::try_from_secs_f64(seconds.min(LONGEST_WAIT.as_secs_f64() + 1.0)).ok())
 }
 
+/// The most characters of a provider's own error message shown ([`NoAnswer::Rejected`]).
+const MESSAGE_CHARS: usize = 300;
+/// The most read of it before it is [`scrubbed`]: more than is shown, so that a key that runs past what is shown
+/// is still seen whole, and hidden, before the message is cut.
+const RAW_MESSAGE_CHARS: usize = 4_000;
+/// What stands in for words of a message that are not shown.
+const HIDDEN: &str = "[hidden]";
+/// The shapes of keys the repository's hooks refuse to commit, one regular expression a line: what a message from a
+/// provider (or a gateway in front of it) must not echo to the interface either.
+const KEY_SHAPES_TEXT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.githooks/secrets.txt"));
+static KEY_SHAPES: std::sync::LazyLock<Vec<regex::Regex>> = std::sync::LazyLock::new(|| {
+    KEY_SHAPES_TEXT
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| regex::Regex::new(line).ok())
+        .collect()
+});
+/// Where a message that echoes the request starts to carry its headers: it is cut there.
+const HEADER_NAMES: [&str; 6] = ["authorization", "x-api-key", "x-goog-api-key", "bearer ", "cookie", "proxy-"];
+
+/// A provider's error message made safe to show: control characters made spaces; the endpoint's own key, anything
+/// shaped like a key ([`KEY_SHAPES`]) and any long unbroken run of token characters hidden; cut where it starts to
+/// echo request headers ([`HEADER_NAMES`]); and at most [`MESSAGE_CHARS`] characters. An arbitrary gateway's
+/// message is shown, so it is never trusted to leave a secret out by itself.
+fn scrubbed(message: &str, key: &ApiKey) -> String {
+    let mut text: String = message.chars().map(|letter| if letter.is_control() { ' ' } else { letter }).collect();
+    if !key.0.is_empty() {
+        text = text.replace(&key.0, HIDDEN);
+    }
+    for shape in KEY_SHAPES.iter() {
+        // a shape may begin with the character before the key (`(^|[^A-Za-z0-9_-])sk-...`): that one stays
+        text = shape
+            .replace_all(&text, |found: &regex::Captures<'_>| {
+                let before: String = found[0].chars().take_while(|letter| !letter.is_ascii_alphanumeric()).collect();
+                format!("{before}{HIDDEN}")
+            })
+            .into_owned();
+    }
+    // ASCII lower-casing keeps every byte where it was, so a place found in it is a place in `text`
+    let lower = text.to_ascii_lowercase();
+    if let Some(at) = HEADER_NAMES.iter().filter_map(|name| lower.find(name)).min() {
+        text.truncate(at);
+        text.push_str("[the rest is not shown]");
+    }
+    let token = |letter: char| letter.is_ascii_alphanumeric() || "-_+/=.".contains(letter);
+    let words: Vec<String> =
+        text.split(' ')
+            .map(|word| {
+                if word.chars().count() >= 32 && word.chars().all(token) { HIDDEN.to_owned() } else { word.to_owned() }
+            })
+            .collect();
+    let joined = words.join(" ");
+    let mut shown: String = joined.trim().chars().take(MESSAGE_CHARS).collect();
+    if joined.trim().chars().count() > MESSAGE_CHARS {
+        shown.push('…');
+    }
+    shown
+}
+
 /// Is this worth asking again, and after how long?
 fn retry_after(error: &AskError, reply_says: Option<&str>, attempt: u32) -> Option<Duration> {
     if reply_says == Some("false") {
@@ -1392,11 +1452,22 @@ impl<'a> Client<'a> {
     /// What a request that failed with `reply.status` means, in the words of the provider's API.
     fn failure(&self, reply: &Reply, model: &str) -> AskError {
         let provider = self.endpoint.provider;
-        match provider.about().api {
+        let error = match provider.about().api {
             Api::Messages => failure(reply, model),
             Api::Responses => responses::failure(reply, model, provider),
             Api::GenerateContent => gemini::failure(reply, model),
             Api::ChatCompletions(_) => chat::openai_style_failure(reply, model, provider),
+        };
+        self.scrubbed(error)
+    }
+
+    /// `error` with the provider's own words in it made safe to show ([`scrubbed`]).
+    fn scrubbed(&self, error: AskError) -> AskError {
+        match error {
+            AskError::NoAnswer(NoAnswer::Rejected(message)) => {
+                NoAnswer::Rejected(scrubbed(&message, &self.endpoint.key)).into()
+            }
+            other => other,
         }
     }
 
@@ -1662,7 +1733,7 @@ impl<'a> Client<'a> {
                 Outcome::Cut => return Err(NoAnswer::Cut.into()),
                 Outcome::Failed(error) => {
                     self.stop(&error);
-                    return Err(error);
+                    return Err(self.scrubbed(error));
                 }
             };
             if text.is_empty() {
@@ -2059,6 +2130,31 @@ mod tests {
         let schema = schema();
         let prose = Ask { form: Form::Text, ..ask(&schema, None) };
         assert_eq!(client.ask(&prose, &plenty()), Err(AskError::NoAnswer(NoAnswer::Cut)));
+    }
+
+    #[test]
+    fn a_providers_error_message_is_shown_without_keys_headers_or_more_than_its_length() {
+        // made at run time, so that no key-shaped text is ever written in the repository
+        let own = format!("{}{}", "own-", "q".repeat(24));
+        let shaped = format!("sk-{}", "Z9".repeat(20));
+        let key = ApiKey(own.clone());
+        let message = format!("invalid request for {own}, see {shaped} and\nnext\tline");
+        let said = scrubbed(&message, &key);
+        assert!(!said.contains(&own) && !said.contains(&shaped), "{said}");
+        assert!(said.contains("invalid request for [hidden]") && said.contains("next line"), "{said}");
+        let echoed = "bad request: headers were Authorization: Bearer whatever x-api-key: whatever";
+        assert_eq!(scrubbed(echoed, &key), "bad request: headers were [the rest is not shown]");
+        let opaque = format!("token {} refused", "a1B2".repeat(10));
+        assert_eq!(scrubbed(&opaque, &key), "token [hidden] refused", "a long opaque run is taken for a token");
+        let long = "word ".repeat(200);
+        let cut = scrubbed(&long, &key);
+        assert!(cut.chars().count() <= MESSAGE_CHARS + 1 && cut.ends_with('…'), "{cut}");
+        // through the client: what the API refused, with the key it echoed hidden
+        let fake = Fake::new(vec![Ok(error(400, "invalid_request_error", &format!("bad key {shaped}")))]);
+        let calls = Mutex::new(Vec::new());
+        let schema = schema();
+        let refused = Client::new(&fake, endpoint(), &calls).ask(&ask(&schema, None), &plenty()).unwrap_err();
+        assert_eq!(refused, NoAnswer::Rejected("bad key [hidden]".to_owned()).into());
     }
 
     #[test]

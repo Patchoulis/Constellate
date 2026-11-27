@@ -163,7 +163,7 @@ fn minimax(status: &BaseResponse) -> AskError {
         1004 => Unavailable::KeyRefused.into(),
         1008 => Unavailable::Billing.into(),
         1002 => NoAnswer::RateLimited { retry_after: None }.into(),
-        _ => NoAnswer::Rejected(status.status_msg.chars().take(300).collect()).into(),
+        _ => NoAnswer::Rejected(status.status_msg.chars().take(super::RAW_MESSAGE_CHARS).collect()).into(),
     }
 }
 
@@ -212,7 +212,7 @@ pub(super) fn openai_style_failure(reply: &Reply, model: &str, provider: Provide
         498 | 503 | 529 => NoAnswer::Overloaded.into(),
         status if status >= 500 => NoAnswer::ServerError(status).into(),
         // what the request got wrong, in the provider's words (which never repeat the key), shortened
-        _ => NoAnswer::Rejected(message.chars().take(300).collect()).into(),
+        _ => NoAnswer::Rejected(message.chars().take(super::RAW_MESSAGE_CHARS).collect()).into(),
     }
 }
 
