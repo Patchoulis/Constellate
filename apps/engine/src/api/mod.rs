@@ -15,6 +15,7 @@
 
 pub mod config;
 pub mod connections;
+pub mod explanation;
 pub mod login;
 pub mod passages;
 pub mod reviews;

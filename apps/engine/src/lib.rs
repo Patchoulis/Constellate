@@ -24,6 +24,7 @@
 pub mod analysis;
 pub mod api;
 pub mod evidence;
+pub mod explanation;
 pub mod jobs;
 pub mod library;
 pub mod model;
