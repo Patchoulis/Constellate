@@ -91,6 +91,8 @@ struct Rules {
     hsts: bool,
     /// Only across a network: on this computer, whoever could guess could also read the token's file.
     strikes: Option<Strikes>,
+    /// On this computer: the name a forwarding server says the browser used must be this computer's too.
+    local: bool,
 }
 
 /// A token's SHA-256: digests of the same length are compared, so the comparison takes the same time whatever
@@ -165,7 +167,8 @@ impl Guard {
             (None, Mode::Network) => Pages::None,
         };
         let strikes = (listen.mode() == Mode::Network).then(|| Strikes::new(WRONG_TOKENS));
-        Guard(Arc::new(Rules { door: admission.0, authorities, pages, hsts, strikes }))
+        let local = listen.mode() == Mode::Local;
+        Guard(Arc::new(Rules { door: admission.0, authorities, pages, hsts, strikes, local }))
     }
 }
 
@@ -198,6 +201,21 @@ impl Rules {
             (Some(one), None) | (None, Some(one)) => ours(one),
             (Some(host), Some(authority)) => ours(host) && ours(authority),
         }
+    }
+
+    /// On this computer, was the request forwarded (by the interface's server, which rewrites `Host` to the
+    /// engine's own address) for a name that is this computer's? A page whose own name was pointed at this
+    /// computer (DNS rebinding) reaches the interface's server under that name, which arrives here only in
+    /// `X-Forwarded-Host`. Across a network the front's public name is the owner's to choose, and is not checked.
+    fn forwarded_for_us(&self, headers: &HeaderMap) -> bool {
+        !self.local
+            || headers.get_all("x-forwarded-host").iter().all(|value| {
+                value.to_str().is_ok_and(|value| {
+                    !value.contains(',')
+                        && Origin::parse(&format!("http://{}", value.trim()))
+                            .is_some_and(|origin| from_this_computer(&origin))
+                })
+            })
     }
 
     /// Does the request come from no browser page, or from one that may send it?
@@ -368,7 +386,7 @@ fn refusal(rules: &Rules, request: &Request) -> Option<ApiError> {
         (Some(strikes), Some(sender)) => strikes.is_waiting(Some(sender), now),
         _ => false,
     };
-    if !rules.addressed_to_us(request) {
+    if !rules.addressed_to_us(request) || !rules.forwarded_for_us(request.headers()) {
         return Some(ApiError::Forbidden("this engine answers only requests addressed to it"));
     }
     if !rules.sent_by_an_allowed_page(request.headers()) {

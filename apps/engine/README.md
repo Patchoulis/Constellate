@@ -189,7 +189,8 @@ some other way must give it a standard input that stays open (a pipe); started w
 Every request, on every path, must:
 
 1. be addressed to the engine: `Host` is the address it listens on, or `localhost` in local mode, or one of the
-   names in `CONSTELLATE_HOST`, with the port (defeats DNS rebinding);
+   names in `CONSTELLATE_HOST`, with the port (defeats DNS rebinding). In local mode a request forwarded by the
+   interface's server (which rewrites `Host`) must also name this computer in `X-Forwarded-Host`, if it sends one;
 2. if it carries an `Origin` header (a browser page sent it), come from exactly `CONSTELLATE_ORIGIN`. Without one
    configured, local mode accepts pages served from this computer and network mode accepts no page at all;
 3. on this computer, carry the token: `Authorization: Bearer <token>`. It is compared in constant time. Across a

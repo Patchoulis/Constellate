@@ -161,44 +161,114 @@ pub enum GetError {
 /// Any https address on the public internet: what lists, pages and the arXiv API are fetched from. A redirect to
 /// plain http is refused, and so is one to this computer or its local network (`localhost`, `127.0.0.1`,
 /// `192.168.x.x`, `169.254.169.254`...): a site answering with such a redirect must not make the engine ask the
-/// user's own machines anything. (A public name that resolves to a private address is not caught here.)
+/// user's own machines anything. A public name that resolves to such an address is caught when it is resolved
+/// ([`PublicOnly`]).
 pub fn any_https(address: &Url) -> bool {
     address.scheme() == "https" && is_public(address)
 }
 
-/// Does the address name a host on the public internet, by its name or its numbers?
-fn is_public(address: &Url) -> bool {
-    use std::net::{Ipv4Addr, Ipv6Addr};
+/// Is this address one on the public internet? Not this computer, its local network, link-local addresses (the
+/// cloud's metadata service), multicast or reserved ranges, written in any form (IPv4 inside IPv6 included).
+fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     let public_v4 = |ip: Ipv4Addr| {
         let [first, second, ..] = ip.octets();
         let shared = first == 100 && (64..128).contains(&second); // carrier-grade NAT, 100.64.0.0/10
+        let benchmarking = first == 198 && (18..20).contains(&second); // 198.18.0.0/15
         !(ip.is_private()
             || ip.is_loopback()
             || ip.is_link_local()
             || ip.is_unspecified()
             || ip.is_broadcast()
             || ip.is_documentation()
+            || ip.is_multicast()
             || shared
-            || first == 0)
+            || benchmarking
+            || first == 0
+            || first >= 240) // reserved, 240.0.0.0/4
     };
     let public_v6 = |ip: Ipv6Addr| {
-        let first = ip.segments()[0];
+        let segments = ip.segments();
+        let first = segments[0];
         let unique_local = (first & 0xfe00) == 0xfc00;
         let link_local = (first & 0xffc0) == 0xfe80;
-        match ip.to_ipv4_mapped() {
+        let site_local = (first & 0xffc0) == 0xfec0;
+        let multicast = (first & 0xff00) == 0xff00;
+        // an IPv4 address carried inside: ::ffff:a.b.c.d, the old ::a.b.c.d, NAT64's 64:ff9b::a.b.c.d and 6to4's
+        // 2002:aabb:ccdd:: all reach that IPv4 address in the end
+        let octets = ip.octets();
+        let last = Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]);
+        let carried = if let Some(v4) = ip.to_ipv4_mapped() {
+            Some(v4)
+        } else if (segments[..6] == [0; 6] && !ip.is_loopback() && !ip.is_unspecified())
+            || segments[..6] == [0x64, 0xff9b, 0, 0, 0, 0]
+        {
+            Some(last)
+        } else if first == 0x2002 {
+            Some(Ipv4Addr::new(octets[2], octets[3], octets[4], octets[5]))
+        } else {
+            None
+        };
+        match carried {
             Some(v4) => public_v4(v4),
-            None => !(ip.is_loopback() || ip.is_unspecified() || unique_local || link_local),
+            None => !(ip.is_loopback() || ip.is_unspecified() || unique_local || link_local || site_local || multicast),
         }
     };
+    match ip {
+        IpAddr::V4(ip) => public_v4(ip),
+        IpAddr::V6(ip) => public_v6(ip),
+    }
+}
+
+/// `text` as an address a paper's record may keep and the window may open: `https` or `http`, with a host and no
+/// user name or password before it (`https://neurips.cc@evil.example/` names `evil.example`). Anything else a
+/// source wrote (`javascript:`, `data:`, `file:`) is no address at all.
+pub fn web_address(text: &str) -> Option<String> {
+    let address = Url::parse(text.trim()).ok()?;
+    let fine = matches!(address.scheme(), "https" | "http")
+        && address.host_str().is_some_and(|host| !host.is_empty())
+        && address.username().is_empty()
+        && address.password().is_none();
+    fine.then(|| address.to_string())
+}
+
+/// Does the address name a host on the public internet, by its name or its numbers?
+fn is_public(address: &Url) -> bool {
     match address.host() {
         Some(url::Host::Domain(name)) => {
             let name = name.trim_end_matches('.').to_ascii_lowercase();
             let local = ["localhost", "local", "internal", "home.arpa"];
             !name.is_empty() && !local.iter().any(|end| name == *end || name.ends_with(&format!(".{end}")))
         }
-        Some(url::Host::Ipv4(ip)) => public_v4(ip),
-        Some(url::Host::Ipv6(ip)) => public_v6(ip),
+        Some(url::Host::Ipv4(ip)) => is_public_ip(ip.into()),
+        Some(url::Host::Ipv6(ip)) => is_public_ip(ip.into()),
         None => false,
+    }
+}
+
+/// Names resolved as the system resolves them, keeping only public addresses ([`is_public_ip`]): the address
+/// actually connected to is checked, not only the name, so a site's name (or a redirect's) that resolves to this
+/// computer or its network is never connected to, whatever check its address passed before. A proxy configured
+/// on this computer (`HTTPS_PROXY`) is the user's own and is resolved as it is.
+#[derive(Debug, Default)]
+pub(crate) struct PublicOnly(ureq::unversioned::resolver::DefaultResolver);
+
+impl ureq::unversioned::resolver::Resolver for PublicOnly {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        config: &ureq::config::Config,
+        timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
+        let found = self.0.resolve(uri, config, timeout)?;
+        if config.proxy().is_some_and(|proxy| Some(proxy.host()) == uri.host()) {
+            return Ok(found);
+        }
+        let mut kept = self.0.empty();
+        for address in found.iter().filter(|address| is_public_ip(address.ip())) {
+            kept.push(*address);
+        }
+        if kept.is_empty() { Err(ureq::Error::HostNotFound) } else { Ok(kept) }
     }
 }
 
@@ -246,15 +316,15 @@ pub struct Http {
 impl Default for Http {
     fn default() -> Self {
         let tls = ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::Rustls).build();
-        let agent = ureq::Agent::config_builder()
+        let config = ureq::Agent::config_builder()
             .max_redirects(0)
             .http_status_as_error(false)
             .user_agent(USER_AGENT)
             .timeout_connect(Some(Duration::from_secs(15)))
             .tls_config(tls)
-            .build()
-            .into();
-        Self { agent }
+            .build();
+        let connector = ureq::unversioned::transport::DefaultConnector::new();
+        Self { agent: ureq::Agent::with_parts(config, connector, PublicOnly::default()) }
     }
 }
 
@@ -530,6 +600,40 @@ mod tests {
         {
             assert!(any_https(&Url::parse(outside).unwrap()), "{outside}");
         }
+    }
+
+    #[test]
+    fn an_address_of_this_computer_or_its_network_written_in_any_form_is_not_public() {
+        for inside in [
+            "::127.0.0.1",
+            "64:ff9b::7f00:1",
+            "64:ff9b::a9fe:a9fe",
+            "2002:7f00:1::",
+            "2002:c0a8:101::1",
+            "fec0::1",
+            "ff02::1",
+            "224.0.0.1",
+            "240.0.0.1",
+            "198.18.0.1",
+        ] {
+            assert!(!is_public_ip(inside.parse().unwrap()), "{inside}");
+        }
+        for outside in ["8.8.8.8", "2606:4700::1", "64:ff9b::808:808", "2002:808:808::1"] {
+            assert!(is_public_ip(outside.parse().unwrap()), "{outside}");
+        }
+    }
+
+    #[test]
+    fn a_name_that_resolves_to_this_computer_is_never_connected_to() {
+        // `localhost` stands for any public-looking name a site's DNS points at 127.0.0.1: the check is made on
+        // the address resolved, so the listener here must see no connection at all
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let quick = Limits { max_bytes: 1024, time: Duration::from_secs(3) };
+        let fetched = Http::new().get(&format!("http://localhost:{port}/"), quick);
+        assert!(fetched.is_err(), "{fetched:?}");
+        assert!(listener.accept().is_err(), "the engine connected to this computer");
     }
 
     #[test]

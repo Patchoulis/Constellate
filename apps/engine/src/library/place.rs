@@ -68,10 +68,49 @@ pub fn data_folder(asked: Option<String>) -> Result<PathBuf, NoPlace> {
     }
 }
 
+/// Make the data folder when it does not exist, readable by this user alone where the system has such modes
+/// (Unix: `0700`). Everything the app keeps is in it: the library, what was asked of the models and what it cost,
+/// the owner's password hash; with the usual `umask` a new folder would be readable by every account on the
+/// computer. An existing folder is left as its owner made it. (On Windows the folder under `%LOCALAPPDATA%` already
+/// belongs to the user alone.)
+pub fn create_private(folder: &std::path::Path) -> std::io::Result<()> {
+    if folder.is_dir() {
+        return Ok(());
+    }
+    if let Some(parent) = folder.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    let builder = {
+        let mut builder = builder;
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder
+    };
+    match builder.create(folder) {
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && folder.is_dir() => Ok(()),
+        other => other,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_data_folder_is_made_for_this_user_alone() {
+        let around = tempfile::tempdir().unwrap();
+        let folder = around.path().join("nested").join("constellate");
+        create_private(&folder).unwrap();
+        assert!(folder.is_dir());
+        create_private(&folder).unwrap(); // there already: fine
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&folder).unwrap().permissions().mode() & 0o777, 0o700);
+        }
+    }
 
     /// An environment holding exactly these variables.
     fn with(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {

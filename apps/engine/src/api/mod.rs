@@ -379,6 +379,32 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn on_this_computer_a_request_forwarded_for_a_name_that_is_not_this_computers_is_refused() {
+        // the interface's server rewrites Host to the engine's and says the browser's name in X-Forwarded-Host:
+        // a page whose name was pointed at this computer (DNS rebinding) shows only there
+        let (router, _data) = local();
+        for (forwarded, expected) in [
+            ("127.0.0.1:3000", StatusCode::OK),
+            ("localhost:3000", StatusCode::OK),
+            ("[::1]:3000", StatusCode::OK),
+            ("rebound.evil.example:3000", StatusCode::FORBIDDEN),
+            ("127.0.0.1.evil.example", StatusCode::FORBIDDEN),
+            ("localhost:3000, evil.example", StatusCode::FORBIDDEN),
+            ("localhost/evil", StatusCode::FORBIDDEN),
+        ] {
+            let request =
+                asked("GET", "/api/status").header("x-forwarded-host", forwarded).body(Body::empty()).unwrap();
+            assert_eq!(answer(&router, request).await.0, expected, "{forwarded}");
+        }
+        let twice = asked("GET", "/api/status")
+            .header("x-forwarded-host", "localhost:3000")
+            .header("x-forwarded-host", "evil.example")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(answer(&router, twice).await.0, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
     async fn a_page_of_another_site_is_refused_even_with_the_token_and_the_interface_is_not() {
         let (router, _data) = local();
         for origin in ["http://evil.example", "http://127.0.0.1:3001", "null", "http://127.0.0.1:3000.evil.example"] {

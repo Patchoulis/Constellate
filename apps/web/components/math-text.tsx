@@ -51,8 +51,15 @@ export function plainText(text: string): string {
 	);
 }
 
+/**
+ * KaTeX's options for text a paper's authors (or a model) wrote. Stated, not left to defaults: `trust: false`
+ * refuses `\href`, `\url`, `\includegraphics` and `\html...`; `maxSize` keeps a `\rule` or a spacing command from
+ * drawing a box over the whole window; `maxExpand` stops a macro that expands without end.
+ */
+const KATEX = { throwOnError: false, output: "html", trust: false, strict: "ignore", maxSize: 20, maxExpand: 1000 } as const;
+
 function Formula({ source }: { source: string }) {
-	const html = katex.renderToString(source.replaceAll(DOLLAR, "\\$"), { throwOnError: false, output: "html" });
+	const html = katex.renderToString(source.replaceAll(DOLLAR, "\\$"), KATEX);
 	// KaTeX builds this markup itself from the parsed expression; nothing of the source is passed through as HTML.
 	return <span dangerouslySetInnerHTML={{ __html: html }} />;
 }

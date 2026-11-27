@@ -349,8 +349,14 @@ impl Environment {
     /// The engine's variables: from `.env` in `folder` if there is one, each overridden by the process's
     /// environment.
     pub fn read(folder: &Path) -> Result<Environment, ConfigError> {
-        let mut read = match fs::read_to_string(folder.join(".env")) {
-            Ok(text) => parse_env_file(&text)?,
+        let file = folder.join(".env");
+        let mut read = match fs::read_to_string(&file) {
+            Ok(text) => {
+                if let Some(warning) = env_file_warning(&file) {
+                    eprintln!("constellate: {warning}");
+                }
+                parse_env_file(&text)?
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Environment::default(),
             Err(error) => return Err(ConfigError::EnvFile { why: error.to_string() }),
         };
@@ -402,6 +408,34 @@ pub fn child_process(program: impl AsRef<std::ffi::OsStr>) -> std::process::Comm
         command.env_remove(secret);
     }
     command
+}
+
+/// Is a file with these Unix permission bits readable or writable by anyone but its owner?
+#[cfg_attr(not(unix), allow(dead_code))]
+fn open_to_others(mode: u32) -> bool {
+    mode & 0o077 != 0
+}
+
+/// What to tell the person about `.env` at `file`: it holds the keys and the token, so a file other accounts on
+/// this computer may read (or change) is said to be one, with the command that mends it. Not on Windows, where a
+/// file has the folder's owner and access lists instead of modes.
+fn env_file_warning(file: &Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(file).ok()?.permissions().mode();
+        open_to_others(mode).then(|| {
+            format!(
+                "{} can be read by other accounts on this computer, and it holds keys: run chmod 600 on it",
+                file.display()
+            )
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file;
+        None
+    }
 }
 
 /// `NAME=value` lines; blank lines and `#` comments are skipped, `export ` before a name is allowed, a value may
@@ -844,6 +878,25 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn an_env_file_other_accounts_may_read_is_warned_about() {
+        assert!(open_to_others(0o644));
+        assert!(open_to_others(0o620));
+        assert!(!open_to_others(0o600));
+        assert!(!open_to_others(0o400));
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join(".env");
+        std::fs::write(&file, "CONSTELLATE_PORT=0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(env_file_warning(&file).unwrap().contains("chmod 600"));
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        assert_eq!(env_file_warning(&file), None);
+    }
+
+    #[test]
     fn plain_http_across_a_network_is_allowed_only_when_asked_for_and_is_warned_about() {
         let pairs = [(BIND, "192.168.1.20"), (TOKEN, STRONG), (ALLOW_TOKEN, "on"), (USE_HTTPS, "False")];
         let listen = listen(&with_sign_in(&pairs)).unwrap();
@@ -1012,8 +1065,9 @@ pub(crate) mod tests {
             assert!(listed.contains(variable), "{variable} is read but not in .env.example");
             assert!(readme.contains(&format!("`{variable}`")), "{variable} is read but not in apps/engine/README.md");
         }
-        // read elsewhere, from the process environment only: the Python backend's model download
-        let elsewhere = ["HF_ENDPOINT"];
+        // read elsewhere, from the process environment only: the Python backend's model download, and the names
+        // the interface's own server answers under (apps/web/proxy.ts)
+        let elsewhere = ["HF_ENDPOINT", "CONSTELLATE_WEB_HOSTS"];
         for variable in listed {
             assert!(
                 read.contains(&variable) || elsewhere.contains(&variable),

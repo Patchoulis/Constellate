@@ -53,6 +53,22 @@ def test_an_oral_is_not_a_second_paper(monkeypatch):
     assert [p["comment"] for p in found] == ["Accept; Oral", "Accept"]
 
 
+def test_a_link_the_list_gives_is_kept_only_when_it_is_a_web_address_that_names_its_host():
+    assert conferences.web_address("https://openreview.net/forum?id=abc") == "https://openreview.net/forum?id=abc"
+    for hostile in (
+        "javascript:alert(document.domain)//openreview.net",
+        "data:text/html,<script>alert(1)</script>",
+        "https://openreview.net@evil.example/forum",
+        "file:///C:/secret",
+        None,
+        42,
+    ):
+        assert conferences.web_address(hostile) is None, hostile
+    assert conferences._page_on("neurips.cc", "/virtual/2025/poster/1") == "https://neurips.cc/virtual/2025/poster/1"
+    for hostile in ("@evil.example/x", "//evil.example/x", None):
+        assert conferences._page_on("neurips.cc", hostile) == "https://neurips.cc/", hostile
+
+
 def test_a_conference_without_an_official_list_says_so():
     with pytest.raises(conferences.NoOfficialList):
         conferences.accepted_papers("ACL 2025", log=lambda line: None)
