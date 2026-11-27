@@ -162,6 +162,22 @@ function step(title, command, args, { log, env, started }) {
 }
 
 /**
+ * Where `folder` really is on disk, which it is made first if need be.
+ *
+ * Windows can show a program a folder somewhere it is not: a program started from inside a packaged (MSIX) app,
+ * such as a terminal in one, sees its new folders under %LOCALAPPDATA% where it made them, while Windows keeps them
+ * in that app's own folder (%LOCALAPPDATA%\Packages\<app>\LocalCache). uv links each Python it fetches to a second
+ * name (cpython-3.13-... -> cpython-3.13.N-...), and a link holds the address it was given: the one that exists
+ * only for that program. The link then leads nowhere and uv stops with "Missing expected target directory for
+ * Python minor version link". Given the real address, the link leads to a real folder for everyone. Elsewhere this
+ * is the folder itself (or the folder its symbolic links lead to).
+ */
+function physical(folder) {
+	fs.mkdirSync(folder, { recursive: true });
+	return fs.realpathSync.native(folder);
+}
+
+/**
  * Make sure the environment in `folder` has what `requirements` lists; resolves to its Python.
  *   uv            path of the uv program
  *   torch         install PyTorch as its own step first (false in tests, which install something small)
@@ -170,12 +186,13 @@ function step(title, command, args, { log, env, started }) {
  */
 async function ensure({ uv, folder, requirements, torch = true, log = () => {}, started = () => {} }) {
 	const wanted = torch ? await torchFor() : { index: null, why: "" };
+	// every address handed to uv, and the Python handed back, is where the folder really is (see `physical`)
+	const home = physical(path.dirname(folder));
+	folder = path.join(home, path.basename(folder));
 	const python = pythonIn(folder);
 	if (state({ folder, requirements, torchIndex: wanted.index }) === "ready") return python;
 	if (!fs.existsSync(uv)) throw new Error(`The installer's package tool is missing (${uv}). Reinstall Constellate.`);
 
-	const home = path.dirname(folder);
-	fs.mkdirSync(home, { recursive: true });
 	const release = claim(path.join(home, "installing.lock"));
 	// uv keeps to this app: its own Python, its own cache, and no settings from the rest of the machine
 	const env = {
@@ -209,4 +226,4 @@ async function ensure({ uv, folder, requirements, torch = true, log = () => {}, 
 	return python;
 }
 
-module.exports = { ensure, state, torchFor, pythonIn, PYTHON, CUDA };
+module.exports = { ensure, physical, state, torchFor, pythonIn, PYTHON, CUDA };
