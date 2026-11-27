@@ -180,6 +180,9 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- Vulnerabilities can be reported privately (`SECURITY.md`). The code is scanned by CodeQL, a pull request that
+  brings in a vulnerable dependency is refused, and nothing reaches `main` except through a pull request whose
+  checks pass.
 - The app's own Python is now set up with an exact, checked version of every package (a lock), instead of whatever
   was newest the day it was first set up and then kept: a computer set up earlier is brought to these versions the
   next time the app starts. On a computer with an NVIDIA graphics card this replaces the setuptools 78.1.0 that came
