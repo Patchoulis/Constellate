@@ -22,3 +22,4 @@ pub mod links;
 pub mod random;
 pub mod reviews;
 pub mod spectral;
+pub mod stances;
