@@ -59,6 +59,11 @@ def only_from_this_machine():
     rebinding)."""
     if _host(request.host) not in LOCAL:
         return jsonify(error="this API only answers on this machine"), 403
+    # The interface's server forwards /api with Host rewritten to this backend's own address, and says the name the
+    # browser used here: that name must be this machine's too (a list of names is never this machine's).
+    forwarded = request.headers.getlist("X-Forwarded-Host")
+    if any("," in name or _host(name) not in LOCAL for name in forwarded):
+        return jsonify(error="this API only answers on this machine"), 403
     origin = request.headers.get("Origin")
     if request.method != "GET" and origin and not _ours(origin):
         return jsonify(error="requests from other sites are refused"), 403

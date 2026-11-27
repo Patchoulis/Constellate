@@ -130,6 +130,16 @@ def test_other_sites_and_other_hosts_are_refused():
     assert client.get("/api/settings", headers={"Host": "evil.example"}).status_code == 403  # DNS rebinding
 
 
+def test_a_request_forwarded_for_another_name_is_refused():
+    """The interface's server forwards /api with Host rewritten to this backend's, and the name the browser used
+    in X-Forwarded-Host: a page whose own name was pointed at this machine is refused by that name."""
+    client = server.app.test_client()
+    rebound = {"X-Forwarded-Host": "rebound.evil.example:3210"}
+    assert client.get("/api/settings", headers=rebound).status_code == 403
+    assert client.get("/api/settings", headers={"X-Forwarded-Host": "127.0.0.1:3210"}).status_code == 200
+    assert client.get("/api/settings", headers={"X-Forwarded-Host": "localhost:3210, evil.example"}).status_code == 403
+
+
 # ------------------------------------------------------------------ comparison
 def test_a_score_nobody_has_ranks_nobody():
     rows = [
