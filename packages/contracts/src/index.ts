@@ -951,13 +951,12 @@ export type WeaknessKind =
 /** Where the model reads a reviewer's point as applying: a passage found in the paper, or no passage on it. */
 export type PointLocation = { kind: "passage"; evidence: Evidence } | { kind: "no_passage" };
 
-/** The model's reading of one reviewer's point; every quote in it was found in the paper. */
-export interface PointReading {
-	point: string;
-	location: PointLocation | null;
-	/** what the paper says that responds to the point: the paper's words only, no judgement */
-	paper_says: Evidence | null;
-}
+/** The model's reading of one reviewer's point; every quote in it was found in the paper. `location` is null when
+ *  the model's place for the point was not found in the paper; then `paper_says` is there (never both null). */
+export type PointReading =
+	/** `paper_says`: what the paper says that responds to the point: the paper's words only, no judgement */
+	| { point: string; location: PointLocation; paper_says: Evidence | null }
+	| { point: string; location: null; paper_says: Evidence };
 
 /** Whether a weakness says something is absent, and what the engine's search of the paper's text found. */
 export type Absence =
@@ -1014,8 +1013,18 @@ export interface Critique {
 	model: CritiqueModelPart;
 }
 
+/** `POST /api/papers/<id>/critique`'s body: the model whose estimate was shown, and its worst case accepted (refused
+ *  when asking would now cost more: the paper's text, its reviews or the model changed), or a budget of one's own. */
+export type CritiqueStart = ShownModel & (AcceptedCost | BudgetOf);
+
 /** `POST /api/papers/<id>/critique`: the job started, or nothing asked because the reading is kept. */
 export type CritiqueStarted = { outcome: "started"; job: number } | { outcome: "kept" };
+
+/** `DELETE /api/papers/<id>/critique`: the reading shown (the chosen model's) forgotten, 1, or none there, 0. Other
+ *  models' readings of the paper stay. */
+export interface CritiqueForgotten {
+	forgotten: number;
+}
 
 // ---- Agree / disagree (stances) ----
 

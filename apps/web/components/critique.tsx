@@ -10,6 +10,7 @@ import { useCallback, useState } from "react";
 import { Loader2, RotateCcw, Sparkles, Square } from "lucide-react";
 import type {
 	Critique,
+	CritiqueEstimate,
 	CritiqueModelPart,
 	CritiqueReviewer,
 	CritiqueReviewers,
@@ -36,7 +37,7 @@ import {
 	scoreLine,
 	scoreTitle,
 } from "@/lib/critique";
-import { shownModel } from "@/lib/cost";
+import { accepting, shownModel } from "@/lib/cost";
 import { ready, useAsync } from "@/lib/use-async";
 import { useFollowedJob } from "@/lib/use-followed-job";
 import { count, knownMoney } from "@/lib/units";
@@ -225,10 +226,10 @@ function ModelPart({
 	const [starting, setStarting] = useState(false);
 	// the job is followed until it ends; then what is kept is read again
 	const { job, start } = useFollowedJob(() => onChanged());
-	const ask = async (shown: ShownModel) => {
+	const ask = async (shown: ShownModel & { estimate: CritiqueEstimate }) => {
 		setStarting(true);
 		await start(async () => {
-			const started = await api.readCritique(id, shownModel(shown));
+			const started = await api.readCritique(id, shownModel(shown), accepting(shown.estimate));
 			if (started.outcome === "started") return started.job;
 			onChanged(); // read before: nothing was asked
 			return null;

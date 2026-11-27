@@ -4,13 +4,14 @@
 //! ```text
 //! GET    /api/papers/{id}/critique   the reviewers' part and the model's part (`Critique`): the reading kept, or
 //!                                    what asking would cost (nothing is sent), or why it cannot be asked
-//! POST   /api/papers/{id}/critique   {provider?, model?, budget_usd? | budget_tokens?}: ask, as the one job
-//!                                    (progress and stop in /api/status), refused when `provider` and `model` (those
-//!                                    whose estimate was shown) are no longer chosen; `{outcome: "started", job}`, or
-//!                                    `{outcome: "kept"}` when it was read before. The budget is the estimate's worst
-//!                                    case unless a lower or higher one is given: in dollars for a model with a
-//!                                    price, in tokens for one without
-//! DELETE /api/papers/{id}/critique   forget the model's reading (a redo): `{forgotten}`
+//! POST   /api/papers/{id}/critique   {provider, model, accepted_usd | accepted_tokens | budget_usd | budget_tokens}:
+//!                                    ask, as the one job (progress and stop in /api/status), refused when `provider`
+//!                                    and `model` (those whose estimate was shown) are no longer chosen, or when what
+//!                                    asking would cost now is more than the worst case accepted;
+//!                                    `{outcome: "started", job}`, or `{outcome: "kept"}` when it was read before.
+//!                                    The budget is that worst case, or one of the user's own: in dollars for a
+//!                                    model with a price, in tokens for one without
+//! DELETE /api/papers/{id}/critique   forget the reading shown, the chosen model's (a redo): `{forgotten}`, 1 or 0
 //! ```
 //!
 //! Every quote of a kept reading is checked again against the paper's text when it is served: a kept answer is
@@ -96,8 +97,14 @@ pub enum Started {
     Kept,
 }
 
+/// `CritiqueStart` in the contracts: the model whose estimate the user saw, and what they accepted of it.
 #[derive(Default, Deserialize)]
 struct Start {
+    /// The estimate's worst case as shown, in US dollars: refused when what asking would cost now is more.
+    accepted_usd: Option<f64>,
+    /// For a model with no price: the estimate's worst case as shown, in tokens.
+    accepted_tokens: Option<u64>,
+    /// A budget of the user's own instead, in US dollars, up to [`MOST_USD`].
     budget_usd: Option<f64>,
     /// For a model with no price: the most it may take, in tokens.
     budget_tokens: Option<u64>,
@@ -180,11 +187,25 @@ async fn view(State(engine): State<Shared>, Path(id): Path<String>) -> Result<Js
     Ok(Json(critique))
 }
 
-/// The budget of one paper's call: as asked, or the estimate's worst case; in tokens when the model has no price.
+/// The budget of one paper's call: the worst case the user accepted, refused when what asking would cost now is
+/// more (the paper's text, its reviews or the model changed since it was shown), or a budget of their own; in tokens
+/// when the model has no price. A request that accepts nothing is refused: nothing is paid that was not shown.
 fn budget_of(asked: &Start, estimate: &BatchEstimate) -> Result<Budget, ApiError> {
     let invalid = |why: crate::model::chosen::Refused| ApiError::Invalid(why.to_string());
-    let accepted = Accepted::of(asked.budget_usd, asked.budget_tokens).map_err(invalid)?;
-    budget(&estimate.cost, accepted, Terms::AtMost { usd: MOST_USD, tokens: MOST_TOKENS }).map_err(invalid)
+    let accepted = (asked.accepted_usd, asked.accepted_tokens);
+    let own = (asked.budget_usd, asked.budget_tokens);
+    let (amount, terms) = match (accepted, own) {
+        ((None, None), (None, None)) => {
+            return Err(ApiError::Invalid(
+                "say what was accepted of the estimate shown (accepted_usd or accepted_tokens), or a budget".to_owned(),
+            ));
+        }
+        ((None, None), (usd, tokens)) => ((usd, tokens), Terms::AtMost { usd: MOST_USD, tokens: MOST_TOKENS }),
+        ((usd, tokens), (None, None)) => ((usd, tokens), Terms::AsShown),
+        _ => return Err(ApiError::Invalid("an accepted cost or a budget, not both".to_owned())),
+    };
+    let accepted = Accepted::of(amount.0, amount.1).map_err(invalid)?;
+    budget(&estimate.cost, accepted, terms).map_err(invalid)
 }
 
 async fn start(State(engine): State<Shared>, Path(id): Path<String>, body: Bytes) -> Result<Json<Started>, ApiError> {
@@ -209,9 +230,10 @@ async fn start(State(engine): State<Shared>, Path(id): Path<String>, body: Bytes
         let endpoint =
             plan.chosen.endpoint().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
         // the estimate the user saw was for this model: one changed in the settings since is not asked unseen
-        if let Some(model) = &asked.model {
-            plan.chosen.as_shown(asked.provider, model).map_err(|why| ApiError::Invalid(why.to_string()))?;
-        }
+        let model = asked.model.as_deref().ok_or_else(|| {
+            ApiError::Invalid("say which model's estimate was shown (provider and model)".to_owned())
+        })?;
+        plan.chosen.as_shown(asked.provider, model).map_err(|why| ApiError::Invalid(why.to_string()))?;
         let budget = budget_of(&asked, &plan.estimate(&library)?)?;
         let transport = engine.transport.clone();
         let job = engine.job.start_tracked("a paper's weaknesses", move |tracker| {
@@ -248,10 +270,11 @@ fn work(
 
 async fn redo(State(engine): State<Shared>, Path(id): Path<String>) -> Result<Json<Forgotten>, ApiError> {
     let forgotten = on_the_side(move || {
-        known(&id)?;
-        let library = engine.library()?;
-        library.paper(&id)?.ok_or(ApiError::NotFound)?;
-        Ok(library.forget(Feature::Critique, &[Subject::Paper(id)])?)
+        let Paper { library, text, .. } = paper(&engine, &id)?;
+        // the reading shown, by the model chosen, only: another model's reading of the paper (paid for, and
+        // shown again when that model is chosen) stays
+        let Ok((plan, _)) = text else { return Ok(0) };
+        Ok(usize::from(library.forget_key(Feature::Critique, &plan.slot().key)?))
     })
     .await?;
     Ok(Json(Forgotten { forgotten }))
@@ -267,6 +290,7 @@ mod tests {
 
     use super::super::config::tests::STRONG;
     use super::super::config::{Environment, Listen};
+    use super::super::other_providers::{ACCEPTED, accepting};
     use super::super::routes::Engine;
     use super::super::tests::served;
     use super::*;
@@ -430,9 +454,124 @@ mod tests {
             .unwrap();
         let job = engine.job.clone();
         let (router, _) = served(&listen(), AT, engine);
-        let (status, told) = ask(&router, "POST", "/api/papers/iclr-2024-1/critique", None).await;
+        let (_, shown) = ask(&router, "GET", "/api/papers/iclr-2024-1/critique", None).await;
+        let accepted = accepting(&shown["model"]["estimate"], ACCEPTED).to_string();
+        let (status, told) = ask(&router, "POST", "/api/papers/iclr-2024-1/critique", Some(accepted)).await;
         assert_eq!((status, told["error"].clone()), (StatusCode::CONFLICT, json!("a run is already in progress")));
         job.cancel(running).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_start_that_accepts_nothing_names_no_model_or_accepts_less_than_it_would_cost_now_is_refused() {
+        let data = data();
+        let (router, _) = served(&listen(), AT, with_key(&data));
+        let path = "/api/papers/iclr-2024-1/critique";
+        let (_, shown) = ask(&router, "GET", path, None).await;
+        let estimate = &shown["model"]["estimate"];
+        let most = estimate["most_usd"].as_f64().unwrap();
+        let model = json!({"provider": "anthropic", "model": "claude-opus-5-5"});
+        let with = |extra: Value| {
+            let mut body = model.clone();
+            body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            body.to_string()
+        };
+        for (body, says) in [
+            (None, "which model"),
+            (Some(model.to_string()), "accepted"),
+            (Some(json!({"accepted_usd": most}).to_string()), "which model"),
+            // shown before the paper's text or its reviews grew: what it would cost now is more than accepted
+            (Some(with(json!({"accepted_usd": most / 2.0}))), "changed since it was shown"),
+            (Some(with(json!({"accepted_tokens": 1_000_000}))), "changed since it was shown"),
+            (Some(with(json!({"accepted_usd": most, "budget_usd": most}))), "not both"),
+        ] {
+            let (status, told) = ask(&router, "POST", path, body.clone()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}: {told}");
+            assert!(told["error"].as_str().unwrap().contains(says), "{body:?}: {told}");
+        }
+        let library = Library::open(&data.path().join("library")).unwrap();
+        assert_eq!(library.spending().unwrap().total.calls, 0);
+    }
+
+    #[tokio::test]
+    async fn a_redo_forgets_the_reading_shown_and_keeps_another_models_reading_of_the_paper() {
+        let data = data();
+        {
+            let library = Library::open(&data.path().join("library")).unwrap();
+            let Some(PaperReading::Read(passages)) = library.paper_texts(&["iclr-2024-1"]).unwrap().pop() else {
+                panic!()
+            };
+            let discussion = library.reviews("iclr-2024-1").unwrap().unwrap().discussion;
+            let answer = json!({"points": [], "weaknesses": []});
+            for model in ["claude-opus-5-5", "claude-haiku-5-5"] {
+                let plan = Plan::new("iclr-2024-1", &Chosen::claude(model), &passages, Some(&discussion));
+                library.keep(&plan.slot(), model, crate::analysis::critique::PROMPT, &answer).unwrap();
+            }
+        }
+        let (router, _) = served(&listen(), AT, with_key(&data));
+        let path = "/api/papers/iclr-2024-1/critique";
+        assert_eq!(ask(&router, "DELETE", path, None).await.1, json!({"forgotten": 1}));
+        assert_eq!(ask(&router, "DELETE", path, None).await.1, json!({"forgotten": 0}), "nothing left to forget");
+        assert_eq!(ask(&router, "GET", path, None).await.1["model"]["state"], "not_asked");
+        let library = Library::open(&data.path().join("library")).unwrap();
+        let Some(PaperReading::Read(passages)) = library.paper_texts(&["iclr-2024-1"]).unwrap().pop() else { panic!() };
+        let discussion = library.reviews("iclr-2024-1").unwrap().unwrap().discussion;
+        let other = Plan::new("iclr-2024-1", &Chosen::claude("claude-haiku-5-5"), &passages, Some(&discussion));
+        assert!(other.kept(&library).unwrap().is_some(), "the other model's reading stays");
+        // a paper without a PDF has no reading to forget
+        assert_eq!(ask(&router, "DELETE", "/api/papers/iclr-2024-3/critique", None).await.1, json!({"forgotten": 0}));
+    }
+
+    #[tokio::test]
+    async fn every_answer_of_the_critique_routes_fits_its_type_in_the_contracts() {
+        use crate::api::contract::assert_fits;
+
+        let data = data();
+        {
+            let library = Library::open(&data.path().join("library")).unwrap();
+            let Some(PaperReading::Read(passages)) = library.paper_texts(&["iclr-2024-1"]).unwrap().pop() else {
+                panic!()
+            };
+            let discussion = library.reviews("iclr-2024-1").unwrap().unwrap().discussion;
+            let plan = Plan::new("iclr-2024-1", &Chosen::claude("claude-opus-5-5"), &passages, Some(&discussion));
+            let answer = json!({
+                "points": [
+                    {"point": "p1", "located": "passage", "quote": "We test it on two small models only and leave larger ones to future work", "paper_says": "We propose an imaginary optimiser and prove that it converges on every smooth problem"},
+                    {"point": "p2", "located": "no_passage", "quote": "", "paper_says": ""},
+                    {"point": "p3", "located": "passage", "quote": "not anywhere in the paper at all, not one word", "paper_says": "We test it on two small models only and leave larger ones to future work"}
+                ],
+                "weaknesses": [
+                    {"kind": "claim_broader_than_evidence", "weakness": "Convergence is claimed for every smooth problem.", "quote": "prove that it converges on every smooth problem", "absent_terms": []},
+                    {"kind": "missing_baseline", "weakness": "No comparison with a second optimiser.", "quote": "We propose an imaginary optimiser", "absent_terms": ["optimiser"]},
+                    {"kind": "missing_ablation", "weakness": "No ablation.", "quote": "We test it on two small models only", "absent_terms": ["ablation"]},
+                    {"kind": "missing_ablation", "weakness": "No ablation of the step.", "quote": "We test it on two small models only", "absent_terms": []}
+                ]
+            });
+            library.keep(&plan.slot(), "claude-opus-5-5", crate::analysis::critique::PROMPT, &answer).unwrap();
+        }
+        let (router, _) = served(&listen(), AT, with_key(&data));
+        let (_, answered) = ask(&router, "GET", "/api/papers/iclr-2024-1/critique", None).await;
+        assert_eq!(answered["model"]["state"], "answered", "{answered}");
+        let absences: Vec<&Value> = answered["model"]["reading"]["weaknesses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|weakness| &weakness["absence"]["kind"])
+            .collect();
+        assert_eq!(absences, ["not_claimed", "but_see", "none_found", "not_searched"]);
+        assert_eq!(answered["model"]["reading"]["points"][2]["location"], Value::Null);
+        for (paper, state) in [("2601.00002", "not_asked"), ("iclr-2024-3", "no_pdf")] {
+            let (_, told) = ask(&router, "GET", &format!("/api/papers/{paper}/critique"), None).await;
+            assert_eq!(told["model"]["state"], state);
+            assert_fits("Critique", &told, &[]);
+        }
+        assert_fits("Critique", &answered, &[]);
+        assert_eq!(answered["reviewers"]["state"], "read");
+        let (_, alone) = ask(&router, "GET", "/api/papers/2601.00002/critique", None).await;
+        assert_eq!(alone["reviewers"]["state"], "none_kept");
+        let (_, kept) = ask(&router, "POST", "/api/papers/iclr-2024-1/critique", None).await;
+        assert_fits("CritiqueStarted", &kept, &[]);
+        let (_, forgotten) = ask(&router, "DELETE", "/api/papers/iclr-2024-1/critique", None).await;
+        assert_fits("CritiqueForgotten", &forgotten, &[]);
     }
 
     #[tokio::test]
@@ -482,7 +621,11 @@ mod tests {
         let Some(PaperReading::Read(passages)) = library.paper_texts(&["2601.00002"]).unwrap().pop() else { panic!() };
         let plan = Plan::new("2601.00002", &Chosen::claude("claude-opus-5-5"), &passages, None);
         let endpoint = || with_key(&data).language.unwrap();
-        let budget = || budget_of(&Start::default(), &plan.estimate(&library).unwrap()).unwrap();
+        let budget = || {
+            let estimate = plan.estimate(&library).unwrap();
+            let accepted_usd = estimate.cost.most_usd.map(crate::usage::Usd::dollars);
+            budget_of(&Start { accepted_usd, ..Start::default() }, &estimate).unwrap()
+        };
         let (log, progress) = (|_: &str| {}, |_: Progress| {});
 
         let cancel = Cancel::new();

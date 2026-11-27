@@ -136,7 +136,7 @@ export const api = {
 	/** ask the model to read the paper for weaknesses, as the one job; capped at the estimate's worst case */
 	/** ask for the model's reading, for the model the estimate was shown for, within a budget (the worst case shown
 	 *  when none is named): in US dollars, or in tokens for a model with no price */
-	readCritique: (id: string, shown: import("@rp/contracts").ShownModel, budget?: import("@rp/contracts").BudgetOf) =>
+	readCritique: (id: string, shown: import("@rp/contracts").ShownModel, budget: import("@rp/contracts").AcceptedCost | import("@rp/contracts").BudgetOf) =>
 		call<CritiqueStarted>(`/api/papers/${encodeURIComponent(id)}/critique`, send("POST", { ...shown, ...budget })),
 	/** forget the model's reading of the paper, so that it can be asked again */
 	forgetCritique: (id: string) => call<{ forgotten: number }>(`/api/papers/${encodeURIComponent(id)}/critique`, { method: "DELETE" }),
