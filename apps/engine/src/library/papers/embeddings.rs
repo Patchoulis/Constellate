@@ -11,8 +11,8 @@
 use ndarray::{Array2, ArrayView2};
 use rusqlite::{Connection, OptionalExtension, params};
 
-use super::papers::exists;
-use super::{Library, LibraryError, Paper};
+use crate::library::papers::exists;
+use crate::library::{Library, LibraryError, Paper};
 
 /// Why a paper's vector cannot be handed out.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -30,7 +30,7 @@ fn encode(row: ndarray::ArrayView1<'_, f32>) -> Vec<u8> {
 }
 
 /// Keep one vector, as raw little-endian bytes, replacing any the paper had from the model.
-pub(super) fn put(
+pub(in crate::library) fn put(
     connection: &Connection,
     model: &str,
     paper_id: &str,
@@ -45,7 +45,7 @@ pub(super) fn put(
 }
 
 /// The length in bytes of the model's vectors, if it has any.
-pub(super) fn width(connection: &Connection, model: &str) -> rusqlite::Result<Option<usize>> {
+pub(in crate::library) fn width(connection: &Connection, model: &str) -> rusqlite::Result<Option<usize>> {
     let bytes: Option<i64> = connection
         .query_row("SELECT length(vector) FROM embeddings WHERE model = ?1 LIMIT 1", [model], |row| row.get(0))
         .optional()?;

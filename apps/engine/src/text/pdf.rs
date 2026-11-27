@@ -369,7 +369,7 @@ mod tests {
 
     /// A one-page PDF that writes `lines` in Helvetica, one below the other, made here so the test needs no file.
     fn pdf_with(lines: &[&str]) -> Vec<u8> {
-        crate::library::passages::fixtures::pdf_with(lines)
+        crate::library::papers::passages::fixtures::pdf_with(lines)
     }
 
     #[test]

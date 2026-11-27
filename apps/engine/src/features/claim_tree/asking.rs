@@ -334,8 +334,8 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::jobs::{Cancel, Progress};
+    use crate::library::papers::passages::fixtures::pdf_with;
     use crate::library::papers::tests::paper as record;
-    use crate::library::passages::fixtures::pdf_with;
     use crate::library::{Known, Ratings};
     use crate::model::language::fake::{Fake, message, ok};
     use crate::model::language::{KEY_VARIABLE, Limit};

@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use super::{Library, LibraryError};
+use crate::library::{Library, LibraryError};
 
 /// What one US dollar buys in a currency, as the bank gave it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -53,7 +53,7 @@ impl Library {
     pub fn settings(&self) -> Result<Map<String, Value>, LibraryError> {
         self.read(|connection| {
             let mut statement = connection.prepare("SELECT name, value FROM settings ORDER BY name")?;
-            let rows = statement.query_map([], |row| Ok((row.get(0)?, super::json_column(row, 1)?)))?;
+            let rows = statement.query_map([], |row| Ok((row.get(0)?, crate::library::json_column(row, 1)?)))?;
             Ok(rows.collect::<rusqlite::Result<_>>()?)
         })
     }

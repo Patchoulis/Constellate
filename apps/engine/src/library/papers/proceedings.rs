@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use rusqlite::{OptionalExtension, params};
 
 use super::readings::Reading;
-use super::{Library, LibraryError, json_column, now, placeholders};
+use crate::library::{Library, LibraryError, json_column, now, placeholders};
 use crate::sources::proceedings::IndexState;
 
 /// Papers asked about in one statement: well under SQLite's limit on bound values.

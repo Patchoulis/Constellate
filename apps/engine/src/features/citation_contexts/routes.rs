@@ -723,8 +723,8 @@ mod tests {
     use crate::api::config::{Environment, Listen};
     use crate::api::routes::Engine;
     use crate::features::citation_contexts::kinds::{Classified, PROMPT, sentence_key};
+    use crate::library::papers::passages::fixtures::pdf_with;
     use crate::library::papers::tests::paper;
-    use crate::library::passages::fixtures::pdf_with;
     use crate::library::{Known, Library, Slot};
     use crate::settings::Choices;
 

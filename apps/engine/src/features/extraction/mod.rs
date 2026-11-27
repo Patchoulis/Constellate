@@ -914,8 +914,8 @@ mod tests {
     use super::*;
     use crate::jobs::{Cancel, Progress};
     use crate::library::Known;
+    use crate::library::papers::passages::fixtures::pdf_with;
     use crate::library::papers::tests::paper;
-    use crate::library::passages::fixtures::pdf_with;
     use crate::model::language::fake::{message, ok};
     use crate::model::language::{ApiKey, Endpoint, KEY_VARIABLE, Limit, Reply, Transport, TransportError};
     use crate::text::passages::read_passages;

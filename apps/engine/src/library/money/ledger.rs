@@ -12,7 +12,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{Connection, params};
 use serde::Serialize;
 
-use super::{Library, LibraryError, now};
+use crate::library::{Library, LibraryError, now};
 
 /// One call to the API, as made.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,7 +77,12 @@ fn totals_from(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<Totals
 }
 
 /// `calls` calls, as one row (more than one only for totals moved in from the old ledger).
-pub(super) fn put_calls(connection: &Connection, at: &str, call: &Call<'_>, calls: i64) -> rusqlite::Result<usize> {
+pub(in crate::library) fn put_calls(
+    connection: &Connection,
+    at: &str,
+    call: &Call<'_>,
+    calls: i64,
+) -> rusqlite::Result<usize> {
     connection.execute(
         "INSERT INTO spending (at, model, purpose, calls, input_tokens, output_tokens, price_micros,
                                cache_read_tokens, cache_write_tokens)

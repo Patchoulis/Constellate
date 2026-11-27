@@ -21,7 +21,7 @@
 //! * `routes.rs`: its HTTP routes, with a `table()` that [`crate::api::routes::table`] extends with, one line
 //!   per feature;
 //! * `store.rs`: what it keeps in the library beyond the model's answers (those are kept for every feature by
-//!   [`crate::library::answers`]), written as `impl Library` blocks;
+//!   [`crate::library::money::answers`]), written as `impl Library` blocks;
 //! * any other file is a part of its logic, named for what it does (`kinds.rs`, `retrieval.rs`, `tree.rs`).
 //!
 //! A new feature is one more folder here, one `pub mod` line below, and one `table.extend(...)` line in

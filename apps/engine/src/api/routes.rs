@@ -120,7 +120,7 @@ impl Engine {
         // the Python backend's data folder, moved in once, part by part (library/import.rs); what could not be is
         // told in /api/library and as a warning in /api/status, and tried again at the next start
         let moved = library.import_old(&self.data.join("library"));
-        if moved != crate::library::import::Moved::default() {
+        if moved != crate::library::core::import::Moved::default() {
             eprintln!("library: the earlier version's data folder: {moved:?}");
         }
         *self.import_problems.lock().unwrap_or_else(PoisonError::into_inner) = moved.problems();
@@ -285,8 +285,8 @@ impl From<SettingsError> for ApiError {
     }
 }
 
-impl From<crate::library::store::StoreError> for ApiError {
-    fn from(error: crate::library::store::StoreError) -> Self {
+impl From<crate::library::core::store::StoreError> for ApiError {
+    fn from(error: crate::library::core::store::StoreError) -> Self {
         eprintln!("{error}");
         ApiError::Files
     }
@@ -607,7 +607,7 @@ mod tests {
 
     #[tokio::test]
     async fn calls_left_with_their_outcome_unknown_are_told_in_the_ledgers_terms_as_the_contract_has_them() {
-        use crate::library::asking::Intent;
+        use crate::library::money::asking::Intent;
         use crate::library::{AnswerKey, Feature, Slot, Subject};
         let data = tempfile::tempdir().unwrap();
         let engine = Arc::new(Engine::new(data.path().to_path_buf(), Choices::default()));

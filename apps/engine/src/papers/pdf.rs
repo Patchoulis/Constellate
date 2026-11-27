@@ -10,7 +10,7 @@
 //! is followed, at most [`crate::sources::proceedings::MAX_PDF`] bytes and
 //! [`crate::sources::proceedings::PDF_TIME`] for all of it, and only bytes that start as a PDF does. A
 //! conference paper's address comes from its proceedings' index, fetched as needed and kept
-//! ([`crate::library::proceedings`]).
+//! ([`crate::library::papers::proceedings`]).
 //!
 //! # Politely, and once
 //!

@@ -79,8 +79,8 @@ mod tests {
     use super::super::config::{Environment, Listen};
     use super::super::routes::Engine;
     use super::super::tests::served;
+    use crate::library::papers::passages::fixtures::pdf_with;
     use crate::library::papers::tests::paper;
-    use crate::library::passages::fixtures::pdf_with;
     use crate::library::{Known, Library};
     use crate::settings::Choices;
 

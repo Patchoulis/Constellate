@@ -160,7 +160,7 @@ pub fn summarise(data: &Path, name: &str) -> Result<Facts, RunFileError> {
     let folder = files::folder_of(data, name)?;
     let path = folder.join(files::COMMUNITIES);
     let text =
-        fs::read(&path).map_err(|source| crate::library::store::StoreError::Io { path: path.clone(), source })?;
+        fs::read(&path).map_err(|source| crate::library::core::store::StoreError::Io { path: path.clone(), source })?;
     let counts: Counts = serde_json::from_slice(&text)
         .map_err(|error| RunFileError::Unreadable { path: path.clone(), reason: error.to_string() })?;
     let graph = fs::metadata(folder.join(files::GRAPH)).map(|meta| meta.len()).unwrap_or(0);
@@ -180,7 +180,7 @@ fn load(data: &Path, name: &str) -> Result<Loaded, RunFileError> {
         let path = folder.join(file);
         fs::read_to_string(&path).map_err(|source| match source.kind() {
             std::io::ErrorKind::NotFound => RunFileError::NotFound,
-            _ => RunFileError::Store(crate::library::store::StoreError::Io { path, source }),
+            _ => RunFileError::Store(crate::library::core::store::StoreError::Io { path, source }),
         })
     };
     Ok(Loaded { communities: read(files::COMMUNITIES)?, graph: read(files::GRAPH)? })

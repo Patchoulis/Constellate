@@ -637,9 +637,9 @@ pub trait Recorder: Send + Sync {
 }
 
 /// A call as the library's ledger keeps it: whole millionths of a dollar, counts that fit its columns.
-fn ledger_call(call: &Call) -> crate::library::ledger::Call<'_> {
+fn ledger_call(call: &Call) -> crate::library::money::ledger::Call<'_> {
     let signed = |count: u64| i64::try_from(count).unwrap_or(i64::MAX);
-    crate::library::ledger::Call {
+    crate::library::money::ledger::Call {
         model: &call.model,
         purpose: &call.purpose,
         input_tokens: signed(call.tokens.input),

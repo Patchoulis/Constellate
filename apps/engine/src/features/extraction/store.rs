@@ -1,7 +1,7 @@
 //! The columns of a run's extraction table ([`crate::features::extraction`]), kept so that the questions a user
 //! wrote survive a restart.
 //!
-//! They are not a model's answer, so they are not kept with the answers ([`crate::library::answers`]): an answer's key
+//! They are not a model's answer, so they are not kept with the answers ([`crate::library::money::answers`]): an answer's key
 //! changes with the passages reader's version, and a user's columns must not be lost when it does. One row per
 //! run, the columns as JSON in their order.
 

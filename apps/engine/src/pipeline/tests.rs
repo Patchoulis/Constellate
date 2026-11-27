@@ -1091,7 +1091,7 @@ fn a_real_run_is_made_again_from_a_python_data_folder() {
     println!("moved in: {moved:?} in {:.1}s", started.elapsed().as_secs_f64());
     assert!(moved.problems().is_empty(), "{:?}", moved.problems());
     let again = std::time::Instant::now();
-    assert_eq!(library.import_old(&data.join("library")), crate::library::import::Moved::default());
+    assert_eq!(library.import_old(&data.join("library")), crate::library::core::import::Moved::default());
     println!("at the next start: nothing to move, in {:.3}s", again.elapsed().as_secs_f64());
     let folder = files::folder_of(&data, &name).unwrap();
     let selection = files::stored_selection(&folder).unwrap();

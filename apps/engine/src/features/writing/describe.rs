@@ -43,7 +43,7 @@ use super::{DATA_RULE, Stored, cut, data_section, one_block};
 use crate::analysis::graph::cluster;
 use crate::analysis::graph::{cosine, mean_of};
 use crate::jobs::{Progress, Tracker};
-use crate::library::store::{self, StoreError};
+use crate::library::core::store::{self, StoreError};
 use crate::library::{AnswerKey, Feature, Kept, Library, LibraryError, Paper, Slot, Subject, community_key};
 use crate::model::batch::{self, Asking, BatchEstimate, Failure, IN_FLIGHT, Item, Outcome as Asked, Stopped};
 use crate::model::chosen::{Accepted, Chosen, Refused, Terms, budget};

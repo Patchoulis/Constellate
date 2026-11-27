@@ -297,8 +297,8 @@ mod tests {
     use crate::api::other_providers::{ACCEPTED, accepting};
     use crate::api::routes::Engine;
     use crate::api::tests::served;
+    use crate::library::papers::passages::fixtures::pdf_with;
     use crate::library::papers::tests::paper as record;
-    use crate::library::passages::fixtures::pdf_with;
     use crate::library::{Known, Ratings};
     use crate::model::chosen::Chosen;
     use crate::settings::Choices;

@@ -15,7 +15,7 @@ use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{Library, LibraryError, Paper, json_column, now};
+use crate::library::{Library, LibraryError, Paper, json_column, now};
 
 /// A checklist answer, as the reader accepts them; anything else ("[TODO]") is not an answer and is left out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,7 +128,7 @@ pub enum AiScore {
     TooShort,
 }
 
-pub(super) fn put_declarations(
+pub(in crate::library) fn put_declarations(
     connection: &Connection,
     paper_id: &str,
     reader: u32,
@@ -147,7 +147,11 @@ pub(super) fn put_declarations(
     Ok(statement.execute(params![paper_id, reader, outcome, content, now()])?)
 }
 
-pub(super) fn put_ratings(connection: &Connection, paper_id: &str, ratings: &Ratings) -> Result<usize, LibraryError> {
+pub(in crate::library) fn put_ratings(
+    connection: &Connection,
+    paper_id: &str,
+    ratings: &Ratings,
+) -> Result<usize, LibraryError> {
     let mut statement = connection.prepare_cached(
         "INSERT INTO ratings (paper_id, content, read_at) VALUES (?1, ?2, ?3)
          ON CONFLICT (paper_id) DO UPDATE SET content = excluded.content, read_at = excluded.read_at",
@@ -155,7 +159,7 @@ pub(super) fn put_ratings(connection: &Connection, paper_id: &str, ratings: &Rat
     Ok(statement.execute(params![paper_id, serde_json::to_string(ratings)?, now()])?)
 }
 
-pub(super) fn put_ai_score(
+pub(in crate::library) fn put_ai_score(
     connection: &Connection,
     paper_id: &str,
     text_hash: &str,

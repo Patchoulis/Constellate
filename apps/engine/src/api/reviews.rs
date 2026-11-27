@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use super::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::analysis::reviews::{PaperFigures, ReviewSummary, Reviewed, paper_figures, summarise, venue_of};
-use crate::library::store::read_json;
+use crate::library::core::store::read_json;
 use crate::library::{Keeping, KeptReviews, Library, Ratings};
 use crate::text::discussion::{Discussion, read_discussion};
 use crate::text::reviews::{MAX_TEXT, forum, read_ratings};

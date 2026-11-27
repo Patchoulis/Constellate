@@ -25,7 +25,7 @@ use ndarray::ArrayView2;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::library::store::{self, StoreError};
+use crate::library::core::store::{self, StoreError};
 use crate::selection::Selection;
 
 pub const RUNS: &str = "runs";
@@ -309,7 +309,7 @@ mod tests {
         let folder = tempfile::tempdir().unwrap();
         let path = folder.path().join("m.npy");
         fs::write(&path, &bytes).unwrap();
-        let (rows, columns, data) = crate::library::import::read_npy(&path).unwrap();
+        let (rows, columns, data) = crate::library::core::import::read_npy(&path).unwrap();
         assert_eq!((rows, columns), (2, 3));
         assert_eq!(f32::from_le_bytes([data[20], data[21], data[22], data[23]]), 6.5);
     }

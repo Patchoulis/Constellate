@@ -9,6 +9,13 @@
 //! was filed as downloaded from its official list when it had fallen back to arXiv comments, and was never asked
 //! again. Here the outcome is kept as what it was, and anything short of complete is fetched again next time.
 
+pub mod embeddings;
+pub mod passages;
+pub mod proceedings;
+pub mod readings;
+pub mod references;
+pub mod reviews;
+
 use std::sync::LazyLock;
 
 use chrono::Days;

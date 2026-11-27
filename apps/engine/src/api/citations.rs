@@ -11,7 +11,7 @@
 //! ```
 //!
 //! The GET reads nothing and asks no one: it links the kept lists to the library as it is now. The POST reads the
-//! list once per PDF and version of the reader ([`crate::library::references`]: a second POST reads nothing), and
+//! list once per PDF and version of the reader ([`crate::library::papers::references`]: a second POST reads nothing), and
 //! asks arXiv about at most [`MOST_LOOKUPS`] entries, at arXiv's one pace (first come, first served with the PDFs
 //! and listings the engine fetches: [`crate::sources::polite::ARXIV_PACE`]), never about an entry it asked about
 //! before; when it stops before every entry was asked about, the answer says so (`lookups_stopped`). Two POSTs for
@@ -39,7 +39,9 @@ use url::Url;
 use super::reviews::papers_of;
 use super::routes::{ApiError, Shared, on_the_side};
 use crate::analysis::citations::{CitationNetwork, Linker, LookupsStopped, network};
-use crate::library::references::{Arxiv, KeptReferences, Looked, ReferencesReading, Stopped, look_up, to_look_up};
+use crate::library::papers::references::{
+    Arxiv, KeptReferences, Looked, ReferencesReading, Stopped, look_up, to_look_up,
+};
 use crate::library::{Library, LibraryError};
 use crate::papers::pdf::PdfOutcome;
 use crate::sources::citations;
@@ -279,9 +281,9 @@ mod tests {
     use super::super::config::{Environment, Listen};
     use super::super::routes::Engine;
     use super::*;
+    use crate::library::papers::passages::fixtures::pdf_with;
+    use crate::library::papers::references::Lookup;
     use crate::library::papers::tests::paper;
-    use crate::library::passages::fixtures::pdf_with;
-    use crate::library::references::Lookup;
     use crate::library::{Known, Paper};
     use crate::settings::Choices;
     use crate::sources::fake::{Fake, ok, status};

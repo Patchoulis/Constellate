@@ -20,8 +20,8 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{Library, LibraryError, now};
 use crate::analysis::citations::Linker;
+use crate::library::{Library, LibraryError, now};
 use crate::sources::citations::{Answer, Ask, Get, LookupError, ask_for, read_answer, send, url_for};
 use crate::text::pdf::{Unreadable, pdf_pages};
 use crate::text::references::{Citing, Confidence, Reference, ReferenceList, read_reference_list};
@@ -285,8 +285,8 @@ mod tests {
 
     use super::*;
     use crate::library::Known;
+    use crate::library::papers::passages::fixtures::pdf_with;
     use crate::library::papers::tests::paper;
-    use crate::library::passages::fixtures::pdf_with;
     use crate::sources::citations::Response;
 
     fn library() -> (tempfile::TempDir, Library) {

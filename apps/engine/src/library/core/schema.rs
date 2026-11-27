@@ -13,7 +13,7 @@
 
 use rusqlite::{Connection, TransactionBehavior};
 
-use super::LibraryError;
+use crate::library::LibraryError;
 
 /// Every migration, in order; `MIGRATIONS[n]` takes a database from version `n` to `n + 1`.
 pub const MIGRATIONS: &[&str] = &[
@@ -376,7 +376,7 @@ pub const MIGRATIONS: &[&str] = &[
 ];
 
 /// Bring `connection` to the last of `migrations`. Refuses a database newer than the list.
-pub(super) fn migrate(connection: &Connection, migrations: &[&str]) -> Result<(), LibraryError> {
+pub(in crate::library) fn migrate(connection: &Connection, migrations: &[&str]) -> Result<(), LibraryError> {
     let known = i64::try_from(migrations.len()).unwrap_or(i64::MAX);
     let version = |connection: &Connection| -> rusqlite::Result<i64> {
         connection.pragma_query_value(None, "user_version", |row| row.get(0))

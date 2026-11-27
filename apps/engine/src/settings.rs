@@ -13,7 +13,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::library::store::{self, StoreError};
+use crate::library::core::store::{self, StoreError};
 use crate::model::language::{Effort, ModelIds, Provider};
 
 /// Every setting, with the names and the JSON shape the interface uses (`Settings` in

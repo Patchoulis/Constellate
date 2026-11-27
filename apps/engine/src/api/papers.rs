@@ -258,8 +258,8 @@ mod tests {
     use super::super::routes::Engine;
     use super::super::tests::served;
     use super::*;
+    use crate::library::papers::passages::fixtures::pdf_with;
     use crate::library::papers::tests::paper;
-    use crate::library::passages::fixtures::pdf_with;
     use crate::library::{Known, Library, Paper};
     use crate::papers::pdf::Pdfs;
     use crate::settings::Choices;

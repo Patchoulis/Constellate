@@ -42,7 +42,8 @@ use constellate::analysis::graph::cluster::{self, Limits, Method, Papers};
 use constellate::analysis::graph::random::Random;
 use constellate::analysis::graph::{adjacency_matrix, make_unit, modularity};
 use constellate::jobs::{Cancel, Progress, Tracker};
-use constellate::library::{Library, Paper, place, store};
+use constellate::library::core::{place, store};
+use constellate::library::{Library, Paper};
 use constellate::pipeline::agreement::{
     adjusted_mutual_information, adjusted_rand_index, coherence, numbered, silhouette_cosine,
 };

@@ -7,7 +7,7 @@
 //! `.` or `-` written `_` ([`Library::pdf_file`]). That is where the Python backend keeps the PDFs it fetches
 //! (`rp/proceedings.py`, `fetch_pdf` into `LIBRARY / "pdfs"`), so those are found as they are. The file itself is
 //! the record that a paper's PDF is stored: [`Library::keep_pdf`] puts one there, replaced whole
-//! ([`super::store::replace`]), so a reader never sees half a PDF. Nothing here downloads: fetching a PDF is the
+//! ([`crate::library::core::store::replace`]), so a reader never sees half a PDF. Nothing here downloads: fetching a PDF is the
 //! sources' work (`sources::proceedings::download_pdf`), and a paper without one is read from its record.
 //!
 //! # Read once
@@ -39,8 +39,9 @@ use rayon::prelude::*;
 use rusqlite::{OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
-use super::{Library, LibraryError, Paper, now, placeholders, store};
 use crate::evidence::{PaperText, Papers};
+use crate::library::core::store;
+use crate::library::{Library, LibraryError, Paper, now, placeholders};
 use crate::text::passages::{Passages, READER, passages_of_pdf};
 use crate::text::pdf::Unreadable;
 
@@ -187,7 +188,7 @@ impl Pending {
 
 /// The papers whose PDF is being read right now, each with the reading others wait for.
 #[derive(Default)]
-pub(super) struct InReading {
+pub(in crate::library) struct InReading {
     papers: Mutex<HashMap<String, Arc<Pending>>>,
 }
 
@@ -224,7 +225,7 @@ impl Drop for Claimed<'_> {
 
 /// Is a file named `name` (with any extension after it) one Windows opens as a device? Its part before the first
 /// `.`, spaces at its end dropped, in any case: `CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM0`-`COM9` and
-/// `LPT0`-`LPT9`, the superscript digits `¹²³` counting as digits, as Windows counts them.
+/// `LPT0`-`LPT9`, the crate::libraryscript digits `¹²³` counting as digits, as Windows counts them.
 fn windows_device(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or("").trim_end().to_uppercase();
     let numbered = |prefix: &str| {

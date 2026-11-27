@@ -38,7 +38,7 @@ use crate::features::writing::describe::{self, Group, Outcome, Run};
 use crate::features::writing::overview::{self, Community, Graph, NotWritten, Overview, Prepared, Standing};
 use crate::features::writing::{Stored, StoredTree, read_tree, tree_path};
 use crate::jobs::{Finished, Phase, Tracker};
-use crate::library::store::read_json;
+use crate::library::core::store::read_json;
 use crate::library::{Feature, Library, Paper};
 use crate::model::batch::{Asking, BatchEstimate, IN_FLIGHT};
 use crate::model::chosen::{Accepted, Chosen, Terms, budget};

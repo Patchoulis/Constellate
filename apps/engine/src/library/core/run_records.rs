@@ -3,7 +3,7 @@
 
 use rusqlite::params;
 
-use super::{Library, LibraryError, json_column};
+use crate::library::{Library, LibraryError, json_column};
 use crate::runs::index::{Facts, SummaryRecord};
 use crate::runs::usage::{Moment, Usage};
 

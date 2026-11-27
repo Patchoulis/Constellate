@@ -237,8 +237,8 @@ mod tests {
     use crate::features::claim_tree::asking::tests::{
         FORUM, LINES, PAPER, keep_reviews, mapping_answer, reply, tree_answer,
     };
+    use crate::library::papers::passages::fixtures::pdf_with;
     use crate::library::papers::tests::paper;
-    use crate::library::passages::fixtures::pdf_with;
     use crate::library::{Known, Library};
     use crate::model::language::fake::Fake;
     use crate::settings::Choices;

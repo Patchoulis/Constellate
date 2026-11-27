@@ -38,7 +38,7 @@ use crate::features::extraction::{
     default_columns, extrapolate, kept_cells, prompt_text,
 };
 use crate::jobs::{Finished, Tracker};
-use crate::library::store::read_json;
+use crate::library::core::store::read_json;
 use crate::library::{Feature, Library, PaperReading, Subject};
 use crate::model::batch::{Asking, IN_FLIGHT};
 use crate::model::chosen::{Accepted, Refused, Terms, budget};
@@ -644,8 +644,8 @@ mod tests {
     use crate::api::routes::Engine;
     use crate::api::tests::served;
     use crate::features::extraction::{Read, SaidCell, cell_key, default_columns};
+    use crate::library::papers::passages::fixtures::pdf_with;
     use crate::library::papers::tests::paper;
-    use crate::library::passages::fixtures::pdf_with;
     use crate::library::{Feature, Known, Library, Slot, Subject};
     use crate::settings::Choices;
 

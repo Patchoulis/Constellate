@@ -55,7 +55,7 @@ use crate::features::answers::{
     Said, SaidOutcome, Scope, Statement,
 };
 use crate::jobs::{About, Finished, Phase, Tracker};
-use crate::library::passages::PDF_FOLDER;
+use crate::library::papers::passages::PDF_FOLDER;
 use crate::library::{AnswerKey, Feature, Library, PaperReading};
 use crate::model::batch::{Asking, IN_FLIGHT};
 use crate::model::chosen::{Accepted, Terms, budget};
@@ -700,8 +700,8 @@ mod tests {
     use crate::api::routes::Engine;
     use crate::api::security::LARGEST_BODY;
     use crate::api::tests::served;
+    use crate::library::papers::passages::fixtures::pdf_with;
     use crate::library::papers::tests::paper;
-    use crate::library::passages::fixtures::pdf_with;
     use crate::library::{Known, Slot, Subject};
     use crate::settings::Choices;
 

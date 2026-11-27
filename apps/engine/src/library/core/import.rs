@@ -53,14 +53,16 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
-use super::embeddings::{put as put_embedding, width};
-use super::ledger::{Call, put_calls};
-use super::papers::{exists, put_paper, put_slice, tag};
 use super::preferences::{Rate, put_rate, put_setting};
-use super::readings::{AiScore, Declarations, Ratings, Reading, put_ai_score, put_declarations, put_ratings};
 use super::store::{self, StoreError};
-use super::{Known, Library, LibraryError, Origin, Paper, SliceOutcome, now};
 use crate::features::writing::store::{Description, Overview, put_description, put_overview};
+use crate::library::money::ledger::{Call, put_calls};
+use crate::library::papers::embeddings::{put as put_embedding, width};
+use crate::library::papers::readings::{
+    AiScore, Declarations, Ratings, Reading, put_ai_score, put_declarations, put_ratings,
+};
+use crate::library::papers::{exists, put_paper, put_slice, tag};
+use crate::library::{Known, Library, LibraryError, Origin, Paper, SliceOutcome, now};
 
 /// The model the Python embedded with unless the settings said otherwise.
 const DEFAULT_MODEL: &str = "Qwen/Qwen3-Embedding-0.6B";

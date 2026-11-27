@@ -4,7 +4,7 @@
 //!
 //! Both ask through [`crate::model::batch`] (kept answers skipped, the budget the user accepted, progress, cancel,
 //! every call in the ledger in the same transaction as its answer) and keep their answers in the library's kept
-//! answers ([`crate::library::answers`], [`Feature::Describing`](crate::library::Feature::Describing) and
+//! answers ([`crate::library::money::answers`], [`Feature::Describing`](crate::library::Feature::Describing) and
 //! [`Feature::Overview`](crate::library::Feature::Overview)): the one place the engine keeps what it pays for.
 //! What the Python wrote (`descriptions.json`, imported into [`crate::features::writing::store`]) is only read, so that a
 //! community it named is not paid for again with the Claude API model it was named by.
@@ -21,7 +21,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::library::store::{StoreError, read_json};
+use crate::library::core::store::{StoreError, read_json};
 
 /// The line that opens the papers' text in a prompt.
 pub const DATA_BEGINS: &str = "=====BEGIN PAPERS=====";

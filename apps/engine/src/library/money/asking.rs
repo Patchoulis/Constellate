@@ -28,7 +28,7 @@ use chrono::{DateTime, Duration as Days, SecondsFormat, Utc};
 use rusqlite::{Connection, params};
 use serde::Serialize;
 
-use super::{Library, LibraryError, Slot, now};
+use crate::library::{Library, LibraryError, Slot, now};
 
 /// Intents older than this many days are folded into the summary row.
 pub const FOLD_AFTER_DAYS: i64 = 30;

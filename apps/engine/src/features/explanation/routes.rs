@@ -36,7 +36,7 @@ use crate::features::explanation::{
     self, Checked, NEARBY_PAPERS, PURPOSE, Prompt, Question, Said, estimate, explain, item, prompt, schema, slot,
 };
 use crate::jobs::Finished;
-use crate::library::store::read_json;
+use crate::library::core::store::read_json;
 use crate::library::{Feature, Library, PaperReading, Subject};
 use crate::model::batch::Asking;
 use crate::model::chosen::{Accepted, Chosen, Terms, budget};
@@ -577,8 +577,8 @@ mod tests {
     use crate::api::routes::Engine;
     use crate::api::security::LARGEST_BODY;
     use crate::api::tests::served;
+    use crate::library::papers::passages::fixtures::pdf_with;
     use crate::library::papers::tests::paper;
-    use crate::library::passages::fixtures::pdf_with;
     use crate::library::{Known, Library};
     use crate::settings::Choices;
 

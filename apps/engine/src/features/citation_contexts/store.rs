@@ -1,7 +1,7 @@
 //! The citing sentences of each paper ([`crate::features::citation_contexts`]), read once and kept by paper, and
 //! who cites whom among the library's papers, so that "the sentences citing this paper" is one indexed look-up.
 //!
-//! A paper's contexts are read from its passages (kept by [`crate::library::passages`]) and its reference list, which is
+//! A paper's contexts are read from its passages (kept by [`crate::library::papers::passages`]) and its reference list, which is
 //! read from the PDF's text as `pdf-extract` gives it (the passages leave the list out). They are kept with the
 //! passages reader's version, the version of what is read ([`CONTEXTS`]) and the SHA-256 of the PDF they were read
 //! from: kept contexts count only while the passages kept for the paper are of that reader and that PDF, so that
@@ -52,7 +52,7 @@ fn sha256(bytes: &[u8]) -> String {
 }
 
 /// Is the paper's PDF on disk still the file its kept passages were read from, as far as its size and time of
-/// change tell (what [`crate::library::passages`] stamps a reading with)? A PDF replaced since leaves the passages' row as
+/// change tell (what [`crate::library::papers::passages`] stamps a reading with)? A PDF replaced since leaves the passages' row as
 /// it was until the paper's text is next asked for ([`Library::paper_texts`]); until then the contexts kept with
 /// those passages are of the old file, and do not hold. Told without reading the file, so that a community's
 /// figures cost one look at each file, not the decoding of every paper's passages.
@@ -383,8 +383,8 @@ mod tests {
 
     use super::*;
     use crate::library::Known;
+    use crate::library::papers::passages::fixtures::pdf_with;
     use crate::library::papers::tests::paper;
-    use crate::library::passages::fixtures::pdf_with;
 
     /// A library of three papers: "seed" (with a PDF that cites the two others), "arith" and "ties" (without).
     fn library() -> (tempfile::TempDir, Library) {

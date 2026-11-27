@@ -74,22 +74,9 @@
 //!   exist yet: writes would run SERIALIZABLE and be retried on a serialization failure (or take an advisory
 //!   lock), and reads that span tables would run REPEATABLE READ.
 
-pub mod answers;
-pub mod asking;
-pub mod embeddings;
-pub mod import;
-pub mod ledger;
+pub mod core;
+pub mod money;
 pub mod papers;
-pub mod passages;
-pub mod place;
-pub mod preferences;
-pub mod proceedings;
-pub mod readings;
-pub mod references;
-pub mod reviews;
-pub mod run_records;
-pub mod schema;
-pub mod store;
 
 use std::fs;
 use std::io;
@@ -100,16 +87,16 @@ use std::time::{Duration, SystemTime};
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{Connection, ErrorCode, Transaction, TransactionBehavior};
 
+pub use self::core::import::{ImportError, Imported, import_files};
+pub use self::core::preferences::Rate;
 pub use crate::features::writing::store::{CitedPaper, Description, Overview, Point, Section, community_key};
-pub use answers::{AnswerKey, Feature, Kept, Slot, Subject};
-pub use embeddings::NotEmbedded;
-pub use import::{ImportError, Imported, import_files};
-pub use ledger::{Call, Spending, Totals};
+pub use money::answers::{AnswerKey, Feature, Kept, Slot, Subject};
+pub use money::ledger::{Call, Spending, Totals};
+pub use papers::embeddings::NotEmbedded;
+pub use papers::passages::PaperReading;
+pub use papers::readings::{AiScore, Answer, ChecklistItem, Declarations, FieldRatings, Ratings, Reading, Statement};
+pub use papers::reviews::{Keeping, KeptReviews, ReviewPage};
 pub use papers::{Added, Known, Origin, Paper, SliceOutcome, text_hash};
-pub use passages::PaperReading;
-pub use preferences::Rate;
-pub use readings::{AiScore, Answer, ChecklistItem, Declarations, FieldRatings, Ratings, Reading, Statement};
-pub use reviews::{Keeping, KeptReviews, ReviewPage};
 
 /// The database's file name inside the library folder.
 pub const DATABASE: &str = "library.sqlite3";
@@ -154,7 +141,7 @@ pub enum LibraryError {
     Shape(String),
     /// A file kept beside the database (a paper's PDF) could not be written.
     #[error(transparent)]
-    Store(#[from] store::StoreError),
+    Store(#[from] self::core::store::StoreError),
 }
 
 /// The library: a handle on its database, shared by every thread of the engine (see the module's "Threads").
@@ -166,7 +153,7 @@ pub struct Library {
     /// Connections that only read, idle; each is used by one read at a time, taken out of here for it.
     readers: Mutex<Vec<Connection>>,
     /// The PDFs being read right now, so that two threads asking for the same paper read it once.
-    in_reading: passages::InReading,
+    in_reading: papers::passages::InReading,
 }
 
 impl Library {
@@ -175,12 +162,13 @@ impl Library {
         fs::create_dir_all(folder).map_err(|source| LibraryError::Folder { path: folder.to_path_buf(), source })?;
         let path = folder.join(DATABASE);
         let connection = connect(&path)?;
-        schema::migrate(&connection, schema::MIGRATIONS).map_err(|error| located(error, &path))?;
+        self::core::schema::migrate(&connection, self::core::schema::MIGRATIONS)
+            .map_err(|error| located(error, &path))?;
         Ok(Self {
             path,
             connection: Mutex::new(connection),
             readers: Mutex::new(Vec::new()),
-            in_reading: passages::InReading::default(),
+            in_reading: papers::passages::InReading::default(),
         })
     }
 

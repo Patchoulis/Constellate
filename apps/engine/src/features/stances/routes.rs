@@ -43,7 +43,7 @@ use crate::features::stances::{
     self, Placed, Prepared, Proposals, Read, Record, Recurring, Relevance, SAMPLE, Said, Shown,
 };
 use crate::jobs::{Finished, Tracker};
-use crate::library::store::read_json;
+use crate::library::core::store::read_json;
 use crate::library::{AnswerKey, Feature, Library, Paper, Slot, Subject};
 use crate::model::batch::{self, Asking, BatchEstimate, Failure, IN_FLIGHT, Item, Outcome, Stopped};
 use crate::model::chosen::{Accepted, Chosen, Terms, budget};

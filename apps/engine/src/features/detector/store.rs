@@ -25,8 +25,8 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::library::import::ImportError;
-use crate::library::store::StoreError;
+use crate::library::core::import::ImportError;
+use crate::library::core::store::StoreError;
 use crate::library::{Library, LibraryError, now};
 use crate::model::language::Provider;
 

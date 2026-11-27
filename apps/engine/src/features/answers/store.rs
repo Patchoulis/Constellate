@@ -11,7 +11,7 @@
 use rusqlite::{OptionalExtension, params};
 
 use crate::features::answers::retrieval::Hit;
-use crate::library::answers::forget_key;
+use crate::library::money::answers::forget_key;
 use crate::library::{Feature, Library, LibraryError, json_column, now};
 use crate::model::language::Provider;
 

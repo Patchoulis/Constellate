@@ -16,7 +16,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
 use super::readings::{put_ratings, ratings_of};
-use super::{Library, LibraryError, Ratings, now, placeholders, text_hash};
+use crate::library::{Library, LibraryError, Ratings, now, placeholders, text_hash};
 use crate::text::discussion::{Discussion, PARSER, read_discussion};
 use crate::threads::{self, Outcome, Progress};
 
