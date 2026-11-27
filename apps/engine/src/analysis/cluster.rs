@@ -598,6 +598,34 @@ mod tests {
         assert_eq!(Path::new(Root::Bisection).child(Half::Second).to_string(), "r.1");
     }
 
+    /// The Python's `test_no_two_communities_share_a_path`: "c1" + "0" was once the name of community "c10".
+    #[test]
+    fn no_two_communities_of_any_method_share_a_path_even_with_ten_roots_and_more() {
+        let mut random = crate::analysis::random::Random::new(3);
+        let centres = Array2::from_shape_simple_fn((12, 24), || 5.0 * random.normal());
+        let points = Array2::from_shape_fn((360, 24), |(point, axis)| centres[[point / 30, axis]] + random.normal())
+            .mapv(|value| value as f32);
+        let adjacency = adjacency_matrix(points.view(), true).unwrap();
+        let mut vectors = &points - &points.mean_axis(Axis(0)).unwrap();
+        make_unit(&mut vectors);
+        let papers = Papers { adjacency: adjacency.view(), vectors: vectors.view() };
+        fn paths(communities: &[Community], into: &mut Vec<String>) {
+            for community in communities {
+                into.push(community.path.to_string());
+                paths(community.sub_communities(), into);
+            }
+        }
+        for method in Method::ALL {
+            let limits = Limits { min_community_size: 5, min_split_modularity: -1.0, sub_levels: 2 };
+            let partition = communities(method, papers, 12, limits).unwrap();
+            let mut found = Vec::new();
+            paths(&partition.communities, &mut found);
+            assert!(found.len() > 12, "{method}: the planted groups should be cut into sub-communities");
+            let distinct: std::collections::HashSet<&String> = found.iter().collect();
+            assert_eq!(distinct.len(), found.len(), "{method}: {found:?}");
+        }
+    }
+
     #[test]
     fn the_fiedler_method_records_its_cuts_and_names_by_the_bisection_tree() {
         let (adjacency, vectors, _) = blob_papers();

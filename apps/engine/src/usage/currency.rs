@@ -91,7 +91,8 @@ mod tests {
 
     #[test]
     fn what_is_not_a_known_currency_is_the_dollar() {
-        for code in ["", "EURO", "E1R", "XYZ", "€"] {
+        // the Python's nonsense codes too: none is ever looked up, nor could name a file
+        for code in ["", "EURO", "E1R", "XYZ", "€", "dollars", "C$", "../x", "XXX"] {
             assert_eq!(rate(code), Rate::dollar(), "{code:?}");
         }
     }

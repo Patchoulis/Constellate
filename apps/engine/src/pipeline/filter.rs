@@ -114,3 +114,115 @@ pub fn outcome(before: usize, after: usize) -> StepOutcome {
         StepOutcome::Done(format!("{} of {} papers go on", thousands(after as u64), thousands(before as u64)))
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::jobs::Cancel;
+    use crate::library::Declarations;
+    use crate::library::papers::tests::paper;
+
+    /// The Python's `test_filters_leave_out_what_the_settings_say_and_keep_rows_aligned`: four conference papers
+    /// (an oral, two posters, a spotlight) and three from arXiv.
+    fn papers() -> Vec<Paper> {
+        let decided = |id: &str, decision: &str| Paper { comment: decision.to_owned(), ..paper(id) };
+        vec![
+            decided("x-2026-1", "Accept (oral)"),
+            decided("x-2026-2", "Accept (poster)"),
+            decided("x-2026-3", "Accept (spotlight)"),
+            decided("x-2026-4", "Accept (poster)"),
+            paper("2601.00001"),
+            paper("2601.00002"),
+            paper("2601.00003"),
+        ]
+    }
+
+    fn read(flags: &[&str]) -> Reading {
+        Reading::Read(Declarations {
+            checklist: Vec::new(),
+            statements: Vec::new(),
+            flags: flags.iter().map(|flag| (*flag).to_owned()).collect(),
+        })
+    }
+
+    /// The ids `settings` keeps, with what the library holds of declarations, and the log.
+    fn kept(library: &Library, flagged: &[bool], settings: &Settings) -> (Vec<String>, Vec<String>) {
+        let papers = papers();
+        let accepted: Vec<Accepted> = papers.iter().map(accepted).collect();
+        let declarations = declarations(library, settings).unwrap();
+        let lines = Mutex::new(Vec::new());
+        let log = |line: &str| lines.lock().unwrap().push(line.to_owned());
+        let progress = |_| {};
+        let cancel = Cancel::new();
+        let tracker = Tracker::new(&log, &progress, &cancel);
+        let keep = keep(&papers, &accepted, flagged, settings, &declarations, &tracker);
+        assert_eq!(keep.len(), papers.len(), "one answer per paper, in their order");
+        let ids = papers.iter().zip(keep).filter(|(_, kept)| *kept).map(|(paper, _)| paper.id.clone()).collect();
+        (ids, lines.into_inner().unwrap())
+    }
+
+    fn library() -> (tempfile::TempDir, Library) {
+        let folder = tempfile::tempdir().unwrap();
+        let library = Library::open(folder.path()).unwrap();
+        library.add_papers(&papers(), None, crate::library::Known::Keep).unwrap();
+        let parser = crate::text::declarations::PARSER;
+        library.keep_declarations(parser, &[("x-2026-3", read(&["llm_declared"])), ("x-2026-1", read(&[]))]).unwrap();
+        // an older reader's reading is not trusted
+        library.keep_declarations(parser - 1, &[("2601.00002", read(&["llm_declared"]))]).unwrap();
+        (folder, library)
+    }
+
+    #[test]
+    fn the_filters_leave_out_what_the_settings_say_and_judge_only_what_they_know() {
+        let (_folder, library) = library();
+        let none = [false; 7];
+        let (everything, _) = kept(&library, &none, &Settings::default());
+        assert_eq!(everything.len(), 7);
+
+        let highlights = Settings { acceptance_filter: "highlights".to_owned(), ..Settings::default() };
+        let (ids, log) = kept(&library, &none, &highlights);
+        // arXiv papers are not judged by their acceptance
+        assert_eq!(ids, ["x-2026-1", "x-2026-3", "2601.00001", "2601.00002", "2601.00003"]);
+        assert!(log.iter().any(|line| line.contains("2 left out: not among: spotlights and orals")), "{log:?}");
+
+        let strict = Settings {
+            acceptance_filter: "highlights".to_owned(),
+            include_ai_papers: false,
+            exclude_flags: vec!["llm_declared".to_owned()],
+            ..Settings::default()
+        };
+        let flagged = [false, true, false, false, false, false, false];
+        let (ids, log) = kept(&library, &flagged, &strict);
+        assert_eq!(ids, ["x-2026-1", "2601.00001", "2601.00002", "2601.00003"]);
+        assert!(log.iter().any(|line| line.contains("declarations have not been read")), "{log:?}");
+    }
+
+    #[test]
+    fn only_the_present_readers_declarations_are_used_and_none_are_read_when_no_flag_is_excluded() {
+        let (_folder, library) = library();
+        assert!(declarations(&library, &Settings::default()).unwrap().is_empty());
+        let excluding = Settings { exclude_flags: vec!["llm_declared".to_owned()], ..Settings::default() };
+        let mut ids: Vec<String> = declarations(&library, &excluding).unwrap().into_keys().collect();
+        ids.sort();
+        assert_eq!(ids, ["x-2026-1", "x-2026-3"]);
+    }
+
+    #[test]
+    fn an_oral_is_kept_by_every_filter_and_a_poster_only_by_all() {
+        for (filter, poster) in [("all", true), ("highlights", false), ("oral", false)] {
+            let (_, tiers) = acceptance_filter(filter);
+            assert!(tiers.contains(&Acceptance::Oral), "{filter}");
+            assert_eq!(tiers.contains(&Acceptance::Poster), poster, "{filter}");
+        }
+        assert_eq!(acceptance_filter("anything else"), acceptance_filter("all"));
+    }
+
+    #[test]
+    fn the_step_says_how_many_papers_go_on() {
+        assert_eq!(outcome(7, 7), StepOutcome::Kept("all 7 papers go on".to_owned()));
+        assert_eq!(outcome(12_487, 4), StepOutcome::Done("4 of 12,487 papers go on".to_owned()));
+    }
+}

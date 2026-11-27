@@ -701,6 +701,22 @@ fn too_few_papers_are_refused_with_how_many_are_needed() {
     assert_eq!(*words.asked.lock().unwrap(), 0, "nothing embedded for a run that cannot be made");
 }
 
+/// The Python's `test_filtering_down_to_too_few_papers_is_refused_with_a_reason`: enough papers are gathered, but
+/// the settings leave too few of them.
+#[test]
+fn filtering_down_to_too_few_papers_is_refused_with_how_many_are_needed() {
+    let data = tempfile::tempdir().unwrap();
+    let library = Library::open(&data.path().join("library")).unwrap();
+    let selection = Selection::parse(&["NeurIPS 2025".into()], None, None, &[], false).unwrap();
+    let words = Words { asked: Mutex::new(0) };
+    let settings = Settings { acceptance_filter: "oral".to_owned(), ..settings_for("spectral") };
+    let error =
+        make_run(data.path(), &library, &selection, settings, &conference_fetch(90), &words, Redo::new()).unwrap_err();
+    // one paper in ten of the listing is an oral
+    assert_eq!(error.to_string(), "only 9 papers: at least 24 are needed to look for communities");
+    assert!(!data.path().join("runs").join("neurips2025").exists(), "no run is written");
+}
+
 #[test]
 fn a_conference_that_cannot_be_fetched_now_fails_the_run_and_keeps_nothing_as_done() {
     use crate::sources::conferences::{Part, list_url};
