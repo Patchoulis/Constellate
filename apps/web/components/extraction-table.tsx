@@ -365,6 +365,7 @@ function RowView({
 }) {
 	const asked = row.cells.some((cell) => cell.kind !== "not_asked");
 	const [confirming, setConfirming] = useState(false);
+	const [forgetError, setForgetError] = useState<string | null>(null);
 	return (
 		<tr className="border-b last:border-b-0">
 			<td className="sticky left-0 w-56 bg-card p-2 align-top">
@@ -394,7 +395,7 @@ function RowView({
 							variant="ghost"
 							size="icon"
 							className="size-5"
-							title="Forget this paper's answers, so that it is asked again at the next run (asks first)"
+							title="Forget this paper's answers, by every model and in every run, so that it is asked again at the next run (asks first)"
 							onClick={() => setConfirming(true)}
 						>
 							<RotateCcw />
@@ -402,11 +403,18 @@ function RowView({
 					)}
 					{confirming && (
 						<span className="flex flex-wrap items-center gap-1 text-foreground">
-							Forget its answers in every table? This cannot be undone, and asking again costs money.
+							Forget its answers, given by every model, in every run&apos;s table? This cannot be undone, and asking again costs money.
 							<Button
 								variant="outline"
 								className="h-6 px-2"
-								onClick={() => void api.forgetExtraction(run, [row.paper]).then(onForgotten, onForgotten)}
+								onClick={() => {
+									setForgetError(null);
+									void api.forgetExtraction(run, [row.paper]).then(onForgotten, (error: Error) => {
+										setForgetError(`Its answers could not be forgotten: ${error.message}`);
+										setConfirming(false);
+										onForgotten();
+									});
+								}}
 							>
 								Forget
 							</Button>
@@ -415,6 +423,7 @@ function RowView({
 							</Button>
 						</span>
 					)}
+					{forgetError && <span className="text-destructive">{forgetError}</span>}
 				</div>
 			</td>
 			{row.cells.map((cell, index) => (

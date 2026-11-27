@@ -171,7 +171,7 @@ export function CommunityCitationKinds({
 	const [forgetting, setForgetting] = useState(false);
 	const [forgetError, setForgetError] = useState<string | null>(null);
 	if (!summary) return null;
-	const coverage = { papers: summary.papers, read: summary.papers_read, without_pdf: summary.without_pdf };
+	const coverage = { papers: summary.papers, read: summary.papers_read, without_pdf: summary.without_pdf, unreadable: summary.unreadable };
 	const lists = { run, treePath, titles: summary.titles, onOpenPaper };
 	const active = (one: FollowedJob) => one.state === "running" || one.state === "starting";
 	const running = active(job) || active(reading.job);
@@ -181,7 +181,8 @@ export function CommunityCitationKinds({
 			<Heading>Citation kinds</Heading>
 			<p className="text-xs text-muted-foreground" title={SENTENCES_NOTE}>
 				Citing sentences read for {summary.papers_read.toLocaleString()} of {count(summary.papers, "paper")}
-				{summary.without_pdf > 0 && ` (${count(summary.without_pdf, "has", "have")} no PDF kept)`}: they cite{" "}
+				{summary.without_pdf > 0 && ` (${count(summary.without_pdf, "has", "have")} no PDF kept)`}
+				{(summary.unreadable ?? 0) > 0 && ` (${count(summary.unreadable ?? 0, "has", "have")} a PDF that cannot be read)`}: they cite{" "}
 				{count(summary.cited_papers, "paper")} of your library in {count(summary.tally.sentences, "sentence")}.
 			</p>
 			{moreToRead(coverage) && !running && (
@@ -238,8 +239,8 @@ export function CommunityCitationKinds({
 					{forgetting ? (
 						<>
 							<span>
-								Forget the kinds read for every paper this community cites, also those read for other communities and runs? Reading them
-								again costs again.
+								Forget the kinds read for every paper this community cites, by every model and in every run (also those read for other
+								communities)? This cannot be undone, and reading them again costs money again.
 							</span>
 							<Button
 								variant="outline"
@@ -256,7 +257,11 @@ export function CommunityCitationKinds({
 							</Button>
 						</>
 					) : (
-						<Button variant="ghost" title="Forget these readings, to have them read again" onClick={() => setForgetting(true)}>
+						<Button
+							variant="ghost"
+							title="Forget these readings, by every model and in every run, to have them read again (asks first)"
+							onClick={() => setForgetting(true)}
+						>
 							<RotateCcw />
 							Read again
 						</Button>
