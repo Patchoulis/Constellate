@@ -27,6 +27,12 @@ const { Lifecycle } = require("./lifecycle.cjs");
 const setup = require("./setup.cjs");
 
 const BACKEND_PORT = 8765; // the web build forwards /api here (apps/web/next.config.ts)
+// How often a starting server is asked whether it answers, and how many times: the window opens once both answer,
+// so a server that is up waits half the interval on average before anyone notices. Asking is one local request.
+// The limit is a number of tries, not a time: where a refused connection itself takes a second or two (Windows
+// retries it), a slow first start gets as long as it always had.
+const START_POLL_MS = 100;
+const START_TRIES = 600;
 const DEV_URL = process.env.RP_DEV_URL;
 const REPO = path.join(__dirname, "..", "..");
 
@@ -125,10 +131,10 @@ async function serve(name, command, args, options, url) {
 		});
 	});
 	const up = (async () => {
-		for (let attempt = 0; attempt < 240; attempt++) {
+		for (let attempt = 0; attempt < START_TRIES; attempt++) {
 			if (await answers(url)) return;
 			if (!life.maySpawn) throw new Error(`${name} is no longer waited for: the app is closing.`);
-			await new Promise((resolve) => setTimeout(resolve, 250));
+			await new Promise((resolve) => setTimeout(resolve, START_POLL_MS));
 		}
 		throw new Error(`${name} did not answer at ${url}.\n\n${output}`);
 	})();

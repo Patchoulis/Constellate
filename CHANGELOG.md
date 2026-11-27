@@ -50,6 +50,8 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   they were saved with, under the tier's generic name, until they are run again.
 - The backend is being rewritten in Rust (`apps/engine`), organised by subject; the Python backend stays until the
   Rust one does everything it does.
+- Moving around the graph, and pointing at papers, is smooth again with the whole run in view: a frame takes a few
+  milliseconds instead of about 30 with 12,500 papers; the app also opens its window a little sooner.
 
 ### Security
 

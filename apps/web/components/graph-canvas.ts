@@ -8,13 +8,14 @@
  *    same camera (glows -> papers -> marked papers and the hovered paper's links -> labels), so nothing can
  *    lag anything else.
  *  - Camera: d3-zoom supplies pan / zoom-to-cursor / pinch (screen = world * k + [x, y]).
- *  - Picking: the nearest paper whose dot (plus a few pixels) is under the pointer; a linear scan is
- *    microseconds at a few thousand papers.
+ *  - Picking: the nearest paper whose dot (plus a few pixels) is under the pointer (lib/pick.ts); a
+ *    scan of every paper, about a tenth of a millisecond at 12,500 papers (tests/perf.bench.ts).
  *
  * The glow shows what belongs together. Every paper adds a soft radial halo in its group's hue, composited
  * additively ("lighter"). One halo is faint; where a group is dense the halos add up, so each group glows in its
- * own colour, brightest at its core. Halos are pre-rendered once per hue as sprites, so a frame is a few thousand
- * drawImage calls.
+ * own colour, brightest at its core. Halos are pre-rendered once per hue as sprites, and the glows of a level are
+ * added up once into a layer of their own (lib/glow-layer.ts), so a frame draws one image for them, not one per
+ * paper. The dots are kept as paths in the same way while the zoom leaves their size alone.
  *
  * Links show what one paper is closest to, and only on request: hovering a paper draws lines to its few most
  * similar papers (the backend cuts each paper's list at the natural gap in its similarities) and marks them.
@@ -33,8 +34,10 @@
 import { select } from "d3-selection";
 import { zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from "d3-zoom";
 import { Glide, prefersLessMotion } from "@/lib/glide";
+import { GLOW_LAYER_MOST_PIXELS, glowLayerGeometry, inside, visibleWorld, type GlowLayerGeometry } from "@/lib/glow-layer";
 import type { MarkedPlace } from "@/lib/labels";
 import type { Box } from "@/lib/layout";
+import { nearestPaper } from "@/lib/pick";
 import { hsl } from "@/lib/utils";
 
 export interface CanvasGroup {
@@ -66,6 +69,17 @@ export interface CanvasData {
 	/** coarse to fine; at least one */
 	levels: CanvasLevel[];
 }
+
+/** The glows of one level under one focus, drawn once (lib/glow-layer.ts); no canvas when it would be too large. */
+type GlowLayer =
+	| {
+			level: CanvasLevel;
+			focus: Set<number> | null;
+			geometry: GlowLayerGeometry;
+			canvas: HTMLCanvasElement;
+			context: CanvasRenderingContext2D;
+	  }
+	| { level: CanvasLevel; focus: Set<number> | null; geometry: null; canvas: null; context: null };
 
 export interface RendererCallbacks {
 	/** The hovered paper (or null), where that paper is inside the canvas, and the same for the papers it is
@@ -155,6 +169,10 @@ export class GraphCanvasRenderer {
 	private hovered: number | null = null;
 	/** the marked papers, newest first */
 	private marked: number[] = [];
+	/** the glows of the levels seen under the current focus, oldest first (glowLayerOf) */
+	private glowLayers: GlowLayer[] = [];
+	/** the dots of one level, focus and size (dotsOf) */
+	private dotPaths: { level: CanvasLevel; focus: Set<number> | null; radius: number; dots: Path2D[]; dimmed: Path2D } | null = null;
 	private observer: ResizeObserver;
 
 	constructor(
@@ -192,6 +210,8 @@ export class GraphCanvasRenderer {
 		this.canvas.removeEventListener("mouseleave", this.onLeave);
 		this.canvas.removeEventListener("click", this.onClick);
 		this.canvas.removeEventListener("contextmenu", this.onContextMenu);
+		this.dropGlowLayers(this.glowLayers);
+		this.glowLayers = [];
 	}
 
 	setData(data: CanvasData | null) {
@@ -199,6 +219,9 @@ export class GraphCanvasRenderer {
 		this.hovered = null;
 		this.marked = [];
 		this.sprites.clear();
+		this.dropGlowLayers(this.glowLayers);
+		this.glowLayers = [];
+		this.dotPaths = null;
 		this.linked = (data?.points ?? []).map(() => []);
 		// closest first, so that where only some of a paper's linked papers can be named, those are the closest
 		for (const [a, b] of [...(data?.links ?? [])].sort((one, other) => other[2] - one[2])) {
@@ -309,6 +332,66 @@ export class GraphCanvasRenderer {
 		return this.sprites.get(key)!;
 	}
 
+	/** The glow layer of this level under the current focus, drawn now if it is not yet; null when it would be too
+	 *  large to keep. Layers of other levels are kept too (zooming back is free) as long as all of them together
+	 *  stay within GLOW_LAYER_MOST_PIXELS; a new focus makes them all stale. A level is only ever one data's, so a
+	 *  new graph never finds an old layer. */
+	private glowLayerOf(level: CanvasLevel, data: CanvasData): { geometry: GlowLayerGeometry; canvas: HTMLCanvasElement } | null {
+		const known = this.glowLayers.find((layer) => layer.level === level && layer.focus === this.focus);
+		// the browser may drop a canvas's pixels (graphics reset, low memory): such a layer is drawn again
+		if (known && !known.context?.isContextLost()) return known.geometry ? known : null;
+		const geometry = glowLayerGeometry(data.points, level.glow, SPRITE);
+		const kept = this.glowLayers.filter((layer) => layer.focus === this.focus && layer !== known);
+		const pixels = (layer: GlowLayer) => (layer.geometry ? layer.geometry.width * layer.geometry.height : 0);
+		if (geometry)
+			while (kept.reduce((sum, layer) => sum + pixels(layer), geometry.width * geometry.height) > GLOW_LAYER_MOST_PIXELS) kept.shift();
+		this.dropGlowLayers(this.glowLayers.filter((layer) => !kept.includes(layer)));
+		if (!geometry) {
+			// remembered, so that the size is not worked out again every frame
+			this.glowLayers = [...kept, { level, focus: this.focus, geometry: null, canvas: null, context: null }];
+			return null;
+		}
+		const canvas = document.createElement("canvas");
+		canvas.width = geometry.width;
+		canvas.height = geometry.height;
+		const layer = canvas.getContext("2d")!;
+		const { box, scale } = geometry;
+		layer.setTransform(scale, 0, 0, scale, -box.minX * scale, -box.minY * scale);
+		layer.globalCompositeOperation = "lighter";
+		const radius = level.glow;
+		data.points.forEach((point, index) => {
+			if (this.lit(index))
+				layer.drawImage(this.sprite(level.groups[level.of[index]].hue), point.x - radius, point.y - radius, radius * 2, radius * 2);
+		});
+		const made = { level, focus: this.focus, geometry, canvas, context: layer };
+		this.glowLayers = [...kept, made];
+		return made;
+	}
+
+	/** Give back the pixels of glow layers no longer used now, rather than whenever they are collected: a layer
+	 *  is tens of megabytes. */
+	private dropGlowLayers(layers: GlowLayer[]) {
+		for (const { canvas } of layers) if (canvas) canvas.width = canvas.height = 0;
+	}
+
+	/** The papers' dots as paths, one per group and one for the papers out of focus. They stay the same while the
+	 *  level, the focus and the dots' size do: a pan, a hover, and any zoom close enough that dots have their true
+	 *  size, reuse them. */
+	private dotsOf(level: CanvasLevel, data: CanvasData, radius: number) {
+		const kept = this.dotPaths;
+		if (kept && kept.level === level && kept.focus === this.focus && kept.radius === radius) return kept;
+		const dots = level.groups.map(() => new Path2D());
+		const dimmed = new Path2D();
+		data.points.forEach((point, index) => {
+			const path = this.lit(index) ? dots[level.of[index]] : dimmed;
+			const size = radius * data.sizes[index];
+			path.moveTo(point.x + size, point.y);
+			path.arc(point.x, point.y, size, 0, Math.PI * 2);
+		});
+		this.dotPaths = { level, focus: this.focus, radius, dots, dimmed };
+		return this.dotPaths;
+	}
+
 	private lit(index: number): boolean {
 		return this.focus === null || this.focus.has(index);
 	}
@@ -337,17 +420,7 @@ export class GraphCanvasRenderer {
 		// the margin, and a fixed reach would leave its outer part dead.
 		const { k } = this.transform;
 		// nearest dot whose own disc (they differ in size) plus the margin is under the pointer
-		let best = Infinity;
-		let index: number | null = null;
-		const { sizes } = this.data;
-		this.data.points.forEach((point, i) => {
-			const distance = (point.x - wx) ** 2 + (point.y - wy) ** 2;
-			if (distance < best && distance < (dotRadius(k) * sizes[i] + PICK_MARGIN_PX / k) ** 2 && this.lit(i)) {
-				best = distance;
-				index = i;
-			}
-		});
-		return index;
+		return nearestPaper(this.data.points, this.data.sizes, { x: wx, y: wy }, dotRadius(k), PICK_MARGIN_PX / k, (index) => this.lit(index));
 	}
 
 	/** Report the hovered paper and its current place on screen. */
@@ -429,21 +502,23 @@ export class GraphCanvasRenderer {
 			ctx.drawImage(this.sprite(groupOf(index).hue), point.x - radius, point.y - radius, radius * 2, radius * 2);
 		};
 
-		// 1. Glows, additive: halos of one hue pile up into the group's glow.
+		// 1. Glows, additive: halos of one hue pile up into the group's glow. Drawn once into the glow layer while
+		// the level and the focus stay the same; when that layer would be too large, halo by halo, only those that
+		// reach the screen (the canvas would clip the others, after paying for them).
 		ctx.globalCompositeOperation = "lighter";
-		data.points.forEach((_, index) => this.lit(index) && glow(index, level.glow));
+		const layer = this.glowLayerOf(level, data);
+		if (layer) {
+			const { box } = layer.geometry;
+			ctx.drawImage(layer.canvas, box.minX, box.minY, box.maxX - box.minX, box.maxY - box.minY);
+		} else {
+			const reach = visibleWorld(this.transform, this.canvas.clientWidth, this.canvas.clientHeight, level.glow);
+			data.points.forEach((point, index) => inside(reach, point.x, point.y) && this.lit(index) && glow(index, level.glow));
+		}
 		ctx.globalCompositeOperation = "source-over";
 
 		// 2. Papers: one path per group plus one for everything out of focus. Never under ~1px on screen.
 		const radius = dotRadius(k);
-		const dots = level.groups.map(() => new Path2D());
-		const dimmed = new Path2D();
-		data.points.forEach((point, index) => {
-			const path = this.lit(index) ? dots[level.of[index]] : dimmed;
-			const size = radius * data.sizes[index];
-			path.moveTo(point.x + size, point.y);
-			path.arc(point.x, point.y, size, 0, Math.PI * 2);
-		});
+		const { dots, dimmed } = this.dotsOf(level, data, radius);
 		ctx.fillStyle = DIM;
 		ctx.fill(dimmed);
 		dots.forEach((path, group) => {

@@ -236,8 +236,15 @@ function CostLine({ models, model, onModel }: { models: CatalogItem[]; model?: s
 	const usage = useAsync(() => api.usage(wanted), [wanted]);
 	const { reload } = usage;
 	useEffect(() => {
-		const timer = setInterval(reload, 15_000); // names and overviews are written in the background
-		return () => clearInterval(timer);
+		// Names and overviews are written in the background, so the cost is asked for again now and then; not while
+		// the window is hidden (minimised, behind another), where nobody reads it, but at once when it is shown.
+		const timer = setInterval(() => document.hidden || reload(), 15_000);
+		const shown = () => document.hidden || reload();
+		document.addEventListener("visibilitychange", shown);
+		return () => {
+			clearInterval(timer);
+			document.removeEventListener("visibilitychange", shown);
+		};
 	}, [reload]);
 	const spent = ready(usage);
 	if (!spent) return null;
