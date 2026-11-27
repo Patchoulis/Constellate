@@ -7,6 +7,8 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Each community has an Agree / disagree section: ask a yes/no question of its papers (or start from a term its papers keep using, or a question the model proposes from their abstracts), see the cost before anything is sent, ask the ten most central papers first and the rest on a second click, and see the papers grouped as supporting, mixed (with the condition), contradicting or not addressing it, each with the paper's own words, counted by acceptance tier and by year; placements whose quotes are not found in the paper are shown apart and never counted, and questions are kept so they can be reopened without paying again.
+
 - Opening a paper's Reviews tab now keeps the whole discussion (each review by section, rebuttals, the meta-review and the decision), shows the paper's mean, range and confidence-weighted mean on its venue's own scale, and adds a Reviews section to each community: how many of its papers have reviews read, ratings per conference and year, the papers reviewers disagreed on most, and what reviewers most often praise and criticise, each linked to the reviewer's words.
 
 - The paper reader has a Text tab showing the paper's text section by section, and citations open it at the exact place they quote, with the words highlighted; quotes Claude gives as evidence are only shown once they have been found in the paper they are attributed to.

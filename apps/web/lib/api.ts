@@ -111,4 +111,41 @@ export const api = {
 	/** read this paper's reference list from its PDF (slow the first time: the PDF is fetched); answers its network */
 	readReferences: (id: string, inRun?: string) =>
 		call<CitationNetwork>(`/api/papers/${id}/references${inRun ? `?run=${encodeURIComponent(inRun)}` : ""}`, { method: "POST" }),
+	/** where a community's papers (or the marked ones) stand on a question (engine api/stances.rs) */
+	stances: {
+		listing: (name: string, scope: StanceScope) =>
+			"community" in scope
+				? call<import("@rp/contracts").StanceListing>(stancesAt(name, scope))
+				: call<import("@rp/contracts").StanceListing>(`${stancesAt(name, scope)}/list`, send("POST", { papers: scope.papers })),
+		/** what asking would cost; nothing is sent to the model */
+		estimate: (name: string, scope: StanceScope, question: string, includeUnrelated: boolean) =>
+			call<import("@rp/contracts").StancePlan>(
+				`${stancesAt(name, scope)}/estimate`,
+				send("POST", { question, include_unrelated: includeUnrelated, papers: "papers" in scope ? scope.papers : [] }),
+			),
+		/** start the job that asks the most central papers ("sample") or all of them */
+		ask: (name: string, scope: StanceScope, question: string, includeUnrelated: boolean, part: "sample" | "all") =>
+			call<import("@rp/contracts").StanceStarted>(
+				`${stancesAt(name, scope)}/ask`,
+				send("POST", { question, include_unrelated: includeUnrelated, part, papers: "papers" in scope ? scope.papers : [] }),
+			),
+		result: (name: string, scope: StanceScope, id: string) =>
+			call<import("@rp/contracts").StanceResult>(`${stancesAt(name, scope)}/${encodeURIComponent(id)}`),
+		/** forget this question's answers for a fresh reading (the next ask pays again) */
+		redo: (name: string, scope: StanceScope, id: string) =>
+			call<import("@rp/contracts").StanceAsked>(`${stancesAt(name, scope)}/${encodeURIComponent(id)}/redo`, { method: "POST" }),
+		proposalEstimate: (name: string, community: string) =>
+			call<import("@rp/contracts").StanceProposalPlan>(`${stancesAt(name, { community })}/proposals/estimate`, { method: "POST" }),
+		propose: (name: string, community: string) =>
+			call<import("@rp/contracts").StanceStarted>(`${stancesAt(name, { community })}/proposals`, { method: "POST" }),
+		redoProposals: (name: string, community: string) =>
+			call<{ round: number }>(`${stancesAt(name, { community })}/proposals/redo`, { method: "POST" }),
+	},
 };
+
+type StanceScope = import("@rp/contracts").StanceScope;
+
+/** Where a scope's stances routes are: a community's, or the run's marked papers'. */
+function stancesAt(name: string, scope: StanceScope): string {
+	return "community" in scope ? `${run(name)}/communities/${encodeURIComponent(scope.community)}/stances` : `${run(name)}/marked/stances`;
+}
