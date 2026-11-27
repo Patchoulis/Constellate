@@ -382,6 +382,10 @@ export interface CitationNetwork {
 	papers_in_library: number;
 	/** the day it was built, YYYY-MM-DD */
 	built: string;
+	/** when reading the seed's references looked works up on arXiv and stopped before every one was asked about:
+	 *  at the most one reading asks, or because arXiv refused or could not be reached (`why`); `left` are asked
+	 *  about when the references are read again. Null when nothing was left, absent from older engines */
+	lookups_stopped?: { kind: "at_most"; left: number } | { kind: "failed"; why: string; left: number } | null;
 }
 
 export interface RunResult {
@@ -769,13 +773,14 @@ export interface Usage {
 	since: string | null;
 	/** the currency asked for and what a US dollar is worth in it; the dollar itself when no rate could be had */
 	currency: { code: string; rate: number; date: string | null };
-	/** everything below is in US dollars, the currency the API bills in */
-	usd: number;
+	/** everything below is in US dollars, the currency the API bills in; null when calls were made and none had a
+	 *  price (a cost that cannot be known is not shown, never as 0) */
+	usd: number | null;
 	calls: number;
 	/** calls to a model whose price is not known: counted in tokens only, so `usd` is short by them */
 	unpriced_calls: number;
-	/** since the app was started */
-	session_usd: number;
+	/** since the app was started; null as `usd` is */
+	session_usd: number | null;
 	session_calls: number;
 	models: Record<string, UsageEntry>;
 	/** what the calls were for: naming communities, overviews, ... */

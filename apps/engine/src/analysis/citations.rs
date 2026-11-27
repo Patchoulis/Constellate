@@ -358,6 +358,20 @@ pub struct CitationNetwork {
     pub papers_read: usize,
     pub papers_in_library: usize,
     pub built: NaiveDate,
+    /// When reading the seed's references looked works up on arXiv and stopped before every one was asked
+    /// about: why. None when nothing was looked up, or every work worth asking about was.
+    pub lookups_stopped: Option<LookupsStopped>,
+}
+
+/// Why looking a paper's references up on arXiv stopped before every one was asked about: `lookups_stopped` of
+/// `CitationNetwork` in the contracts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LookupsStopped {
+    /// The most one request asks was asked; `left` works are asked about when the references are read again.
+    AtMost { left: usize },
+    /// arXiv refused or could not be reached; `left` works are asked about when the references are read again.
+    Failed { why: String, left: usize },
 }
 
 /// Who cites each work, among the read papers: work key -> the citing papers' ids.
@@ -530,6 +544,7 @@ pub fn network(
         papers_read: read.len(),
         papers_in_library: library.papers.len(),
         built,
+        lookups_stopped: None,
     }
 }
 

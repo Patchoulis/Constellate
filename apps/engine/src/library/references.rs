@@ -22,8 +22,8 @@ use sha2::{Digest, Sha256};
 
 use super::{Library, LibraryError, now};
 use crate::analysis::citations::Linker;
-use crate::sources::citations::{Answer, Ask, Clock, Get, LookupError, Pacer, ask_for, read_answer, url_for};
-use crate::text::pdf::pdf_pages;
+use crate::sources::citations::{Answer, Ask, Get, LookupError, ask_for, read_answer, send, url_for};
+use crate::text::pdf::{Unreadable, pdf_pages};
 use crate::text::references::{Citing, Confidence, Reference, ReferenceList, read_reference_list};
 
 /// The version of what is kept: raised when [`crate::text::references`] reads lists differently, so that the
@@ -89,9 +89,20 @@ fn sha256(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// What is kept of reading a paper's PDF for its references, by this reader and that PDF: its list, or a lasting
+/// reason it cannot be read ([`Unreadable::is_lasting`]), so that a PDF that cannot be read (a hostile one that
+/// takes a reader its whole time or memory) is read once, not at every request. Another PDF, or another reader,
+/// is read again. Kept as the list alone, as before, or as `{"unreadable": ...}`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+enum KeptReading {
+    List(KeptReferences),
+    Unreadable { unreadable: Unreadable },
+}
+
 impl Library {
-    /// The reference list kept for `paper_id`, if this reader read it from the PDF of hash `pdf_hash`.
-    pub fn kept_references(&self, paper_id: &str, pdf_hash: &str) -> Result<Option<KeptReferences>, LibraryError> {
+    /// What was kept of reading `paper_id`'s PDF of hash `pdf_hash` with this reader.
+    fn kept_reading(&self, paper_id: &str, pdf_hash: &str) -> Result<Option<KeptReading>, LibraryError> {
         self.read(|connection| {
             let content: Option<String> = connection
                 .prepare_cached(
@@ -99,8 +110,16 @@ impl Library {
                 )?
                 .query_row(params![paper_id, READER, pdf_hash], |row| row.get(0))
                 .optional()?;
-            // a content that no longer reads as a list is read again
+            // a content that no longer reads as either is read again
             Ok(content.and_then(|content| serde_json::from_str(&content).ok()))
+        })
+    }
+
+    /// The reference list kept for `paper_id`, if this reader read it from the PDF of hash `pdf_hash`.
+    pub fn kept_references(&self, paper_id: &str, pdf_hash: &str) -> Result<Option<KeptReferences>, LibraryError> {
+        Ok(match self.kept_reading(paper_id, pdf_hash)? {
+            Some(KeptReading::List(list)) => Some(list),
+            Some(KeptReading::Unreadable { .. }) | None => None,
         })
     }
 
@@ -124,7 +143,11 @@ impl Library {
 
     /// Keep `list` as the reference list of `paper_id`, read from the PDF of hash `pdf_hash` (replacing any).
     pub fn keep_references(&self, paper_id: &str, pdf_hash: &str, list: &KeptReferences) -> Result<(), LibraryError> {
-        let content = serde_json::to_string(list)?;
+        self.keep_reading(paper_id, pdf_hash, &KeptReading::List(list.clone()))
+    }
+
+    fn keep_reading(&self, paper_id: &str, pdf_hash: &str, reading: &KeptReading) -> Result<(), LibraryError> {
+        let content = serde_json::to_string(reading)?;
         self.write(|transaction| {
             transaction
                 .prepare_cached(
@@ -160,12 +183,22 @@ impl Library {
         self.paper(paper_id)?.ok_or_else(|| LibraryError::UnknownPaper(paper_id.to_owned()))?;
         let Ok(bytes) = fs::read(self.pdf_file(paper_id)) else { return Ok(ReferencesReading::NoPdf) };
         let pdf_hash = sha256(&bytes);
-        if let Some(list) = self.kept_references(paper_id, &pdf_hash)? {
-            return Ok(ReferencesReading::Kept { pdf_hash, list });
+        match self.kept_reading(paper_id, &pdf_hash)? {
+            Some(KeptReading::List(list)) => return Ok(ReferencesReading::Kept { pdf_hash, list }),
+            Some(KeptReading::Unreadable { unreadable }) => {
+                return Ok(ReferencesReading::Unreadable(unreadable.to_string()));
+            }
+            None => {}
         }
         let pages = match pdf_pages(&bytes) {
             Ok(pages) => pages,
-            Err(why) => return Ok(ReferencesReading::Unreadable(why.to_string())),
+            Err(why) => {
+                // kept only when it says something of the PDF: a reader that could not start is tried again
+                if why.is_lasting() {
+                    self.keep_reading(paper_id, &pdf_hash, &KeptReading::Unreadable { unreadable: why.clone() })?;
+                }
+                return Ok(ReferencesReading::Unreadable(why.to_string()));
+            }
         };
         let list = KeptReferences::read(read_reference_list(&pages.join("\n")));
         self.keep_references(paper_id, &pdf_hash, &list)?;
@@ -193,12 +226,10 @@ pub struct Looked {
     pub stopped: Stopped,
 }
 
-/// How arXiv is asked: at its API's address `base`, through `get`, at the pace `pacer` keeps by `clock`.
+/// How arXiv is asked: at its API's address `base`, through `get` (which keeps arXiv's pace: the network does).
 pub struct Arxiv<'a, 'g> {
     pub base: &'a str,
-    pub pacer: &'a mut Pacer,
     pub get: &'a mut Get<'g>,
-    pub clock: &'a mut dyn Clock,
 }
 
 /// The entries of `list` (the list of `paper`) not in `library` that are worth asking arXiv about and were never
@@ -217,14 +248,14 @@ pub fn to_look_up(list: &KeptReferences, paper: &str, library: &Linker) -> Vec<(
 /// Look up on `arxiv` the entries [`to_look_up`] names: at most `most` of them, in the order listed. Each answer
 /// is written into its entry ([`Lookup`]); an entry found is identified from then on.
 pub fn look_up(list: &mut KeptReferences, paper: &str, library: &Linker, most: usize, arxiv: Arxiv) -> Looked {
-    let Arxiv { base, pacer, get, clock } = arxiv;
+    let Arxiv { base, get } = arxiv;
     let wanted = to_look_up(list, paper, library);
     let (mut asked, mut found) = (0, 0);
     for (done, (at, ask)) in wanted.iter().enumerate() {
         if done == most {
             return Looked { asked, found, stopped: Stopped::AtMost { left: wanted.len() - done } };
         }
-        let feed = match pacer.send(&url_for(base, ask), get, clock) {
+        let feed = match send(&url_for(base, ask), get) {
             Ok(feed) => feed,
             Err(error) => return Looked { asked, found, stopped: Stopped::Failed(error) },
         };
@@ -251,7 +282,6 @@ pub fn look_up(list: &mut KeptReferences, paper: &str, library: &Linker, most: u
 #[allow(clippy::unwrap_used)]
 mod tests {
     use std::cell::RefCell;
-    use std::time::{Duration, Instant};
 
     use super::*;
     use crate::library::Known;
@@ -312,6 +342,23 @@ mod tests {
     }
 
     #[test]
+    fn a_pdf_that_cannot_be_read_is_read_once_and_read_again_only_when_the_pdf_is_replaced() {
+        let (_folder, library) = library();
+        library.keep_pdf("seed", b"%PDF-1.4 not a real PDF at all").unwrap();
+        let ReferencesReading::Unreadable(first) = library.references_of("seed").unwrap() else { panic!() };
+        // marked: a second asking that read the PDF again would say the first reason, not the mark
+        library
+            .connection()
+            .execute(r#"UPDATE paper_references SET content = '{"unreadable":{"kind":"no_text"}}'"#, [])
+            .unwrap();
+        let ReferencesReading::Unreadable(again) = library.references_of("seed").unwrap() else { panic!() };
+        assert_eq!(again, Unreadable::NoText.to_string(), "kept, not read again (first: {first})");
+        assert!(library.every_kept_reference_list().unwrap().is_empty(), "no list is made of it");
+        library.keep_pdf("seed", &seed_pdf()).unwrap();
+        assert!(matches!(library.references_of("seed").unwrap(), ReferencesReading::ReadNow { .. }));
+    }
+
+    #[test]
     fn a_list_kept_by_an_older_reader_is_read_again() {
         let (_folder, library) = library();
         library.keep_pdf("seed", &seed_pdf()).unwrap();
@@ -332,19 +379,6 @@ mod tests {
         assert!(!library.keep_lookups("seed", "another-pdf", &list).unwrap());
         assert!(library.keep_lookups("seed", &pdf_hash, &list).unwrap());
         assert_eq!(library.kept_references("seed", &pdf_hash).unwrap().unwrap().entries[0].lookup, Lookup::NotFound);
-    }
-
-    struct PretendClock {
-        now: Instant,
-    }
-
-    impl Clock for PretendClock {
-        fn now(&self) -> Instant {
-            self.now
-        }
-        fn sleep(&mut self, duration: Duration) {
-            self.now += duration;
-        }
     }
 
     const FOUND: &str = r#"<feed><entry><id>http://arxiv.org/abs/2505.11792v3</id><title>Unresolved work number 0 on arXiv</title><published>2025-05-17T02:32:03Z</published></entry></feed>"#;
@@ -381,11 +415,9 @@ mod tests {
             let body = if url.contains("number%200%20") { FOUND } else { NOTHING };
             Ok(Response { status: 200, retry_after: None, body: body.to_owned() })
         };
-        let mut clock = PretendClock { now: Instant::now() };
-        let mut pacer = Pacer::default();
         let base = "https://export.arxiv.org/api/query";
         let mut round = |list: &mut KeptReferences| {
-            let arxiv = Arxiv { base, pacer: &mut pacer, get: &mut get, clock: &mut clock };
+            let arxiv = Arxiv { base, get: &mut get };
             look_up(list, "seed", &linker, 3, arxiv)
         };
         let first = round(&mut list);
@@ -411,8 +443,7 @@ mod tests {
         let linker = Linker::new(&papers);
         let mut list = unresolved(2);
         let mut get = |_: &str| -> Result<Response, String> { Err("no connection".to_owned()) };
-        let mut clock = PretendClock { now: Instant::now() };
-        let arxiv = Arxiv { base: "https://x", pacer: &mut Pacer::default(), get: &mut get, clock: &mut clock };
+        let arxiv = Arxiv { base: "https://x", get: &mut get };
         let looked = look_up(&mut list, "seed", &linker, 10, arxiv);
         assert_eq!(looked.asked, 0);
         assert!(matches!(looked.stopped, Stopped::Failed(LookupError::Unreachable(_))));

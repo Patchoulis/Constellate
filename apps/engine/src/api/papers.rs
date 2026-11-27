@@ -16,7 +16,7 @@
 //! here: the PDF's file is the library's own naming of it ([`crate::library::Library::pdf_file`]).
 
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Seek, SeekFrom};
 
 use axum::Json;
 use axum::body::Body;
@@ -167,12 +167,15 @@ fn pdf_answer(path: &std::path::Path, id: &str, asked: Option<HeaderValue>) -> R
             return Ok((StatusCode::RANGE_NOT_SATISFIABLE, headers).into_response());
         }
     };
-    let mut bytes = Vec::new();
-    if size > 0 {
-        file.seek(SeekFrom::Start(start)).map_err(files)?;
-        file.take(end - start + 1).read_to_end(&mut bytes).map_err(files)?;
+    if size == 0 {
+        return Ok((status, headers, Body::empty()).into_response());
     }
-    Ok((status, headers, Body::from(bytes)).into_response())
+    // streamed from the file as the client reads it: a PDF of 80 MB is never held in memory, nor are many
+    file.seek(SeekFrom::Start(start)).map_err(files)?;
+    let length = end - start + 1;
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+    let reader = tokio::io::AsyncReadExt::take(tokio::fs::File::from_std(file), length);
+    Ok((status, headers, Body::from_stream(tokio_util::io::ReaderStream::new(reader))).into_response())
 }
 
 async fn pdf(State(engine): State<Shared>, Path(id): Path<String>, asked: HeaderMap) -> Result<Response, Refusal> {
@@ -413,6 +416,26 @@ mod tests {
         let refused = ask(&router, "GET", "/api/papers/hep-th%2F9901001/pdf", Some(&outside)).await;
         assert_eq!(refused.status(), StatusCode::RANGE_NOT_SATISFIABLE);
         assert!(fake.asked().is_empty(), "a kept PDF asks nobody");
+    }
+
+    #[tokio::test]
+    async fn a_large_pdf_is_streamed_from_its_file_whole_or_by_its_range() {
+        let (router, data, _) = engine();
+        let library = Library::open(&data.path().join("library")).unwrap();
+        // larger than any one read of the stream: it comes in many pieces
+        let mut big = b"%PDF-1.4 ".to_vec();
+        big.extend((0..6 * 1024 * 1024u32).map(|n| (n % 251) as u8));
+        library.keep_pdf("hep-th/9901001", &big).unwrap();
+        let whole = ask(&router, "GET", "/api/papers/hep-th%2F9901001/pdf", None).await;
+        assert_eq!(whole.status(), StatusCode::OK);
+        assert_eq!(whole.headers()[header::CONTENT_LENGTH], big.len().to_string());
+        assert_eq!(to_bytes(whole.into_body(), usize::MAX).await.unwrap().as_ref(), big.as_slice());
+        let (from, to) = (3_000_001, 5_000_000);
+        let part = ask(&router, "GET", "/api/papers/hep-th%2F9901001/pdf", Some(&format!("bytes={from}-{to}"))).await;
+        assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(part.headers()[header::CONTENT_LENGTH], (to - from + 1).to_string());
+        assert_eq!(part.headers()[header::CONTENT_RANGE], format!("bytes {from}-{to}/{}", big.len()));
+        assert_eq!(to_bytes(part.into_body(), usize::MAX).await.unwrap().as_ref(), &big[from..=to]);
     }
 
     #[tokio::test]

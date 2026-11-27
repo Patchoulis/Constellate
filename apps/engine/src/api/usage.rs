@@ -14,7 +14,8 @@
 //! A call to a model whose price is not known is counted (in calls, tokens and `unpriced_calls`) and never priced
 //! at nothing: a model or a purpose whose every call is unpriced has no `usd` at all (`null`), so that it cannot
 //! read as having cost 0. One with some priced calls has the cost of those, and its `unpriced_calls` says it is
-//! short.
+//! short. The same holds of the totals, in all and this session: `usd` and `session_usd` are `null` when calls
+//! were made and none had a price, and the cost of the priced ones when some had.
 //!
 //! This session's totals are the ledger's rows stamped at or after the moment the engine built its routes (its
 //! start; [`started`]): every row carries the instant it was recorded at, so nothing is counted twice or kept in
@@ -78,12 +79,13 @@ pub struct Told {
     /// The day of the first call in the ledger; none when nothing has been spent.
     pub since: Option<String>,
     pub currency: Rate,
-    /// US dollars, of the priced calls only.
-    pub usd: f64,
+    /// US dollars, of the priced calls only; none when calls were made and none of them had a price (a cost that
+    /// cannot be known is not shown, never as 0).
+    pub usd: Option<f64>,
     pub calls: i64,
     pub unpriced_calls: i64,
-    /// US dollars spent since the engine started.
-    pub session_usd: f64,
+    /// US dollars spent since the engine started; none as `usd` is.
+    pub session_usd: Option<f64>,
     pub session_calls: i64,
     pub models: BTreeMap<String, Entry>,
     pub purposes: BTreeMap<String, Entry>,
@@ -164,10 +166,10 @@ pub fn told(spending: &Spending, session: &Totals, chosen: &Chosen, currency: Ra
         model: model_told(chosen),
         since: spending.since.clone(),
         currency,
-        usd: spending.total.usd(),
+        usd: known_usd(&spending.total),
         calls: spending.total.calls,
         unpriced_calls: spending.total.unpriced_calls,
-        session_usd: session.usd(),
+        session_usd: known_usd(session),
         session_calls: session.calls,
         models: entries(&spending.models),
         purposes: entries(&spending.purposes),
@@ -332,7 +334,7 @@ mod tests {
         let session = library.spending_since(started()).unwrap();
         let told = told(&library.spending().unwrap(), &session, &Chosen::claude("claude-opus-5-5"), Rate::dollar());
         assert_eq!((told.calls, told.session_calls, told.unpriced_calls), (3, 3, 1));
-        assert!((told.usd - (0.06 + 0.5)).abs() < 1e-12 && told.usd == told.session_usd);
+        assert!((told.usd.unwrap() - (0.06 + 0.5)).abs() < 1e-12 && told.usd == told.session_usd);
         assert_eq!(told.models["claude-opus-5-5"].input_tokens, 110_000);
         assert_eq!(told.purposes["naming communities"].calls, 2);
         assert_eq!(told.purposes["naming communities"].unpriced_calls, 1);
@@ -350,6 +352,27 @@ mod tests {
         assert_eq!(Entry::from(&totals(1, 0, 0)).usd, Some(0.0));
     }
 
+    #[test]
+    fn the_totals_of_someone_who_used_only_unpriced_models_have_no_cost_and_priced_calls_still_total() {
+        let data = tempfile::tempdir().unwrap();
+        let library = Library::open(&data.path().join("library")).unwrap();
+        let chosen = Chosen::claude("claude-opus-5-5");
+        let nothing =
+            told(&library.spending().unwrap(), &library.spending_since(started()).unwrap(), &chosen, Rate::dollar());
+        assert_eq!((nothing.usd, nothing.session_usd), (Some(0.0), Some(0.0)), "nothing spent is a known 0");
+        library.record_call(&call("some-other-model", "naming communities", 500, 500)).unwrap();
+        let unpriced =
+            told(&library.spending().unwrap(), &library.spending_since(started()).unwrap(), &chosen, Rate::dollar());
+        assert_eq!((unpriced.usd, unpriced.session_usd), (None, None));
+        let json = serde_json::to_value(&unpriced).unwrap();
+        assert_eq!((json["usd"].clone(), json["session_usd"].clone()), (Value::Null, Value::Null));
+        library.record_call(&call("claude-opus-5-5", "naming communities", 10_000, 1_000)).unwrap();
+        let both =
+            told(&library.spending().unwrap(), &library.spending_since(started()).unwrap(), &chosen, Rate::dollar());
+        assert!((both.usd.unwrap() - 0.06).abs() < 1e-12, "{:?}", both.usd);
+        assert_eq!((both.session_usd, both.unpriced_calls), (both.usd, 1));
+    }
+
     // test_many_tiny_calls_do_not_drift
     #[test]
     fn many_tiny_calls_do_not_drift() {
@@ -363,6 +386,7 @@ mod tests {
         // 320 * (70000 * 0.10 + 30000 * 0.50) dollars per million tokens: summed in whole millionths, exactly
         assert_eq!(told.models["claude-haiku-5-5"].usd, Some(7_040_000.0 / 1e6));
         assert_eq!(told.usd, told.session_usd);
+        assert!(told.usd.is_some());
     }
 
     // test_the_interface_is_told_who_provides_the_model

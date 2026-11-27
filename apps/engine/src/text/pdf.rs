@@ -32,8 +32,9 @@
 //!
 //! The process costs a few milliseconds per PDF (measured in the tests' `--ignored` benchmark), next to the tens
 //! to hundreds a paper's PDF takes to read. Several are read at once, one per computing thread that asks: the
-//! library reads a batch of PDFs on the engine's pool ([`crate::threads`]), so as many children run as the pool
-//! has threads, never more.
+//! library reads a batch of PDFs on the engine's pool ([`crate::threads`]). Since each child may take up to
+//! [`CHILD_HEAP`], no more run at once than the memory free holds at that cap ([`readers_at_once`]), and never
+//! more than the pool has threads: a thread past that waits for a place.
 //!
 //! What the cap does not cover: memory the PDF library maps outside the allocator (it maps none), and the
 //! operating system's own accounting (the child's address space is not limited, only what it allocates).
@@ -45,7 +46,7 @@ use std::io::{self, Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::process::{ExitCode, ExitStatus, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Condvar, LazyLock, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -58,8 +59,8 @@ pub const MAX_PDF_BYTES: usize = 80 * 1024 * 1024;
 /// standard output, then stop. Not meant for people, so not in `--help` (there is none).
 pub const CHILD_ARGUMENT: &str = "--read-one-pdf";
 /// The most a child may allocate: a PDF of a paper (at most [`MAX_PDF_BYTES`]) with its streams inflated fits in
-/// it many times over, so a child that needs more is reading something that is not a paper. As many children run
-/// as the engine's pool has threads, so this is per thread.
+/// it many times over, so a child that needs more is reading something that is not a paper. At most as many
+/// children run as the free memory holds at this cap ([`readers_at_once`]).
 pub const CHILD_HEAP: usize = 1024 * 1024 * 1024;
 /// The exit code of a child whose own input, output or thread failed: a fault of this computer, not of the PDF.
 const CHILD_TROUBLE: u8 = 3;
@@ -240,8 +241,64 @@ fn wait_until(child: &mut Reaped, deadline: Instant) -> Option<ExitStatus> {
     }
 }
 
-/// Read `bytes` in a child process of `program` within `time`: the pages, or why not.
+/// How many PDF readers may run at once: one per computing thread (`cores`), and no more than `available` bytes
+/// of free memory hold at `cap` bytes each (the most one child may allocate); at least one, so that a PDF is
+/// always read, one at a time on a computer short of memory.
+pub fn readers_at_once(cores: usize, available: u64, cap: u64) -> usize {
+    let by_memory = usize::try_from(available / cap.max(1)).unwrap_or(usize::MAX);
+    cores.min(by_memory).max(1)
+}
+
+/// The memory this computer has free now, in bytes; None when the system does not say.
+fn available_memory() -> Option<u64> {
+    let mut system = sysinfo::System::new();
+    system.refresh_memory();
+    Some(system.available_memory()).filter(|bytes| *bytes > 0)
+}
+
+/// Places for children: at most [`readers_at_once`] of them read at once, whoever asks.
+struct Places {
+    most: usize,
+    taken: Mutex<usize>,
+    freed: Condvar,
+}
+
+/// A child's place, given back when dropped (on a panic too).
+struct Place<'a>(&'a Places);
+
+impl Places {
+    fn take(&self) -> Place<'_> {
+        let mut taken = self.taken.lock().unwrap_or_else(PoisonError::into_inner);
+        while *taken >= self.most {
+            taken = self.freed.wait(taken).unwrap_or_else(PoisonError::into_inner);
+        }
+        *taken += 1;
+        Place(self)
+    }
+}
+
+impl Drop for Place<'_> {
+    fn drop(&mut self) {
+        let mut taken = self.0.taken.lock().unwrap_or_else(PoisonError::into_inner);
+        *taken = taken.saturating_sub(1);
+        drop(taken);
+        self.0.freed.notify_one();
+    }
+}
+
+/// The engine's places, counted once, when the first PDF is read in a child: by the computing threads and the
+/// memory free then. A system that does not say its free memory is taken to have one cap's worth per thread.
+static PLACES: LazyLock<Places> = LazyLock::new(|| {
+    let cores = threads::computing();
+    let cap = u64::try_from(CHILD_HEAP).unwrap_or(u64::MAX);
+    let available = available_memory().unwrap_or_else(|| cap.saturating_mul(cores as u64));
+    Places { most: readers_at_once(cores, available, cap), taken: Mutex::new(0), freed: Condvar::new() }
+});
+
+/// Read `bytes` in a child process of `program` within `time`: the pages, or why not. Waits first for a place
+/// among the children ([`readers_at_once`]); `time` runs from when the child starts.
 pub fn read_in_child(program: &Path, bytes: &[u8], time: Duration) -> Result<Vec<String>, Unreadable> {
+    let _place = PLACES.take();
     let mut command = crate::api::config::child_process(program);
     command.arg(CHILD_ARGUMENT).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     // a group of its own: Ctrl-C in the engine's terminal stops the engine, which stops its children, rather than
@@ -313,6 +370,43 @@ mod tests {
     /// A one-page PDF that writes `lines` in Helvetica, one below the other, made here so the test needs no file.
     fn pdf_with(lines: &[&str]) -> Vec<u8> {
         crate::library::passages::fixtures::pdf_with(lines)
+    }
+
+    #[test]
+    fn no_more_readers_run_at_once_than_the_free_memory_holds_at_their_cap_nor_than_the_threads() {
+        const GIB: u64 = 1 << 30;
+        assert_eq!(readers_at_once(16, 64 * GIB, GIB), 16, "plenty of memory: one per thread");
+        assert_eq!(readers_at_once(16, 6 * GIB + GIB / 2, GIB), 6, "six caps' worth free: six");
+        assert_eq!(readers_at_once(4, GIB / 2, GIB), 1, "less than one cap free: still one, one at a time");
+        assert_eq!(readers_at_once(0, 64 * GIB, GIB), 1);
+        assert_eq!(readers_at_once(8, u64::MAX, 0), 8, "a cap of nothing bounds nothing");
+        assert!(available_memory().is_some_and(|bytes| bytes > 0), "this system says what it has free");
+    }
+
+    #[test]
+    fn a_place_is_given_back_when_its_reading_ends_and_whoever_waits_takes_it() {
+        let places = Places { most: 2, taken: Mutex::new(0), freed: Condvar::new() };
+        let most = Mutex::new(0usize);
+        let now = Mutex::new(0usize);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    let _place = places.take();
+                    let at_once = {
+                        let mut now = now.lock().unwrap();
+                        *now += 1;
+                        *now
+                    };
+                    let mut seen = most.lock().unwrap();
+                    *seen = (*seen).max(at_once);
+                    drop(seen);
+                    std::thread::sleep(Duration::from_millis(10));
+                    *now.lock().unwrap() -= 1;
+                });
+            }
+        });
+        assert_eq!(*most.lock().unwrap(), 2);
+        assert_eq!(*places.taken.lock().unwrap(), 0, "every place given back");
     }
 
     #[test]
