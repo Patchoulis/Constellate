@@ -43,7 +43,37 @@ function secretFilesIn(folder) {
 		.map((entry) => path.join(entry.parentPath, entry.name));
 }
 
+/** The folder of package `name` as Node would find it from `from`: in a node_modules folder there or above. */
+function packageFolder(name, from) {
+	for (let folder = from; ; folder = path.dirname(folder)) {
+		const candidate = path.join(folder, "node_modules", name);
+		if (fs.existsSync(path.join(candidate, "package.json"))) return candidate;
+		if (path.dirname(folder) === folder) return null;
+	}
+}
+
+/**
+ * The packages the interface's pages are compiled from: its own dependencies and theirs, all the way down (d3-zoom
+ * brings d3-drag and d3-transition, radix-ui each of its parts). Next is left out: what of it runs is the server's,
+ * found in the standalone output itself. Our own packages (@rp/...) carry no third-party licence.
+ */
+function compiledIntoPages(web = path.join(repo, "apps", "web")) {
+	const found = new Set();
+	const visit = (name, from) => {
+		if (found.has(name) || name === "next" || name.startsWith("@rp/")) return;
+		const folder = packageFolder(name, from);
+		if (!folder) return; // an optional dependency for another system
+		found.add(name);
+		const manifest = JSON.parse(fs.readFileSync(path.join(folder, "package.json"), "utf8"));
+		for (const dependency of Object.keys(manifest.dependencies ?? {})) visit(dependency, folder);
+	};
+	const manifest = JSON.parse(fs.readFileSync(path.join(web, "package.json"), "utf8"));
+	for (const dependency of Object.keys(manifest.dependencies ?? {})) visit(dependency, web);
+	return [...found];
+}
+
 exports.secretFilesIn = secretFilesIn;
+exports.compiledIntoPages = compiledIntoPages;
 
 exports.default = async function afterPack({ appOutDir }) {
 	const from = path.join(__dirname, "..", "web", ".next", "standalone");
@@ -65,25 +95,14 @@ exports.default = async function afterPack({ appOutDir }) {
 
 	const licences = path.join(resources, "licenses");
 	// what the server runs on, plus what is compiled into the pages (the bundler keeps no licence files either)
-	const shipped = new Set([
-		...packagesIn(path.join(resources, "web", "node_modules")),
-		"katex",
-		"d3-force",
-		"d3-zoom",
-		"d3-selection",
-		"lucide-react",
-		"radix-ui",
-	]);
+	const shipped = new Set([...packagesIn(path.join(resources, "web", "node_modules")), ...compiledIntoPages()]);
 	const without = [];
 	for (const name of shipped) {
-		const found = [path.join(repo, "node_modules", name), path.join(from, "node_modules", name)].some((folder) =>
-			copyLicences(folder, path.join(licences, name)),
-		);
+		const folders = [packageFolder(name, path.join(repo, "apps", "web")), path.join(from, "node_modules", name)].filter(Boolean);
+		const found = folders.some((folder) => copyLicences(folder, path.join(licences, name)));
 		if (found) continue;
 		// a package without a licence file still names its licence in its package.json: that much travels with it
-		const manifest = [path.join(repo, "node_modules", name), path.join(from, "node_modules", name)]
-			.map((folder) => path.join(folder, "package.json"))
-			.find((file) => fs.existsSync(file));
+		const manifest = folders.map((folder) => path.join(folder, "package.json")).find((file) => fs.existsSync(file));
 		const licence = manifest && JSON.parse(fs.readFileSync(manifest, "utf8")).license;
 		if (!licence) {
 			without.push(name);

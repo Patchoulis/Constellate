@@ -55,6 +55,29 @@ test("environment files and keys are found anywhere in what is packaged, and the
 	fs.rmSync(folder, { recursive: true, force: true });
 });
 
+test("the licences gathered include every package compiled into the pages, their own dependencies too", () => {
+	const { compiledIntoPages } = require("./after-pack.cjs");
+	const shipped = compiledIntoPages();
+	// the interface's own dependencies, and some it only has through them
+	for (const name of [
+		"katex",
+		"clsx",
+		"tailwind-merge",
+		"class-variance-authority",
+		"d3-zoom",
+		"d3-drag",
+		"d3-transition",
+		"@floating-ui/dom",
+	]) {
+		assert.ok(shipped.includes(name), name);
+	}
+	assert.equal(shipped.includes("next"), false); // the server's part of Next is in the standalone output
+	assert.equal(
+		shipped.some((name) => name.startsWith("@rp/")),
+		false,
+	);
+});
+
 test("the shell's tests are not packaged", () => {
 	assert.deepEqual(
 		packaged().filter((name) => name.endsWith(".test.cjs")),
