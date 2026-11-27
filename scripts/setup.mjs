@@ -7,6 +7,7 @@
  *               your user folder; no administrator rights. On Windows it also needs Microsoft's C++ build
  *               tools, which this cannot install for you: it says how if they are missing.
  *   rustfmt, clippy   the formatter and linter `npm run pr` runs
+ *   cargo-deny  the check of the engine's crates for known vulnerabilities and licences (deny.toml)
  *   packages    `npm ci` for the interface and the desktop shell
  *   git hooks   the checks on commit messages and against committing secrets (.githooks)
  *
@@ -103,6 +104,10 @@ function components() {
 		else if (checkOnly) missing.push(`${component} (run: npm run setup)`);
 		else run(`add ${component}`, "rustup", ["component", "add", component]);
 	}
+	// the advisory and licence check of the engine's crates (deny.toml); built from source, a few minutes once
+	if (has("cargo", ["deny", "--version"])) console.log("  cargo-deny: present");
+	else if (checkOnly) missing.push("cargo-deny (run: npm run setup)");
+	else run("install cargo-deny", "cargo", ["install", "cargo-deny", "--locked"]);
 }
 
 function packages() {

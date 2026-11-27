@@ -1,0 +1,58 @@
+name: Advisories
+
+# Known vulnerabilities in the dependencies, from each ecosystem's own database: npm audit (the npm lockfile),
+# cargo deny (Cargo.lock, with deny.toml) and pip-audit (apps/backend/requirements.lock.txt, what the app installs).
+# The same steps as `npm run pr -- --only=advisories`.
+#
+# A workflow of its own, beside CI, so that an advisory published today against some dependency fails this check
+# without hiding a pull request's own test results. It is meant to be required like CI's jobs (Settings > Branches:
+# add "Advisories" to the required checks), and it runs every week as well, so a new advisory is seen without a pull
+# request. Dependabot (.github/dependabot.yml) opens the pull requests that move dependencies to fixed versions.
+on:
+  pull_request:
+  push:
+    branches: [main, "feat/**", "fix/**", "perf/**", "review/**", "chore/**", "refactor/**", "docs/**", "test/**", "ci/**"]
+  schedule:
+    # Mondays, 05:41 UTC (a schedule runs only from the copy of this file on the default branch)
+    - cron: "41 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: advisories-${{ github.ref }}
+  cancel-in-progress: true
+
+# Actions are pinned to the commit of a release (named in the comment): a tag can be moved, a commit cannot.
+jobs:
+  advisories:
+    name: Advisories
+    runs-on: ubuntu-latest
+    env:
+      # the versions of the checking tools themselves, raised by hand
+      CARGO_DENY_VERSION: "0.22.1"
+      PIP_AUDIT_VERSION: "2.10.1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: cargo-deny
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-${{ runner.os }}-${{ env.CARGO_DENY_VERSION }}
+      - name: Install cargo-deny
+        if: steps.cargo-deny.outputs.cache-hit != 'true'
+        run: cargo install cargo-deny --version "$CARGO_DENY_VERSION" --locked
+      - name: Install pip-audit
+        run: pip install "pip-audit==$PIP_AUDIT_VERSION"
+      # npm audit reads package-lock.json; nothing needs installing (and no dependency's install script runs)
+      - name: Check every lockfile against the advisory databases
+        run: node scripts/pr.mjs --only=advisories
