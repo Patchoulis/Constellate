@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DetectorEstimate } from "@rp/contracts";
 import { DOLLAR } from "@/lib/cost";
-import { detectorEstimateLines, trainingLine } from "@/lib/detector";
+import { detectorEstimateLines, trainingLine } from "@/lib/features/detector/detector";
 
 const estimate = (more: Partial<DetectorEstimate> = {}, cost: Partial<DetectorEstimate["cost"]> = {}): DetectorEstimate => ({
 	provider: "openai",

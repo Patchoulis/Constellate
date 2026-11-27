@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Evidence, Explanation, ExplanationEstimate, PaperPassages, PassageAddress, PassageKind } from "@rp/contracts";
-import { Explained } from "@/components/passage-explainer";
+import { Explained } from "@/components/features/explanation/passage-explainer";
 import { askingCost } from "./costs";
 import {
 	LONGEST_SELECTION,
@@ -20,7 +20,7 @@ import {
 	searchedLine,
 	selectionQuote,
 	symbolSource,
-} from "@/lib/explanation";
+} from "@/lib/features/explanation/explanation";
 
 const address = (page: number, start: number, end: number, section = "2. Method"): PassageAddress => ({
 	page,

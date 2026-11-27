@@ -15,7 +15,7 @@ import {
 	paperGroups,
 	sortRows,
 	toCsv,
-} from "@/lib/extraction";
+} from "@/lib/features/extraction/extraction";
 
 const evidence = (paper: string, quote: string, page = 3): Evidence => ({
 	paper,

@@ -2,7 +2,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Evidence, StanceCostEstimate, StanceFilter, StancePlaced, StanceResult, StanceRow } from "@rp/contracts";
-import { breakdown, costLine, countsLine, coverageLine, skippedLine, stanceColouring, starter, tally } from "@/lib/stances";
+import {
+	breakdown,
+	costLine,
+	countsLine,
+	coverageLine,
+	skippedLine,
+	stanceColouring,
+	starter,
+	tally,
+} from "@/lib/features/stances/stances";
 import { canvasColouring } from "@/lib/graph-colouring";
 import { batchCost } from "./costs";
 

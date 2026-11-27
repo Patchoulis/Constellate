@@ -6,7 +6,7 @@ import type { DetectorEstimate, DetectorState } from "@rp/contracts";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { accepting, costTitle, DOLLAR, shownModel } from "@/lib/cost";
-import { detectorEstimateLines, trainingLine } from "@/lib/detector";
+import { detectorEstimateLines, trainingLine } from "@/lib/features/detector/detector";
 import { elsewhereLine, useFollowedJob } from "@/lib/use-followed-job";
 
 /** Where the estimate stands: not asked, being asked, shown (to be accepted with the click), or refused. */

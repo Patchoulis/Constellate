@@ -2,12 +2,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtractionRow, StanceFilter } from "@rp/contracts";
-import { stateNote } from "@/lib/answers";
-import { allLeftOutLine, ignoredLine } from "@/lib/claim-tree";
+import { stateNote } from "@/lib/features/answers/answers";
+import { allLeftOutLine, ignoredLine } from "@/lib/features/claim_tree/claim-tree";
 import { lookupsStoppedLine } from "@/lib/citations";
-import { leftOutLines } from "@/lib/critique";
-import { abstractOnlyNote, readFromLine } from "@/lib/extraction";
-import { notInLibraryLine, quotesNotFoundLine } from "@/lib/stances";
+import { leftOutLines } from "@/lib/features/critique/critique";
+import { abstractOnlyNote, readFromLine } from "@/lib/features/extraction/extraction";
+import { notInLibraryLine, quotesNotFoundLine } from "@/lib/features/stances/stances";
 
 test("an answer with no statement at all says there is nothing to show, not that the papers do not say", () => {
 	const note = stateNote({ state: "empty" } as Parameters<typeof stateNote>[0]);

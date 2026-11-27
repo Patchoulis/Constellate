@@ -16,7 +16,7 @@ import {
 	splitPassages,
 	stateNote,
 	type AskState,
-} from "@/lib/answers";
+} from "@/lib/features/answers/answers";
 import { noReadablePdf } from "@/lib/no-pdf";
 import { RequestError } from "@/lib/request";
 

@@ -5,7 +5,7 @@ import type { Catalog, CatalogItem, DescribeEstimate, Settings } from "@rp/contr
 import { SETTING_LABELS } from "@/components/settings-dialog";
 import { useChoose } from "@/components/ui/confirm";
 import { costTitle, costWords } from "@/lib/cost";
-import { namingWords } from "@/lib/naming";
+import { namingWords } from "@/lib/features/writing/naming";
 import type { Answer, Asking, NamingOffer } from "@/lib/run-replace";
 import { acceptedWords, replaceWords } from "@/lib/run-replace";
 

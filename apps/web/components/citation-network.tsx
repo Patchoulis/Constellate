@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BookOpenText, Loader2, RotateCw } from "lucide-react";
 import type { CitationKind, CitationNeighbour, CitationNetwork, Paper } from "@rp/contracts";
-import { contextsOf } from "@/components/citation-contexts";
-import { KIND_HUE, edgeKinds, lineKind } from "@/lib/citation-kinds";
+import { contextsOf } from "@/components/features/citation_contexts/citation-contexts";
+import { KIND_HUE, edgeKinds, lineKind } from "@/lib/features/citation_contexts/citation-kinds";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { Input } from "@/components/ui/field";

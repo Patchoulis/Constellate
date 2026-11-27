@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import type { Catalog, Ratings, ReaderTarget } from "@rp/contracts";
-import { RunAsk } from "@/components/ask";
+import { RunAsk } from "@/components/features/answers/ask";
 import { CommunityPanel } from "@/components/community-panel";
 import { EvidenceProvider, type EvidenceActions } from "@/components/evidence-link";
 import { GraphView } from "@/components/graph-view";

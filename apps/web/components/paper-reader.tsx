@@ -5,13 +5,13 @@ import { AlignLeft, ExternalLink, FileSearch, FileText, ListTree, Loader2, Messa
 import type { Catalog, CatalogItem, Declarations, Paper, Ratings, ReaderTarget } from "@rp/contracts";
 import { AcceptanceTag, AiTag, FlagTag, RatingTags } from "@/components/brand";
 import { Citations } from "@/components/citation-network";
-import { ClaimsView } from "@/components/claims-view";
-import { CitationSentences } from "@/components/citation-contexts";
+import { ClaimsView } from "@/components/features/claim_tree/claims-view";
+import { CitationSentences } from "@/components/features/citation_contexts/citation-contexts";
 import { CommunityDot, MarkButton } from "@/components/community-panel";
-import { Weaknesses } from "@/components/critique";
+import { Weaknesses } from "@/components/features/critique/critique";
 import { MathText } from "@/components/math-text";
 import { PaperText } from "@/components/paper-text";
-import { ExplainFromText } from "@/components/passage-explainer";
+import { ExplainFromText } from "@/components/features/explanation/passage-explainer";
 import { PaperReviewFigures } from "@/components/review-summary";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { ResizeHandle } from "@/components/ui/resize-handle";

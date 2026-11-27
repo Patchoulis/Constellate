@@ -3,17 +3,17 @@
 import { useState } from "react";
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronLeft, Loader2, Square, Star, Tags, Telescope, Trash2, X } from "lucide-react";
 import type { Community, GraphNode, RunResult } from "@rp/contracts";
-import { CommunityAsk } from "@/components/ask";
+import { CommunityAsk } from "@/components/features/answers/ask";
 import { useAskNaming } from "@/components/run-dialogs";
 import { api } from "@/lib/api";
-import { namingRequest, unnamedOf } from "@/lib/naming";
+import { namingRequest, unnamedOf } from "@/lib/features/writing/naming";
 import { elsewhereLine, useFollowedJob } from "@/lib/use-followed-job";
 import { AcceptanceTag, AiTag } from "@/components/brand";
 import { MathText } from "@/components/math-text";
 import { CommunityReviews } from "@/components/review-summary";
-import { CommunityStances } from "@/components/stances";
-import { ExtractionTable } from "@/components/extraction-table";
-import { CommunityCitationKinds } from "@/components/citation-kinds";
+import { CommunityStances } from "@/components/features/stances/stances";
+import { ExtractionTable } from "@/components/features/extraction/extraction-table";
+import { CommunityCitationKinds } from "@/components/features/citation_contexts/citation-kinds";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { CITATIONS_NOTE, citationsNote, citedByFigure, citedByOf, citesFigure, citesOf } from "@/lib/citations";
@@ -431,7 +431,7 @@ export function CommunityPanel({
 
 /**
  * "Name the communities", over the list of a run that has unnamed ones (one made without names, or without a key):
- * what naming would cost is shown first (lib/naming.ts), the click starts the job, which is followed with its
+ * what naming would cost is shown first (lib/features/writing/naming.ts), the click starts the job, which is followed with its
  * progress and can be stopped, and the run's communities are read again when it ends.
  */
 function NameCommunities({

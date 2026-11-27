@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Community, DescribeEstimate } from "@rp/contracts";
-import { namingRequest, namingWords, unnamedOf } from "@/lib/naming";
+import { namingRequest, namingWords, unnamedOf } from "@/lib/features/writing/naming";
 
 const estimate = (more: Partial<DescribeEstimate["estimate"]> = {}): DescribeEstimate => ({
 	provider: "openai",

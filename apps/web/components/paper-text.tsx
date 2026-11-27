@@ -3,11 +3,11 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { AlignLeft, FileText, MessageSquareText, Sparkles } from "lucide-react";
 import type { Passage, PassageAddress, PassageKind } from "@rp/contracts";
-import { PassageExplainer, type AskedOnce, type ExplainMode } from "@/components/passage-explainer";
+import { PassageExplainer, type AskedOnce, type ExplainMode } from "@/components/features/explanation/passage-explainer";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { highlighted, pages, passageAt } from "@/lib/evidence";
-import { explainable, placeKey, resolveSelection, selectionQuote } from "@/lib/explanation";
+import { explainable, placeKey, resolveSelection, selectionQuote } from "@/lib/features/explanation/explanation";
 import { noReadablePdf } from "@/lib/no-pdf";
 import { ready, useAsync } from "@/lib/use-async";
 import { cn } from "@/lib/utils";
@@ -89,7 +89,7 @@ function passageOf(node: Node | null): Element | null {
  * view; `at.quote` without an address is looked for in the paper first.
  *
  * Words selected here (with the mouse or the keyboard), or a passage's own button, can be explained by the model
- * or matched with passages of nearby papers (components/passage-explainer.tsx). Both are offered once the
+ * or matched with passages of nearby papers (components/features/explanation/passage-explainer.tsx). Both are offered once the
  * explanations kept for the paper have been read.
  */
 export function PaperText({

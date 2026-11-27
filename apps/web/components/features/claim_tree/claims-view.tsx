@@ -46,7 +46,7 @@ import {
 	stanceTone,
 	stanceWords,
 	unplacedWhy,
-} from "@/lib/claim-tree";
+} from "@/lib/features/claim_tree/claim-tree";
 import { budgetWords, shownModel } from "@/lib/cost";
 import { ready, useAsync } from "@/lib/use-async";
 import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";

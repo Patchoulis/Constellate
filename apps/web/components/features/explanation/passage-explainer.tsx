@@ -31,7 +31,7 @@ import {
 	readAskBelow,
 	searchedLine,
 	symbolSource,
-} from "@/lib/explanation";
+} from "@/lib/features/explanation/explanation";
 import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
 import { accepting, shownModel } from "@/lib/cost";
 import { money } from "@/lib/units";

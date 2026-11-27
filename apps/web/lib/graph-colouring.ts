@@ -62,7 +62,7 @@ export function colouringStep(current: PaperColouring | null, event: ColouringEv
 	}
 }
 
-/** The owner of the colouring by the papers a cited answer cites (components/ask.tsx `onCitedPapers`). */
+/** The owner of the colouring by the papers a cited answer cites (components/features/answers/ask.tsx `onCitedPapers`). */
 export const ANSWER_OWNER = "answer";
 
 /** Hues for groups that have no meaning of their own (an extraction column's values): far apart on the wheel. */

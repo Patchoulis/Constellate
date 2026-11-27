@@ -28,7 +28,7 @@ import {
 	reviewerName,
 	scoreLine,
 	scoreTitle,
-} from "@/lib/critique";
+} from "@/lib/features/critique/critique";
 import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
 import { accepting, shownModel } from "@/lib/cost";
 import { ready, useAsync } from "@/lib/use-async";

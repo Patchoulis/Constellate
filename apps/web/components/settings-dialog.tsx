@@ -3,7 +3,7 @@
 import { Dialog } from "radix-ui";
 import { FileSearch, RotateCcw, X } from "lucide-react";
 import { REDO_STEPS, type Catalog, type Library, type ModelProvider, type RedoStep, type Settings } from "@rp/contracts";
-import { DetectorTraining } from "@/components/detector-training";
+import { DetectorTraining } from "@/components/features/detector/detector-training";
 import { ModelChoice } from "@/components/model-choice";
 import { IMPORT_ADVICE } from "@/lib/notices";
 import { groupsOf, type Choosable } from "@/lib/models";

@@ -1,5 +1,5 @@
 /**
- * The Claims view's logic (components/claims-view.tsx): the tree as an outline of rows, the "only contested
+ * The Claims view's logic (components/features/claim_tree/claims-view.tsx): the tree as an outline of rows, the "only contested
  * claims" filter, moving through it with the keyboard, and the words every figure is shown with. Plain functions,
  * so that they are tested (tests/claim-tree.test.ts).
  */

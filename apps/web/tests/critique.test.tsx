@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Critique, CritiqueEstimate, CritiqueReviewer, Evidence } from "@rp/contracts";
-import { WeaknessesOf } from "@/components/critique";
+import { WeaknessesOf } from "@/components/features/critique/critique";
 import { ConfirmProvider } from "@/components/ui/confirm";
 
 /** The section as the app draws it: inside the window's one confirmation dialog. */
@@ -20,7 +20,7 @@ import {
 	reviewerName,
 	scoreLine,
 	scoreTitle,
-} from "@/lib/critique";
+} from "@/lib/features/critique/critique";
 
 const evidence = (quote: string): Evidence => ({
 	paper: "iclr-2024-1",

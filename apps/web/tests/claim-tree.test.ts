@@ -17,7 +17,7 @@ import {
 	ratingLabel,
 	stanceWords,
 	unplacedWhy,
-} from "@/lib/claim-tree";
+} from "@/lib/features/claim_tree/claim-tree";
 
 const quote: Evidence = {
 	paper: "iclr-2024-7",

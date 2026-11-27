@@ -38,7 +38,7 @@ import {
 	sortRows,
 	toCsv,
 	valueText,
-} from "@/lib/extraction";
+} from "@/lib/features/extraction/extraction";
 import { choiceKey, currentEstimate, useChosenModel } from "@/lib/chosen-model";
 import { budgetOf, costWords, shownModel } from "@/lib/cost";
 import { useColouringBy } from "@/lib/graph-colouring";

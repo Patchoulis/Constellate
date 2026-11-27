@@ -9,7 +9,7 @@
 import { useState } from "react";
 import { BookOpenText, RotateCcw, Sparkles } from "lucide-react";
 import type { BudgetOf, CitationKind, CitationKindsEstimate, CitationKindsScope, RankedCitation } from "@rp/contracts";
-import { JobStrip, SentenceRow, contextsOf, forgetAsked } from "@/components/citation-contexts";
+import { JobStrip, SentenceRow, contextsOf, forgetAsked } from "@/components/features/citation_contexts/citation-contexts";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton } from "@/components/ui/button";
 import { api } from "@/lib/api";
@@ -22,7 +22,7 @@ import {
 	sentencesOfKind,
 	tallyLine,
 	tokensPerSentence,
-} from "@/lib/citation-kinds";
+} from "@/lib/features/citation_contexts/citation-kinds";
 import { budgetWords, costTitle, costWords, shownModel } from "@/lib/cost";
 import { count, tokens } from "@/lib/units";
 import { ready, useAsync } from "@/lib/use-async";

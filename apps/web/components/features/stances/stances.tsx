@@ -43,7 +43,7 @@ import {
 	stanceColouring,
 	starter,
 	tally,
-} from "@/lib/stances";
+} from "@/lib/features/stances/stances";
 import { accepting, shownModel } from "@/lib/cost";
 import { useColouringBy } from "@/lib/graph-colouring";
 import { ready, useAsync } from "@/lib/use-async";

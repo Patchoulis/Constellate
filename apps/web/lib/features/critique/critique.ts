@@ -1,5 +1,5 @@
 /**
- * What the Weaknesses section says, in words (components/critique.tsx draws it): who a reviewer is and what they
+ * What the Weaknesses section says, in words (components/features/critique/critique.tsx draws it): who a reviewer is and what they
  * scored, how a reply is attached, where a point is in its section, what the model's reading left out, what asking
  * would cost. Plain functions, tested in tests/critique.test.tsx.
  */

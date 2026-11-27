@@ -1,6 +1,6 @@
 /**
  * Asking a run or a community a question (engine api/answers.rs): what the Ask box shows, as plain functions and
- * one explicit state machine, so that they are tested (tests/answers.test.ts); components/ask.tsx draws them.
+ * one explicit state machine, so that they are tested (tests/answers.test.ts); components/features/answers/ask.tsx draws them.
  */
 import type { AnswerCounts, AnswerEstimate, AnswerSummary, AnswerView, PassageFound, PassagesFound, SearchCoverage } from "@rp/contracts";
 import { costWords } from "@/lib/cost";

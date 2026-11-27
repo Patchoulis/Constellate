@@ -1,4 +1,4 @@
-/** Citing sentences and the kinds of citation, as they are said and drawn (lib/citation-kinds.ts). */
+/** Citing sentences and the kinds of citation, as they are said and drawn (lib/features/citation_contexts/citation-kinds.ts). */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { CitationKindsEstimate, CitationTally, CitingSentenceShown, Evidence, PaperCitationContexts } from "@rp/contracts";
@@ -17,7 +17,7 @@ import {
 	sentencesOfKind,
 	tallyLine,
 	tokensPerSentence,
-} from "@/lib/citation-kinds";
+} from "@/lib/features/citation_contexts/citation-kinds";
 
 function tally(rest: Partial<CitationTally> = {}): CitationTally {
 	return { sentences: 0, papers: 0, kinds: {}, mentions: 0, not_justified: 0, not_classified: 0, ...rest };
