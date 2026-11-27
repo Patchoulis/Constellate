@@ -24,7 +24,9 @@ half = "2"
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 # the ID token of a sign-in with Google (OpenID Connect): its signature checked against the provider's published
 # keys (JWKS), and its claims. The pure-Rust backend, so that no C build tools are needed (aws-lc-rs would be).
-# 10.x: later versions need a newer Rust than the workspace's rust-version.
+# It only verifies signatures with public keys, so RUSTSEC-2023-0071 (rsa) and RUSTSEC-2026-0387 (crypto-bigint),
+# timing leaks of private keys and secret integers, do not reach it (deny.toml); 12.x, a new API, brings the fixed
+# rsa 0.10 and crypto-bigint 0.7.
 jsonwebtoken = { version = "10.3", default-features = false, features = ["rust_crypto"] }
 # matrix products through matrixmultiply, on one thread each: the large ones are cut into rows on the engine's
 # own threads (src/threads.rs). matrixmultiply's own threading (at most 4, its own pool) would otherwise run under
