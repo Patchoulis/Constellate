@@ -17,7 +17,8 @@
 //! [`SAMPLE`]) or `rest` (the others). The sample's estimate is reckoned from its papers' own texts; the rest's
 //! from the sample's texts, applied to every paper of the rest that has a PDF (and from its own abstract for one
 //! that has none): an estimate either way, and said to be one. The budget of a run is what the user agreed to
-//! after seeing the estimate; no call is started that could pass it.
+//! after seeing the estimate, for the model named with it; no call is started that could pass it, and a run whose
+//! estimate has grown past it since (papers added, a PDF kept, columns changed) is refused, to be looked at again.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -509,6 +510,24 @@ fn refused(why: Refused) -> ApiError {
     ApiError::Invalid(why.to_string())
 }
 
+/// A hundredth of a cent: the rounding of a figure as it travelled to the interface and back.
+const SLACK_USD: f64 = 1e-4;
+
+/// Is what asking would cost now (`cost`, its worst case) within what the user accepted after seeing an
+/// estimate? Not when it has grown since: papers added to the community, a PDF kept since (read in full now, not
+/// from its abstract), columns added or changed. The budget alone would stop such a run part way, on a table the
+/// user agreed to pay for in full; they see the new estimate first instead.
+fn within_accepted(cost: &Estimate, accepted: Accepted) -> Result<(), Refused> {
+    let grown = match (cost.most_usd, accepted) {
+        _ if cost.calls == 0 => false,
+        (Some(most), Accepted::Dollars(usd)) => most.dollars() > usd + SLACK_USD,
+        (None, Accepted::Tokens(tokens)) => cost.most_tokens > tokens,
+        // in the other unit: refused by the budget itself
+        _ => false,
+    };
+    if grown { Err(Refused::Changed) } else { Ok(()) }
+}
+
 /// The job's number, for following it in `/api/status` and stopping it.
 #[derive(Serialize)]
 pub struct Begun {
@@ -531,13 +550,14 @@ async fn start(
     let id = on_the_side(move || {
         let chosen = engine.chosen()?;
         let endpoint = chosen.endpoint().map_err(|why| ApiError::Invalid(why.to_string()))?;
-        if let Some(model) = &model {
-            chosen.as_shown(provider, model).map_err(|why| ApiError::Invalid(why.to_string()))?;
-        }
+        // the estimate accepted was for one model: without its name, nothing says it was this one's
+        let model = model.ok_or_else(|| ApiError::Invalid("say which model's estimate was shown".to_owned()))?;
+        chosen.as_shown(provider, &model).map_err(|why| ApiError::Invalid(why.to_string()))?;
         // in dollars for a model with a price, in tokens for one without, as the estimate was shown
         let shown = costing(&engine, &run, &scope, part)?;
         let terms = Terms::AtMost { usd: MOST_BUDGET_USD, tokens: MOST_BUDGET_TOKENS };
         let budget = budget(&shown.cost, accepted, terms).map_err(refused)?;
+        within_accepted(&shown.cost, accepted).map_err(refused)?;
         let (_, ordered) = papers_of(&engine, &run, &scope)?;
         let papers = part_of(&ordered, part).to_vec();
         let library = engine.library()?;
@@ -883,7 +903,9 @@ mod tests {
     #[tokio::test]
     async fn a_run_needs_a_key_a_budget_and_no_other_job_running() {
         let data = data();
-        let started = |budget: f64| json!({"scope": {"community": "c0.0"}, "part": "sample", "budget_usd": budget});
+        let started = |budget: f64| {
+            json!({"scope": {"community": "c0.0"}, "part": "sample", "budget_usd": budget, "provider": "anthropic", "model": MODEL})
+        };
         let (no_key, _) = served_at(&data, false);
         let (status, told) = post(&no_key, "/api/runs/r1/extraction/run", started(1.0)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -907,9 +929,60 @@ mod tests {
             (status, told["error"].clone()),
             (StatusCode::CONFLICT, json!("something else is already in progress"))
         );
-        let elsewhere = json!({"scope": {"community": "c9"}, "part": "sample", "budget_usd": 1.0});
+        let mut elsewhere = started(1.0);
+        elsewhere["scope"] = json!({"community": "c9"});
         assert_eq!(post(&router, "/api/runs/r1/extraction/run", elsewhere).await.0, StatusCode::NOT_FOUND);
         job.cancel(id).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_run_is_refused_without_the_model_shown_or_when_its_estimate_grew_past_what_was_accepted() {
+        use super::super::other_providers::{BUDGET, Chosen as Asked, Scripted, accepting, router};
+
+        let data = data();
+        // never the network: had anything been started, it would have been asked of this
+        let transport = Scripted::new(|_| json!({"cells": []}).to_string());
+        let router = router(data.path(), Asked::OpenAi, &transport);
+        let scope = json!({"community": "c0.0"});
+        let estimate = || post(&router, "/api/runs/r1/extraction/estimate", json!({"scope": scope, "part": "sample"}));
+        let (_, shown) = estimate().await;
+        let mut accepted = accepting(&shown, BUDGET);
+        accepted["scope"] = scope.clone();
+        accepted["part"] = json!("sample");
+        let refused = |told: &Value| told["error"].as_str().unwrap().contains("changed since it was shown");
+
+        let mut nameless = accepted.clone();
+        nameless.as_object_mut().unwrap().remove("model");
+        let (status, told) = post(&router, "/api/runs/r1/extraction/run", nameless).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(told["error"].as_str().unwrap().contains("which model"), "{told}");
+
+        // a column added since: more would be asked than was accepted
+        let mut more = default_columns();
+        more.push(crate::analysis::extraction::Column {
+            id: "ood".to_owned(),
+            label: "OOD".to_owned(),
+            question: "Does the paper evaluate on out-of-distribution data?".to_owned(),
+            kind: crate::analysis::extraction::AnswerKind::YesNo,
+        });
+        let put = json!({"columns": more}).to_string();
+        assert_eq!(ask(&router, "PUT", "/api/runs/r1/extraction/columns", Some(put)).await.0, StatusCode::OK);
+        let (status, told) = post(&router, "/api/runs/r1/extraction/run", accepted.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+        assert!(refused(&told), "{told}");
+
+        // the new estimate seen, then p03's PDF kept: it would be read in full, not from its abstract
+        let (_, seen) = estimate().await;
+        assert!(seen["most_usd"].as_f64() > shown["most_usd"].as_f64());
+        let library = Library::open(&data.path().join("library")).unwrap();
+        let long = "We report every experiment of this study in full detail in the sections that follow here.";
+        library.keep_pdf("p03", &pdf_with(&[long; 80])).unwrap();
+        let mut again = accepted.clone();
+        again["budget_usd"] = seen["most_usd"].clone();
+        let (status, told) = post(&router, "/api/runs/r1/extraction/run", again).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+        assert!(refused(&told), "{told}");
+        assert!(transport.sent().is_empty(), "nothing was asked");
     }
 
     #[tokio::test]
