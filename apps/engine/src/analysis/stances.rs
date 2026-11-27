@@ -38,11 +38,12 @@ use crate::model::chosen::Chosen;
 use crate::model::language::{Ask, Form};
 use crate::text::passages::{Kind, Match, Part, Passages};
 use crate::text::words;
+use crate::text::{data_section, first_chars};
 
 /// The version of the per-paper prompt and answer: raised when either changes, so kept answers are asked again.
-pub const PROMPT: u32 = 1;
+pub const PROMPT: u32 = 2;
 /// The version of the prompt that proposes questions.
-pub const PROPOSE_PROMPT: u32 = 1;
+pub const PROPOSE_PROMPT: u32 = 2;
 /// Papers asked first, before the user decides whether to ask the rest.
 pub const SAMPLE: usize = 10;
 /// A question's length in characters: one sentence.
@@ -67,14 +68,17 @@ pub const PROPOSE_MAX_TOKENS: u32 = 6_000;
 pub const PROPOSE_LIKELY_TOKENS: u32 = 2_500;
 
 /// The instructions of every placement: the same for every paper and question, so cached with the prefix.
-pub const SYSTEM: &str = "You read one research paper and say where it stands on a yes/no research question. \
+pub const SYSTEM: &str = concat!(
+    "You read one research paper and say where it stands on a yes/no research question. \
 Answer only from the paper's text given; never from what you know of other work. A paper supports the question when \
 its own findings or claims say yes; it is mixed when it says yes only under a condition, or yes in some settings \
 and no in others (then state that condition in one sentence of your own); it contradicts the question when its \
 findings say no; and it does not address the question when it takes no position on it, which is the common case \
 and the right answer when in doubt. For every position other than not addressed, copy one to three passages word \
 for word from the paper's text that show the position: whole clauses, not fragments, never paraphrased. Reply \
-with JSON only.";
+with JSON only. ",
+    crate::text::data_rule!()
+);
 
 /// Where a paper stands, as the model is asked to say it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -210,6 +214,7 @@ pub struct Prepared {
 /// The passages a position is read from: running text, headings and captions of the front matter and body.
 fn sent(passages: &Passages) -> String {
     let mut text = String::from("The paper's text, read from its PDF (front matter and body; appendices left out):\n");
+    let mut sent_any = false;
     for passage in &passages.passages {
         let kept = matches!(passage.part, Part::Front | Part::Body)
             && matches!(
@@ -221,19 +226,30 @@ fn sent(passages: &Passages) -> String {
         }
         let line = format!("[p. {}] {}\n", passage.address.page, passage.text.trim());
         if text.len() + line.len() > PAPER_CHARS {
+            // cut at a passage; but a paper whose first passage is longer than the limit (a PDF read as one
+            // block) is sent what fits of it, not its heading alone
+            if !sent_any {
+                let room = crate::text::floor_boundary(&line, PAPER_CHARS.saturating_sub(text.len()));
+                text.push_str(&line[..room]);
+                text.push('\n');
+            }
             text.push_str("[the rest of the paper is left out]\n");
             break;
         }
         text.push_str(&line);
+        sent_any = true;
     }
-    text
+    data_section("PAPER", &text)
 }
 
 fn record(title: &str, abstract_text: &str) -> String {
-    format!(
-        "The paper's title and abstract (its full text is not available):\nTitle: {}\nAbstract: {}\n",
-        title.trim(),
-        abstract_text.trim()
+    data_section(
+        "PAPER",
+        &format!(
+            "The paper's title and abstract (its full text is not available):\nTitle: {}\nAbstract: {}\n",
+            title.trim(),
+            first_chars(abstract_text.trim(), PAPER_CHARS)
+        ),
     )
 }
 
@@ -653,16 +669,24 @@ pub struct Proposals {
     pub questions: Vec<Claim<String>>,
 }
 
-pub const PROPOSE_SYSTEM: &str = "You read the abstracts of a group of research papers and find the yes/no research \
-questions on which several of them take a position. Use only the abstracts given. Reply with JSON only.";
+pub const PROPOSE_SYSTEM: &str = concat!(
+    "You read the abstracts of a group of research papers and find the yes/no research questions on which several \
+     of them take a position. Use only the abstracts given. Reply with JSON only. ",
+    crate::text::data_rule!()
+);
+
+/// Characters of one paper's abstract sent to propose questions, at most: a record whose abstract runs on (a
+/// source that put the paper's text there) does not make one prompt too large to send.
+pub const PROPOSAL_ABSTRACT: usize = 3_000;
 
 /// The abstracts of the papers a proposal is asked from, each headed by its id, in the order given.
 pub fn proposal_text(papers: &[(&str, Record<'_>)]) -> String {
     let mut text = String::from("The papers' abstracts, each headed by the paper's id in brackets:\n\n");
     for (id, record) in papers {
-        text.push_str(&format!("[{id}] {}\n{}\n\n", record.title.trim(), record.abstract_text.trim()));
+        let (title, abstract_text) = (record.title.trim(), first_chars(record.abstract_text.trim(), PROPOSAL_ABSTRACT));
+        text.push_str(&format!("[{id}] {title}\n{abstract_text}\n\n"));
     }
-    text
+    data_section("ABSTRACTS", &text)
 }
 
 pub fn proposal_prompt() -> String {
@@ -1085,8 +1109,27 @@ mod tests {
     fn a_long_paper_is_cut_at_a_passage() {
         let long: String = (0..2_000).map(|n| format!("Sentence number {n} of a long paper.\n\n")).collect();
         let prepared = prepare("p", &reading(&format!("1. Introduction\n\n{long}"))).unwrap();
-        assert!(prepared.shared.len() <= PAPER_CHARS + 60);
-        assert!(prepared.shared.ends_with("[the rest of the paper is left out]\n"));
+        assert!(prepared.shared.len() <= PAPER_CHARS + 100);
+        assert!(prepared.shared.starts_with("<<<BEGIN PAPER>>>\n"), "the paper's text is a data section");
+        assert!(prepared.shared.ends_with("[the rest of the paper is left out]\n<<<END PAPER>>>\n"));
+        assert!(SYSTEM.ends_with(crate::text::data_rule!()) && PROPOSE_SYSTEM.ends_with(crate::text::data_rule!()));
+    }
+
+    #[test]
+    fn a_paper_read_as_one_passage_longer_than_the_limit_is_sent_what_fits_of_it() {
+        let block: String = (0..4_000).map(|n| format!("Sentence number {n} of a paper read as one block. ")).collect();
+        let prepared = prepare("p", &reading(&block)).unwrap();
+        assert!(prepared.shared.contains("Sentence number 10 of a paper"), "not the heading alone");
+        assert!(prepared.shared.len() <= PAPER_CHARS + 100);
+        assert!(prepared.shared.ends_with("[the rest of the paper is left out]\n<<<END PAPER>>>\n"));
+    }
+
+    #[test]
+    fn a_proposals_abstracts_are_a_data_section_each_cut_to_its_bound() {
+        let long = "word ".repeat(PROPOSAL_ABSTRACT);
+        let text = proposal_text(&[("p1", Record { title: "A title", abstract_text: &long })]);
+        assert!(text.starts_with("<<<BEGIN ABSTRACTS>>>\n") && text.ends_with("<<<END ABSTRACTS>>>\n"));
+        assert!(text.len() < PROPOSAL_ABSTRACT + 200, "{}", text.len());
     }
 
     #[test]
