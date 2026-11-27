@@ -12,10 +12,11 @@ use constellate::api::Server;
 use constellate::api::config::{DATA, Environment, Listen};
 use constellate::api::routes::{Engine, routes};
 use constellate::library::place;
+use constellate::model::language;
 use constellate::settings::Choices;
 
 /// The choices among the settings. Until the modules that own them are ported (clustering, the acceptance
-/// tiers, authors' declarations, the Claude models, the embedding models), they are listed here as the Python
+/// tiers, authors' declarations, the embedding models), they are listed here as the Python
 /// backend has them; each moves to its module as that module arrives.
 fn choices() -> Choices {
     let list = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect();
@@ -30,7 +31,7 @@ fn choices() -> Choices {
         clustering: list(&["spectral", "spectral-knn", "kmeans", "fiedler"]),
         acceptance: list(&["all", "highlights", "oral"]),
         flags: list(&["llm_declared", "closed_code", "no_limitations", "human_subjects"]),
-        describe_models: list(&["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-2"]),
+        describe_models: language::model_ids(),
     }
 }
 
