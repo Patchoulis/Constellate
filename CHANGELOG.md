@@ -5,6 +5,10 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Markdown emphasis in titles and abstracts (`**bold**`, `*italic*`) is set as bold and italic instead of being shown with its stars.
+
 ## [0.1.0] - 2026-11-26
 
 The first release.

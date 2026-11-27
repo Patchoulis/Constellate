@@ -67,3 +67,13 @@ test("an escaped dollar sign is money, not math", () => {
 test("plain titles pass through untouched", () => {
 	assert.equal(read("Deep Residual Learning for Image Recognition"), "Deep Residual Learning for Image Recognition");
 });
+
+test("Markdown emphasis is set, and stars that are not emphasis are left alone", () => {
+	assert.equal(
+		shown("We propose **CALM** (*Corrective Adaptation with Lightweight Modification*), a method."),
+		"We propose <strong>CALM</strong> (<em>Corrective Adaptation with Lightweight Modification</em>), a method.",
+	);
+	assert.equal(read("a * b and 2*3*4 and a lone * star"), "a * b and 2*3*4 and a lone * star");
+	assert.equal(shown("costs **$5** less"), "costs <strong>$5</strong> less"); // a lone dollar sign is not math
+	assert.equal(shown("**bold** then a link https://example.org/x*y"), '<strong>bold</strong> then a link <a href="https://example.org/x*y" target="_blank" rel="noopener noreferrer" class="underline decoration-muted-foreground underline-offset-2 hover:decoration-foreground">https://example.org/x*y</a>');
+});

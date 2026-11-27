@@ -8,6 +8,7 @@ import katex from "katex";
  *               and web addresses written out
  *   text marks  "\textbf{x}", "\emph{x}", "\%", "``quoted''", "--",   become what they stand for
  *               "\'e", "\footnote{x}"
+ *   emphasis    "**CALM** (*Corrective Adaptation ...*)"                 Markdown's bold and italic
  *
  * Anything not recognised (an author's own macro, say "\ours") is left exactly as written.
  */
@@ -56,13 +57,35 @@ function Formula({ source }: { source: string }) {
 	return <span dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
+/** Markdown's `**bold**` and `*italic*`, as OpenReview abstracts use them ("**CALM** (*Corrective Adaptation*)").
+ *  A star that touches a letter or digit on its outer side, or a space on its inner side, is not emphasis
+ *  ("a * b", "2*3*4"). */
+const EMPHASIS = /\*\*([^*\n]+?)\*\*|(?<![\w*])\*([^*\s](?:[^*\n]*[^*\s])?)\*(?![\w*])/g;
+
+/** A stretch of text with no math and no links: LaTeX's marks resolved, Markdown's emphasis set. */
+function emphasised(text: string, key: number) {
+	const plain = plainText(text);
+	if (!plain.includes("*")) return plain;
+	const parts = [];
+	let from = 0;
+	for (const found of plain.matchAll(EMPHASIS)) {
+		parts.push(plain.slice(from, found.index));
+		parts.push(
+			found[1] !== undefined ? <strong key={`${key}b${found.index}`}>{found[1]}</strong> : <em key={`${key}i${found.index}`}>{found[2]}</em>,
+		);
+		from = found.index + found[0].length;
+	}
+	parts.push(plain.slice(from));
+	return parts;
+}
+
 /** Text with no math in it: its links as links, the rest as plain text. */
 function Text({ text }: { text: string }) {
 	const parts = [];
 	let from = 0;
 	for (const found of text.matchAll(LINK)) {
 		const address = found[1] ?? found[2] ?? found[4];
-		parts.push(plainText(text.slice(from, found.index)));
+		parts.push(emphasised(text.slice(from, found.index), from));
 		parts.push(
 			/^https?:\/\//.test(address) ? (
 				<a
@@ -81,12 +104,12 @@ function Text({ text }: { text: string }) {
 		);
 		from = found.index + found[0].length;
 	}
-	parts.push(plainText(text.slice(from)));
+	parts.push(emphasised(text.slice(from), from));
 	return <>{parts}</>;
 }
 
 export function MathText({ children }: { children: string }) {
-	if (!/[\\$`~]|--|''|https?:/.test(children)) return children; // nothing to do for most titles
+	if (!/[\\$`~*]|--|''|https?:/.test(children)) return children; // nothing to do for most titles
 	return children
 		.replaceAll("\\$", DOLLAR)
 		.replace(/\\\((.+?)\\\)/g, "$$$1$$") // \( ... \) is $ ... $
