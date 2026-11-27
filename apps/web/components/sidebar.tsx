@@ -1,14 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2, Pencil, Play, Settings as SettingsIcon, Trash2 } from "lucide-react";
-import type { Catalog, CatalogItem, Library, RunRequest, RunSummary, UsageEntry } from "@rp/contracts";
+import { Loader2, Pencil, Play, RotateCcw, Settings as SettingsIcon, Trash2 } from "lucide-react";
+import type { Catalog, Library, RunRequest, RunSummary, Settings, UsageEntry } from "@rp/contracts";
 import { Logo } from "@/components/brand";
+import { ModelChoice, chosenPrice } from "@/components/model-choice";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { Input, Label, SwitchRow } from "@/components/ui/field";
-import { Choice, GroupedPicker } from "@/components/ui/picker";
+import { GroupedPicker } from "@/components/ui/picker";
+import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
+import { chosenLabel, chosenOf, unavailableBecause, type Choosable } from "@/lib/models";
 import { ready, useAsync } from "@/lib/use-async";
+import { useResizable } from "@/lib/use-resizable";
 import { count, currencyOf, money, tokens } from "@/lib/units";
 import { APP_NAME } from "@/lib/utils";
 
@@ -137,16 +141,20 @@ function RunForm({
 	);
 }
 
-/** One run in the list. Its title can be edited in place (pencil, or double-click); the bin removes the run. */
+/** One run in the list. Its title can be edited in place (pencil, or double-click); the arrow does the whole run
+ *  again from scratch; the bin removes the run. */
 function RunRow({
 	run,
 	active,
 	onSelect,
 	onRename,
+	onRedoAll,
 	onDelete,
 }: {
 	run: RunSummary;
 	active: boolean;
+	/** do this run again with everything redone; undefined while a run is in progress */
+	onRedoAll?: () => void;
 	onSelect: () => void;
 	onRename: (title: string) => void;
 	onDelete: () => void;
@@ -179,12 +187,30 @@ function RunRow({
 	return (
 		<div className="group relative">
 			<RowButton active={active} className="flex-col gap-0.5" onClick={onSelect} onDoubleClick={() => setDraft(run.title)}>
-				<span className="w-full truncate text-sm text-foreground group-hover:pr-12">{run.title}</span>
+				<span className="w-full truncate text-sm text-foreground group-hover:pr-20">{run.title}</span>
 				<span className="text-xs text-muted-foreground tabular-nums">{details}</span>
 			</RowButton>
 			<div className="absolute top-1 right-1 hidden gap-0.5 group-hover:flex">
 				<Button variant="ghost" size="icon" className="size-6" title="Rename" onClick={() => setDraft(run.title)}>
 					<Pencil />
+				</Button>
+				<Button
+					variant="ghost"
+					size="icon"
+					className="size-6"
+					disabled={!onRedoAll}
+					title={
+						onRedoAll
+							? "Redo all of this run: download, embed and describe everything again from scratch"
+							: "A run is in progress: wait for it to finish"
+					}
+					onClick={() =>
+						window.confirm(
+							`Redo all of "${run.title}"?\n\nIts ${count(run.papers, "paper")} are downloaded, embedded and described again from scratch. This takes a while and, with a language model's API key set, the descriptions cost money again.`,
+						) && onRedoAll?.()
+					}
+				>
+					<RotateCcw />
 				</Button>
 				<Button
 					variant="ghost"
@@ -204,19 +230,65 @@ function RunRow({
 	);
 }
 
-/** The model that writes names and overviews (a menu to change it), who provides it, and what it has cost so
- *  far; the breakdown on hover. */
-function CostLine({ models, model, onModel }: { models: CatalogItem[]; model?: string; onModel: (model: string) => void }) {
+/** The dollar itself, until the backend has said what the user's currency is worth. */
+const DOLLAR = { code: "USD", rate: 1, date: null };
+
+/** The model that writes names and overviews and its provider (a menu to change both, and the effort), what it
+ *  costs, and what has been spent so far; the breakdown on hover. */
+function CostLine({
+	choosable,
+	settings,
+	providerOwned,
+	onChange,
+}: {
+	choosable: Choosable;
+	settings: Settings | undefined;
+	providerOwned: boolean;
+	onChange: (changes: Partial<Settings>) => void;
+}) {
 	const locale = typeof navigator === "undefined" ? undefined : navigator.language;
 	const wanted = currencyOf(locale); // the currency of the user's region; the bills themselves are in US dollars
 	const usage = useAsync(() => api.usage(wanted), [wanted]);
 	const { reload } = usage;
 	useEffect(() => {
-		const timer = setInterval(reload, 15_000); // names and overviews are written in the background
-		return () => clearInterval(timer);
+		// Names and overviews are written in the background, so the cost is asked for again now and then; not while
+		// the window is hidden (minimised, behind another), where nobody reads it, but at once when it is shown.
+		const timer = setInterval(() => document.hidden || reload(), 15_000);
+		const shown = () => document.hidden || reload();
+		document.addEventListener("visibilitychange", shown);
+		return () => {
+			clearInterval(timer);
+			document.removeEventListener("visibilitychange", shown);
+		};
 	}, [reload]);
 	const spent = ready(usage);
-	if (!spent) return null;
+	const chosen = chosenOf(choosable.catalog, settings);
+	const why = chosen.provider && unavailableBecause(chosen.provider);
+	const price = chosenPrice(choosable, settings, spent?.currency ?? DOLLAR, locale);
+	const choice = (
+		<span className="flex min-w-0 items-center gap-1.5" title="The model that names communities and writes overviews, and who provides it">
+			<ModelChoice
+				quiet
+				choosable={choosable}
+				settings={settings}
+				providerOwned={providerOwned}
+				currency={spent?.currency ?? DOLLAR}
+				locale={locale}
+				onChange={onChange}
+			/>
+			{why && <span className="shrink-0 text-warning">· {why}</span>}
+			{!why && choosable.source === "older_backend" && spent && !spent.provider.ready && (
+				<span className="shrink-0 text-warning">· no key set</span>
+			)}
+		</span>
+	);
+	if (!spent)
+		return (
+			<div className="flex flex-col gap-0.5">
+				{choice}
+				{price && <span className="truncate">{price}</span>}
+			</div>
+		);
 	const cost = (usd: number) => money(usd, spent.currency, locale);
 	const lines = (table: Record<string, UsageEntry>) =>
 		Object.entries(table).map(
@@ -229,6 +301,7 @@ function CostLine({ models, model, onModel }: { models: CatalogItem[]; model?: s
 		...(spent.unpriced_calls
 			? [`${count(spent.unpriced_calls, "call")} went to a model whose price is not known here and are not in the total.`]
 			: []),
+		...(price ? [`${chosenLabel(chosen)}: ${price}.`] : []),
 		"Prices are the published list prices in US dollars per million tokens.",
 		...(spent.currency.code === "USD"
 			? []
@@ -237,19 +310,17 @@ function CostLine({ models, model, onModel }: { models: CatalogItem[]; model?: s
 				]),
 	].join("\n");
 	return (
-		<div className="flex items-center justify-between gap-2">
-			<span
-				className="flex min-w-0 items-center gap-1.5"
-				title="The model that names communities and writes overviews, and who provides it"
-			>
-				<Choice quiet options={models} value={model ?? spent.model.name} onChange={onModel} />
-				<span className="truncate">· {spent.provider.name}</span>
-				{!spent.provider.ready && <span className="shrink-0 text-warning">· no key set</span>}
-			</span>
-			<span className="shrink-0 text-foreground/80" title={detail}>
-				{cost(spent.usd)} spent
-				{spent.session_calls > 0 && <span className="text-muted-foreground"> · {cost(spent.session_usd)} this session</span>}
-			</span>
+		<div className="flex flex-col gap-0.5">
+			{choice}
+			<div className="flex items-center justify-between gap-2">
+				<span className="min-w-0 truncate" title={price ?? undefined}>
+					{price}
+				</span>
+				<span className="shrink-0 text-foreground/80" title={detail}>
+					{cost(spent.usd)} spent
+					{spent.session_calls > 0 && <span className="text-muted-foreground"> · {cost(spent.session_usd)} this session</span>}
+				</span>
+			</div>
 		</div>
 	);
 }
@@ -259,12 +330,15 @@ export function Sidebar({
 	current,
 	running,
 	library,
-	model,
-	onModel,
+	choosable,
+	settings,
+	providerOwned,
+	onChange,
 	catalog,
 	error,
 	onSelect,
 	onRename,
+	onRedoAll,
 	onDelete,
 	onStart,
 	onOpenSettings,
@@ -273,20 +347,27 @@ export function Sidebar({
 	current: string | null;
 	running: boolean;
 	library: Library | undefined;
-	/** the model that writes names and overviews, and what to do when another is picked in the footer */
-	model: string | undefined;
-	onModel: (model: string) => void;
+	/** the language models that can write names and overviews, the settings that choose one, and what to do when
+	 *  another is picked in the footer; the provider is the server's when `providerOwned` */
+	choosable: Choosable;
+	settings: Settings | undefined;
+	providerOwned: boolean;
+	onChange: (changes: Partial<Settings>) => void;
 	catalog: Catalog | undefined;
 	error: string | null;
 	onSelect: (name: string) => void;
 	onRename: (name: string, title: string) => void;
+	/** do a run again with every step redone */
+	onRedoAll: (name: string) => void;
 	onDelete: (name: string) => void;
 	onStart: (request: RunRequest) => void;
 	onOpenSettings: () => void;
 }) {
 	const embedded = Object.values(library?.embeddings ?? {}).reduce((sum, count) => sum + count, 0);
+	const { ref, style, handle } = useResizable("sidebar");
 	return (
-		<aside className="flex w-72 shrink-0 flex-col border-r bg-card">
+		<aside ref={ref} style={style} className="relative flex w-(--panel-size) shrink-0 flex-col border-r bg-card">
+			<ResizeHandle {...handle} />
 			<div className="flex h-11 items-center justify-between border-b px-4">
 				<span className="flex items-center gap-2 text-sm font-semibold tracking-tight">
 					<Logo />
@@ -312,6 +393,7 @@ export function Sidebar({
 							active={current === run.name}
 							onSelect={() => onSelect(run.name)}
 							onRename={(title) => onRename(run.name, title)}
+							onRedoAll={running ? undefined : () => onRedoAll(run.name)}
 							onDelete={() => onDelete(run.name)}
 						/>
 					))}
@@ -321,7 +403,7 @@ export function Sidebar({
 				<div>
 					Library: {library ? count(library.papers, "paper") : "–"} · {count(embedded, "embedding")}
 				</div>
-				<CostLine models={catalog?.describe_models ?? []} model={model} onModel={onModel} />
+				<CostLine choosable={choosable} settings={settings} providerOwned={providerOwned} onChange={onChange} />
 			</div>
 		</aside>
 	);

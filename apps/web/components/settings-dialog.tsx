@@ -2,10 +2,13 @@
 
 import { Dialog } from "radix-ui";
 import { FileSearch, RotateCcw, X } from "lucide-react";
-import type { Catalog, Library, RedoStep, Settings } from "@rp/contracts";
+import { REDO_STEPS, type Catalog, type Library, type ModelProvider, type RedoStep, type Settings } from "@rp/contracts";
+import { ModelChoice } from "@/components/model-choice";
+import { groupsOf, type Choosable } from "@/lib/models";
 import { Button, Heading } from "@/components/ui/button";
 import { Input, Label, SwitchRow } from "@/components/ui/field";
 import { Choice, GroupedPicker } from "@/components/ui/picker";
+import { splitByOwner } from "@/lib/engine";
 import { cn } from "@/lib/utils";
 
 /** The whole dialog as data: every setting appears once here, with how it is edited. */
@@ -13,19 +16,88 @@ type Field = { key: keyof Settings; label: string; hint?: string } & (
 	| { kind: "switch" }
 	| { kind: "number"; step?: number }
 	// one of a list the backend offers (Catalog), in a dropdown
-	| { kind: "choice"; from: "embedding_models" | "describe_models" | "clustering" | "acceptance" }
+	| { kind: "choice"; from: "embedding_models" | "clustering" | "acceptance" }
 	// any number of a list the backend offers
 	| { kind: "several"; from: "flags"; placeholder: string }
+	// the language model: a provider and one of its models, and the effort (model-choice.tsx)
+	| { kind: "model" }
 );
 
-/** Steps whose stored results can be thrown away and produced again, each as a button that does it now. */
-const REDO: { step: RedoStep; label: string; hint: string }[] = [
-	{ step: "download", label: "Download again", hint: "Fetch the paper list again and overwrite the stored records" },
-	{ step: "embeddings", label: "Embed again", hint: "Recompute the embedding of every paper in the run" },
-	{ step: "descriptions", label: "Describe again", hint: "Ask Claude for new names and descriptions" },
+/** How a provider's address is shown: its host, and where that is. */
+function where(provider: ModelProvider): string {
+	const host = provider.address.host ?? "no address set";
+	switch (provider.address.place) {
+		case "this_computer":
+			return `${host}, on this computer: no API cost`;
+		case "set":
+			return `${host} (set in ${provider.address.variable})`;
+		case "not_set":
+			return `no address set: set ${provider.address.variable}`;
+		case "provider":
+			return host;
+	}
+}
+
+/** Whether a provider's key is set, by its variable's name: never the key. */
+function keyState(provider: ModelProvider): string {
+	if (provider.key.set) return `${provider.key.variable} is set`;
+	return provider.key.needed ? `${provider.key.variable} is not set` : `no key needed (${provider.key.variable} if the server wants one)`;
+}
+
+/** Every provider: whether it can be used, its key (set or not, never the key), its host, what it cannot do. */
+function LanguageModels({ choosable }: { choosable: Choosable }) {
+	if (choosable.source === "older_backend") {
+		return (
+			<p className="text-xs text-muted-foreground">
+				The backend this window is connected to reaches the Claude API only, with ANTHROPIC_API_KEY. The engine offers the other providers.
+			</p>
+		);
+	}
+	return (
+		<>
+			<p className="text-xs text-muted-foreground">
+				Keys and addresses are not entered here: set the variable named below in the engine&apos;s environment or its .env file, and start
+				the engine again. A key is never shown, only whether it is set.
+			</p>
+			<ul className="flex flex-col gap-2">
+				{groupsOf(choosable.catalog).map(({ provider, why }) => (
+					<li key={provider.id} className="flex flex-col gap-0.5 text-xs">
+						<span className="flex items-baseline justify-between gap-2">
+							<span className="text-sm text-foreground">{provider.label}</span>
+							<span className={why ? "text-warning" : "text-muted-foreground"}>{why ?? "ready"}</span>
+						</span>
+						<span className="text-muted-foreground">
+							{keyState(provider)} · {where(provider)}
+						</span>
+						{provider.limits.map((limit) => (
+							<span key={limit} className="text-muted-foreground">
+								{limit}
+							</span>
+						))}
+					</li>
+				))}
+			</ul>
+		</>
+	);
+}
+
+/** Stored results that can be thrown away and produced again, each as a button that does it now: one step for
+ *  all of the open run's papers, or every step. */
+const REDO: { steps: RedoStep[]; label: string; hint: string }[] = [
+	{ steps: ["download"], label: "Download all again", hint: "Fetch the run's whole paper list again and overwrite the stored records" },
+	{ steps: ["embeddings"], label: "Embed all again", hint: "Recompute the embedding of every paper in the run" },
+	{
+		steps: ["descriptions"],
+		label: "Describe all again",
+		hint: "Ask the language model for new names and descriptions of every community",
+	},
+	{ steps: REDO_STEPS, label: "Redo all of it", hint: "All three: download, embed and describe everything in the run from scratch" },
 ];
 
 const AI_GROUP = "AI-written papers";
+
+/** Prices in the menu's hints are told in US dollars here; the sidebar tells them in the user's currency. */
+const DOLLAR = { code: "USD", rate: 1, date: null };
 
 const GROUPS: { title: string; note?: string; columns?: number; fields: Field[] }[] = [
 	{
@@ -96,26 +168,49 @@ const GROUPS: { title: string; note?: string; columns?: number; fields: Field[] 
 			{
 				kind: "switch",
 				key: "describe",
-				label: "Describe communities with Claude",
-				hint: "Needs ANTHROPIC_API_KEY in the backend's environment",
+				label: "Describe communities with a language model",
+				hint: "Needs the chosen provider's key in the backend's environment (see Language model below)",
 			},
-			{ kind: "choice", key: "describe_model", label: "Claude model", from: "describe_models" },
+			{ kind: "model", key: "describe_model", label: "Language model" },
 		],
 	},
 ];
+
+const MODELS_GROUP = "Language model";
 
 function Editor({
 	field,
 	settings,
 	catalog,
+	choosable,
+	providerOwned,
 	onChange,
 }: {
 	field: Field;
 	settings: Settings;
 	catalog: Catalog | undefined;
+	choosable: Choosable;
+	providerOwned: boolean;
 	onChange: (changes: Partial<Settings>) => void;
 }) {
 	const set = (value: Settings[keyof Settings]) => onChange({ [field.key]: value });
+	if (field.kind === "model") {
+		return (
+			<Label>
+				{field.label}
+				<span className="flex h-8 items-center rounded-md border border-input bg-background px-2 text-sm">
+					<ModelChoice
+						quiet
+						choosable={choosable}
+						settings={settings}
+						providerOwned={providerOwned}
+						currency={DOLLAR}
+						onChange={onChange}
+					/>
+				</span>
+			</Label>
+		);
+	}
 	if (field.kind === "switch") {
 		return <SwitchRow label={field.label} hint={field.hint} checked={Boolean(settings[field.key])} onCheckedChange={set} />;
 	}
@@ -163,6 +258,8 @@ export function SettingsDialog({
 	validation,
 	detector,
 	machine,
+	serverOwned = new Set<keyof Settings>(),
+	choosable,
 	onOpenChange,
 	onChange,
 	onRedo,
@@ -177,10 +274,14 @@ export function SettingsDialog({
 	detector: Library["ai_detector"] | undefined;
 	/** what this computer can do, and what that means for embedding */
 	machine: Library["machine"] | undefined;
+	/** the settings the server this window is connected to decides (none on the user's own computer) */
+	serverOwned?: ReadonlySet<keyof Settings>;
+	/** the language models to choose from, and what each provider can do */
+	choosable: Choosable;
 	onOpenChange: (open: boolean) => void;
 	onChange: (changes: Partial<Settings>) => void;
-	/** Run the open run again with one step redone; undefined when there is no run to redo, or one is running. */
-	onRedo?: (step: RedoStep) => void;
+	/** Run the open run again with these steps redone; undefined when there is no run to redo, or one is running. */
+	onRedo?: (steps: RedoStep[]) => void;
 	/** Read the declarations of every paper of the open run; undefined when that cannot be started now. */
 	onReadDeclarations?: () => void;
 }) {
@@ -204,19 +305,20 @@ export function SettingsDialog({
 								<Heading>Redo</Heading>
 								<p className="text-xs text-muted-foreground">
 									Anything already stored is reused: a known paper is not downloaded again, an unchanged one is not embedded again, a
-									described group is not described again. A button here runs the open run again with that step done from scratch.
+									described group is not described again. A button here runs the open run again with that step done from scratch, for all of
+									its papers. Each run in the sidebar also has its own button to redo all of it.
 								</p>
-								{REDO.map(({ step, label, hint }) => (
-									<div key={step} className="flex items-center justify-between gap-4 py-1">
+								{REDO.map(({ steps, label, hint }) => (
+									<div key={label} className="flex items-center justify-between gap-4 py-1">
 										<span className="text-xs text-muted-foreground">{hint}</span>
-										<Button variant="outline" className="w-36" disabled={!onRedo} onClick={() => onRedo?.(step)}>
+										<Button variant="outline" className="w-44" disabled={!onRedo} onClick={() => onRedo?.(steps)}>
 											<RotateCcw />
 											{label}
 										</Button>
 									</div>
 								))}
 							</section>
-							{GROUPS.map((group) => (
+							{GROUPS.map((group) => ({ group, ...splitByOwner(group.fields, serverOwned) })).map(({ group, shown, decided }) => (
 								<section key={group.title} className="flex flex-col gap-2">
 									<Heading>{group.title}</Heading>
 									{group.note && <p className="text-xs text-muted-foreground">{group.note}</p>}
@@ -232,9 +334,14 @@ export function SettingsDialog({
 											</Button>
 										</div>
 									)}
-									{group.title === "Embeddings" && machine && (
+									{group.title === "Embeddings" && machine && decided.length === 0 && (
 										<p className={cn("text-xs", machine.gpu ? "text-muted-foreground" : "text-warning")}>{machine.embedding}</p>
 									)}
+									{decided.map((field) => (
+										<p key={field.key} className="text-xs text-muted-foreground">
+											{field.label}: decided by the server this window is connected to.
+										</p>
+									))}
 									{group.title === AI_GROUP && detector && (
 										<p className={cn("text-xs", detector.state === "ready" ? "text-muted-foreground" : "text-warning")}>{detector.why}</p>
 									)}
@@ -258,12 +365,30 @@ export function SettingsDialog({
 										</p>
 									)}
 									<div className={group.columns ? "grid grid-cols-2 gap-2" : "flex flex-col gap-2"}>
-										{group.fields.map((field) => (
-											<Editor key={field.key} field={field} settings={settings} catalog={catalog} onChange={onChange} />
+										{shown.map((field) => (
+											<Editor
+												key={field.key}
+												field={field}
+												settings={settings}
+												catalog={catalog}
+												choosable={choosable}
+												providerOwned={serverOwned.has("describe_provider")}
+												onChange={onChange}
+											/>
 										))}
 									</div>
 								</section>
 							))}
+							<section className="flex flex-col gap-2">
+								<Heading>{MODELS_GROUP}</Heading>
+								{serverOwned.has("describe_provider") && (
+									<p className="text-xs text-muted-foreground">
+										The provider is decided by the server this window is connected to: its key and account are the server&apos;s. Its models
+										can be chosen above.
+									</p>
+								)}
+								<LanguageModels choosable={choosable} />
+							</section>
 						</div>
 					)}
 				</Dialog.Content>

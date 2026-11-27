@@ -1,0 +1,869 @@
+//! Questions asked of a run or of one of its communities, answered with cited statements (`model::answers`), and
+//! the passages that talk about something, found without a model (`text::retrieval`).
+//!
+//! ```text
+//! GET    /api/runs/{run}/passages/found?q=..&community=..   the passages that match best (`PassagesFound`)
+//! GET    /api/runs/{run}/answers/estimate?q=..&community=.. what asking would cost, nothing sent (`AnswerEstimate`)
+//! POST   /api/runs/{run}/answers   {question, community?, accepted_usd}: start asking (`AnswerStarted`)
+//! GET    /api/runs/{run}/answers                            the questions asked of the run (`AnswerHistory`)
+//! GET    /api/runs/{run}/answers/{id}                       one, its kept answer checked again (`AnswerView`)
+//! DELETE /api/runs/{run}/answers/{id}                       forget it and its answer
+//! POST   /api/runs/{run}/answers/{id}/redo                  forget its answer only: asked again at a new click
+//! ```
+//!
+//! A scope's index is built once on a thread of its own, the first time it is searched, and kept (with the
+//! others under a memory budget: [`crate::text::retrieval::Indexes`]); while it is being built (reading PDFs
+//! never read before takes a while) a request waits up to [`WAIT`] and is then told how far it has got
+//! (`{"state": "indexing", "done", "of"}`), and asks again.
+//!
+//! Money is spent only by the POST, which the interface sends when the user clicks the button showing the
+//! estimate. It carries the most the user was shown (`accepted_usd`): if what the question would cost at most
+//! is now more (the passages or the model changed), nothing is asked and the estimate must be asked for again.
+//! That worst case is the call's budget: no call is started that could pass it as the budget reckons it (prompt
+//! tokens from characters, at 3 a token, which errs high for English prose; text that tokenizes more densely, such
+//! as mathematics, can cost somewhat more, which is why the interface says it is an estimate). A request naming
+//! another model than the one estimated, or accepting dollars for a model whose price is not known, is refused.
+//! A model whose price is not known is capped in tokens instead, by the same worst case.
+//!
+//! Retrieval here is lexical: the engine has no embedding model loaded to embed a question with. When it has,
+//! the similarity of each paper's embedding to the question goes to `Index::search` as `Ranking::Embedded`.
+
+use std::sync::{Arc, LazyLock};
+use std::time::Duration;
+
+use axum::Json;
+use axum::extract::rejection::{JsonRejection, QueryRejection};
+use axum::extract::{Path, Query, State};
+use axum::routing::{MethodRouter, get, post};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use super::reviews::papers_of;
+use super::routes::{ApiError, Shared, on_the_side, one_name};
+use crate::evidence::{Cited, PaperText, Papers};
+use crate::jobs::{Phase, Tracker};
+use crate::library::questions::Asked;
+use crate::library::{Feature, Library, PaperReading};
+use crate::model::answers::{
+    self, Answer, AnswerCounts, Found, LONGEST_QUESTION, MAX_TOKENS, NotAnswered, Outcome, PROMPT_TOKENS, Prepared,
+    Said, SaidOutcome, Scope, Statement,
+};
+use crate::model::batch::{Asking, IN_FLIGHT};
+use crate::model::language::{Budget, DEFAULT_MODEL, Estimate, Https, Limit};
+use crate::settings;
+use crate::text::retrieval::{
+    Builder, Coverage, Document, Got, Hit, Index, Indexes, LONGEST_QUERY, Ranking, Unit, Unread, Wait,
+};
+use crate::usage::Usd;
+
+/// How long a request waits for an index being built before it is told how far the building has got.
+pub const WAIT: Duration = Duration::from_secs(15);
+/// Papers read through the library at a time while an index is built.
+const CHUNK: usize = 200;
+/// What the job asking a question is called in `/api/status`.
+const JOB: &str = "answering a question";
+
+/// The indexes of this engine, by library, run, scope and members.
+static INDEXES: LazyLock<Indexes> = LazyLock::new(Indexes::default);
+
+/// The routes of this module, for [`super::routes::table`].
+pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
+    vec![
+        ("/api/runs/{run}/passages/found", get(passages_found)),
+        ("/api/runs/{run}/answers/estimate", get(estimate)),
+        ("/api/runs/{run}/answers", get(history).post(start)),
+        ("/api/runs/{run}/answers/{id}", get(view).delete(remove)),
+        ("/api/runs/{run}/answers/{id}/redo", post(redo)),
+    ]
+}
+
+#[derive(Deserialize)]
+struct Search {
+    q: String,
+    community: Option<String>,
+}
+
+/// `AnswerRequest` in the contracts.
+#[derive(Deserialize)]
+struct Request {
+    question: String,
+    community: Option<String>,
+    /// The model the estimate was for: a request for another one is refused.
+    model: String,
+    /// The most it would cost, as the user was shown it; null when the model's price is not known.
+    accepted_usd: Option<f64>,
+}
+
+/// A query or a question, trimmed, if it is not empty and not longer than `longest` characters.
+fn bounded(text: &str, longest: usize) -> Result<String, ApiError> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(ApiError::Invalid("the question is empty".to_owned()));
+    }
+    if text.chars().nth(longest).is_some() {
+        return Err(ApiError::Invalid(format!("the question is longer than {longest} characters")));
+    }
+    Ok(text.to_owned())
+}
+
+/// The scope's papers' index, as [`Indexes::get`] finds it, and its name there.
+fn index_of(engine: &Shared, library: &Arc<Library>, scope: &Scope) -> Result<(Got, String), ApiError> {
+    let ids = papers_of(engine, &scope.run, scope.community.as_deref())?;
+    let members: String = Sha256::digest(ids.join("\n").as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect();
+    let name =
+        format!("{}\n{}\n{}\n{members}", library.path().display(), scope.run, scope.community.as_deref().unwrap_or(""));
+    let library = Arc::clone(library);
+    let got =
+        INDEXES.get(&name, Wait::AtMost(WAIT), move |progress| build(&library, &ids, progress)).map_err(|why| {
+            eprintln!("answers: an index could not be built: {why}");
+            ApiError::Files
+        })?;
+    Ok((got, name))
+}
+
+/// Was `hit` indexed from the text its paper has now? A paper whose PDF was read after the index was built was
+/// indexed by its abstract, and its text is now its passages: the index is out of date.
+fn current(hit: &Hit, texts: &Papers) -> bool {
+    matches!(
+        (hit.unit, texts.get(&hit.paper)),
+        (Unit::Passage { .. }, Some(PaperText::Read(_))) | (Unit::Record, Some(PaperText::Unread { .. }))
+    )
+}
+
+/// The index of `ids`, read through the library a chunk at a time (PDFs kept but never read are read now).
+fn build(library: &Library, ids: &[String], progress: &crate::text::retrieval::Progress) -> Result<Index, String> {
+    let mut builder = Builder::default();
+    for (number, chunk) in ids.chunks(CHUNK).enumerate() {
+        progress.set(number * CHUNK, ids.len());
+        let wanted: Vec<&str> = chunk.iter().map(String::as_str).collect();
+        let readings = library.paper_texts(&wanted).map_err(|error| error.to_string())?;
+        let documents: Vec<Document<'_>> = chunk
+            .iter()
+            .zip(&readings)
+            .map(|(paper, reading)| match reading {
+                PaperReading::Read(passages) => Document::Read { paper, passages },
+                PaperReading::NoPdf { title, abstract_text } => {
+                    Document::Record { paper, title, abstract_text, why: Unread::NoPdf }
+                }
+                PaperReading::Unreadable { title, abstract_text, .. } => {
+                    Document::Record { paper, title, abstract_text, why: Unread::Unreadable }
+                }
+                PaperReading::NotInLibrary => Document::Missing,
+            })
+            .collect();
+        builder.add(&documents);
+    }
+    progress.set(ids.len(), ids.len());
+    Ok(builder.finish())
+}
+
+/// The texts of the papers `hits` are from, as the library has them now (kept: no PDF is read again).
+fn texts_of(library: &Library, hits: &[Hit]) -> Result<Papers, ApiError> {
+    let mut ids: Vec<&str> = hits.iter().map(|hit| hit.paper.as_str()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    Ok(library.citable(&ids)?)
+}
+
+/// What a search came to.
+enum Searched {
+    Ready { hits: Vec<Hit>, coverage: Coverage, texts: Papers },
+    Indexing { done: usize, of: usize },
+}
+
+/// The passages that match `query`, with their papers' texts. An index found out of date is dropped and built
+/// again (the request then waits for it, or is told how far it has got).
+fn search(engine: &Shared, library: &Arc<Library>, scope: &Scope, query: &str) -> Result<Searched, ApiError> {
+    for _ in 0..2 {
+        let (got, name) = index_of(engine, library, scope)?;
+        let index = match got {
+            Got::Ready(index) => index,
+            Got::Building { done, of } => return Ok(Searched::Indexing { done, of }),
+        };
+        let hits = index.search(query, Ranking::Lexical);
+        let texts = texts_of(library, &hits)?;
+        if hits.iter().all(|hit| current(hit, &texts)) {
+            return Ok(Searched::Ready { hits, coverage: index.coverage(), texts });
+        }
+        INDEXES.forget(&name);
+    }
+    Err(ApiError::Invalid("the papers' texts are changing: try again in a moment".to_owned()))
+}
+
+/// `PassagesFound` in the contracts.
+#[derive(Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+enum PassagesFound {
+    Ready { query: String, coverage: Coverage, passages: Vec<Found> },
+    Indexing { done: usize, of: usize },
+}
+
+fn scope_of(run: String, community: Option<String>) -> Result<Scope, ApiError> {
+    one_name(&run)?;
+    let community = community.map(|path| path.trim().to_owned()).filter(|path| !path.is_empty());
+    Ok(Scope { run, community })
+}
+
+async fn passages_found(
+    State(engine): State<Shared>,
+    Path(run): Path<String>,
+    query: Result<Query<Search>, QueryRejection>,
+) -> Result<Json<PassagesFound>, ApiError> {
+    let Query(Search { q, community }) = query?;
+    let q = bounded(&q, LONGEST_QUERY)?;
+    let scope = scope_of(run, community)?;
+    let found = on_the_side(move || {
+        let library = engine.library()?;
+        Ok(match search(&engine, &library, &scope, &q)? {
+            Searched::Ready { hits, coverage, texts } => {
+                PassagesFound::Ready { passages: answers::found(&hits, &texts, &[]), query: q, coverage }
+            }
+            Searched::Indexing { done, of } => PassagesFound::Indexing { done, of },
+        })
+    })
+    .await?;
+    Ok(Json(found))
+}
+
+/// The model chosen in the settings.
+fn model_of(engine: &Shared) -> Result<String, ApiError> {
+    let chosen = settings::load(&engine.settings_file(), &engine.choices)?.describe_model;
+    Ok(if chosen.trim().is_empty() { DEFAULT_MODEL.to_owned() } else { chosen })
+}
+
+/// A question prepared for its scope, with the passages found for it and the coverage of the search.
+enum Ready {
+    Prepared { prepared: Box<Prepared>, coverage: Coverage },
+    Indexing { done: usize, of: usize },
+}
+
+fn prepared(engine: &Shared, library: &Arc<Library>, scope: &Scope, question: &str) -> Result<Ready, ApiError> {
+    let model = model_of(engine)?;
+    Ok(match search(engine, library, scope, question)? {
+        Searched::Ready { hits, coverage, texts } => {
+            let prepared = Box::new(answers::prepare(&model, scope, question, &hits, &texts));
+            Ready::Prepared { prepared, coverage }
+        }
+        Searched::Indexing { done, of } => Ready::Indexing { done, of },
+    })
+}
+
+/// `AnswerEstimate` in the contracts: what one question would cost, before anything is sent.
+#[derive(Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+enum AnswerEstimate {
+    Ready {
+        /// The question's id once asked (the key its answer is kept under).
+        id: String,
+        model: String,
+        /// Its answer is kept: asking costs nothing.
+        kept: bool,
+        /// Passages that fit in the prompt, and the papers they are from.
+        passages: usize,
+        papers: usize,
+        coverage: Coverage,
+        /// The cap on the passages in the prompt, and on the answer, in tokens.
+        prompt_cap_tokens: u64,
+        max_answer_tokens: u32,
+        /// Likely tokens and dollars (`Estimate::counting` says how tokens were reckoned: an estimate either way);
+        /// null when kept.
+        cost: Option<Box<Estimate>>,
+        /// The most it can cost, which is what the POST must accept; null when the price is not known.
+        most_usd: Option<Usd>,
+        /// The most tokens it can take: the cap when the price is not known.
+        most_tokens: u64,
+        /// Whether the model can be asked at all (a key is set): never the key.
+        api_key_set: bool,
+    },
+    Indexing {
+        done: usize,
+        of: usize,
+    },
+}
+
+async fn estimate(
+    State(engine): State<Shared>,
+    Path(run): Path<String>,
+    query: Result<Query<Search>, QueryRejection>,
+) -> Result<Json<AnswerEstimate>, ApiError> {
+    let Query(Search { q, community }) = query?;
+    let question = bounded(&q, LONGEST_QUESTION)?;
+    let scope = scope_of(run, community)?;
+    let told = on_the_side(move || {
+        let library = engine.library()?;
+        Ok(match prepared(&engine, &library, &scope, &question)? {
+            Ready::Prepared { prepared, coverage } => {
+                let estimate = prepared.estimate(&library)?;
+                let kept = estimate.to_ask == 0;
+                AnswerEstimate::Ready {
+                    id: prepared.key.as_str().to_owned(),
+                    model: prepared.model.clone(),
+                    kept,
+                    passages: prepared.given.len(),
+                    papers: prepared.papers.len(),
+                    coverage,
+                    prompt_cap_tokens: PROMPT_TOKENS,
+                    max_answer_tokens: MAX_TOKENS,
+                    cost: estimate.by_model.into_iter().next().map(Box::new),
+                    most_usd: estimate.most_usd,
+                    most_tokens: prepared.most_tokens(),
+                    api_key_set: engine.endpoint().is_ok(),
+                }
+            }
+            Ready::Indexing { done, of } => AnswerEstimate::Indexing { done, of },
+        })
+    })
+    .await?;
+    Ok(Json(told))
+}
+
+/// The first line of the log of the job asking question `id`: how a view tells that its own question is being
+/// asked, not another.
+fn asking_line(id: &str) -> String {
+    format!("Asking the model question {id}.")
+}
+
+/// `AnswerStarted` in the contracts: the question's id, and the job asking it (none when its answer was kept).
+#[derive(Serialize)]
+struct Started {
+    id: String,
+    job: Option<u64>,
+}
+
+/// The budget of a question: its worst case, if that is no more than the user accepted.
+fn budget_of(prepared: &Prepared, library: &Library, accepted: Option<f64>) -> Result<Budget, ApiError> {
+    let estimate = prepared.estimate(library)?;
+    match (estimate.most_usd, accepted) {
+        (Some(most), Some(accepted)) if accepted.is_finite() && most.dollars() <= accepted + 1e-9 => {
+            Ok(Budget::new(Limit::Dollars(most)))
+        }
+        (Some(_), _) | (None, Some(_)) => Err(ApiError::Invalid(
+            "what this question would cost has changed since it was shown: ask for the estimate again".to_owned(),
+        )),
+        // a model whose price is not known, as shown: capped in tokens, at the worst case shown
+        (None, None) => Ok(Budget::new(Limit::Tokens(prepared.most_tokens()))),
+    }
+}
+
+/// What the question's job does: ask it, and say what came of it.
+fn answer(asking: Asking<'_>, prepared: &Prepared, budget: &Budget, tracker: &Tracker<'_>) -> Result<String, String> {
+    match answers::ask(asking, prepared, budget, tracker) {
+        Ok(said) if said.outcome == SaidOutcome::NotInPapers => Ok("the papers in scope do not say".to_owned()),
+        Ok(said) => Ok(format!("answered with {} statements, checked when shown", said.statements.len())),
+        Err(NotAnswered::Library(error)) => {
+            eprintln!("answers: {error}");
+            Err("the engine could not read or write its files".to_owned())
+        }
+        Err(why) => Err(why.to_string()),
+    }
+}
+
+async fn start(
+    State(engine): State<Shared>,
+    Path(run): Path<String>,
+    body: Result<Json<Request>, JsonRejection>,
+) -> Result<Json<Started>, ApiError> {
+    let Json(request) = body?;
+    let question = bounded(&request.question, LONGEST_QUESTION)?;
+    let scope = scope_of(run, request.community)?;
+    let started = on_the_side(move || {
+        let library = engine.library()?;
+        let (prepared, _) = match prepared(&engine, &library, &scope, &question)? {
+            Ready::Prepared { prepared, coverage } => (*prepared, coverage),
+            Ready::Indexing { .. } => {
+                return Err(ApiError::Invalid("the papers are still being indexed: try again in a moment".to_owned()));
+            }
+        };
+        if prepared.model != request.model {
+            return Err(ApiError::Invalid(
+                "the model chosen in the settings has changed since the cost was shown: ask for the estimate again"
+                    .to_owned(),
+            ));
+        }
+        if prepared.given.is_empty() {
+            return Err(ApiError::Invalid("no passage of these papers matches the question".to_owned()));
+        }
+        let asked = Asked {
+            run: scope.run.clone(),
+            key: prepared.key.as_str().to_owned(),
+            community: scope.community.clone(),
+            question: question.clone(),
+            model: prepared.model.clone(),
+            passages: prepared.given.clone(),
+            asked_at: String::new(),
+        };
+        let id = asked.key.clone();
+        if library.kept::<Said>(Feature::Answers, &prepared.key)?.is_some() {
+            library.keep_question(&asked)?;
+            return Ok(Started { id, job: None });
+        }
+        let endpoint = engine.endpoint().map_err(|why| ApiError::Invalid(why.to_string()))?;
+        let budget = budget_of(&prepared, &library, request.accepted_usd)?;
+        // listed before the call is started, so that a call paid for is never missing from the history
+        let new = library.question(&scope.run, &id)?.is_none();
+        library.keep_question(&asked)?;
+        let worker = Arc::clone(&library);
+        let line = asking_line(&id);
+        let started = engine.job.start_tracked(JOB, move |tracker| {
+            tracker.log(&line);
+            let transport = Https::default();
+            let asking =
+                Asking { library: &worker, transport: &transport, endpoint, recorder: &*worker, in_flight: IN_FLIGHT };
+            answer(asking, &prepared, &budget, tracker)
+        });
+        match started {
+            Ok(job) => Ok(Started { id, job: Some(job) }),
+            Err(busy) => {
+                if new {
+                    library.forget_question(&scope.run, &id)?;
+                }
+                Err(busy.into())
+            }
+        }
+    })
+    .await?;
+    Ok(Json(started))
+}
+
+/// `AnswerSummary` in the contracts: one line of a run's questions.
+#[derive(Serialize)]
+struct Summary {
+    id: String,
+    question: String,
+    community: Option<String>,
+    model: String,
+    asked_at: String,
+    /// Its answer is kept: reopening it costs nothing.
+    answered: bool,
+}
+
+/// The scope of a question kept, and the key its answer would be kept under now.
+fn kept_answer(library: &Library, asked: &Asked) -> Result<Option<Said>, ApiError> {
+    let scope = Scope { run: asked.run.clone(), community: asked.community.clone() };
+    let (key, _) = answers::key_of(&asked.model, &scope, &asked.question, &asked.passages);
+    // asked with an older prompt: not this answer's key any more, so not answered as far as it goes
+    if key.as_str() != asked.key {
+        return Ok(None);
+    }
+    Ok(library.kept::<Said>(Feature::Answers, &key)?.map(|kept| kept.answer))
+}
+
+async fn history(State(engine): State<Shared>, Path(run): Path<String>) -> Result<Json<Vec<Summary>>, ApiError> {
+    one_name(&run)?;
+    let listed = on_the_side(move || {
+        let library = engine.library()?;
+        library
+            .questions(&run)?
+            .into_iter()
+            .map(|asked| {
+                Ok(Summary {
+                    answered: kept_answer(&library, &asked)?.is_some(),
+                    id: asked.key,
+                    question: asked.question,
+                    community: asked.community,
+                    model: asked.model,
+                    asked_at: asked.asked_at,
+                })
+            })
+            .collect::<Result<Vec<_>, ApiError>>()
+    })
+    .await?;
+    Ok(Json(listed))
+}
+
+/// Where a question stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Standing {
+    Answered,
+    NotInPapers,
+    Unverified,
+    /// Being asked now.
+    Asking,
+    /// Not answered: the call failed or was stopped, or the answer was forgotten. Asking again costs again.
+    Unanswered,
+}
+
+/// `AnswerView` in the contracts.
+#[derive(Serialize)]
+struct View {
+    id: String,
+    question: String,
+    community: Option<String>,
+    model: String,
+    asked_at: String,
+    state: Standing,
+    /// Only when answered: each statement with the evidence found for it.
+    statements: Vec<Cited<Statement>>,
+    counts: AnswerCounts,
+    /// The passages the model was given, best first, each with whether the answer cites it.
+    passages: Vec<Found>,
+    /// The papers the statements shown cite: what can be lit up on the graph.
+    cited_papers: Vec<String>,
+}
+
+async fn view(State(engine): State<Shared>, Path((run, id)): Path<(String, String)>) -> Result<Json<View>, ApiError> {
+    one_name(&run)?;
+    let told = on_the_side(move || {
+        let library = engine.library()?;
+        let asked = library.question(&run, &id)?.ok_or(ApiError::NotFound)?;
+        let texts = texts_of(&library, &asked.passages)?;
+        let (state, answer) = match kept_answer(&library, &asked)? {
+            Some(said) => {
+                let answer = answers::checked(said, &answers::citable(&texts, &papers_in(&asked.passages)));
+                let state = match answer.outcome {
+                    Outcome::Answered => Standing::Answered,
+                    Outcome::NotInPapers => Standing::NotInPapers,
+                    Outcome::Unverified => Standing::Unverified,
+                };
+                (state, answer)
+            }
+            None => {
+                let job = engine.job.snapshot(0);
+                let ours = job.log.first().is_some_and(|line| *line == asking_line(&asked.key));
+                let state = if job.state == Phase::Running && job.kind == JOB && ours {
+                    Standing::Asking
+                } else {
+                    Standing::Unanswered
+                };
+                (
+                    state,
+                    Answer { outcome: Outcome::Unverified, statements: Vec::new(), counts: AnswerCounts::default() },
+                )
+            }
+        };
+        Ok(View {
+            passages: answers::found(&asked.passages, &texts, &answer.statements),
+            cited_papers: answers::cited_papers(&answer.statements),
+            statements: answer.statements,
+            counts: answer.counts,
+            state,
+            id: asked.key,
+            question: asked.question,
+            community: asked.community,
+            model: asked.model,
+            asked_at: asked.asked_at,
+        })
+    })
+    .await?;
+    Ok(Json(told))
+}
+
+fn papers_in(hits: &[Hit]) -> Vec<String> {
+    let mut papers: Vec<String> = hits.iter().map(|hit| hit.paper.clone()).collect();
+    papers.sort_unstable();
+    papers.dedup();
+    papers
+}
+
+async fn remove(
+    State(engine): State<Shared>,
+    Path((run, id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    one_name(&run)?;
+    let gone = on_the_side(move || Ok(engine.library()?.forget_question(&run, &id)?)).await?;
+    if !gone {
+        return Err(ApiError::NotFound);
+    }
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn redo(
+    State(engine): State<Shared>,
+    Path((run, id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    one_name(&run)?;
+    let forgotten = on_the_side(move || {
+        let library = engine.library()?;
+        let asked = library.question(&run, &id)?.ok_or(ApiError::NotFound)?;
+        let scope = Scope { run: asked.run.clone(), community: asked.community.clone() };
+        let (key, _) = answers::key_of(&asked.model, &scope, &asked.question, &asked.passages);
+        Ok(library.forget_answer(&key)?)
+    })
+    .await?;
+    Ok(Json(serde_json::json!({ "ok": true, "forgotten": forgotten })))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Request, StatusCode, header};
+    use serde_json::{Value, json};
+    use tower::ServiceExt;
+
+    use super::super::config::tests::STRONG;
+    use super::super::config::{Environment, Listen};
+    use super::super::routes::Engine;
+    use super::super::security::LARGEST_BODY;
+    use super::super::tests::served;
+    use super::*;
+    use crate::library::papers::tests::paper;
+    use crate::library::passages::fixtures::pdf_with;
+    use crate::library::{Known, Slot};
+    use crate::settings::Choices;
+
+    const AT: &str = "127.0.0.1:8765";
+    const QUESTION: &str = "Does merging count shared directions twice?";
+
+    fn choices() -> Choices {
+        let one = |name: &str| vec![name.to_owned()];
+        Choices {
+            embedding_models: one("Qwen/Qwen3-Embedding-0.6B"),
+            clustering: one("spectral"),
+            acceptance: one("all"),
+            flags: one("llm_declared"),
+            describe_models: one("claude-opus-5-5"),
+        }
+    }
+
+    /// A data folder with three papers (two with a PDF, one without) and a run of them with two communities.
+    fn data() -> tempfile::TempDir {
+        let data = tempfile::tempdir().unwrap();
+        let library = Library::open(&data.path().join("library")).unwrap();
+        let mut unread = paper("icml-2026-3");
+        unread.r#abstract = "Merging fine-tuned models inflates the spectrum of shared directions.".to_owned();
+        library.add_papers(&[paper("2601.00001"), paper("2601.00002"), unread], None, Known::Keep).unwrap();
+        let merging = ["Introduction", "We show that merging task vectors counts shared directions twice."];
+        library.keep_pdf("2601.00001", &pdf_with(&merging)).unwrap();
+        let distilling = ["Method", "Our method distils a large teacher into a small student without labels."];
+        library.keep_pdf("2601.00002", &pdf_with(&distilling)).unwrap();
+        let run = data.path().join("runs").join("r1");
+        std::fs::create_dir_all(&run).unwrap();
+        let nodes = json!({"nodes": [{"id": "2601.00001"}, {"id": "2601.00002"}, {"id": "icml-2026-3"}], "edges": []});
+        std::fs::write(run.join("graph.json"), nodes.to_string()).unwrap();
+        let tree = json!({"communities": [
+            {"tree_path": "c0", "members": [0, 2], "children": []},
+            {"tree_path": "c1", "members": [1], "children": []}]});
+        std::fs::write(run.join("communities.json"), tree.to_string()).unwrap();
+        data
+    }
+
+    fn engine(data: &tempfile::TempDir) -> Engine {
+        Engine::new(data.path().to_path_buf(), choices())
+    }
+
+    fn router(engine: Engine) -> axum::Router {
+        let pairs = [("CONSTELLATE_TOKEN", STRONG), ("CONSTELLATE_ORIGIN", "http://127.0.0.1:3000")];
+        let listen = Listen::from_environment(&Environment::from_pairs(pairs)).unwrap();
+        served(&listen, AT, engine).0
+    }
+
+    /// A key, and an address where nothing listens: should anything be sent, it reaches no one.
+    fn with_key(mut engine: Engine) -> Engine {
+        engine.language = Environment::from_pairs([
+            ("ANTHROPIC_API_KEY", "test-key-not-real-0123456789"),
+            ("ANTHROPIC_BASE_URL", "http://127.0.0.1:1"),
+        ])
+        .language_endpoint();
+        engine
+    }
+
+    async fn ask(router: &axum::Router, method: &str, path: &str, body: Option<String>) -> (StatusCode, Value) {
+        let request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::HOST, AT)
+            .header(header::AUTHORIZATION, format!("Bearer {STRONG}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(body.map_or(Body::empty(), Body::from))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    fn query(text: &str) -> String {
+        url::form_urlencoded::byte_serialize(text.as_bytes()).collect()
+    }
+
+    #[tokio::test]
+    async fn the_passages_found_come_with_their_evidence_and_the_coverage_of_the_search() {
+        let data = data();
+        let router = router(engine(&data));
+        let path = format!("/api/runs/r1/passages/found?q={}", query("merging shared directions"));
+        let (status, found) = ask(&router, "GET", &path, None).await;
+        assert_eq!(status, StatusCode::OK, "{found}");
+        assert_eq!(found["state"], "ready");
+        assert_eq!(
+            found["coverage"],
+            json!({"papers": 3, "full_text": 2, "capped": 0, "no_pdf": 1, "unreadable": 0, "missing": 0})
+        );
+        let passages = found["passages"].as_array().unwrap();
+        let read = passages.iter().find(|found| found["evidence"]["paper"] == "2601.00001").unwrap();
+        assert_eq!(read["evidence"]["established"]["kind"], "verified");
+        assert_eq!(read["evidence"]["established"]["address"]["page"], 1);
+        assert!(read["evidence"]["quote"].as_str().unwrap().contains("counts shared directions twice"));
+        assert_eq!(read["cited"], false);
+        assert!(!passages.iter().any(|found| found["evidence"]["paper"] == "2601.00002"));
+        // a community's search is over its papers only
+        let path = format!("/api/runs/r1/passages/found?q={}&community=c1", query("merging shared directions"));
+        let (_, only) = ask(&router, "GET", &path, None).await;
+        assert_eq!(only["coverage"]["papers"], 1);
+        assert!(only["passages"].as_array().unwrap().is_empty());
+        // a paper without a PDF is found by its abstract
+        let (_, record) = ask(&router, "GET", "/api/runs/r1/passages/found?q=spectrum", None).await;
+        assert_eq!(record["passages"][0]["evidence"]["paper"], "icml-2026-3");
+        assert_eq!(record["passages"][0]["evidence"]["established"]["kind"], "abstract");
+    }
+
+    #[tokio::test]
+    async fn a_search_of_nothing_or_too_much_or_of_no_run_is_refused() {
+        let data = data();
+        let router = router(engine(&data));
+        let long = "x".repeat(LONGEST_QUERY + 1);
+        for (path, status) in [
+            (format!("/api/runs/r1/passages/found?q={long}"), StatusCode::BAD_REQUEST),
+            ("/api/runs/r1/passages/found?q=%20".to_owned(), StatusCode::BAD_REQUEST),
+            ("/api/runs/r1/passages/found".to_owned(), StatusCode::BAD_REQUEST),
+            ("/api/runs/none/passages/found?q=merging".to_owned(), StatusCode::NOT_FOUND),
+            ("/api/runs/..%2Fdata/passages/found?q=merging".to_owned(), StatusCode::NOT_FOUND),
+            ("/api/runs/r1/passages/found?q=merging&community=c9".to_owned(), StatusCode::NOT_FOUND),
+            ("/api/runs/r1/answers/nothing-of-the-kind".to_owned(), StatusCode::NOT_FOUND),
+        ] {
+            assert_eq!(ask(&router, "GET", &path, None).await.0, status, "{path}");
+        }
+        let long = json!({"question": "x".repeat(LONGEST_QUESTION + 1), "accepted_usd": 1.0}).to_string();
+        assert_eq!(ask(&router, "POST", "/api/runs/r1/answers", Some(long)).await.0, StatusCode::BAD_REQUEST);
+        let huge = json!({"question": "x".repeat(LARGEST_BODY), "accepted_usd": 1.0}).to_string();
+        assert_eq!(ask(&router, "POST", "/api/runs/r1/answers", Some(huge)).await.0, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(ask(&router, "DELETE", "/api/runs/r1/answers/none", None).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(ask(&router, "POST", "/api/runs/r1/answers/none/redo", None).await.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn the_estimate_says_what_one_call_would_cost_and_sends_nothing() {
+        let data = data();
+        let router = router(engine(&data));
+        let path = format!("/api/runs/r1/answers/estimate?q={}", query(QUESTION));
+        let (status, told) = ask(&router, "GET", &path, None).await;
+        assert_eq!(status, StatusCode::OK, "{told}");
+        assert_eq!((told["state"].clone(), told["kept"].clone()), (json!("ready"), json!(false)));
+        assert_eq!((told["model"].clone(), told["api_key_set"].clone()), (json!("claude-opus-5-5"), json!(false)));
+        assert_eq!(told["cost"]["calls"], 1);
+        assert_eq!(told["cost"]["counting"]["kind"], "assumed");
+        assert!(told["cost"]["usd"].as_f64().unwrap() > 0.0);
+        assert!(told["most_usd"].as_f64().unwrap() >= told["cost"]["usd"].as_f64().unwrap());
+        assert_eq!(told["prompt_cap_tokens"], PROMPT_TOKENS);
+        assert!(told["passages"].as_u64().unwrap() >= 1);
+        assert_eq!(told["id"].as_str().unwrap().len(), 64);
+        let library = Library::open(&data.path().join("library")).unwrap();
+        assert!(library.questions("r1").unwrap().is_empty(), "an estimate asks nothing and keeps nothing");
+    }
+
+    #[tokio::test]
+    async fn asking_needs_a_key_a_free_job_and_the_cost_the_user_accepted() {
+        let data = data();
+        let request = |accepted: Value| {
+            json!({"question": QUESTION, "model": "claude-opus-5-5", "accepted_usd": accepted}).to_string()
+        };
+        let (status, told) =
+            ask(&router(engine(&data)), "POST", "/api/runs/r1/answers", Some(request(json!(5.0)))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(told["error"].as_str().unwrap().contains("No API key"), "{told}");
+
+        let router = router(with_key(engine(&data)));
+        let (status, told) = ask(&router, "POST", "/api/runs/r1/answers", Some(request(json!(0.000_001)))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "less than it can cost was accepted: {told}");
+        assert_eq!(
+            ask(&router, "POST", "/api/runs/r1/answers", Some(request(Value::Null))).await.0,
+            StatusCode::BAD_REQUEST
+        );
+        let none =
+            json!({"question": "quantum chromodynamics", "model": "claude-opus-5-5", "accepted_usd": 5.0}).to_string();
+        assert_eq!(ask(&router, "POST", "/api/runs/r1/answers", Some(none)).await.0, StatusCode::BAD_REQUEST);
+        let other = json!({"question": QUESTION, "model": "claude-haiku-5-5", "accepted_usd": 5.0}).to_string();
+        let (status, told) = ask(&router, "POST", "/api/runs/r1/answers", Some(other)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "the cost shown was for another model: {told}");
+        let library = Library::open(&data.path().join("library")).unwrap();
+        assert!(library.questions("r1").unwrap().is_empty(), "nothing refused is listed");
+
+        // a job of another kind is running: busy
+        let busy = with_key(engine(&data));
+        let stop = crate::jobs::Cancel::new();
+        let waiting = stop.clone();
+        busy.job
+            .start("a run", move |_| {
+                while !waiting.is_cancelled() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok("done".to_owned())
+            })
+            .unwrap();
+        let busy = self::router(busy);
+        let (status, told) = ask(&busy, "POST", "/api/runs/r1/answers", Some(request(json!(5.0)))).await;
+        stop.cancel();
+        assert_eq!(status, StatusCode::CONFLICT, "{told}");
+        assert!(library.questions("r1").unwrap().is_empty());
+
+        // accepted, and free: the job starts and the question is listed
+        let (status, started) = ask(&router, "POST", "/api/runs/r1/answers", Some(request(json!(5.0)))).await;
+        assert_eq!(status, StatusCode::OK, "{started}");
+        assert!(started["job"].as_u64().is_some());
+        let (_, listed) = ask(&router, "GET", "/api/runs/r1/answers", None).await;
+        assert_eq!(listed[0]["id"], started["id"]);
+        assert_eq!((listed[0]["question"].clone(), listed[0]["answered"].clone()), (json!(QUESTION), json!(false)));
+        assert_eq!(listed[0]["community"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn a_kept_answer_is_shown_checked_again_and_can_be_redone_or_deleted() {
+        let data = data();
+        let shared: Shared = Arc::new(engine(&data));
+        let library = shared.library().unwrap();
+        let scope = Scope { run: "r1".to_owned(), community: Some("c0".to_owned()) };
+        let Ready::Prepared { prepared, .. } = prepared(&shared, &library, &scope, QUESTION).unwrap() else { panic!() };
+        library
+            .keep_question(&Asked {
+                run: "r1".to_owned(),
+                key: prepared.key.as_str().to_owned(),
+                community: scope.community.clone(),
+                question: QUESTION.to_owned(),
+                model: prepared.model.clone(),
+                passages: prepared.given.clone(),
+                asked_at: String::new(),
+            })
+            .unwrap();
+        let claim = |sentence: &str, paper: &str, quote: &str| json!({"statement": {"sentence": sentence, "about": "one_paper"}, "quotes": [{"paper": paper, "quote": quote}]});
+        let said = Said {
+            outcome: SaidOutcome::Answered,
+            statements: vec![
+                claim(
+                    "Merging counts shared directions twice.",
+                    "2601.00001",
+                    "merging task vectors counts shared directions twice",
+                ),
+                claim("Merging always helps.", "icml-2026-3", "merging always improves every task by ten points"),
+                claim("The spectrum inflates.", "icml-2026-3", "inflates the spectrum of shared directions"),
+            ],
+        };
+        let slot = Slot { feature: Feature::Answers, key: prepared.key.clone(), subject: prepared.subject.clone() };
+        library.keep(&slot, &prepared.model, answers::PROMPT, &said).unwrap();
+
+        let router = router(engine(&data));
+        let path = format!("/api/runs/r1/answers/{}", prepared.key.as_str());
+        let (status, view) = ask(&router, "GET", &path, None).await;
+        assert_eq!(status, StatusCode::OK, "{view}");
+        assert_eq!(view["state"], "answered", "{view}");
+        assert_eq!(view["statements"].as_array().unwrap().len(), 2, "{view}");
+        assert_eq!(view["statements"][0]["statement"]["sentence"], "Merging counts shared directions twice.");
+        assert_eq!(view["statements"][0]["evidence"][0]["established"]["kind"], "verified");
+        assert_eq!(view["counts"], json!({"written": 3, "shown": 2, "not_found": 1, "malformed": 0}));
+        assert_eq!(view["cited_papers"], json!(["2601.00001", "icml-2026-3"]));
+        assert!(view["passages"].as_array().unwrap().iter().any(|found| found["cited"] == true));
+        let (_, listed) = ask(&router, "GET", "/api/runs/r1/answers", None).await;
+        assert_eq!((listed[0]["answered"].clone(), listed[0]["community"].clone()), (json!(true), json!("c0")));
+        // the estimate knows it is kept: nothing to pay
+        let estimate = format!("/api/runs/r1/answers/estimate?q={}&community=c0", query(QUESTION));
+        let (_, told) = ask(&router, "GET", &estimate, None).await;
+        assert_eq!((told["kept"].clone(), told["id"].clone()), (json!(true), json!(prepared.key.as_str())));
+        assert_eq!(told["cost"], Value::Null);
+
+        let (status, redone) = ask(&router, "POST", &format!("{path}/redo"), None).await;
+        assert_eq!((status, redone["forgotten"].clone()), (StatusCode::OK, json!(true)));
+        assert_eq!(ask(&router, "GET", &path, None).await.1["state"], "unanswered");
+        assert_eq!(ask(&router, "DELETE", &path, None).await.0, StatusCode::OK);
+        assert_eq!(ask(&router, "GET", &path, None).await.0, StatusCode::NOT_FOUND);
+    }
+}

@@ -21,12 +21,18 @@ const { app, BrowserWindow, dialog, session, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const http = require("node:http");
-const net = require("node:net");
 const path = require("node:path");
 const { Lifecycle } = require("./lifecycle.cjs");
+const { interfacePort } = require("./port.cjs");
 const setup = require("./setup.cjs");
 
 const BACKEND_PORT = 8765; // the web build forwards /api here (apps/web/next.config.ts)
+// How often a starting server is asked whether it answers, and how many times: the window opens once both answer,
+// so a server that is up waits half the interval on average before anyone notices. Asking is one local request.
+// The limit is a number of tries, not a time: where a refused connection itself takes a second or two (Windows
+// retries it), a slow first start gets as long as it always had.
+const START_POLL_MS = 100;
+const START_TRIES = 600;
 const DEV_URL = process.env.RP_DEV_URL;
 const REPO = path.join(__dirname, "..", "..");
 
@@ -35,15 +41,30 @@ const places = app.isPackaged
 	? {
 			backend: path.join(process.resourcesPath, "backend"),
 			uv: path.join(process.resourcesPath, "uv", process.platform === "win32" ? "uv.exe" : "uv"),
-			python: path.join(app.getPath("userData"), "python"),
+			python: path.join(localData(), "python"),
 			web: path.join(process.resourcesPath, "web", "apps", "web", "server.js"),
-			data: path.join(app.getPath("userData"), "data"),
+			data: path.join(localData(), "data"),
 		}
 	: {
 			backend: path.join(REPO, "apps", "backend"),
 			web: path.join(REPO, "apps", "web", ".next", "standalone", "apps", "web", "server.js"),
 			data: path.join(REPO, "data"),
 		};
+
+/**
+ * The installed app's own data: its library and its Python. Always the system's folder for one program's local
+ * data, which nothing syncs: the library is a database that is open while the app runs, and a sync client
+ * copying it mid-write can corrupt it. (Electron's "userData" is the roaming folder on Windows.)
+ */
+function localData() {
+	if (process.platform === "win32" && process.env.LOCALAPPDATA) return path.join(process.env.LOCALAPPDATA, "Constellate");
+	if (process.platform === "darwin") return path.join(app.getPath("home"), "Library", "Application Support", "Constellate");
+	if (process.platform === "linux") {
+		const shared = process.env.XDG_DATA_HOME;
+		return path.join(shared && path.isAbsolute(shared) ? shared : path.join(app.getPath("home"), ".local", "share"), "constellate");
+	}
+	return app.getPath("userData");
+}
 
 const life = new Lifecycle();
 const children = []; // the two servers
@@ -59,17 +80,6 @@ app.on("second-instance", () => {
 	if (window.isMinimized()) window.restore();
 	window.focus();
 });
-
-function freePort() {
-	return new Promise((resolve, reject) => {
-		const probe = net.createServer();
-		probe.once("error", reject);
-		probe.listen(0, "127.0.0.1", () => {
-			const { port } = probe.address();
-			probe.close(() => resolve(port));
-		});
-	});
-}
 
 function answers(url) {
 	return new Promise((resolve) => {
@@ -110,10 +120,10 @@ async function serve(name, command, args, options, url) {
 		});
 	});
 	const up = (async () => {
-		for (let attempt = 0; attempt < 240; attempt++) {
+		for (let attempt = 0; attempt < START_TRIES; attempt++) {
 			if (await answers(url)) return;
 			if (!life.maySpawn) throw new Error(`${name} is no longer waited for: the app is closing.`);
-			await new Promise((resolve) => setTimeout(resolve, 250));
+			await new Promise((resolve) => setTimeout(resolve, START_POLL_MS));
 		}
 		throw new Error(`${name} did not answer at ${url}.\n\n${output}`);
 	})();
@@ -181,7 +191,8 @@ async function startServers() {
 	const python = await backendPython();
 	life.move("serving"); // from the repository there was nothing to install: straight to serving
 	if (!life.is("serving")) throw new Error("The app is closing.");
-	const port = await freePort();
+	// the same port as last time, so the window still has what it remembered (marked papers, panel sizes)
+	const port = await interfacePort(path.join(places.data, "interface-port"));
 	const url = `http://127.0.0.1:${port}`;
 	await Promise.all([
 		serve(

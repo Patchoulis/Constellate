@@ -36,11 +36,11 @@ Pull requests are how concrete changes are made to the code, documentation and d
 Before a large change, it is usually a good idea to open an issue describing it first, to get feedback before the
 work is done. For a larger feature, a draft pull request shows others what is in progress.
 
-Once after cloning, switch the repository's hooks on (they check commit messages and refuse anything shaped
-like a secret):
+Once after cloning, get everything the project is built with (Rust, its formatter and linter, the npm packages,
+and the git hooks that check commit messages and refuse anything shaped like a secret):
 
 ```sh
-git config core.hooksPath .githooks
+npm run setup
 ```
 
 Please make sure that this passes before you ask for review; it is exactly what CI runs:
@@ -49,7 +49,8 @@ Please make sure that this passes before you ask for review; it is exactly what 
 npm run pr
 ```
 
-It checks formatting (`prettier`, `ruff format`), lints (`ruff check` and the naming rule below), type-checks
+It checks formatting (`cargo fmt`, `prettier`, `ruff format`), lints (`clippy` with warnings denied, `ruff check`
+and the naming rule below), type-checks
 and runs every test. `npm run pr -- --fix` formats and fixes what it can.
 
 #### Style

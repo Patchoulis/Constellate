@@ -22,8 +22,9 @@ import numpy as np
 from . import RUNS, cluster, describe, detect, embed, graph, proceedings, report, store
 from . import download as downloads
 from . import settings as settings_store
-from .library import acceptance
+from .library import acceptance, accepted
 from .selection import Selection
+from .tiers import unknown_terms
 
 
 @dataclass
@@ -97,6 +98,11 @@ def filter_papers(run: Run):
         leave_out(run.flagged, "tagged as written the way language models write")
     label, tiers = settings_store.ACCEPTANCE[s["acceptance_filter"]]
     states = [acceptance(paper) for paper in run.papers]
+    for (conference, decision), count in unknown_terms(run.papers, accepted).most_common():
+        run.log(
+            f"  NOTE: {count} {conference} papers have a decision Constellate's table of tiers does not know, "
+            f"{decision!r}: its tier was read from its wording (add it to rp/tiers.py)"
+        )
     leave_out(np.array([state is not None and state not in tiers for state in states]), f"not among: {label.lower()}")
     if s["exclude_flags"]:
         read = proceedings.stored()

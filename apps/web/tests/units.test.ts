@@ -1,13 +1,23 @@
 /** Numbers are shown with what they are numbers of. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { count, currencyOf, money, percent, similarity, tokens } from "@/lib/units";
+import { count, currencyOf, money, normalised, onScale, percent, scaleName, similarity, spreadPoints, tokens } from "@/lib/units";
 
 test("a count names what is counted, in the singular for one", () => {
 	assert.equal(count(1, "paper"), "1 paper");
 	assert.equal(count(12487, "paper"), "12,487 papers");
 	assert.equal(count(24, "community", "communities"), "24 communities");
 	assert.equal(count(0, "review"), "0 reviews");
+});
+
+test("a reviewers' figure names its scale, and a figure across scales says it is normalised", () => {
+	const iclr = { minimum: 1, maximum: 10 };
+	assert.equal(onScale(5.5, iclr, "mean rating"), "5.5 of 10 mean rating");
+	assert.equal(onScale(4, { minimum: 1, maximum: 6 }, "mean rating"), "4 of 6 mean rating");
+	assert.equal(onScale(4, { minimum: 0, maximum: 10 }, "mean rating"), "4 of 0 to 10 mean rating");
+	assert.equal(scaleName(iclr), "the 1 to 10 scale");
+	assert.equal(spreadPoints(1.234), "1.2 points spread");
+	assert.equal(normalised(0.556), "56% of the scale, normalised");
 });
 
 test("a similarity says it is a cosine similarity", () => {

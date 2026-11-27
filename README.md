@@ -24,29 +24,41 @@ There is nothing else to install.
   few gigabytes and takes several minutes; it happens once. With an NVIDIA graphics card the GPU build of PyTorch
   is installed and embedding is fast; without one everything still works, slowly.
 - The embedding model (about 1.2 GB) is downloaded the first time papers are embedded.
-- Names, descriptions and overviews of communities are written by Claude and need an API key in the
-  `ANTHROPIC_API_KEY` environment variable. Without one, everything else works and communities are named by
-  their distinguishing terms. To set it: Start, "Edit environment variables for your account", New.
+- Names, descriptions and overviews of communities are written by a language model and need its provider's API
+  key in an environment variable: `ANTHROPIC_API_KEY` for Claude, the default. The Rust engine (`apps/engine`)
+  also reaches OpenAI (`OPENAI_API_KEY`), Google Gemini (`GEMINI_API_KEY`), a dozen other hosted providers, and any
+  OpenAI-compatible server such as Ollama or LM Studio on your own computer (`CONSTELLATE_MODEL_BASE_URL`), chosen in
+  the sidebar; `.env.example` lists every variable. Without a key, everything else works and communities are named
+  by their distinguishing terms. To set one: Start, "Edit environment variables for your account", New.
 
 **Uninstall:** Windows Settings, Apps, Installed apps, Constellate, Uninstall. The uninstaller asks whether to also
-remove what the app downloaded and computed, all of which is in `%APPDATA%\\Constellate`: its own Python and
+remove what the app downloaded and computed, all of which is in `%LOCALAPPDATA%\\Constellate`: its own Python and
 packages (several GB) and your library of papers, embeddings and runs. Answer No to keep them for a later
 reinstall. The embedding model sits in the shared Hugging Face cache (`%USERPROFILE%\\.cache\\huggingface`),
 which other programs may use too, so it is left alone: delete that folder by hand if nothing else needs it.
 
 **What it connects to:** the conferences' sites and arXiv (papers), Hugging Face and PyPI (the model and packages,
-once), the Claude API (names and overviews, if you set a key), OpenReview (only pages you open in the reader), and
-frankfurter.dev for the day's exchange rate when your region's currency is not the US dollar. Nothing about you
+once), the language model's provider you chose (names and overviews, if you set its key; nothing leaves your
+computer for a model you run on it), OpenReview (only pages you open in the reader), and
+frankfurter.dev for the day's exchange rate when your region's currency is not the US dollar. Citation networks
+use no citation service: they are built from the reference lists of the PDFs Constellate reads, and a cited work
+not in your library is looked up on arXiv only. Nothing about you
 or your library is sent anywhere.
 
-**From source** (any platform; needs Node 22+, Python 3.12+ and, for speed, PyTorch with CUDA):
+**From source** (developers; any platform). You need Node 22 or newer and git; one command gets everything else
+(Rust through rustup, the formatter and linter, the npm packages, the git hooks):
 
 ```
-git clone <this repository> && cd constellate
-npm ci
-pip install -r apps/backend/requirements.txt
+git clone https://github.com/Patchoulis/Constellate && cd Constellate
+npm run setup
 npm run app
 ```
+
+`make setup`, `make run`, `make pr` do the same for people who reach for make; `make` alone lists every command.
+On Linux the engine needs glibc 2.38 or newer for now (Ubuntu 24.04, Debian 13, Fedora 39 and later), and a C
+compiler (`build-essential` or your distribution's equivalent). It uses any graphics card through Vulkan.
+While the backend is being moved from Python to Rust, running the app from source also needs Python 3.12 or
+newer with `pip install -r apps/backend/requirements.txt`.
 
 ## Build and run
 
@@ -84,7 +96,7 @@ Seven stages (`apps/backend/rp/pipeline.py`), each a function over one shared re
    enough and the cut's modularity inside the group reaches the threshold.
 6. **Describe.** The embeddings of each (sub-)community are averaged. That mean embedding is turned back into
    words three ways: the terms that set the group apart, the papers nearest to the mean, and, with
-   `ANTHROPIC_API_KEY` set for the backend, a name and description written by Claude from those papers.
+   a language model's key set for the backend, a name and description written by the model from those papers.
    Similarity figures come with it: members to their mean embedding, pairwise inside, and between communities.
 7. **Write** `data/runs/<name>/`: `report.md`, `communities.json`, `graph.json`, `adjacency.npy`,
    `centroids.npy`, `run.json`.
@@ -101,7 +113,7 @@ size. The table is in the run's `clustering_comparison.md`. It is one dataset: r
 
 ## Community overviews
 
-A community's detail panel has an Overview button. Claude reads every paper of the community plus what the graph
+A community's detail panel has an Overview button. The language model reads every paper of the community plus what the graph
 says about it (its sub-communities, its central and most-linked papers, where its links to other communities go)
 and writes labelled sections: common methods, recurring findings, promising directions, patterns in the
 structure, open questions. Repetition is the test: every point must cite at least three papers that share it,
@@ -128,9 +140,8 @@ text. A tag means "written the way these models write". It is not evidence about
 - **Chips above the graph** show or dim papers by kind (orals, spotlights, posters, AI detected, not AI detected) without redoing the run.
 - **Filters** (Settings, "Which papers"): leave out AI-detected papers, keep only orals or orals + spotlights, leave out papers carrying chosen flags. A flag filter only acts on papers whose PDF has been read.
 - **The reader** opens inside the window with tabs: Abstract, Paper (the PDF), and Reviews (the paper's OpenReview page, desktop app only).
-- **Reviewers' ratings** (Rating, Quality, Clarity, Significance, Originality, Soundness, ...) are read from the Reviews page when you open it, since OpenReview does not allow programs to fetch reviews; they are kept and then shown on the paper and in the graph's hover labels. Scores are shown per field on the conference's own scale, never merged.
 - **Tags explain themselves**: hover Oral / Spotlight, AI detected, a declaration flag or a rating to see what it means and where it came from.
-- **Cost**: the bottom of the sidebar shows the model and provider in use and what the Claude API has cost (total, and since the app was started); hover it for the breakdown by purpose and model. Counting starts when this was added.
+- **Cost**: the bottom of the sidebar shows the model and provider in use (a menu to choose another, grouped by provider, with the effort where the model has one), its price, and what the language model has cost (total, and since the app was started); hover it for the breakdown by purpose and model. A model whose price is not known says "cost not known", never 0; a model on your own computer says it has no API cost. Counting starts when this was added.
 
 ## The graph
 

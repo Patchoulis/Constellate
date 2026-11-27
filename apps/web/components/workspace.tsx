@@ -1,36 +1,46 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
-import type { Catalog, Ratings } from "@rp/contracts";
+import type { Catalog, Ratings, ReaderTarget } from "@rp/contracts";
+import { RunAsk } from "@/components/ask";
 import { CommunityPanel } from "@/components/community-panel";
+import { EvidenceProvider, type EvidenceActions } from "@/components/evidence-link";
 import { GraphView } from "@/components/graph-view";
 import { OverviewPanel } from "@/components/overview";
 import { PaperReader } from "@/components/paper-reader";
+import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
 import { communityTree, type CommunityNode } from "@/lib/community";
+import { useMarks } from "@/lib/marks";
 import type { Job } from "@/lib/use-job";
 import { useAsync } from "@/lib/use-async";
+import { useResizable } from "@/lib/use-resizable";
 
 /** The run's log, folded to its last line until opened. */
 export function ActivityLog({ job }: { job: Job }) {
 	const [open, setOpen] = useState(false);
-	const box = useRef<HTMLPreElement>(null);
+	const { ref: box, style, handle } = useResizable<HTMLPreElement>("log"); // the height of its text, when open
 	const running = job.state === "running";
 	useEffect(() => setOpen(running), [running]);
 	useEffect(() => {
 		if (box.current) box.current.scrollTop = box.current.scrollHeight;
-	}, [job.log, open]);
+	}, [box, job.log, open]);
 	if (job.log.length === 0) return null;
 	return (
-		<div className="absolute bottom-3 left-3 z-10 w-[min(34rem,calc(100%-4.5rem))] rounded-md border bg-card/95 shadow-lg">
+		<div className="enter-from-bottom absolute bottom-3 left-3 z-10 w-[min(34rem,calc(100%-4.5rem))] rounded-md border bg-card/95 shadow-lg">
+			{open && <ResizeHandle {...handle} />}
 			<button onClick={() => setOpen((value) => !value)} className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs">
 				<span className={running ? "size-1.5 animate-pulse rounded-full bg-success" : "size-1.5 rounded-full bg-muted-foreground"} />
 				<span className="flex-1 truncate text-muted-foreground">{job.log[job.log.length - 1].trim()}</span>
 				{open ? <ChevronDown className="size-3.5" /> : <ChevronUp className="size-3.5" />}
 			</button>
 			{open && (
-				<pre ref={box} className="max-h-56 overflow-auto border-t px-3 py-2 text-xs whitespace-pre-wrap text-muted-foreground">
+				<pre
+					ref={box}
+					style={style}
+					className="h-(--panel-size) overflow-auto border-t px-3 py-2 text-xs whitespace-pre-wrap text-muted-foreground"
+				>
 					{job.log.join("\n")}
 				</pre>
 			)}
@@ -56,6 +66,41 @@ export function Workspace({ name, catalog, children }: { name: string; catalog: 
 	const [fresh, setFresh] = useState<Record<string, Ratings>>({});
 	const ratings = useMemo(() => ({ ...(kept.status === "ready" ? kept.data : {}), ...fresh }), [kept, fresh]);
 	const onRatings = useCallback((id: string, read: Ratings) => setFresh((before) => ({ ...before, [id]: read })), []);
+	// the papers marked in this run; none are shown until the graph says which papers the run has
+	const known = useMemo(() => (graph ? new Set(graph.nodes.map((node) => node.id)) : null), [graph]);
+	const marks = useMarks(name, known);
+	const [goTo, setGoTo] = useState<{ id: string } | null>(null);
+	// where in the open paper a citation asked the reader to land; any other way of opening a paper clears it
+	const [place, setPlace] = useState<ReaderTarget | null>(null);
+	const openPaper = useCallback((id: string | null) => {
+		setPlace(null);
+		setPaper(id);
+	}, []);
+	const goToPaper = useCallback(
+		(id: string) => {
+			openPaper(id);
+			setGoTo({ id });
+		},
+		[openPaper],
+	);
+	const evidence = useMemo<EvidenceActions>(
+		() => ({
+			open: (target) => {
+				setPlace(target);
+				setPaper(target.paper);
+			},
+			inRun: (id) => known?.has(id) ?? false,
+			locate: goToPaper,
+		}),
+		[known, goToPaper],
+	);
+	const markedPapers = useMemo(() => {
+		const byId = new Map(graph?.nodes.map((node) => [node.id, node]));
+		return marks.marked.flatMap((id) => {
+			const node = byId.get(id);
+			return node ? [{ node, community: roots[node.community] }] : [];
+		});
+	}, [graph, roots, marks.marked]);
 
 	if (!result || !graph) {
 		return (
@@ -73,16 +118,27 @@ export function Workspace({ name, catalog, children }: { name: string; catalog: 
 		.map(([a, b, similarity]) => ({ ...graph.nodes[a === paperIndex ? b : a], similarity }))
 		.sort((a, b) => b.similarity - a.similarity);
 	return (
-		<>
+		<EvidenceProvider value={evidence}>
 			<main className="relative min-w-0 flex-1">
-				<GraphView graph={graph} roots={roots} focus={selected} selectedPaper={paper} ratings={ratings} onPickPaper={setPaper} />
+				<GraphView
+					graph={graph}
+					roots={roots}
+					focus={selected}
+					selectedPaper={paper}
+					ratings={ratings}
+					marked={marks.marked}
+					goTo={goTo}
+					onPickPaper={openPaper}
+					onMarkPaper={marks.toggle}
+				/>
 				{children}
+				<RunAsk run={name} papers={graph.nodes.length} />
 				{overview && (
 					<OverviewPanel
 						key={overview.community.tree_path}
 						run={name}
 						node={overview}
-						onOpenPaper={setPaper}
+						onOpenPaper={openPaper}
 						onClose={() => setOverview(null)}
 					/>
 				)}
@@ -93,9 +149,13 @@ export function Workspace({ name, catalog, children }: { name: string; catalog: 
 						community={paperNode && roots[paperNode.community]}
 						related={related.map((other) => ({ ...other, community: roots[other.community] }))}
 						catalog={catalog}
+						marked={marks.has(paper)}
+						onToggleMark={() => marks.toggle(paper)}
+						run={name}
+						at={place}
 						onRatings={onRatings}
-						onOpen={setPaper}
-						onClose={() => setPaper(null)}
+						onOpen={openPaper}
+						onClose={() => openPaper(null)}
 					/>
 				)}
 			</main>
@@ -105,8 +165,11 @@ export function Workspace({ name, catalog, children }: { name: string; catalog: 
 				selected={selected}
 				onSelect={setSelected}
 				onOverview={setOverview}
-				onOpenPaper={setPaper}
+				onOpenPaper={openPaper}
+				marks={marks}
+				markedPapers={markedPapers}
+				onGoToPaper={goToPaper}
 			/>
-		</>
+		</EvidenceProvider>
 	);
 }

@@ -4,7 +4,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, "feat/**", "fix/**"]
 
 permissions:
   contents: read
@@ -33,6 +33,23 @@ jobs:
       - run: pip install -r apps/backend/requirements-test.txt
       - run: npm ci
       - run: npm run pr
+
+  engine-linux:
+    # The engine on a real Linux distribution (Ubuntu), not only on Windows: built, linted and tested there.
+    name: Engine on Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: engine-linux-${{ hashFiles('Cargo.lock') }}
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --quiet -- -D warnings
+      - run: cargo test --quiet
 
   title:
     name: Conventional title

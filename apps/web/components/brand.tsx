@@ -1,4 +1,5 @@
-import type { Acceptance, AiVerdict, Ratings } from "@rp/contracts";
+import type { Acceptance, AcceptanceTerm, AiVerdict, Ratings } from "@rp/contracts";
+import { tagText, tagTitle } from "@/lib/acceptance";
 import { cn } from "@/lib/utils";
 
 /**
@@ -28,19 +29,18 @@ export function Logo({ className }: { className?: string }) {
 
 const TAG = "inline-flex max-w-full items-center rounded-sm border px-1.5 py-px font-ui text-xs";
 
-/** How a conference paper was accepted. An ordinary acceptance is the norm, so it gets no tag. */
-export function AcceptanceTag({ state, small }: { state: Acceptance | null; small?: boolean }) {
+/**
+ * How a conference paper was accepted, in the conference's own words ("Highlight", "Notable top 5%"), drawn as
+ * Constellate's tier (lib/acceptance.ts). An ordinary acceptance is the norm, so it gets no tag.
+ */
+export function AcceptanceTag({ state, term, small }: { state: Acceptance | null; term?: AcceptanceTerm | null; small?: boolean }) {
 	if (state !== "oral" && state !== "spotlight") return null;
 	return (
 		<span
-			title={
-				state === "oral"
-					? "Accepted as an oral: the conference's committee picked it for a talk, which only the top few percent of accepted papers get."
-					: "Accepted as a spotlight (or highlight): singled out by the conference's committee, a tier below an oral and above an ordinary acceptance."
-			}
+			title={tagTitle(state, term)}
 			className={cn(TAG, small && SMALL, state === "oral" ? "border-success/50 bg-success/10 text-success" : "border-ring text-foreground")}
 		>
-			{state === "oral" ? "Oral" : "Spotlight"}
+			{tagText(state, term)}
 		</span>
 	);
 }

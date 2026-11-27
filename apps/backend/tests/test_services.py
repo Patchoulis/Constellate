@@ -47,6 +47,8 @@ def test_an_oral_is_not_a_second_paper(monkeypatch):
     assert found[1]["abstract"] == "second, from the abstracts file"
     assert found[0]["pdf_url"] == "https://openreview.net/pdf?id=abc"
     assert found[0]["primary_category"] == "Theory->Learning"
+    # the talk is kept with the decision, which does not name it
+    assert [p["comment"] for p in found] == ["Accept; Oral", "Accept"]
 
 
 def test_a_conference_without_an_official_list_says_so():

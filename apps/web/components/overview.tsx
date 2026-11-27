@@ -1,13 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, Sparkles, X } from "lucide-react";
+import { Loader2, PenLine, X } from "lucide-react";
 import type { OverviewPoint, OverviewStatus } from "@rp/contracts";
 import { CommunityDot } from "@/components/community-panel";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton } from "@/components/ui/button";
+import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
 import { communityLabel, type CommunityNode } from "@/lib/community";
+import { useResizable } from "@/lib/use-resizable";
 
 const POLL_MS = 3000;
 const CITED_AT_FIRST = 4;
@@ -95,8 +97,14 @@ export function OverviewPanel({
 	const { community } = node;
 	const { status, error, write } = useOverview(run, community.tree_path);
 	const overview = status?.state === "done" ? status.overview : null;
+	const { ref, style, handle } = useResizable<HTMLDivElement>("overview");
 	return (
-		<div className="absolute inset-y-0 right-0 z-20 flex w-[min(52rem,100%)] flex-col border-l bg-card shadow-2xl">
+		<div
+			ref={ref}
+			style={style}
+			className="enter-from-right absolute inset-y-0 right-0 z-20 flex w-[min(var(--panel-size),100%)] flex-col border-l bg-card shadow-2xl"
+		>
+			<ResizeHandle {...handle} />
 			<div className="flex h-11 shrink-0 items-center gap-2 border-b px-4">
 				<CommunityDot hue={node.hue} />
 				<span className="min-w-0 flex-1 truncate text-sm font-semibold">Overview · {communityLabel(community)}</span>
@@ -140,13 +148,13 @@ export function OverviewPanel({
 							</p>
 						) : (
 							<Button disabled={status === null && !error} onClick={write}>
-								<Sparkles />
+								<PenLine />
 								Write the overview
 							</Button>
 						)}
 						{error && <p className="text-sm text-destructive">{error}</p>}
 						<p className="text-xs text-muted-foreground">
-							It is written with the Claude model chosen in Settings and kept, so it is only written once.
+							It is written with the language model chosen in Settings and kept, so it is only written once.
 						</p>
 					</div>
 				)}
