@@ -26,7 +26,7 @@ export function ActivityLog({ job }: { job: Job }) {
 	}, [box, job.log, open]);
 	if (job.log.length === 0) return null;
 	return (
-		<div className="absolute bottom-3 left-3 z-10 w-[min(34rem,calc(100%-4.5rem))] rounded-md border bg-card/95 shadow-lg">
+		<div className="enter-from-bottom absolute bottom-3 left-3 z-10 w-[min(34rem,calc(100%-4.5rem))] rounded-md border bg-card/95 shadow-lg">
 			{open && <ResizeHandle {...handle} />}
 			<button onClick={() => setOpen((value) => !value)} className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs">
 				<span className={running ? "size-1.5 animate-pulse rounded-full bg-success" : "size-1.5 rounded-full bg-muted-foreground"} />

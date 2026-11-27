@@ -105,3 +105,40 @@
 	scrollbar-width: thin;
 	scrollbar-color: #3a3a3a transparent;
 }
+
+/* Things that appear ease in, so the eye can follow where they came from: a panel slides from the edge it is
+   attached to, a label fades. Nothing here lasts long enough to wait for, and none of it runs for someone who has
+   asked their system for less motion. */
+@keyframes slide-from-right {
+	from {
+		transform: translateX(2rem);
+		opacity: 0;
+	}
+}
+@keyframes slide-from-bottom {
+	from {
+		transform: translateY(1rem);
+		opacity: 0;
+	}
+}
+@keyframes fade-in {
+	from {
+		opacity: 0;
+	}
+}
+.enter-from-right {
+	animation: slide-from-right 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.enter-from-bottom {
+	animation: slide-from-bottom 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.enter-fade {
+	animation: fade-in 140ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+	.enter-from-right,
+	.enter-from-bottom,
+	.enter-fade {
+		animation: none;
+	}
+}

@@ -102,7 +102,7 @@ export function OverviewPanel({
 		<div
 			ref={ref}
 			style={style}
-			className="absolute inset-y-0 right-0 z-20 flex w-[min(var(--panel-size),100%)] flex-col border-l bg-card shadow-2xl"
+			className="enter-from-right absolute inset-y-0 right-0 z-20 flex w-[min(var(--panel-size),100%)] flex-col border-l bg-card shadow-2xl"
 		>
 			<ResizeHandle {...handle} />
 			<div className="flex h-11 shrink-0 items-center gap-2 border-b px-4">

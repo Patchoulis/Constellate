@@ -32,6 +32,7 @@
  */
 import { select } from "d3-selection";
 import { zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from "d3-zoom";
+import { Glide, prefersLessMotion } from "@/lib/glide";
 import type { MarkedPlace } from "@/lib/labels";
 import type { Box } from "@/lib/layout";
 import { hsl } from "@/lib/utils";
@@ -139,6 +140,8 @@ export class GraphCanvasRenderer {
 	private linked: number[][] = [];
 	private transform: ZoomTransform = zoomIdentity;
 	private zoomBehavior: ZoomBehavior<HTMLCanvasElement, unknown>;
+	/** the camera's glide from one view to another: one at a time */
+	private glide = new Glide();
 	private fitZoom = 1;
 	/** the box the whole graph occupies, once known: levels of detail are measured against fitting it */
 	private whole: Box | null = null;
@@ -167,7 +170,9 @@ export class GraphCanvasRenderer {
 				this.tellHover(); // the hovered paper moved on screen
 				this.tellMarked();
 				this.markDirty();
-			});
+			})
+			// the person took hold of the graph (wheel, drag): a glide in progress gives way to them
+			.on("start", (event) => event.sourceEvent && this.stopGliding());
 		select(canvas).call(this.zoomBehavior).on("dblclick.zoom", null);
 		canvas.addEventListener("mousemove", this.onMove);
 		canvas.addEventListener("mouseleave", this.onLeave);
@@ -179,6 +184,7 @@ export class GraphCanvasRenderer {
 	}
 
 	destroy() {
+		this.stopGliding();
 		cancelAnimationFrame(this.frame);
 		this.observer.disconnect();
 		select(this.canvas).on(".zoom", null);
@@ -219,8 +225,30 @@ export class GraphCanvasRenderer {
 		if (!point || !width || !height) return;
 		const free = width - right >= 160 ? width - right : width; // a sliver is no place to show it
 		const k = Math.max(this.transform.k, this.fitZoom * LEVEL_ZOOM[0]);
-		const target = zoomIdentity.translate(free / 2 - k * point.x, height / 2 - k * point.y).scale(k);
-		select(this.canvas).call(this.zoomBehavior.transform, target);
+		this.glideTo(zoomIdentity.translate(free / 2 - k * point.x, height / 2 - k * point.y).scale(k));
+	}
+
+	private stopGliding() {
+		this.glide.stop();
+	}
+
+	/**
+	 * Take the camera to `target` and call `arrived` there. It glides (lib/glide.ts) unless told to go at once:
+	 * the first view of a graph and a canvas that changed size are not journeys, and someone who asked their
+	 * system for less motion gets none. A new destination ends a glide in progress and starts from where the
+	 * camera is at that instant; so does the person taking hold of the graph.
+	 */
+	private glideTo(target: ZoomTransform, atOnce = false, arrived?: () => void) {
+		const show = ({ x, y, k }: { x: number; y: number; k: number }) =>
+			select(this.canvas).call(this.zoomBehavior.transform, zoomIdentity.translate(x, y).scale(k));
+		const { clientWidth: width, clientHeight: height } = this.canvas;
+		if (atOnce || prefersLessMotion() || !width || !height) {
+			this.glide.stop();
+			show(target);
+			arrived?.();
+			return;
+		}
+		this.glide.go(this.transform, target, { width, height }, show, arrived);
 	}
 
 	setFocus(focus: Set<number> | null) {
@@ -243,8 +271,9 @@ export class GraphCanvasRenderer {
 		});
 	}
 
-	/** Move the camera so the given world rectangle fills the canvas. `whole` marks it as the full graph. */
-	fit(box: Box, whole = false) {
+	/** Move the camera so the given world rectangle fills the canvas. `whole` marks it as the full graph;
+	 *  `atOnce` skips the glide (a graph's first view, a canvas that changed size). */
+	fit(box: Box, whole = false, atOnce = false) {
 		if (whole) this.whole = box;
 		const width = this.canvas.clientWidth;
 		const height = this.canvas.clientHeight;
@@ -254,8 +283,8 @@ export class GraphCanvasRenderer {
 		const target = zoomIdentity
 			.translate(width / 2 - (k * (box.minX + box.maxX)) / 2, height / 2 - (k * (box.minY + box.maxY)) / 2)
 			.scale(k);
-		select(this.canvas).call(this.zoomBehavior.transform, target);
-		this.fitted = { box, transform: this.transform };
+		this.fitted = null; // on the way, the camera is fitted to nothing
+		this.glideTo(target, atOnce, () => (this.fitted = { box, transform: this.transform }));
 	}
 
 	/** The zoom at which a world rectangle just fits the canvas, with a little margin. */
@@ -288,7 +317,7 @@ export class GraphCanvasRenderer {
 		const dpr = window.devicePixelRatio || 1;
 		this.canvas.width = Math.max(1, Math.round(this.canvas.clientWidth * dpr));
 		this.canvas.height = Math.max(1, Math.round(this.canvas.clientHeight * dpr));
-		if (this.fitted && this.fitted.transform === this.transform) this.fit(this.fitted.box);
+		if (this.fitted && this.fitted.transform === this.transform) this.fit(this.fitted.box, false, true);
 		else if (this.whole) {
 			this.fitZoom = this.zoomToFit(this.whole);
 			this.updateLevel();

@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Maximize2, Star } from "lucide-react";
+import { LocateFixed, Star } from "lucide-react";
 import type { GraphData, Ratings } from "@rp/contracts";
 import { AcceptanceTag, AiTag, RatingTags } from "@/components/brand";
 import { CommunityDot, MARK_HINT } from "@/components/community-panel";
@@ -128,7 +128,7 @@ export function GraphView({
 		});
 		rendererRef.current = renderer;
 		renderer.setData(canvasData(graph, roots, layout));
-		renderer.fit(layout.bounds, true);
+		renderer.fit(layout.bounds, true, true); // a graph's first view: there is nowhere to glide from
 		return () => {
 			renderer.destroy();
 			rendererRef.current = null;
@@ -174,6 +174,21 @@ export function GraphView({
 		if (index === undefined) return;
 		rendererRef.current?.moveTo(index, panelSize("reader")); // as wide as the user has made it
 	}, [goTo]);
+
+	// Where "Recenter" goes: the open paper if there is one, else the focused community, else the whole graph.
+	const openIndex = selectedPaper === null ? undefined : indexOf.get(selectedPaper);
+	const recentre =
+		openIndex !== undefined
+			? {
+					title: "Bring the open paper back to the middle of the graph",
+					go: () => rendererRef.current?.moveTo(openIndex, panelSize("reader")),
+				}
+			: focus
+				? {
+						title: `Bring ${communityLabel(focus.community)} back into view`,
+						go: () => rendererRef.current?.fit(boxOf(layout.discs.get(focus)!)),
+					}
+				: { title: "Bring the whole graph back into view", go: () => rendererRef.current?.fit(layout.bounds, true) };
 
 	// Every label on the graph, most important first: the hovered paper and its linked papers, then the marked
 	// papers and theirs (those not named already, within MOST_LABELS).
@@ -255,14 +270,10 @@ export function GraphView({
 					</button>
 				))}
 			</div>
-			<Button
-				variant="outline"
-				size="icon"
-				className="absolute right-3 bottom-3 bg-card"
-				title="Fit the graph to the view"
-				onClick={() => rendererRef.current?.fit(layout.bounds, true)}
-			>
-				<Maximize2 />
+			{/* Back to what is being looked at, after dragging or zooming away from it. */}
+			<Button variant="outline" className="absolute right-3 bottom-3 gap-1.5 bg-card" title={recentre.title} onClick={recentre.go}>
+				<LocateFixed />
+				Recenter
 			</Button>
 			{/* The hovered paper's label, and in small the papers it is linked to, the marked papers and theirs. They are
 			    placed together (above), so that each stays inside the graph and none covers another. */}
@@ -275,7 +286,7 @@ export function GraphView({
 						key={`${label.kind}:${label.index}`}
 						ref={ref}
 						className={cn(
-							"pointer-events-none absolute w-max max-w-56 rounded-sm border bg-popover/95 px-1.5 py-1 shadow-md",
+							"enter-fade pointer-events-none absolute w-max max-w-56 rounded-sm border bg-popover/95 px-1.5 py-1 shadow-md",
 							label.kind === "marked" ? "z-[6] border-mark/60" : "z-[5]",
 						)}
 					>
@@ -297,7 +308,7 @@ export function GraphView({
 				<div
 					key="hovered"
 					ref={(box) => void (labels.current[0] = box)}
-					className="pointer-events-none absolute z-10 w-max max-w-80 rounded-md border bg-popover px-2.5 py-1.5 shadow-lg"
+					className="enter-fade pointer-events-none absolute z-10 w-max max-w-80 rounded-md border bg-popover px-2.5 py-1.5 shadow-lg"
 				>
 					<div className="font-sans text-base leading-snug text-foreground">
 						<Title text={hovered.title} />

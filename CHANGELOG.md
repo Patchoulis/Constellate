@@ -14,6 +14,10 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The engine uses any maker's graphics card: through DirectML on Windows and through Vulkan (WebGPU) on Linux, with
   the processor as the fallback. It is built and tested on Linux as well as Windows.
 
+- A Recenter button on the graph brings back what you were looking at: the open paper, else the focused community,
+  else the whole graph. The graph glides there instead of jumping, as it does when a community is focused or a
+  paper opened; panels slide in and labels fade in. None of it moves for someone who asked their system for less
+  motion.
 - Mark papers to keep them in view: right-click a paper on the graph (or use the star in the reader and in a
   community's list) and it gets a yellow ring with its closest papers always linked and named; the Marked tab lists
   a run's marked papers, and marks are remembered for each run. While one community is in focus, only the marked
