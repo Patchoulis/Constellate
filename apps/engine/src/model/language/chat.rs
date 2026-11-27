@@ -11,7 +11,7 @@
 //!   answer is checked here either way.
 //! - **Usage**: `prompt_tokens` includes what was read from the cache (`prompt_tokens_details.cached_tokens`, or
 //!   DeepSeek's `prompt_cache_hit_tokens`) and written to it (`cache_write_tokens`, where reported). A server that
-//!   reports no usage at all is estimated from characters by the client.
+//!   reports no usage at all is counted by the client at the worst case the request allows.
 //! - **Errors** come in several shapes (`{"error": {"message", "code"}}`, `{"error": "..."}`, `{"message"}`,
 //!   `{"detail"}`, MiniMax's `base_resp`); what they mean is decided by the status first.
 
@@ -163,7 +163,7 @@ fn minimax(status: &BaseResponse) -> AskError {
         1004 => Unavailable::KeyRefused.into(),
         1008 => Unavailable::Billing.into(),
         1002 => NoAnswer::RateLimited { retry_after: None }.into(),
-        _ => NoAnswer::Rejected(status.status_msg.chars().take(300).collect()).into(),
+        _ => NoAnswer::Rejected(status.status_msg.chars().take(super::RAW_MESSAGE_CHARS).collect()).into(),
     }
 }
 
@@ -212,7 +212,7 @@ pub(super) fn openai_style_failure(reply: &Reply, model: &str, provider: Provide
         498 | 503 | 529 => NoAnswer::Overloaded.into(),
         status if status >= 500 => NoAnswer::ServerError(status).into(),
         // what the request got wrong, in the provider's words (which never repeat the key), shortened
-        _ => NoAnswer::Rejected(message.chars().take(300).collect()).into(),
+        _ => NoAnswer::Rejected(message.chars().take(super::RAW_MESSAGE_CHARS).collect()).into(),
     }
 }
 

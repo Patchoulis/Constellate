@@ -58,6 +58,13 @@ test("a \\href shows its text and links to its address; an address written out i
 	assert.ok(bare.endsWith(", then more"));
 });
 
+test("a plain http address in a record is shown, not made a link (lib/net/links.ts: https only)", () => {
+	const plain = shown("data at http://example.org/data and \\href{http://example.org/x}{there}");
+	assert.ok(!plain.includes("<a "), plain);
+	assert.ok(new Set(plain.split(" ")).has("http://example.org/data"), plain);
+	assert.ok(plain.includes("there"));
+});
+
 test("only web addresses are made clickable", () => {
 	assert.ok(!shown("\\url{javascript:alert(1)}").includes("<a "));
 });

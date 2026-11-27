@@ -2,7 +2,7 @@
 //! communities cite and are cited.
 //!
 //! Everything here is worked out from the reference lists of the papers whose PDFs Constellate has read
-//! ([`crate::text::references`]), and from nothing else. It is not the whole literature: a paper's *references*
+//! ([`crate::text::pdf::references`]), and from nothing else. It is not the whole literature: a paper's *references*
 //! are complete once its own PDF is read, but the papers that *cite* it are only those among the read ones. The
 //! interface says so wherever it shows these figures.
 //!
@@ -14,7 +14,7 @@
 //!    close title (nine in ten of the words shared, [`SIMILAR_TITLES`]) from the same year or the next counts,
 //!    which survives a word lost at a page break. Below that nothing is linked: two papers are never taken to be
 //!    one on a resemblance. A reference that is not in the library but names an arXiv id is "on arXiv"; any other
-//!    is unresolved, shown with what was read of it. ([`crate::sources::citations`] can look the unresolved ones
+//!    is unresolved, shown with what was read of it. ([`crate::sources::arxiv::citations`] can look the unresolved ones
 //!    up on arXiv.)
 //! 2. **The network around a seed paper** ([`network`]): its references (prior work), the read papers whose
 //!    references include it (derivative work), the citations between those neighbours, so that the picture is a
@@ -29,7 +29,7 @@ use chrono::NaiveDate;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::text::references::{Confidence, Reference, title_key, title_words};
+use crate::text::pdf::references::{Confidence, Reference, title_key, title_words};
 
 /// The share of their words two titles must have in common to be taken for the same title.
 pub const SIMILAR_TITLES: f64 = 0.9;
@@ -358,6 +358,20 @@ pub struct CitationNetwork {
     pub papers_read: usize,
     pub papers_in_library: usize,
     pub built: NaiveDate,
+    /// When reading the seed's references looked works up on arXiv and stopped before every one was asked
+    /// about: why. None when nothing was looked up, or every work worth asking about was.
+    pub lookups_stopped: Option<LookupsStopped>,
+}
+
+/// Why looking a paper's references up on arXiv stopped before every one was asked about: `lookups_stopped` of
+/// `CitationNetwork` in the contracts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LookupsStopped {
+    /// The most one request asks was asked; `left` works are asked about when the references are read again.
+    AtMost { left: usize },
+    /// arXiv refused or could not be reached; `left` works are asked about when the references are read again.
+    Failed { why: String, left: usize },
 }
 
 /// Who cites each work, among the read papers: work key -> the citing papers' ids.
@@ -530,6 +544,7 @@ pub fn network(
         papers_read: read.len(),
         papers_in_library: library.papers.len(),
         built,
+        lookups_stopped: None,
     }
 }
 

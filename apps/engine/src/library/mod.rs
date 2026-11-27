@@ -10,20 +10,11 @@
 //! left read-change-write races between processes. A database removes all three: several rows change in one
 //! transaction or not at all, and SQLite itself arbitrates between threads and processes.
 //!
-//! | file            | what lives there                                                          |
+//! | folder          | what lives there                                                          |
 //! |-----------------|---------------------------------------------------------------------------|
-//! | [`schema`]      | the numbered migrations, applied at open                                  |
-//! | [`papers`]      | papers, their venues, selections, and which download slices are finished  |
-//! | [`embeddings`]  | one vector per model and paper, reused only for the same text             |
-//! | [`readings`]    | what was read from a paper: declarations, ratings, AI-text scores         |
-//! | [`reviews`]     | a paper's reviews page as the reader showed it, and its notes as read     |
-//! | [`passages`]    | a paper's PDF, and its passages as read once per version of the reader    |
-//! | [`answers`]     | what the language model answered for a feature, so none is paid twice    |
-//! | [`writings`]    | community descriptions and overviews, keyed by model and members          |
-//! | [`ledger`]      | one row per call to the Claude API; totals are queries                    |
-//! | [`preferences`] | settings and exchange rates                                               |
-//! | [`import`]      | the one-off move from the files-based library                             |
-//! | [`store`]       | the few plain files that remain (a run's exported results)                |
+//! | [`core`]        | the library itself: schema, place, file store, import, preferences, run records |
+//! | [`papers`]      | what is kept about papers: records, embeddings, passages, readings, reviews, references, proceedings |
+//! | [`money`]       | what asking the model costs: kept answers, calls about to be asked, the ledger |
 //!
 //! # The database
 //!
@@ -55,7 +46,9 @@
 //!
 //! # PostgreSQL, should the engine ever be a shared server
 //!
-//! All SQL is in this module and is written in the portable subset: `INSERT ... ON CONFLICT (...) DO UPDATE /
+//! All SQL is in this module and in the `store.rs` of each feature ([`crate::features`]), whose `impl Library`
+//! blocks go through the same `Library::read` and `Library::write`; it is written in the portable subset:
+//! `INSERT ... ON CONFLICT (...) DO UPDATE /
 //! DO NOTHING`, `BIGINT`, `DOUBLE PRECISION`, `TEXT`, `CHECK` constraints, no `INSERT OR REPLACE`, no
 //! `WITHOUT ROWID`, no JSON functions in queries, no rowid. A port would change:
 //!
@@ -72,22 +65,9 @@
 //!   exist yet: writes would run SERIALIZABLE and be retried on a serialization failure (or take an advisory
 //!   lock), and reads that span tables would run REPEATABLE READ.
 
-pub mod answers;
-pub mod citation_contexts;
-pub mod embeddings;
-pub mod extraction;
-pub mod import;
-pub mod ledger;
+pub mod core;
+pub mod money;
 pub mod papers;
-pub mod passages;
-pub mod place;
-pub mod preferences;
-pub mod questions;
-pub mod readings;
-pub mod reviews;
-pub mod schema;
-pub mod store;
-pub mod writings;
 
 use std::fs;
 use std::io;
@@ -98,16 +78,16 @@ use std::time::{Duration, SystemTime};
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{Connection, ErrorCode, Transaction, TransactionBehavior};
 
-pub use answers::{AnswerKey, Feature, Kept, Slot, Subject};
-pub use embeddings::NotEmbedded;
-pub use import::{ImportError, Imported, import_files};
-pub use ledger::{Call, Spending, Totals};
+pub use self::core::import::{ImportError, Imported, import_files};
+pub use self::core::preferences::Rate;
+pub use crate::features::writing::store::{CitedPaper, Description, Overview, Point, Section, community_key};
+pub use money::answers::{AnswerKey, Feature, Kept, Slot, Subject};
+pub use money::ledger::{Call, Spending, Totals};
+pub use papers::embeddings::NotEmbedded;
+pub use papers::passages::PaperReading;
+pub use papers::readings::{AiScore, Answer, ChecklistItem, Declarations, FieldRatings, Ratings, Reading, Statement};
+pub use papers::reviews::{Keeping, KeptReviews, ReviewPage};
 pub use papers::{Added, Known, Origin, Paper, SliceOutcome, text_hash};
-pub use passages::PaperReading;
-pub use preferences::Rate;
-pub use readings::{AiScore, Answer, ChecklistItem, Declarations, FieldRatings, Ratings, Reading, Statement};
-pub use reviews::{Keeping, KeptReviews, ReviewPage};
-pub use writings::{CitedPaper, Description, Overview, Point, Section, community_key};
 
 /// The database's file name inside the library folder.
 pub const DATABASE: &str = "library.sqlite3";
@@ -152,7 +132,7 @@ pub enum LibraryError {
     Shape(String),
     /// A file kept beside the database (a paper's PDF) could not be written.
     #[error(transparent)]
-    Store(#[from] store::StoreError),
+    Store(#[from] self::core::store::StoreError),
 }
 
 /// The library: a handle on its database, shared by every thread of the engine (see the module's "Threads").
@@ -164,7 +144,7 @@ pub struct Library {
     /// Connections that only read, idle; each is used by one read at a time, taken out of here for it.
     readers: Mutex<Vec<Connection>>,
     /// The PDFs being read right now, so that two threads asking for the same paper read it once.
-    in_reading: passages::InReading,
+    in_reading: papers::passages::InReading,
 }
 
 impl Library {
@@ -173,12 +153,13 @@ impl Library {
         fs::create_dir_all(folder).map_err(|source| LibraryError::Folder { path: folder.to_path_buf(), source })?;
         let path = folder.join(DATABASE);
         let connection = connect(&path)?;
-        schema::migrate(&connection, schema::MIGRATIONS).map_err(|error| located(error, &path))?;
+        self::core::schema::migrate(&connection, self::core::schema::MIGRATIONS)
+            .map_err(|error| located(error, &path))?;
         Ok(Self {
             path,
             connection: Mutex::new(connection),
             readers: Mutex::new(Vec::new()),
-            in_reading: passages::InReading::default(),
+            in_reading: papers::passages::InReading::default(),
         })
     }
 
@@ -187,13 +168,16 @@ impl Library {
         &self.path
     }
 
-    fn connection(&self) -> MutexGuard<'_, Connection> {
+    pub(crate) fn connection(&self) -> MutexGuard<'_, Connection> {
         // a thread that panicked mid-transaction left nothing half-done: the transaction rolled back on unwind
         self.connection.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Run `work` as one write transaction: all of it is kept, or none of it.
-    fn write<T>(&self, work: impl FnOnce(&Transaction<'_>) -> Result<T, LibraryError>) -> Result<T, LibraryError> {
+    pub(crate) fn write<T>(
+        &self,
+        work: impl FnOnce(&Transaction<'_>) -> Result<T, LibraryError>,
+    ) -> Result<T, LibraryError> {
         let mut connection = self.connection();
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let result = work(&transaction)?;
@@ -202,7 +186,7 @@ impl Library {
     }
 
     /// Run `work` on one consistent view of the database, on a reader of its own.
-    fn read<T>(&self, work: impl FnOnce(&Connection) -> Result<T, LibraryError>) -> Result<T, LibraryError> {
+    pub(crate) fn read<T>(&self, work: impl FnOnce(&Connection) -> Result<T, LibraryError>) -> Result<T, LibraryError> {
         let idle = self.readers.lock().unwrap_or_else(PoisonError::into_inner).pop();
         let mut connection = match idle {
             Some(connection) => connection,
@@ -267,19 +251,22 @@ fn located(error: LibraryError, path: &Path) -> LibraryError {
 }
 
 /// Now, as kept in the database: UTC, to the second, in RFC 3339 (which sorts as text).
-fn now() -> String {
+pub(crate) fn now() -> String {
     DateTime::<Utc>::from(SystemTime::now()).to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
 /// A JSON column read back into its type; a value that does not parse is reported as that column's error.
-fn json_column<T: serde::de::DeserializeOwned>(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<T> {
+pub(crate) fn json_column<T: serde::de::DeserializeOwned>(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+) -> rusqlite::Result<T> {
     let text: String = row.get(index)?;
     serde_json::from_str(&text)
         .map_err(|error| rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, Box::new(error)))
 }
 
 /// `?, ?, ?` for a list of `count` values (never empty: callers return early on an empty list).
-fn placeholders(count: usize) -> String {
+pub(crate) fn placeholders(count: usize) -> String {
     vec!["?"; count].join(", ")
 }
 

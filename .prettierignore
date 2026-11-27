@@ -8,3 +8,5 @@ package-lock.json
 next-env.d.ts
 CHANGELOG.md
 target
+# what the Python pipeline wrote, kept byte for byte for the engine's parity test
+apps/engine/src/pipeline/parity

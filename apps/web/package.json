@@ -1,6 +1,6 @@
 {
 	"name": "@rp/web",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"private": true,
 	"type": "module",
 	"scripts": {
@@ -8,7 +8,7 @@
 		"build": "next build",
 		"start": "next start -H localhost -p 3210",
 		"typecheck": "tsc --noEmit",
-		"test": "tsx --test tests/*.test.ts tests/*.test.tsx"
+		"test": "tsx --test \"tests/**/*.test.ts\" \"tests/**/*.test.tsx\""
 	},
 	"dependencies": {
 		"@rp/contracts": "*",

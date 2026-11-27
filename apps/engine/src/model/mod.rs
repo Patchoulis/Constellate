@@ -2,7 +2,7 @@
 //! language model, over the API of the provider chosen (the Claude API, OpenAI, Gemini, an OpenAI-compatible server
 //! and others).
 
-pub mod answers;
 pub mod batch;
+pub mod chosen;
 pub mod embed;
 pub mod language;

@@ -1,4 +1,4 @@
-/** The shapes the backend's HTTP API returns (apps/backend/rp/server.py, apps/engine) and the web app reads. */
+/** The shapes the engine's HTTP API returns (apps/engine/src/api) and the web app reads. */
 
 export interface Settings {
 	embedding_model: string;
@@ -21,11 +21,11 @@ export interface Settings {
 	/** papers whose authors' declarations raise one of these flags are left out (Catalog.flags) */
 	exclude_flags: string[];
 	describe: boolean;
-	/** the language model's provider (ModelProvider.id); absent from the Python backend, which knows Claude only */
+	/** the language model's provider (ModelProvider.id) */
 	describe_provider?: ProviderId;
 	/** one of that provider's models, or an id typed for a provider that takes one */
 	describe_model: string;
-	/** how hard the model thinks; absent from the Python backend */
+	/** how hard the model thinks */
 	describe_effort?: Effort;
 }
 
@@ -107,56 +107,160 @@ export interface ModelCatalog {
 	chosen: { provider: ProviderId; model: string; effort: Effort };
 }
 
-/** A step whose stored results a run can be told to ignore and produce again (rp/pipeline.py REDO). */
+/** Tokens of a call or a batch, by how they are billed (engine usage/prices.rs `Tokens`). */
+export interface BilledTokens {
+	input: number;
+	output: number;
+	cache_read: number;
+	cache_write_5m: number;
+	cache_write_1h: number;
+}
+
+/** How prompt tokens were reckoned before anything was sent: from characters, at a ratio assumed or measured. */
+export interface TokenCounting {
+	kind: "assumed" | "measured";
+	chars_per_token: number;
+}
+
+/**
+ * What asking would cost, before anything is sent (engine model/language `Estimate`): the one shape every
+ * feature's estimate has, whichever provider is chosen. An estimate, always.
+ */
+export interface AskingCost {
+	/** the provider and model that would be asked: the estimate is at that provider's prices */
+	provider: ProviderId;
+	model: string;
+	calls: number;
+	/** likely tokens, by how they are billed */
+	tokens: BilledTokens;
+	/** likely and at most, in US dollars; null when the model's price is not known or it runs on this computer */
+	usd: number | null;
+	most_usd: number | null;
+	/** tokens of every kind at most: the budget a model with no price is held to */
+	most_tokens: number;
+	counting: TokenCounting;
+	/** how the shared text was counted: cached as the provider caches, or in full for every question */
+	caching: ModelCapabilities["caching"];
+	/** a server on this computer: no API fee */
+	on_this_computer: boolean;
+}
+
+/** What a batch would cost (engine model/batch.rs `BatchEstimate`): its items, and what asking those not kept would cost. */
+export interface BatchCost extends AskingCost {
+	items: number;
+	/** kept from before: they cost nothing */
+	kept: number;
+	to_ask: number;
+}
+
+/** What a request accepts of an estimate shown: its most in US dollars, or in tokens for a model with no price. */
+export type AcceptedCost = { accepted_usd: number; accepted_tokens?: never } | { accepted_tokens: number; accepted_usd?: never };
+
+/** A budget of the user's own: in US dollars, or in tokens for a model with no price. */
+export type BudgetOf = { budget_usd: number; budget_tokens?: never } | { budget_tokens: number; budget_usd?: never };
+
+/** The model an estimate was shown for: a request for another one (of another provider) is refused. */
+export interface ShownModel {
+	provider: ProviderId;
+	model: string;
+}
+
+/** A step whose stored results a run can be told to ignore and produce again (engine pipeline/mod.rs `RedoStep`). */
 export type RedoStep = "download" | "embeddings" | "descriptions";
 
 /** Every step that can be done again, in the order a run does them. */
 export const REDO_STEPS: RedoStep[] = ["download", "embeddings", "descriptions"];
 
-/** Conferences, or a submission-date range with optional categories (rp/selection.py checks it); or an earlier
+/** Conferences, or a submission-date range with optional categories (engine selection.rs checks it); or an earlier
  *  run to do again. Either way `redo` lists the steps to do again despite what is stored. */
 export type RunRequest = (
 	{ venues: string[]; include_workshops: boolean } | { start: string; end: string; categories: string[] } | { rerun: string }
-) & { redo?: RedoStep[] };
+) & {
+	redo?: RedoStep[];
+	/** name the run's communities within the most `GET /api/describe/estimate` showed (DescribeAccepted); absent: the
+	 *  run is made without names, which can be added from it later. */
+	describe?: DescribeAccepted;
+	/** make it again although a run of that name exists (a `rerun`, or the same selection anew): without it the
+	 *  engine answers 409 with `RunRefusedReplacing`, to be shown before the person confirms. Engine only */
+	replace?: boolean;
+};
 
-/** The backend's job state machine (rp/jobs.py). */
+/** The engine's one background job (apps/engine/src/jobs.rs). */
 export type JobState = "idle" | "running" | "done" | "failed";
 
+/**
+ * What a finished job made (engine jobs.rs `Finished`): a run to open, a feature's answers about a subject (the
+ * feature's own component shows them), or nothing to open.
+ */
+export type JobOutcome =
+	{ kind: "run"; run: string } | { kind: "feature"; feature: FeatureName; subject: FeatureSubject } | { kind: "nothing" };
+
+/** The features that keep the model's answers (engine library/money/answers.rs `Feature`). */
+export type FeatureName =
+	"extraction" | "citation_kinds" | "stances" | "answers" | "critique" | "explanation" | "claim_tree" | "describing" | "overview";
+
+/** What a feature's answers are about. */
+export type FeatureSubject = { paper: string } | { run: string } | { community: { run: string; community: string } };
+
 export interface Status {
-	/** the job's number (absent from the Python backend): what `api.cancelJob` names */
+	/** the job's number: what `api.cancelJob` names */
 	id?: number;
 	/** what kind of work it is ("a run", "asking about papers") */
 	kind?: string;
 	state: JobState;
-	/** name of the finished run, once state is "done" */
+	/**
+	 * the name of the run a finished job made, once state is "done"; null for any other job. Derived from `outcome` by
+	 * the engine and kept for compatibility with the Python backend: read `outcome` where it is there
+	 */
 	result: string | null;
+	/** what a finished job made; null while it runs and when it failed */
+	outcome?: JobOutcome | null;
 	error: string | null;
 	/** log lines after the `since` the request asked for */
 	log: string[];
 	total: number;
-	/** what is unsafe about how the engine listens (apps/engine); absent from the Python backend */
+	/** what is unsafe about how the engine listens (apps/engine) */
 	warnings?: string[];
-	/** what kind of engine this is; absent from the Python backend, which is always local */
+	/** what kind of engine this is */
 	mode?: EngineMode;
 	/** the settings the server decides, which the interface does not offer to change */
 	server_owned?: (keyof Settings)[];
 	/** how far a job that does many things has got; null for one that does not say */
 	progress?: JobProgress | null;
-	/** whether a key for the Claude API is set (never the key itself); absent from the Python backend */
+	/** how many of its papers a job that counts them has done; null for one that does not */
+	papers?: JobPapers | null;
+	/** whether a key for the chosen provider is set (never the key itself) */
 	api_key_set?: boolean;
+	/** the step of the run being made and how far it has got; null when no run is being made */
+	step?: RunStep | null;
+	/**
+	 * the feature a feature's job is (or was) for, from the moment it starts, so that any window can tell which section a
+	 * running job belongs to; null for any other job, absent from the Python backend
+	 */
+	feature?: FeatureName | null;
+	/** what that job asks about, as `outcome`'s subject */
+	subject?: FeatureSubject | null;
+	/** the one item of the subject it asks about, when it is one: a question's id among a run's questions */
+	item?: string | null;
 }
 
-/** n of m done, and what it has spent so far on the Claude API, in US dollars. */
+/** n of m done, and what it has spent so far on the language model's API, in US dollars (of calls with a price). */
 export interface JobProgress {
 	done: number;
 	of: number;
 	usd: number;
 }
 
-/** On the user's own computer, or one person's server reached across a network (apps/engine/src/api/config.rs). */
+/** Papers done, of how many. */
+export interface JobPapers {
+	done: number;
+	of: number;
+}
+
+/** On the user's own computer, or one person's server reached across a network (apps/engine/src/api/guard/config.rs). */
 export type EngineMode = "local" | "network";
 
-/** What `GET /auth/session` says on a server (apps/engine/src/api/login). */
+/** What `GET /auth/session` says on a server (apps/engine/src/api/guard/login). */
 export interface SignInSession {
 	signed_in: boolean;
 	/** the ways in this server offers */
@@ -293,6 +397,10 @@ export interface CitationNetwork {
 	papers_in_library: number;
 	/** the day it was built, YYYY-MM-DD */
 	built: string;
+	/** when reading the seed's references looked works up on arXiv and stopped before every one was asked about:
+	 *  at the most one reading asks, or because arXiv refused or could not be reached (`why`); `left` are asked
+	 *  about when the references are read again. Null when nothing was left, absent from older engines */
+	lookups_stopped?: { kind: "at_most"; left: number } | { kind: "failed"; why: string; left: number } | null;
 }
 
 export interface RunResult {
@@ -356,7 +464,7 @@ export interface Paper {
 	reviews: Ratings | null;
 }
 
-/** Reviewers' scores, by field, as the conference names and scales them (rp/reviews.py). */
+/** Reviewers' scores, by field, as the conference names and scales them (engine text/reviews/mod.rs). */
 export interface Ratings {
 	/** how many reviews gave scores */
 	reviews: number;
@@ -407,7 +515,7 @@ export interface ReviewScore {
 	meaning: string;
 }
 
-/** One note of a paper's discussion on OpenReview, as read from the page the user opened (engine text/discussion.rs). */
+/** One note of a paper's discussion on OpenReview, as read from the page the user opened (engine text/reviews/discussion.rs). */
 export type ReviewNote = (
 	| { kind: "official_review"; scores: ReviewScore[]; confidence: ReviewScore | null }
 	| { kind: "decision"; decision: string }
@@ -476,7 +584,7 @@ export interface PaperFigures {
 	disagreement: Disagreement | null;
 }
 
-/** `GET /api/papers/<id>/reviews`: a paper's kept discussion and what its scores come to (engine api/reviews.rs). */
+/** `GET /api/papers/<id>/reviews`: a paper's kept discussion and what its scores come to (engine api/papers/reviews.rs). */
 export interface PaperReviews {
 	paper_id: string;
 	/** the address of the page the reader showed */
@@ -569,7 +677,7 @@ export interface ReviewSummary {
 /** How a conference paper was accepted, in tiers that hold across conferences; best first. */
 export type Acceptance = "oral" | "spotlight" | "poster";
 
-/** How the conference itself named a paper's acceptance (rp/tiers.py, docs/acceptance-tiers.md). */
+/** How the conference itself named a paper's acceptance (engine sources/conferences/acceptance.rs, docs/acceptance-tiers.md). */
 export interface AcceptanceTerm {
 	/** the conference and year: "CVPR 2024" */
 	conference: string;
@@ -581,7 +689,7 @@ export interface AcceptanceTerm {
 	known: boolean;
 }
 
-/** What the authors of a paper declare in it (rp/proceedings.py). */
+/** What the authors of a paper declare in it (engine text/declarations.rs). */
 export interface Declarations {
 	/** the NeurIPS-style checklist, when the paper has one */
 	checklist: { number: number; title: string; answer: "Yes" | "No" | "NA"; justification: string }[];
@@ -591,7 +699,7 @@ export interface Declarations {
 	flags: string[];
 }
 
-/** A statistical estimate, not proof: see rp/detect.py. */
+/** A statistical estimate, not proof: see the engine's features/detector/mod.rs. */
 export interface AiVerdict {
 	/** higher = more machine-like */
 	score: number;
@@ -608,23 +716,42 @@ export interface AiVerdict {
 export interface OverviewPoint {
 	title: string;
 	insight: string;
+	/** the papers whose quotes were found (at least 3) */
 	papers: { id: string; title: string }[];
+	/** the quotes found, in the papers' own words (the engine only) */
+	evidence?: Evidence[];
 }
 
-/** What a community's papers have in common, written by Claude from all of them (rp/overview.py). */
+/** What a community's papers have in common, written by the language model from them (engine features/writing/overview.rs). */
 export interface Overview {
 	title: string;
+	/** empty when it was left out: its quotes were not found (`counts.summary_left_out`) */
 	summary: string;
 	sections: { heading: string; points: OverviewPoint[] }[];
 	model: string;
+	/** the community's papers */
 	papers: number;
+	/** the engine only: the summary's quotes */
+	summary_evidence?: Evidence[];
+	provider?: ProviderId;
+	/** of `papers`, how many the model was given (its most central, within a bound) */
+	papers_given?: number;
+	/** points written, shown and left out */
+	counts?: OverviewCounts;
 }
 
-/** Where the writing of an overview stands. */
+/** Where the writing of an overview stands, for the model chosen now. */
 export interface OverviewStatus {
 	state: JobState;
 	overview: Overview | null;
 	error: string | null;
+	/** the engine only: the model it is (or would be) written by */
+	provider?: ProviderId;
+	model?: string;
+	/** what writing it would cost, when it is neither kept nor being written: an estimate */
+	estimate?: BatchCost | null;
+	/** a key for the chosen provider is set (never the key) */
+	api_key_set?: boolean;
 }
 
 /** One thing that can be picked from a menu, and a few words about it. */
@@ -641,7 +768,7 @@ export interface CatalogGroup {
 	items: CatalogItem[];
 }
 
-/** What the run form offers to pick from (rp/catalog.py). */
+/** What the run form offers to pick from (engine sources/catalog.rs). */
 export interface Catalog {
 	conferences: CatalogGroup[];
 	categories: CatalogGroup[];
@@ -652,7 +779,7 @@ export interface Catalog {
 	clustering: CatalogItem[];
 }
 
-/** What the language model has cost (rp/usage.py). Counted from `since`: earlier calls were not recorded. */
+/** What the language model has cost (engine usage/). Counted from `since`: earlier calls were not recorded. */
 export interface Usage {
 	provider: { /** "Anthropic API", or the host requests are sent to */ name: string; /** are credentials set? */ ready: boolean };
 	/** the model that writes names and overviews (Settings) */
@@ -661,13 +788,14 @@ export interface Usage {
 	since: string | null;
 	/** the currency asked for and what a US dollar is worth in it; the dollar itself when no rate could be had */
 	currency: { code: string; rate: number; date: string | null };
-	/** everything below is in US dollars, the currency the API bills in */
-	usd: number;
+	/** everything below is in US dollars, the currency the API bills in; null when calls were made and none had a
+	 *  price (a cost that cannot be known is not shown, never as 0) */
+	usd: number | null;
 	calls: number;
 	/** calls to a model whose price is not known: counted in tokens only, so `usd` is short by them */
 	unpriced_calls: number;
-	/** since the app was started */
-	session_usd: number;
+	/** since the app was started; null as `usd` is */
+	session_usd: number | null;
 	session_calls: number;
 	models: Record<string, UsageEntry>;
 	/** what the calls were for: naming communities, overviews, ... */
@@ -679,18 +807,19 @@ export interface UsageEntry {
 	/** the prompt read at the full rate */
 	input_tokens: number;
 	output_tokens: number;
-	/** read from and written to the prompt cache, each billed at its own rate (absent from older backends) */
+	/** read from and written to the prompt cache, each billed at its own rate */
 	cache_read_tokens?: number;
 	cache_write_tokens?: number;
-	usd: number;
+	/** of the priced calls; null when none of its calls had a price, which is not a cost of 0 */
+	usd: number | null;
 	unpriced_calls: number;
 }
 
 /**
- * Where something is in a paper (engine text/passages.rs). `page` and `end_page` are the PDF's own page numbers
+ * Where something is in a paper (engine text/pdf/passages.rs). `page` and `end_page` are the PDF's own page numbers
  * from 1 (what `#page=N` opens), not those the paper prints. `start` counts characters into the text of `page`,
  * `end` into the text of `end_page` (the same page unless a quote runs on to the next). Characters are Unicode
- * code points, not UTF-16 units: slice with `Array.from(text)` (lib/evidence.ts `codePoints`), not `slice`.
+ * code points, not UTF-16 units: slice with `Array.from(text)` (lib/reader/evidence.ts `codePoints`), not `slice`.
  */
 export interface PassageAddress {
 	page: number;
@@ -746,7 +875,7 @@ export type Established =
 	/** found in the title or abstract only, at `start..end` (code points) of it: the PDF has not been read */
 	| { kind: "abstract"; field: "title" | "abstract"; start: number; end: number; matched: QuoteMatch };
 
-/** "This statement rests on that place in that paper" (engine evidence.rs); shown with components/evidence-link.tsx. */
+/** "This statement rests on that place in that paper" (engine evidence.rs); shown with components/reader/evidence-link.tsx. */
 export interface Evidence {
 	paper: string;
 	/** the paper's own words at that place, which is what is shown (never the model's copy) */
@@ -771,8 +900,8 @@ export interface ReaderTarget {
 export interface Library {
 	papers: number;
 	embeddings: Record<string, number>;
-	/** whether abstracts get scored in the next run, and why (rp/detect.py `availability`) */
-	ai_detector: { state: "off" | "untrained" | "ready"; why: string };
+	/** whether abstracts get scored in the next run, and why (engine features/detector/mod.rs `Availability`) */
+	ai_detector: { state: DetectorState; why: string };
 	/** what this computer can do: its NVIDIA graphics card, if any, and what that means for embedding */
 	machine: { gpu: string | null; embedding: string };
 	/** what was measured about the AI-text detector on papers it was not trained on; null until it is trained */
@@ -782,20 +911,23 @@ export interface Library {
 		held_out: number;
 		/** share of human abstracts flagged, by construction of the threshold */
 		false_alarms: number;
-		/** share caught of abstracts a model wrote from the title */
-		written_caught: number;
-		/** share caught of human abstracts a model polished */
-		polished_caught: number;
+		/** share caught of abstracts a model wrote from the title; null when none was held out */
+		written_caught: number | null;
+		/** share caught of human abstracts a model polished; null when none was held out */
+		polished_caught: number | null;
 		/** the words that most point to a model */
 		machine_words: string[];
 		/** share of arXiv abstracts flagged in a week of each year, if that check was run */
 		by_year: Record<string, { abstracts: number; flagged: number }> | null;
 	} | null;
+	/** what of the earlier version's data folder could not be moved in, in words (tried again at the next start);
+	 *  empty when everything was. Engine only */
+	import_problems?: string[];
 }
 
 // ---- Weaknesses (critique) ----
 
-/** What a reviewer's point raises, as its section's name says (engine text/review_points.rs). */
+/** What a reviewer's point raises, as its section's name says (engine text/reviews/review_points.rs). */
 export type ReviewConcern = "weakness" | "question" | "limitation";
 
 /** How an authors' reply is attached to a review: named by its own title, or a guess and what it rests on. */
@@ -834,8 +966,8 @@ export interface CritiqueReply {
 	note: number;
 	heading: string;
 	attachment: ReplyAttachment;
-	/** the reply's text from the kept page, cut when `cut` */
-	text: string;
+	/** the reply's text from the kept page, cut when `cut`; null when the page is not kept (its words are not known) */
+	text: string | null;
 	cut: boolean;
 	span: Span;
 }
@@ -870,13 +1002,11 @@ export type WeaknessKind =
 /** Where the model reads a reviewer's point as applying: a passage found in the paper, or no passage on it. */
 export type PointLocation = { kind: "passage"; evidence: Evidence } | { kind: "no_passage" };
 
-/** The model's reading of one reviewer's point; every quote in it was found in the paper. */
-export interface PointReading {
-	point: string;
-	location: PointLocation | null;
-	/** what the paper says that responds to the point: the paper's words only, no judgement */
-	paper_says: Evidence | null;
-}
+/** The model's reading of one reviewer's point; every quote in it was found in the paper. `location` is null when
+ *  the model's place for the point was not found in the paper; then `paper_says` is there (never both null). */
+export type PointReading =
+	/** `paper_says`: what the paper says that responds to the point: the paper's words only, no judgement */
+	{ point: string; location: PointLocation; paper_says: Evidence | null } | { point: string; location: null; paper_says: Evidence };
 
 /** Whether a weakness says something is absent, and what the engine's search of the paper's text found. */
 export type Absence =
@@ -901,6 +1031,8 @@ export interface CritiqueLeftOut {
 	beyond_limit: number;
 	/** weaknesses worded as a judgement of the paper (accept, reject, a score): the section gives none */
 	verdict: number;
+	/** points asked about that the answer has no entry for: they have no reading at all */
+	not_answered?: number;
 }
 
 export interface CritiqueReading {
@@ -909,30 +1041,21 @@ export interface CritiqueReading {
 	left_out: CritiqueLeftOut;
 }
 
-/** What one model's calls are likely to cost, before they are made (engine model/language.rs `Estimate`). */
-export interface CritiqueModelEstimate {
-	model: string;
-	calls: number;
-	tokens: { input: number; output: number; cache_read: number; cache_write_5m: number; cache_write_1h: number };
-	usd: number | null;
-	most_usd: number | null;
-	counting: { kind: "assumed" | "measured"; chars_per_token: number };
-}
-
-/** What asking would cost (engine model/batch.rs `BatchEstimate`), in US dollars: an estimate. */
-export interface CritiqueEstimate {
-	items: number;
-	kept: number;
-	to_ask: number;
-	by_model: CritiqueModelEstimate[];
-	usd: number | null;
-	most_usd: number | null;
-}
+/** What asking for a paper's weaknesses would cost: an estimate. */
+export type CritiqueEstimate = BatchCost;
 
 export type CritiqueModelPart =
 	| { state: "no_pdf" }
 	| { state: "unreadable" }
-	| { state: "not_asked"; model: string; estimate: CritiqueEstimate; api_key_set: boolean; points_asked: number; cut: number | null }
+	| {
+			state: "not_asked";
+			provider: ProviderId;
+			model: string;
+			estimate: CritiqueEstimate;
+			api_key_set: boolean;
+			points_asked: number;
+			cut: number | null;
+	  }
 	| { state: "answered"; model: string; kept_at: string; reading: CritiqueReading; points_asked: number; cut: number | null };
 
 /** `GET /api/papers/<id>/critique`: a paper's weaknesses, the reviewers' points first and the model's reading second. */
@@ -942,8 +1065,18 @@ export interface Critique {
 	model: CritiqueModelPart;
 }
 
+/** `POST /api/papers/<id>/critique`'s body: the model whose estimate was shown, and its worst case accepted (refused
+ *  when asking would now cost more: the paper's text, its reviews or the model changed), or a budget of one's own. */
+export type CritiqueStart = ShownModel & (AcceptedCost | BudgetOf);
+
 /** `POST /api/papers/<id>/critique`: the job started, or nothing asked because the reading is kept. */
 export type CritiqueStarted = { outcome: "started"; job: number } | { outcome: "kept" };
+
+/** `DELETE /api/papers/<id>/critique`: the reading shown (the chosen model's) forgotten, 1, or none there, 0. Other
+ *  models' readings of the paper stay. */
+export interface CritiqueForgotten {
+	forgotten: number;
+}
 
 // ---- Agree / disagree (stances) ----
 
@@ -951,14 +1084,23 @@ export type CritiqueStarted = { outcome: "started"; job: number } | { outcome: "
 export type StanceScope = { community: string } | { papers: string[] };
 
 /**
- * Where the model placed one paper on a yes/no question (engine analysis/stances.rs). Every placement but
+ * Where the model placed one paper on a yes/no question (engine features/stances/mod.rs). Every placement but
  * `not_addressed` comes with the paper's own words, found in it; a placement whose quotes were not found is
  * `not_verified` and is never counted for or against. `unusable`: the kept answer is not one the question allows.
  */
 export type StancePlaced =
-	| { group: "supports"; evidence: Evidence[] }
-	| { group: "mixed"; /** the model's words for when the answer is yes */ condition: string; evidence: Evidence[] }
-	| { group: "contradicts"; evidence: Evidence[] }
+	| {
+			group: "supports";
+			evidence: Evidence[];
+			/** quotes the model gave that were not found in the paper: left out */ quotes_not_found?: number;
+	  }
+	| {
+			group: "mixed";
+			/** the model's words for when the answer is yes */ condition: string;
+			evidence: Evidence[];
+			quotes_not_found?: number;
+	  }
+	| { group: "contradicts"; evidence: Evidence[]; quotes_not_found?: number }
 	| { group: "not_addressed" }
 	| { group: "not_verified"; quotes_not_found: number }
 	| { group: "unusable" };
@@ -979,7 +1121,10 @@ export interface StanceRow {
 
 /** What the pre-filter (no model) decided: papers sharing no distinctive word with the question are skipped. */
 export interface StanceFilter {
+	/** the scope's papers the library has: `related` and `unrelated` add up to it */
 	papers: number;
+	/** the scope's papers the library does not have: neither asked nor skipped (the engine always sends it) */
+	not_in_library?: number;
 	related: number;
 	unrelated: number;
 	include_unrelated: boolean;
@@ -987,24 +1132,8 @@ export interface StanceFilter {
 	terms: string[];
 }
 
-/** What a batch of calls would cost, before anything is sent (engine model/batch.rs BatchEstimate): an estimate. */
-export interface StanceCostEstimate {
-	items: number;
-	/** answered before: they cost nothing */
-	kept: number;
-	to_ask: number;
-	by_model: {
-		model: string;
-		calls: number;
-		tokens: { input: number; output: number; cache_read: number; cache_write_5m: number; cache_write_1h: number };
-		usd: number | null;
-		most_usd: number | null;
-		counting: { kind: "assumed" | "measured"; chars_per_token: number };
-	}[];
-	/** in US dollars; null when the model's price is not known */
-	usd: number | null;
-	most_usd: number | null;
-}
+/** What a batch of calls would cost, before anything is sent: an estimate. */
+export type StanceCostEstimate = BatchCost;
 
 export interface StancePartEstimate {
 	papers: number;
@@ -1017,7 +1146,9 @@ export interface StancePartEstimate {
 export interface StancePlan {
 	id: string;
 	question: string;
+	provider: ProviderId;
 	model: string;
+	api_key_set: boolean;
 	filter: StanceFilter;
 	/** the most central papers, asked first */
 	sample: StancePartEstimate;
@@ -1030,6 +1161,7 @@ export interface StanceResult {
 	id: string;
 	question: string;
 	asked_at: string;
+	provider: ProviderId;
 	model: string;
 	filter: StanceFilter;
 	/** papers that would be asked */
@@ -1079,8 +1211,10 @@ export interface StanceListing {
 /** `POST .../stances/proposals/estimate`: what proposing questions would cost. An estimate. */
 export interface StanceProposalPlan {
 	papers: number;
+	provider: ProviderId;
 	model: string;
 	estimate: StanceCostEstimate;
+	api_key_set: boolean;
 }
 
 /** A job started: its number (for `/api/status` and `api.cancelJob`) and the question's id. */
@@ -1091,7 +1225,7 @@ export interface StanceStarted {
 
 // ---- extraction table ----
 
-/** What kind of answer a column of an extraction table takes (engine analysis/extraction.rs). */
+/** What kind of answer a column of an extraction table takes (engine features/extraction/mod.rs). */
 export type ExtractionAnswerKind = "text" | "yes_no" | "number" | "list";
 
 /** A column of an extraction table: a question every paper is asked. */
@@ -1143,7 +1277,8 @@ export interface ExtractionRow {
 /** `POST /api/runs/<run>/extraction/table` with `{ scope }`: what is kept, every quote checked again. */
 export interface ExtractionTable {
 	columns: ExtractionColumn[];
-	/** the model whose answers these are */
+	/** the model whose answers these are, and its provider */
+	provider: ProviderId;
 	model: string;
 	/** most central first: the sample's papers come first */
 	rows: ExtractionRow[];
@@ -1160,17 +1295,12 @@ export type ExtractionScope = { community: string } | { papers: string[] };
 export type ExtractionPart = "sample" | "rest";
 
 /** `POST /api/runs/<run>/extraction/estimate`: what asking would cost, before anything is sent. An estimate. */
-export interface ExtractionEstimate {
+export interface ExtractionEstimate extends AskingCost {
 	part: ExtractionPart;
 	papers: number;
 	/** papers with a cell to ask; the others are kept */
 	to_ask: number;
-	model: string;
-	/** US dollars, likely and at most; null when the model's price is not known */
-	usd: number | null;
-	most_usd: number | null;
-	tokens: { input: number; output: number; cache_read: number; cache_write_5m: number; cache_write_1h: number };
-	counting: { kind: "assumed" | "measured"; chars_per_token: number };
+	api_key_set: boolean;
 	/** what it was reckoned from: the papers' own texts, or (for the rest) the sample's */
 	basis: { kind: "texts" } | { kind: "sample_texts"; papers: number; characters: number } | { kind: "typical"; characters: number };
 }
@@ -1185,12 +1315,9 @@ export interface ExplanationRequest {
 
 /** `POST /api/papers/<id>/explanation`: the passage, and the model and worst case the reader was shown; the
  *  engine refuses when either changed since, so nothing is paid that was not shown. */
-export interface ExplanationStart extends ExplanationRequest {
-	model: string;
-	most_usd: number | null;
-}
+export type ExplanationStart = ExplanationRequest & ShownModel & AcceptedCost;
 
-/** What is asked about a passage, from its kind (engine explanation/mod.rs). */
+/** What is asked about a passage, from its kind (engine features/explanation/mod.rs). */
 export type ExplanationQuestion = "passage" | "equation" | "table" | "figure";
 
 export type ExplanationPart = "explanation" | "symbol" | "reading" | "prerequisite";
@@ -1212,14 +1339,7 @@ export interface Explanation {
 }
 
 /** What explaining would cost: an estimate, from characters at an assumed or measured rate. */
-export interface ExplanationEstimate {
-	/** likely and at most, in US dollars; null when the model's price is not known */
-	usd: number | null;
-	most_usd: number | null;
-	prompt_tokens: number;
-	answer_tokens: number;
-	counting: { kind: "assumed" | "measured"; chars_per_token: number };
-}
+export type ExplanationEstimate = AskingCost;
 
 /** A symbol or a capitalised term the passage uses, and the sentence of the paper that introduces it (found by
  *  a program, no model). */
@@ -1229,27 +1349,32 @@ export interface DefinedTerm {
 }
 
 export type ExplanationPrepared =
-	| {
+	/** ready: the explanation kept from before (shown at no cost), or, not asked yet, what asking would cost */
+	| ({
 			state: "ready";
 			paper: string;
 			passage: { kind: PassageKind; address: PassageAddress };
 			question: ExplanationQuestion;
 			/** the passage's extracted text may be garbled (equations, tables, figures): only text is sent */
 			garbled: boolean;
-			/** the model that would be asked: the one chosen in the settings */
+			/** the model that would be asked, of its provider: the one chosen in the settings */
+			provider: ProviderId;
 			model: string;
+			api_key_set: boolean;
 			definitions: DefinedTerm[];
-			/** kept from before: shown at no cost */
-			explained: Explanation | null;
-			/** null when an explanation is kept */
-			estimate: ExplanationEstimate | null;
-	  }
+	  } & ({ explained: Explanation; estimate: null } | { explained: null; estimate: ExplanationEstimate }))
 	| { state: "no_text"; why: "no_pdf" | "unreadable" };
 
 /** `POST /api/papers/<id>/explanation`: the job that asks, when one was started (none when one is kept). */
 export interface ExplanationStarted {
 	started: boolean;
 	job: number | null;
+}
+
+/** `DELETE /api/papers/<id>/explanation`: whether there was an explanation of the passage (by the model chosen) to
+ *  forget; the paper's other explanations stay. */
+export interface ExplanationRedone {
+	redone: boolean;
 }
 
 /** `GET /api/papers/<id>/explanations`: the passages with an explanation kept for the model chosen. */
@@ -1280,7 +1405,7 @@ export interface RelatedPassages {
 
 // ---- Claim tree ----
 
-/** What evidence a paper offers for a claim (engine analysis/claim_tree/tree.rs). */
+/** What evidence a paper offers for a claim (engine features/claim_tree/tree.rs). */
 export type ClaimEvidenceKind = "experiment" | "table" | "figure" | "theorem" | "ablation" | "citation" | "argument";
 
 /** One node of a paper's claim tree: a central claim, a finding under it, or the evidence the paper offers. Its
@@ -1311,7 +1436,9 @@ export type ClaimTreeState =
 	| { state: "no_text" }
 	| { state: "not_asked" }
 	| { state: "malformed"; why: { why: "duplicate_id" | "cycle"; id: string } | { why: "empty" }; kept_at: string }
-	| { state: "made"; nodes: ClaimNode[]; left_out: ClaimsLeftOut; kept_at: string; model: string };
+	| { state: "made"; nodes: ClaimNode[]; left_out: ClaimsLeftOut; kept_at: string; model: string }
+	/** a tree was written but every node of it was left out (`left_out` says why): nothing stands */
+	| { state: "all_left_out"; left_out: ClaimsLeftOut; kept_at: string; model: string };
 
 /** What a reviewer's point does to the node it is placed on. */
 export type ReviewStance = "supports" | "challenges" | "asks" | "presentation" | "whole_paper";
@@ -1349,7 +1476,8 @@ export interface PointMapping {
 	placed: PointPlacement[];
 	/** always shown */
 	unplaced: UnplacedPoint[];
-	ignored: { unknown_points: number; repeated: number };
+	/** answered but not shown: about no point sent, a point placed again, or past the most read (two per point) */
+	ignored: { unknown_points: number; repeated: number; past_most?: number };
 }
 
 export type PointMappingState =
@@ -1420,28 +1548,14 @@ export interface ClaimGap {
 	evidence: Evidence[];
 }
 
-/** What a batch of calls is likely to cost, before anything is sent (engine model/batch.rs): an estimate. */
-export interface ClaimsEstimate {
-	items: number;
-	kept: number;
-	to_ask: number;
-	by_model: {
-		model: string;
-		calls: number;
-		tokens: { input: number; output: number; cache_read: number; cache_write_5m: number; cache_write_1h: number };
-		usd: number | null;
-		most_usd: number | null;
-		counting: { kind: "assumed" | "measured"; chars_per_token: number };
-	}[];
-	/** US dollars; null when a model's price is not known */
-	usd: number | null;
-	most_usd: number | null;
-}
+/** What a batch of calls is likely to cost, before anything is sent: an estimate. */
+export type ClaimsEstimate = BatchCost;
 
 /** `GET /api/papers/<id>/claims`: the paper's claim tree with its reviews mapped onto it. */
 export interface ClaimsView {
 	paper_id: string;
-	/** the model chosen in the settings */
+	/** the model chosen in the settings, of its provider */
+	provider: ProviderId;
 	model: string;
 	paper: { state: "read"; passages: number; sent: number } | { state: "no_pdf" } | { state: "unreadable" };
 	tree: ClaimTreeState;
@@ -1455,10 +1569,8 @@ export interface ClaimsView {
 	estimate: ClaimsEstimate | null;
 }
 
-/** `POST /api/papers/<id>/claims`: the most the calls may spend, in US dollars. */
-export interface ClaimsStart {
-	budget_usd: number;
-}
+/** `POST /api/papers/<id>/claims`: the most the calls may spend, and the model the estimate was shown for. */
+export type ClaimsStart = BudgetOf & ShownModel;
 
 /** `GET /api/runs/<run>/communities/<tree path>/claims/contested`: per paper mapped, its contested claims. */
 export interface ContestedClaims {
@@ -1470,7 +1582,7 @@ export interface ContestedClaims {
 
 // ---- citation contexts and kinds ----
 
-/** The part of a paper a citation is in, normalised from its section's heading (engine analysis/citation_contexts.rs). */
+/** The part of a paper a citation is in, normalised from its section's heading (engine features/citation_contexts/mod.rs). */
 export type CitationSection =
 	| { kind: "abstract" | "introduction" | "related_work" | "background" | "method" | "experiments" | "discussion" | "appendix" }
 	/** a heading none of those words name, as the paper writes it */
@@ -1479,7 +1591,7 @@ export type CitationSection =
 /** Whether the cited work is named alone or in a group ("[3, 7-9]": a grouped citation says less about each work). */
 export type CitationGrouping = { kind: "alone" } | { kind: "grouped"; with: number };
 
-/** What a citation does, as the model reads it (engine analysis/citation_kinds.rs). */
+/** What a citation does, as the model reads it (engine features/citation_contexts/kinds.rs). */
 export type CitationKind = "uses" | "uses_data" | "baseline" | "extends" | "supports" | "contrasts" | "mention";
 
 /** The model's reading of one citing sentence, shown only beside the sentence. A kind other than mention counts
@@ -1536,7 +1648,7 @@ export interface PaperCitationContexts {
 	cited_by: CitationContextsOf[];
 	cited_by_total: number;
 	/** how many of the run's papers have had their citing sentences read (null without a run) */
-	coverage: { papers: number; read: number; without_pdf: number } | null;
+	coverage: { papers: number; read: number; without_pdf: number; /** with a PDF that could not be read */ unreadable?: number } | null;
 	/** sentences whose place could no longer be found in their paper's text: not shown */
 	left_out: number;
 	/** the model whose readings are shown */
@@ -1557,6 +1669,8 @@ export interface CitationKindsSummary {
 	/** of its papers, whose citing sentences were read */
 	papers_read: number;
 	without_pdf: number;
+	/** of its papers, those with a PDF that could not be read: neither read nor waiting to be */
+	unreadable?: number;
 	/** papers of the library its papers cite */
 	cited_papers: number;
 	tally: CitationTally;
@@ -1578,47 +1692,29 @@ export type CitationKindsScope = "sample" | "rest";
 /** `GET /api/runs/<name>/citation-kinds/estimate`: what reading a scope's kinds would cost; nothing is sent. */
 export interface CitationKindsEstimate {
 	scope: CitationKindsScope;
+	provider: ProviderId;
 	model: string;
 	sentences: number;
 	/** read already: they cost nothing */
 	kept: number;
 	to_ask: number;
-	estimate: {
-		items: number;
-		kept: number;
-		to_ask: number;
-		by_model: {
-			model: string;
-			calls: number;
-			tokens: { input: number; output: number; cache_read: number; cache_write_5m: number; cache_write_1h: number };
-			usd: number | null;
-			most_usd: number | null;
-			/** how prompt tokens were reckoned: an estimate either way */
-			counting: { kind: "assumed" | "measured"; chars_per_token: number };
-		}[];
-		/** likely cost in US dollars; null when a model's price is not known */
-		usd: number | null;
-		/** if every answer took its most and nothing was read from the cache */
-		most_usd: number | null;
-	};
+	estimate: BatchCost;
 	/** a key is set, so the model can be asked (never the key) */
 	can_ask: boolean;
 }
 
-/** `POST /api/runs/<name>/citation-kinds`. */
-export interface ClassifyCitationsRequest {
-	community?: string | null;
-	scope: CitationKindsScope;
-	/** the most the job may spend, in US dollars */
-	budget_usd: number;
-	/** the model and the sentences to ask of the estimate shown: anything else is refused (estimate again) */
-	model: string;
-	to_ask: number;
-}
+/** `POST /api/runs/<name>/citation-kinds`: the most the job may spend, and the model and the sentences to ask of the
+ *  estimate shown (anything else is refused: estimate again). */
+export type ClassifyCitationsRequest = BudgetOf &
+	ShownModel & {
+		community?: string | null;
+		scope: CitationKindsScope;
+		to_ask: number;
+	};
 
 // ---- cited answers ----
 
-/** How much of a run's or a community's papers a search covers (engine text/retrieval.rs `Coverage`). */
+/** How much of a run's or a community's papers a search covers (engine features/answers/retrieval.rs `Coverage`). */
 export interface SearchCoverage {
 	papers: number;
 	/** searched in their full text, read from their PDF */
@@ -1650,25 +1746,8 @@ export interface SearchIndexing {
 /** `GET /api/runs/<run>/passages/found?q=...&community=<tree path>`: found without any model, at no cost. */
 export type PassagesFound = { state: "ready"; query: string; coverage: SearchCoverage; passages: PassageFound[] } | SearchIndexing;
 
-/** Tokens of a call, by how they are billed (engine usage/prices.rs `Tokens`). */
-export interface AnswerTokens {
-	input: number;
-	output: number;
-	cache_read: number;
-	cache_write_5m: number;
-	cache_write_1h: number;
-}
-
-/** What a call is likely to cost (engine model/language.rs `Estimate`): an estimate either way. */
-export interface AnswerCost {
-	model: string;
-	calls: number;
-	tokens: AnswerTokens;
-	/** US dollars; null when the model's price is not known */
-	usd: number | null;
-	most_usd: number | null;
-	counting: { kind: "assumed" | "measured"; chars_per_token: number };
-}
+/** What a call is likely to cost: an estimate either way. */
+export type AnswerCost = AskingCost;
 
 /** `GET /api/runs/<run>/answers/estimate?q=...&community=...`: what asking would cost. Nothing is sent. */
 export type AnswerEstimate =
@@ -1676,6 +1755,7 @@ export type AnswerEstimate =
 			state: "ready";
 			/** the question's id once asked */
 			id: string;
+			provider: ProviderId;
 			model: string;
 			/** its answer is kept: reopening it costs nothing */
 			kept: boolean;
@@ -1695,16 +1775,16 @@ export type AnswerEstimate =
 	  }
 	| SearchIndexing;
 
-/** `POST /api/runs/<run>/answers`, sent when the user clicks the button showing the estimate. */
-export interface AnswerRequest {
-	question: string;
-	/** a community's tree path; absent or null for the whole run */
-	community?: string | null;
-	/** the model the estimate shown was for: a request for another is refused */
-	model: string;
-	/** the `most_usd` the user was shown; null when the price is not known */
-	accepted_usd: number | null;
-}
+/** `POST /api/runs/<run>/answers`, sent when the user clicks the button showing the estimate: the most it was shown
+ *  to cost (in tokens for a model with no price), for the model it was shown for. */
+export type AnswerRequest = ShownModel &
+	AcceptedCost & {
+		/** the id of the estimate shown (`AnswerEstimate.id`): refused when the passages that would be sent changed since */
+		id: string;
+		question: string;
+		/** a community's tree path; absent or null for the whole run */
+		community?: string | null;
+	};
 
 /** The question's id, and the job asking it (null when its answer was kept). */
 export interface AnswerStarted {
@@ -1739,8 +1819,8 @@ export interface AnswerCounts {
 	malformed: number;
 }
 
-/** Where a question stands: answered, the papers do not say, too little verified to show, being asked, or not answered. */
-export type AnswerState = "answered" | "not_in_papers" | "unverified" | "asking" | "unanswered";
+/** Where a question stands: answered, the papers do not say, too little verified to show, being asked, not answered, or answered with no statement at all. */
+export type AnswerState = "answered" | "not_in_papers" | "unverified" | "asking" | "unanswered" | "empty";
 
 /** `GET /api/runs/<run>/answers/<id>`: a question and its kept answer, its quotes checked again. */
 export interface AnswerView {
@@ -1757,4 +1837,224 @@ export interface AnswerView {
 	passages: PassageFound[];
 	/** the papers the statements shown cite */
 	cited_papers: string[];
+}
+
+// ---- names, descriptions and overviews of communities (engine features/writing/) ----
+
+/** How many points of an overview were written, shown and left out. */
+export interface OverviewCounts {
+	written: number;
+	shown: number;
+	/** left out: their quotes were not found in at least 3 of the papers they name */
+	not_found: number;
+	/** left out: not of the shape asked for */
+	malformed: number;
+	/** the summary was left out, its quotes not found in enough papers */
+	summary_left_out: boolean;
+}
+
+/** `POST /api/runs/<run>/overview/<path>`: the model the estimate was shown for and its most. */
+export type OverviewRequest = ShownModel & AcceptedCost;
+
+/** `GET /api/describe/estimate`: what naming a run made with the settings would cost at most, before it is made
+ *  (its communities are not known yet: as many as the settings allow). An estimate. */
+export interface DescribeBeforeRun {
+	provider: ProviderId;
+	model: string;
+	communities_at_most: number;
+	calls_at_most: number;
+	estimate: AskingCost;
+	api_key_set: boolean;
+	/** the settings' "describe communities" */
+	describe: boolean;
+}
+
+/** What a run request accepts of `DescribeBeforeRun`: the model shown and its most. */
+export type DescribeAccepted = ShownModel & AcceptedCost;
+
+/** `GET /api/runs/<run>/describe/estimate[?redo=true]`: what naming a made run's communities would cost. */
+export interface DescribeEstimate {
+	provider: ProviderId;
+	model: string;
+	/** communities and sub-communities of the run */
+	communities: number;
+	/** of those, with a name now */
+	named: number;
+	/** calls kept from before (`kept`) cost nothing */
+	estimate: BatchCost;
+	api_key_set: boolean;
+}
+
+/** `POST /api/runs/<run>/describe`: name the run's communities (all again with `redo`), as the one job. */
+export type DescribeRequest = ShownModel & AcceptedCost & { redo?: boolean };
+
+/** The job naming them; it finishes as `{kind: "run", run}`: open the run again to see the names. */
+export interface DescribeStarted {
+	ok: true;
+	id: number;
+}
+
+// ---- Runs: making one, and the paged list (engine pipeline/, runs/index.rs) ----
+
+/** The steps of a run, in order (engine pipeline/steps/mod.rs `Step`). */
+export type RunStepName =
+	"gather" | "model" | "embed" | "detect" | "filter" | "similarity" | "communities" | "summarise" | "describe" | "write";
+
+/** So many of so many things done: papers, slices (days or conferences), bytes of the model, communities. */
+export interface StepCount {
+	done: number;
+	of: number;
+	unit: "papers" | "slices" | "bytes" | "communities";
+}
+
+/** The step of the run being made: "embed, 3 of 10: 3,120 of 12,487 papers, on the graphics card". */
+export interface RunStep {
+	step: RunStepName;
+	/** what the log calls it */
+	title: string;
+	/** its place, from 1, of how many steps there are */
+	number: number;
+	of: number;
+	count: StepCount | null;
+	/** what it is doing, in words ("embedding on the processor ...") */
+	detail: string | null;
+}
+
+/** A run of a page of the list (engine runs/index.rs `RunSummary`). Times are seconds since 1970. */
+export interface RunListed {
+	kind: "run";
+	name: string;
+	title: string;
+	papers: number;
+	communities: number;
+	modularity: number;
+	created: number;
+	last_opened: number | null;
+	times_opened: number;
+	/** about how much memory it takes once open, in bytes */
+	bytes: number;
+}
+
+/** A row of a page of the list: a run, a run whose files cannot be read (so that it can be deleted), or one not
+ *  read yet. */
+export type RunRow = RunListed | { kind: "unreadable"; name: string; reason: string } | { kind: "unread"; name: string };
+
+/** How a page of the list is sorted: most recently opened first, by title, newest first, largest first. */
+export type RunSort = "opened" | "name" | "created" | "size";
+
+/** `GET /api/runs?offset=&limit=&sort=&search=`: one page of the runs, and how many match in all. */
+export interface RunPage {
+	total: number;
+	offset: number;
+	rows: RunRow[];
+}
+
+// ---- AI-text detector (engine features/detector/, features/detector/routes.rs) ----
+
+/** off: switched off; untrained: nothing built, nothing flagged; building: the job is under way; ready: trained by
+ * this version; stale: trained by an earlier version of the app (it still scores; training again is free). */
+export type DetectorState = "off" | "untrained" | "building" | "ready" | "stale";
+
+/** What was measured on held-out papers: shares of held-out abstracts, from 0 to 1. */
+export interface DetectorMeasured {
+	/** detector scores above this are flagged */
+	threshold: number;
+	written_caught: number | null;
+	polished_caught: number | null;
+	auc: number | null;
+}
+
+/** `GET /api/detector`: the state and why, and what was measured about it. */
+export interface DetectorInfo {
+	state: DetectorState;
+	/** while building: abstracts written so far, of how many at most */
+	done?: number;
+	of?: number;
+	/** ready or stale: when it was trained (UTC) */
+	trained_at?: string;
+	why: string;
+	validation: Library["ai_validation"];
+	report: {
+		trained_at: string;
+		/** the models whose text it learnt, and how many of the abstracts trained on each wrote */
+		written_by: { name: string; provider: ProviderId | null; model: string; mirrors: number }[];
+		trained_on: number;
+		held_out: number;
+		false_alarms: number;
+		measured: DetectorMeasured;
+		rounds: { round: number; humans: number; written_caught: number | null; polished_caught: number | null }[];
+		machine_words: string[];
+		human_words: string[];
+	} | null;
+}
+
+/** `GET /api/detector/estimate`: what building would ask and cost with the chosen model; nothing is sent. */
+export interface DetectorEstimate {
+	provider: ProviderId;
+	model: string;
+	api_key_set: boolean;
+	/** 2019 abstracts kept, of how many the training set needs */
+	pool_kept: number;
+	pool: number;
+	mirrors_kept: number;
+	/** the most abstracts a build could still ask a model to write */
+	to_generate: number;
+	/** built before: building again asks nothing and trains it again */
+	built: boolean;
+	cost: BatchCost;
+}
+
+/** `POST /api/detector/build` and `POST /api/detector/years`. */
+export interface DetectorStarted {
+	outcome: "started";
+	job: number;
+}
+
+// ---- Making a run again in place (engine api/runs.rs, pipeline/results/files.rs `Replaced`) ----
+
+/** A setting that decides a run's communities, as the run was made with it and as it is now (`was` is null when
+ *  the run did not record it). */
+export interface SettingChanged {
+	setting: keyof Settings;
+	was: unknown;
+	now: unknown;
+}
+
+/** The run a `POST /api/runs` would make again in its folder, told before anything is done. */
+export interface RunReplaced {
+	run: string;
+	title: string;
+	/** its communities and sub-communities now, and how many of them have a name */
+	communities: number;
+	named: number;
+	/** "change": they will be cut otherwise (a setting below differs, or the run was cut by another clustering:
+	 *  the earlier version's k-means); "may_change": the same settings and clustering, so they come out the same
+	 *  unless its papers changed. Either way, names and what was asked about a community that changes no longer
+	 *  apply to it */
+	communities_will: "change" | "may_change";
+	changed: SettingChanged[];
+}
+
+/** `POST /api/runs` answered 409: the run exists; sending the request again with `replace: true` makes it again. */
+export interface RunRefusedReplacing {
+	error: string;
+	replaces: RunReplaced;
+}
+
+/**
+ * `GET /api/usage/unsettled` (engine): calls asked of the language model whose outcome is unknown, because the engine
+ * stopped after the provider billed and before the answer was kept, or the connection was lost after sending. They
+ * may have been billed, at most `most_usd` US dollars (of the priced ones) and `most_tokens` tokens; they are not
+ * asked again until the user starts that work again.
+ */
+export interface Unsettled {
+	calls: number;
+	most_usd: number;
+	/** of a model whose price is not known: `most_usd` leaves them out, `most_tokens` counts them */
+	unpriced_calls: number;
+	most_tokens: number;
+	/** when the oldest was asked (UTC), or null when there is none */
+	since: string | null;
+	/** the same in a sentence, with its units; null when there is none */
+	said: string | null;
 }

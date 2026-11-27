@@ -1,10 +1,6 @@
 import path from "node:path";
 import type { NextConfig } from "next";
 
-// Where the Python backend listens. Rewrites are fixed when the app is built, so the desktop shell starts the
-// backend on this same port (apps/desktop/main.cjs).
-const BACKEND = process.env.RP_BACKEND ?? "http://127.0.0.1:8765";
-
 const nextConfig: NextConfig = {
 	transpilePackages: ["@rp/contracts"],
 	// A self-contained server (.next/standalone) that the desktop shell runs as a child process.
@@ -13,18 +9,13 @@ const nextConfig: NextConfig = {
 	images: { unoptimized: true },
 	outputFileTracingExcludes: { "*": ["node_modules/sharp/**", "node_modules/@img/**"] },
 	outputFileTracingRoot: path.join(import.meta.dirname, "..", ".."),
-	// The backend owns /api; the window only ever talks to this one origin.
+	// /api and /auth are the engine's: proxy.ts forwards them, with the engine's token added on that hop alone (a
+	// rewrite here could not add it). A forwarded request may wait as long as the engine takes to fetch a PDF from
+	// its publisher (180 s, apps/engine/README.md) and a little more; Next's own limit is 30 s.
+	experimental: { proxyTimeout: 200_000 },
 	// No other site may put this interface in a frame (a page shown in the reader could otherwise try to).
 	async headers() {
 		return [{ source: "/:path*", headers: [{ key: "Content-Security-Policy", value: "frame-ancestors 'self'" }] }];
-	},
-	async rewrites() {
-		return [
-			{ source: "/api/:path*", destination: `${BACKEND}/api/:path*` },
-			// a server's sign-in (apps/engine/src/api/login); the Python backend has none and answers 404
-			{ source: "/auth", destination: `${BACKEND}/auth/` },
-			{ source: "/auth/:path*", destination: `${BACKEND}/auth/:path*` },
-		];
 	},
 };
 

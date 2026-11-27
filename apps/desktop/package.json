@@ -1,15 +1,16 @@
 {
 	"name": "@rp/desktop",
 	"productName": "Constellate",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"private": true,
 	"description": "arXiv and conference papers, embedded and split into communities by Fiedler vectors.",
 	"author": "Constellate",
+	"homepage": "https://github.com/Patchoulis/Constellate",
 	"main": "main.cjs",
 	"scripts": {
 		"start": "electron .",
-		"dist": "electron-builder --win --x64",
-		"test": "node --test setup.test.cjs lifecycle.test.cjs port.test.cjs"
+		"test": "node --test lifecycle.test.cjs port.test.cjs reader.test.cjs servers.test.cjs shell.test.cjs",
+		"test:reader": "electron reader.electron.cjs"
 	},
 	"devDependencies": {
 		"electron": "44.11.6",

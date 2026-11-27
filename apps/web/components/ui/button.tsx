@@ -59,7 +59,10 @@ export function Segmented<T extends string>({
 			{options.map((option) => (
 				<button
 					key={option.value}
+					type="button"
 					title={option.title}
+					// which one is chosen, for those who do not see the highlight
+					aria-pressed={value === option.value}
 					onClick={() => onChange(option.value)}
 					className={cn(
 						"flex h-6 flex-1 items-center justify-center gap-1.5 rounded-sm px-2.5 text-xs transition-colors [&_svg]:size-3",

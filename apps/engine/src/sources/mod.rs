@@ -6,12 +6,9 @@
 //!
 //! | module          | what lives there                                                                   |
 //! |-----------------|------------------------------------------------------------------------------------|
-//! | [`citations`]   | cited works that are not in the library, looked up on arXiv                         |
 //! | [`catalog`]     | the conferences and arXiv categories a run can be about, grouped by field           |
-//! | [`arxiv`]       | arXiv's search API: the query, its pages, and its Atom answer read into papers      |
-//! | [`conferences`] | a conference's official list of accepted papers, or arXiv comments where it has none |
-//! | [`acceptance`]  | how a conference accepted a paper, the same whatever the conference calls it        |
-//! | [`proceedings`] | where each conference publishes its PDFs, and downloading one safely                |
+//! | [`conferences`] | a conference's official list of accepted papers, its acceptance tiers, its proceedings' PDFs |
+//! | [`arxiv`]       | arXiv's search API, and cited works that are not in the library looked up there     |
 //! | [`download`]    | a selection cut into the slices that are fetched, and fetching one                  |
 //! | [`polite`]      | many addresses fetched at once, within each host's limits and pauses                |
 //!
@@ -21,14 +18,11 @@
 //! OpenReview is never contacted: it serves a bot challenge to programs, and Constellate does not work around it.
 //! Its addresses appear in records only as links for the reader the user opens.
 
-pub mod acceptance;
 pub mod arxiv;
 pub mod catalog;
-pub mod citations;
 pub mod conferences;
 pub mod download;
 pub mod polite;
-pub mod proceedings;
 
 use std::io::Read;
 use std::sync::LazyLock;
@@ -158,9 +152,118 @@ pub enum GetError {
     Fetch(#[from] FetchError),
 }
 
-/// Any https address: what lists, pages and the arXiv API are fetched from. A redirect to plain http is refused.
+/// Any https address on the public internet: what lists, pages and the arXiv API are fetched from. A redirect to
+/// plain http is refused, and so is one to this computer or its local network (`localhost`, `127.0.0.1`,
+/// `192.168.x.x`, `169.254.169.254`...): a site answering with such a redirect must not make the engine ask the
+/// user's own machines anything. A public name that resolves to such an address is caught when it is resolved
+/// ([`PublicOnly`]).
 pub fn any_https(address: &Url) -> bool {
-    address.scheme() == "https"
+    address.scheme() == "https" && is_public(address)
+}
+
+/// Is this address one on the public internet? Not this computer, its local network, link-local addresses (the
+/// cloud's metadata service), multicast or reserved ranges, written in any form (IPv4 inside IPv6 included).
+fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    let public_v4 = |ip: Ipv4Addr| {
+        let [first, second, ..] = ip.octets();
+        let shared = first == 100 && (64..128).contains(&second); // carrier-grade NAT, 100.64.0.0/10
+        let benchmarking = first == 198 && (18..20).contains(&second); // 198.18.0.0/15
+        !(ip.is_private()
+            || ip.is_loopback()
+            || ip.is_link_local()
+            || ip.is_unspecified()
+            || ip.is_broadcast()
+            || ip.is_documentation()
+            || ip.is_multicast()
+            || shared
+            || benchmarking
+            || first == 0
+            || first >= 240) // reserved, 240.0.0.0/4
+    };
+    let public_v6 = |ip: Ipv6Addr| {
+        let segments = ip.segments();
+        let first = segments[0];
+        let unique_local = (first & 0xfe00) == 0xfc00;
+        let link_local = (first & 0xffc0) == 0xfe80;
+        let site_local = (first & 0xffc0) == 0xfec0;
+        let multicast = (first & 0xff00) == 0xff00;
+        // an IPv4 address carried inside: ::ffff:a.b.c.d, the old ::a.b.c.d, NAT64's 64:ff9b::a.b.c.d and 6to4's
+        // 2002:aabb:ccdd:: all reach that IPv4 address in the end
+        let octets = ip.octets();
+        let last = Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]);
+        let carried = if let Some(v4) = ip.to_ipv4_mapped() {
+            Some(v4)
+        } else if (segments[..6] == [0; 6] && !ip.is_loopback() && !ip.is_unspecified())
+            || segments[..6] == [0x64, 0xff9b, 0, 0, 0, 0]
+        {
+            Some(last)
+        } else if first == 0x2002 {
+            Some(Ipv4Addr::new(octets[2], octets[3], octets[4], octets[5]))
+        } else {
+            None
+        };
+        match carried {
+            Some(v4) => public_v4(v4),
+            None => !(ip.is_loopback() || ip.is_unspecified() || unique_local || link_local || site_local || multicast),
+        }
+    };
+    match ip {
+        IpAddr::V4(ip) => public_v4(ip),
+        IpAddr::V6(ip) => public_v6(ip),
+    }
+}
+
+/// `text` as an address a paper's record may keep and the window may open: `https` or `http`, with a host and no
+/// user name or password before it (`https://neurips.cc@evil.example/` names `evil.example`). Anything else a
+/// source wrote (`javascript:`, `data:`, `file:`) is no address at all.
+pub fn web_address(text: &str) -> Option<String> {
+    let address = Url::parse(text.trim()).ok()?;
+    let fine = matches!(address.scheme(), "https" | "http")
+        && address.host_str().is_some_and(|host| !host.is_empty())
+        && address.username().is_empty()
+        && address.password().is_none();
+    fine.then(|| address.to_string())
+}
+
+/// Does the address name a host on the public internet, by its name or its numbers?
+fn is_public(address: &Url) -> bool {
+    match address.host() {
+        Some(url::Host::Domain(name)) => {
+            let name = name.trim_end_matches('.').to_ascii_lowercase();
+            let local = ["localhost", "local", "internal", "home.arpa"];
+            !name.is_empty() && !local.iter().any(|end| name == *end || name.ends_with(&format!(".{end}")))
+        }
+        Some(url::Host::Ipv4(ip)) => is_public_ip(ip.into()),
+        Some(url::Host::Ipv6(ip)) => is_public_ip(ip.into()),
+        None => false,
+    }
+}
+
+/// Names resolved as the system resolves them, keeping only public addresses ([`is_public_ip`]): the address
+/// actually connected to is checked, not only the name, so a site's name (or a redirect's) that resolves to this
+/// computer or its network is never connected to, whatever check its address passed before. A proxy configured
+/// on this computer (`HTTPS_PROXY`) is the user's own and is resolved as it is.
+#[derive(Debug, Default)]
+pub(crate) struct PublicOnly(ureq::unversioned::resolver::DefaultResolver);
+
+impl ureq::unversioned::resolver::Resolver for PublicOnly {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        config: &ureq::config::Config,
+        timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
+        let found = self.0.resolve(uri, config, timeout)?;
+        if config.proxy().is_some_and(|proxy| Some(proxy.host()) == uri.host()) {
+            return Ok(found);
+        }
+        let mut kept = self.0.empty();
+        for address in found.iter().filter(|address| is_public_ip(address.ip())) {
+            kept.push(*address);
+        }
+        if kept.is_empty() { Err(ureq::Error::HostNotFound) } else { Ok(kept) }
+    }
 }
 
 /// The answer at `address`, with redirects followed by hand: every hop, the first included, is checked with
@@ -207,15 +310,15 @@ pub struct Http {
 impl Default for Http {
     fn default() -> Self {
         let tls = ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::Rustls).build();
-        let agent = ureq::Agent::config_builder()
+        let config = ureq::Agent::config_builder()
             .max_redirects(0)
             .http_status_as_error(false)
             .user_agent(USER_AGENT)
             .timeout_connect(Some(Duration::from_secs(15)))
             .tls_config(tls)
-            .build()
-            .into();
-        Self { agent }
+            .build();
+        let connector = ureq::unversioned::transport::DefaultConnector::new();
+        Self { agent: ureq::Agent::with_parts(config, connector, PublicOnly::default()) }
     }
 }
 
@@ -225,8 +328,25 @@ impl Http {
     }
 }
 
+/// Every request of the network to arXiv waits for its turn at arXiv's one pace ([`polite::ARXIV_PACE`]),
+/// whoever sends it: a run's listings, a lookup, a PDF, a publisher's redirect to arXiv.
 impl Fetch for Http {
     fn get(&self, url: &str, limits: Limits) -> Result<Response, FetchError> {
+        polite::Paced { inner: Unpaced(self), pace: &polite::ARXIV_PACE }.get(url, limits)
+    }
+}
+
+/// The network without arXiv's pace: only ever asked through [`polite::Paced`].
+struct Unpaced<'a>(&'a Http);
+
+impl Fetch for Unpaced<'_> {
+    fn get(&self, url: &str, limits: Limits) -> Result<Response, FetchError> {
+        self.0.send(url, limits)
+    }
+}
+
+impl Http {
+    fn send(&self, url: &str, limits: Limits) -> Result<Response, FetchError> {
         let failed = |error: ureq::Error| match error {
             ureq::Error::Timeout(_) => FetchError::TimedOut(url.to_owned()),
             ureq::Error::BadUri(_) | ureq::Error::Http(_) => FetchError::BadAddress(url.to_owned()),
@@ -460,6 +580,71 @@ mod tests {
         let refused = get_following(&fake, "https://example.org/a", LIMITS, &any_https);
         assert_eq!(refused, Err(GetError::NotAllowed("http://example.org/a".to_owned())));
         assert_eq!(fake.asked(), ["https://example.org/a"]);
+    }
+
+    #[test]
+    fn a_redirect_to_this_computer_or_its_network_is_refused_before_it_is_fetched() {
+        for inside in [
+            "https://localhost/api/runs",
+            "https://LOCALHOST./x",
+            "https://app.localhost/x",
+            "https://127.0.0.1:8765/api/runs",
+            "https://10.0.0.7/x",
+            "https://192.168.1.1/admin",
+            "https://172.16.4.2/x",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://100.64.0.1/x",
+            "https://0.0.0.0/x",
+            "https://[::1]/x",
+            "https://[fd00::1]/x",
+            "https://[fe80::1]/x",
+            "https://[::ffff:127.0.0.1]/x",
+            "https://printer.local/x",
+            "https://router.home.arpa/x",
+        ] {
+            let fake = Fake::new().with("https://example.org/a", redirect(302, inside));
+            let refused = get_following(&fake, "https://example.org/a", LIMITS, &any_https);
+            assert!(matches!(refused, Err(GetError::NotAllowed(_))), "{inside}: {refused:?}");
+            assert_eq!(fake.asked(), ["https://example.org/a"], "{inside}");
+        }
+        for outside in ["https://arxiv.org/x", "https://8.8.8.8/x", "https://[2606:4700::1]/x", "https://neurips.cc./x"]
+        {
+            assert!(any_https(&Url::parse(outside).unwrap()), "{outside}");
+        }
+    }
+
+    #[test]
+    fn an_address_of_this_computer_or_its_network_written_in_any_form_is_not_public() {
+        for inside in [
+            "::127.0.0.1",
+            "64:ff9b::7f00:1",
+            "64:ff9b::a9fe:a9fe",
+            "2002:7f00:1::",
+            "2002:c0a8:101::1",
+            "fec0::1",
+            "ff02::1",
+            "224.0.0.1",
+            "240.0.0.1",
+            "198.18.0.1",
+        ] {
+            assert!(!is_public_ip(inside.parse().unwrap()), "{inside}");
+        }
+        for outside in ["8.8.8.8", "2606:4700::1", "64:ff9b::808:808", "2002:808:808::1"] {
+            assert!(is_public_ip(outside.parse().unwrap()), "{outside}");
+        }
+    }
+
+    #[test]
+    fn a_name_that_resolves_to_this_computer_is_never_connected_to() {
+        // `localhost` stands for any public-looking name a site's DNS points at 127.0.0.1: the check is made on
+        // the address resolved, so the listener here must see no connection at all
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let quick = Limits { max_bytes: 1024, time: Duration::from_secs(3) };
+        let fetched = Http::new().get(&format!("http://localhost:{port}/"), quick);
+        assert!(fetched.is_err(), "{fetched:?}");
+        assert!(listener.accept().is_err(), "the engine connected to this computer");
     }
 
     #[test]

@@ -1,0 +1,4 @@
+# The Rust that clippy suggests features of. Cargo.toml's rust-version is 1.88 because the fixed releases of two
+# dependencies need it; the engine's code is still written for 1.85, and moving it to what 1.88 allows (let chains,
+# is_multiple_of) is a change to the code of its own. Remove this file, and so follow rust-version, with that change.
+msrv = "1.85"

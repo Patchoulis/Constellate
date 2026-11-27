@@ -8,9 +8,9 @@
 //! runs from 1 to 10, NeurIPS 2025's from 1 to 6, and a 6 means different things on each. Figures on different
 //! scales are never averaged or counted together. Where papers of different venues are compared (the most
 //! disagreed-upon papers of a community that has both), the comparison is made on a figure named as normalised:
-//! the position within the scale, 0 at its lowest and 1 at its highest. The scales are the venues' published
-//! ones ([`ScaleSource::Published`]); for a venue or field this module does not know, a usual scale is assumed
-//! and said to be ([`ScaleSource::Assumed`]).
+//! the position within the scale, 0 at its lowest and 1 at its highest. A scale read in the venue's own reviewer
+//! guidelines is [`ScaleSource::Published`]; one believed but not found there, and the usual scale of a field for
+//! a venue this module does not know, are said to be assumed ([`ScaleSource::Assumed`]): see [`scale`].
 //!
 //! # Themes, without a language model
 //!
@@ -38,8 +38,8 @@ use rayon::prelude::*;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::text::discussion::{Discussion, Kind, Section, Signer, Span, Venue};
 use crate::text::reviews::Field;
+use crate::text::reviews::discussion::{Discussion, Kind, Section, Signer, Span, Venue};
 use crate::text::{CharIndex, first_chars, floor_boundary, squash};
 
 /// Papers listed among the most and least agreed-upon, and the highest rated.
@@ -89,29 +89,46 @@ impl Scale {
     }
 }
 
-/// The scale `field` is scored on at `venue`, as published; the field's usual scale, said to be assumed, where
-/// the venue or year is not known here.
+/// The scale `field` is scored on at `venue`: as the venue's own reviewer guidelines publish it where they were
+/// read, else the scale the venue is believed to use, else the field's usual scale, both said to be assumed.
+///
+/// Published (read on the venue's own site): NeurIPS 2022 to 2025 (neurips.cc/Conferences/<year>/
+/// ReviewerGuidelines: a rating of 1 to 10 until 2024 and of 1 to 6 from 2025, confidence 1 to 5, soundness,
+/// presentation and contribution 1 to 4 in 2022 to 2024, quality, clarity, significance and originality 1 to 4
+/// from 2025); ICML 2024 and 2025 (icml.cc/Conferences/<year>/ReviewerInstructions: 2024 a rating of 1 to 10,
+/// confidence 1 to 5, soundness, presentation and contribution 1 to 4; 2025 an overall recommendation of 1 to 5).
+/// Assumed: every ICLR scale (iclr.cc's reviewer guides do not print the form's scales), ICML before 2024 (its
+/// instructions are no longer on icml.cc), ICML 2025's confidence (not on its main track's form), and NeurIPS
+/// before 2022 and after 2025 (not read).
 pub fn scale(venue: Option<&Venue>, field: Field) -> Scale {
     use Field::*;
-    let published = venue.and_then(|venue| {
+    use ScaleSource::{Assumed, Published};
+    let known = venue.and_then(|venue| {
         let year = venue.year;
+        let neurips = if (2022..=2025).contains(&year) { Published } else { Assumed };
+        let icml = if (2024..=2025).contains(&year) { Published } else { Assumed };
         match (venue.conference.as_str(), field) {
-            ("NeurIPS" | "ICLR" | "ICML", Confidence) => Some((1, 5)),
-            ("ICLR", Rating) if year >= 2026 => Some((0, 10)),
-            ("ICLR", Rating) => Some((1, 10)),
-            ("ICLR", Soundness | Presentation | Contribution) if year >= 2023 => Some((1, 4)),
-            ("NeurIPS", Rating) if year >= 2025 => Some((1, 6)),
-            ("NeurIPS", Rating) => Some((1, 10)),
-            ("NeurIPS", Quality | Clarity | Significance | Originality) if year >= 2025 => Some((1, 4)),
-            ("NeurIPS", Soundness | Presentation | Contribution) if (2022..=2024).contains(&year) => Some((1, 4)),
-            ("ICML", OverallRecommendation) if year >= 2025 => Some((1, 5)),
-            ("ICML", Rating) if year <= 2024 => Some((1, 10)),
-            ("ICML", Soundness | Presentation | Contribution) if (2023..=2024).contains(&year) => Some((1, 4)),
+            ("NeurIPS", Confidence) => Some((1, 5, neurips)),
+            ("NeurIPS", Rating) if year >= 2025 => Some((1, 6, neurips)),
+            ("NeurIPS", Rating) => Some((1, 10, neurips)),
+            ("NeurIPS", Quality | Clarity | Significance | Originality) if year >= 2025 => Some((1, 4, neurips)),
+            ("NeurIPS", Soundness | Presentation | Contribution) if (2022..=2024).contains(&year) => {
+                Some((1, 4, neurips))
+            }
+            ("ICML", Confidence) if year <= 2024 => Some((1, 5, icml)),
+            ("ICML", Confidence) => Some((1, 5, Assumed)),
+            ("ICML", OverallRecommendation) if year >= 2025 => Some((1, 5, icml)),
+            ("ICML", Rating) if year <= 2024 => Some((1, 10, icml)),
+            ("ICML", Soundness | Presentation | Contribution) if (2023..=2024).contains(&year) => Some((1, 4, icml)),
+            ("ICLR", Confidence) => Some((1, 5, Assumed)),
+            ("ICLR", Rating) if year >= 2026 => Some((0, 10, Assumed)),
+            ("ICLR", Rating) => Some((1, 10, Assumed)),
+            ("ICLR", Soundness | Presentation | Contribution) if year >= 2023 => Some((1, 4, Assumed)),
             _ => None,
         }
     });
-    match published {
-        Some((minimum, maximum)) => Scale { minimum, maximum, source: ScaleSource::Published },
+    match known {
+        Some((minimum, maximum, source)) => Scale { minimum, maximum, source },
         None => {
             let (minimum, maximum) = match field {
                 Rating | Overall | Recommendation => (1, 10),
@@ -786,8 +803,10 @@ pub fn summarise(papers: usize, reviewed: &[Reviewed<'_>]) -> ReviewSummary {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::text::discussion::fixtures::{ICLR_2024, ICML_2025, NEURIPS_2023, NEURIPS_2025, synthetic_page};
-    use crate::text::discussion::read_discussion;
+    use crate::text::reviews::discussion::fixtures::{
+        ICLR_2024, ICML_2025, NEURIPS_2023, NEURIPS_2025, synthetic_page,
+    };
+    use crate::text::reviews::discussion::read_discussion;
 
     fn figures(page: &str) -> PaperFigures {
         let discussion = read_discussion(page).unwrap();
@@ -851,7 +870,50 @@ mod tests {
         let elsewhere = Venue::new("colm", 2025);
         assert_eq!(scale(Some(&elsewhere), Field::Rating).source, ScaleSource::Assumed);
         assert_eq!(scale(None, Field::Soundness), Scale { minimum: 1, maximum: 4, source: ScaleSource::Assumed });
-        assert_eq!(scale(Some(&Venue::new("ICLR", 2024)), Field::Rating).source, ScaleSource::Published);
+        assert_eq!(scale(Some(&Venue::new("NeurIPS", 2024)), Field::Rating).source, ScaleSource::Published);
+    }
+
+    #[test]
+    fn only_the_scales_read_on_the_venues_own_site_are_said_to_be_published() {
+        let at = |conference: &str, year: u16, field: Field| scale(Some(&Venue::new(conference, year)), field);
+        let published = [
+            ("NeurIPS", 2022, Field::Soundness, 1, 4),
+            ("NeurIPS", 2024, Field::Rating, 1, 10),
+            ("NeurIPS", 2025, Field::Rating, 1, 6),
+            ("NeurIPS", 2025, Field::Originality, 1, 4),
+            ("NeurIPS", 2023, Field::Confidence, 1, 5),
+            ("ICML", 2024, Field::Rating, 1, 10),
+            ("ICML", 2024, Field::Contribution, 1, 4),
+            ("ICML", 2025, Field::OverallRecommendation, 1, 5),
+        ];
+        for (conference, year, field, minimum, maximum) in published {
+            let scale = at(conference, year, field);
+            assert_eq!(
+                scale,
+                Scale { minimum, maximum, source: ScaleSource::Published },
+                "{conference} {year} {field:?}"
+            );
+        }
+        // the same ranges where the venue's own pages do not print them: believed, and said to be assumed
+        let assumed = [
+            ("ICLR", 2024, Field::Rating, 1, 10),
+            ("ICLR", 2026, Field::Rating, 0, 10),
+            ("ICLR", 2024, Field::Soundness, 1, 4),
+            ("ICLR", 2025, Field::Confidence, 1, 5),
+            ("ICML", 2023, Field::Rating, 1, 10),
+            ("ICML", 2023, Field::Presentation, 1, 4),
+            ("ICML", 2025, Field::Confidence, 1, 5),
+            ("NeurIPS", 2021, Field::Rating, 1, 10),
+            ("NeurIPS", 2026, Field::Rating, 1, 6),
+        ];
+        for (conference, year, field, minimum, maximum) in assumed {
+            let scale = at(conference, year, field);
+            assert_eq!(
+                scale,
+                Scale { minimum, maximum, source: ScaleSource::Assumed },
+                "{conference} {year} {field:?}"
+            );
+        }
     }
 
     #[test]

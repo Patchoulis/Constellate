@@ -13,9 +13,11 @@
 
 use std::time::Instant;
 
-use constellate::text::passages::{Kind, Match, Passages, citing_sentences, letters_in, read_passages, sentence_spans};
+use constellate::text::pdf::passages::{
+    Kind, Match, Passages, citing_sentences, letters_in, read_passages, sentence_spans,
+};
 use constellate::text::pdf::pdf_pages;
-use constellate::text::references::read_reference_list;
+use constellate::text::pdf::references::read_reference_list;
 
 /// Sentences of the raw text before its reference list: what a model reading the PDF's text might quote. Each
 /// page is taken by itself and its first and last sentence left out, since those run into the page's running

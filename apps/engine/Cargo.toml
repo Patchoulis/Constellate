@@ -14,17 +14,22 @@ workspace = true
 # system OpenSSL (Linux) nor the build tools aws-lc needs are required.
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }
 axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
-# the owner's password, kept only as an Argon2id hash (src/api/login/password.rs)
+# the owner's password, kept only as an Argon2id hash (src/api/guard/login/password.rs)
 argon2 = { version = "0.6", default-features = false, features = ["alloc", "password-hash"] }
 # PKCE, state and session ids are written in base64url (RFC 7636, RFC 4648 section 5)
 base64 = "0.22"
+# the heap of the child process a PDF is read in, capped by its allocator (src/text/pdf/mod.rs): a hostile PDF that
+# inflates to gigabytes ends that child, never the engine. A ceiling the same on every system, without unsafe code.
+cap = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 getrandom = "0.3"
 half = "2"
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 # the ID token of a sign-in with Google (OpenID Connect): its signature checked against the provider's published
 # keys (JWKS), and its claims. The pure-Rust backend, so that no C build tools are needed (aws-lc-rs would be).
-# 10.x: later versions need a newer Rust than the workspace's rust-version.
+# It only verifies signatures with public keys, so RUSTSEC-2023-0071 (rsa) and RUSTSEC-2026-0387 (crypto-bigint),
+# timing leaks of private keys and secret integers, do not reach it (deny.toml); 12.x, a new API, brings the fixed
+# rsa 0.10 and crypto-bigint 0.7.
 jsonwebtoken = { version = "10.3", default-features = false, features = ["rust_crypto"] }
 # matrix products through matrixmultiply, on one thread each: the large ones are cut into rows on the engine's
 # own threads (src/threads.rs). matrixmultiply's own threading (at most 4, its own pool) would otherwise run under
@@ -47,9 +52,14 @@ serde_json = "1"
 sha1 = "0.10"
 sha2 = "0.10"
 subtle = "2"
+# the memory this computer has free, so that no more PDF readers run at once than it can hold at their heap cap
+# (src/text/pdf/mod.rs); only the part that reads memory, and without unsafe code of ours
+sysinfo = { version = "0.37", default-features = false, features = ["system"] }
 thiserror = "2"
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros", "time", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros", "time", "sync", "fs", "io-util"] }
+# a PDF (or the range of it asked for) streamed from its file, never read whole into memory (src/api/papers/mod.rs)
+tokio-util = { version = "0.7", default-features = false, features = ["io"] }
 tower-http = { version = "0.6", features = ["limit", "timeout"] }
 # text out of a PDF carries ligatures and odd spaces, and titles are compared without accents: both need Unicode
 # normal forms

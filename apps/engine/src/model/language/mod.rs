@@ -12,7 +12,7 @@
 //! | hold an answer to a schema      | the schema is asked for in the question, the answer checked here (`schema.rs`), asked once more, then [`NoAnswer::NotJson`] |
 //! | cache the shared prefix         | [`Estimate::caching`] says so, and the prefix is priced in full for every question |
 //! | count tokens                    | they are estimated from characters, marked [`Counting::Assumed`]           |
-//! | report its usage                | the call's tokens are estimated from its characters                       |
+//! | report its usage                | the call is counted at its worst case (an answer of `max_tokens`): hidden thinking has no characters |
 //! | publish a price                 | the cost is "not known" (`None`), never 0, and a budget in dollars is refused |
 //!
 //! Whatever model answers, quotes it gives are evidence only once found in the paper (`crate::evidence`): a weaker
@@ -44,8 +44,10 @@
 //!   by how they are billed, cache reads and writes apart; a call is recorded whether its answer is usable or
 //!   not, since it was paid for either way.
 //! - **A budget** ([`Budget`]) is checked before every call: a call whose worst case would take the batch past
-//!   what its caller is willing to spend is not started. [`estimate`] says what a batch is likely to cost before
-//!   it is started.
+//!   what its caller is willing to spend is not started. The worst case of a request sent with fallbacks is the
+//!   model asked and the dearest fallback after it ([`worst_of`]), each at its worst, since a refusal part way is
+//!   billed too; what is held is a [`Hold`], given back however the call ends unless it is settled.
+//!   [`estimate_for`] says what a batch is likely to cost before it is started, and at most the same worst case.
 //! - **The key** is read from `ANTHROPIC_API_KEY` only, the address from `ANTHROPIC_BASE_URL` when it is set (and
 //!   each other provider's from the variables its row names). Neither is ever logged, shown in a `Debug`, put in an
 //!   error, or returned by a route ([`Providers`] tells only whether a key is set).
@@ -80,6 +82,7 @@ pub use provider::{
 };
 use provider::{Api, effort_for};
 pub use providers::{AddressState, Availability, KeyState, Listed, ListedModel, Place, Providers};
+pub use schema::strict_ready;
 
 /// The version of the API this speaks (`anthropic-version`).
 pub const API_VERSION: &str = "2026-10-21";
@@ -155,6 +158,45 @@ pub fn model(id: &str) -> Option<&'static Model> {
 /// The ids of the models offered, for the settings' choices.
 pub fn model_ids() -> Vec<String> {
     MODELS.iter().map(|model| model.id.to_owned()).collect()
+}
+
+/// The models the Claude API may hand a declined request to under `fallbacks: "default"`: the permitted fallback
+/// targets, as the API's reference lists them (which one is picked, by the reason for declining, is not published).
+/// A request sent with fallbacks may be answered, and billed, by any of them, so it is held and estimated at the
+/// dearest of these and the model asked.
+pub const FALLBACK_TARGETS: [&str; 2] = ["claude-opus-4-8", "claude-opus-5"];
+
+/// Does a request to `model` of `provider` go with `fallbacks`?
+fn falls_back(provider: Provider, model: &str) -> bool {
+    provider == Provider::Anthropic && self::model(model).is_some_and(|model| model.fallback == Fallback::ServerSide)
+}
+
+/// The price keys of every model a request to `model` of `provider` may be billed by: the model asked first, then
+/// the fallback targets when the request goes with fallbacks ([`worst_of`] says how they add up). One of them
+/// without a price makes the call unpriced (held to a budget in tokens), never guessed.
+pub fn answered_by(provider: Provider, model: &str) -> Vec<String> {
+    let mut models = vec![price_key(provider, model)];
+    if falls_back(provider, model) {
+        models.extend(FALLBACK_TARGETS.iter().map(|target| price_key(provider, target)));
+    }
+    models
+}
+
+/// The most one call of worst case `worst` can take, when it may be billed by `models` ([`answered_by`]): the
+/// model asked, and, when there are others, one of them after it. A declined request is handed on within the
+/// same call, and the reference says that a refusal part way through is billed at the normal rates, so the worst
+/// is the model asked at its worst plus the dearest fallback at its worst: tokens of every kind, and dollars, or
+/// the price key of a model whose price is not known.
+pub fn worst_of<S: AsRef<str>>(models: &[S], worst: &Tokens) -> (u64, Result<Usd, String>) {
+    let Some((asked, fallbacks)) = models.split_first() else {
+        return (worst.all(), Err(String::new()));
+    };
+    let price = |model: &S| price_of(model.as_ref(), worst).ok_or_else(|| model.as_ref().to_owned());
+    let attempts = if fallbacks.is_empty() { 1 } else { 2 };
+    let usd = price(asked).and_then(|first| {
+        fallbacks.iter().map(price).try_fold(first, |sum, cost| cost.map(|cost| sum.max(first + cost)))
+    });
+    (worst.all().saturating_mul(attempts), usd)
 }
 
 /// The API key. It is shown to nothing: its `Debug` says only that there is one.
@@ -305,7 +347,8 @@ impl Endpoint {
 }
 
 /// How hard the model thinks before it answers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Ordered from least to most, so that a feature's cap on it is a `min`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Effort {
     Low,
@@ -373,12 +416,25 @@ pub struct Reply {
 }
 
 /// Why no answer came back at all. No message: the transport's own could name the address.
+///
+/// The first two are before the request was taken in (nothing can have been billed); [`TransportError::Lost`]
+/// is after it was sent, when the provider may have answered and billed it: it is not sent again, which could
+/// pay twice, and the call's outcome is left as unknown (`library::money::asking`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum TransportError {
+    /// No connection could be made (the address, the network, TLS): nothing was sent.
     #[error("the language model's API could not be reached")]
     Unreachable,
+    /// The time to connect or to send the request ran out: it was not taken in.
     #[error("the language model's API took too long to answer")]
     TimedOut,
+    /// The request was sent, and then the connection was lost or the answer took too long or could not be read:
+    /// it may have been answered and billed.
+    #[error("the language model's API stopped answering part way: the request may have been answered, and billed")]
+    Lost,
+    /// Not sent: the work was asked to stop while the request waited for its turn (after a rate limit).
+    #[error("asking was stopped")]
+    Cancelled,
 }
 
 /// The one way this reaches the network. An implementation sends `key` as the `x-api-key` header and nowhere
@@ -477,10 +533,40 @@ impl Transport for Https {
     }
 }
 
+/// What a failure of `ureq` means for the request: not sent, or sent and maybe billed. Only what certainly comes
+/// before the request is taken in (resolving, connecting, TLS, sending) counts as not sent; anything else (an
+/// I/O error part way, a timeout waiting for the answer, an answer that cannot be read) is [`TransportError::Lost`].
 fn transport_failed(error: ureq::Error) -> TransportError {
+    use std::io::ErrorKind;
+    use ureq::Timeout;
     match error {
-        ureq::Error::Timeout(_) => TransportError::TimedOut,
-        _ => TransportError::Unreachable,
+        ureq::Error::Timeout(Timeout::Resolve | Timeout::Connect | Timeout::SendRequest | Timeout::SendBody) => {
+            TransportError::TimedOut
+        }
+        ureq::Error::Timeout(_) => TransportError::Lost,
+        ureq::Error::Io(io)
+            if matches!(
+                io.kind(),
+                ErrorKind::ConnectionRefused
+                    | ErrorKind::NetworkUnreachable
+                    | ErrorKind::HostUnreachable
+                    | ErrorKind::AddrNotAvailable
+                    | ErrorKind::NetworkDown
+            ) =>
+        {
+            TransportError::Unreachable
+        }
+        ureq::Error::HostNotFound
+        | ureq::Error::ConnectionFailed
+        | ureq::Error::BadUri(_)
+        | ureq::Error::Http(_)
+        | ureq::Error::InvalidProxyUrl
+        | ureq::Error::ConnectProxyFailed(_)
+        | ureq::Error::RequireHttpsOnly(_)
+        | ureq::Error::TlsRequired
+        | ureq::Error::Tls(_)
+        | ureq::Error::Pem(_) => TransportError::Unreachable,
+        _ => TransportError::Lost,
     }
 }
 
@@ -506,13 +592,62 @@ fn reply_of(mut response: ureq::http::Response<ureq::Body>) -> Result<Reply, Tra
     let retry_after = header("retry-after").or_else(in_millis);
     let should_retry = header("x-should-retry");
     let status = response.status().as_u16();
-    let body = response.body_mut().with_config().limit(LARGEST_ANSWER).read_to_vec().map_err(transport_failed)?;
+    // the status is in: the request was taken in, so an answer that cannot be read may still have been billed
+    let body =
+        response.body_mut().with_config().limit(LARGEST_ANSWER).read_to_vec().map_err(|_| TransportError::Lost)?;
     Ok(Reply { status, retry_after, should_retry, body })
 }
 
 /// Where each call is recorded for the ledger.
 pub trait Recorder: Send + Sync {
     fn record(&self, call: Call);
+
+    /// Keep an answer just paid for in `library` and record the `calls` that paid for it. The library's own ledger
+    /// does both in one transaction ([`Library::keep_paid`]); any other recorder keeps, then records.
+    fn keep_paid(
+        &self,
+        library: &Library,
+        slot: &crate::library::Slot,
+        model: &str,
+        prompt: u32,
+        content: &str,
+        calls: Vec<Call>,
+    ) -> Result<(), crate::library::LibraryError> {
+        let kept = library.keep_paid(slot, model, prompt, content, &[]);
+        for call in calls {
+            self.record(call);
+        }
+        kept
+    }
+
+    /// Record the `calls` a question in `slot` took that gave no answer to keep, and remove the intent written in
+    /// `library` before it was sent (`library::money::asking`): the ledger now knows what it cost. The library's own
+    /// ledger does both in one transaction ([`Library::record_paid`]).
+    fn record_paid(
+        &self,
+        library: &Library,
+        slot: &crate::library::Slot,
+        calls: Vec<Call>,
+    ) -> Result<(), crate::library::LibraryError> {
+        for call in calls {
+            self.record(call);
+        }
+        library.not_billed(slot).map(drop)
+    }
+}
+
+/// A call as the library's ledger keeps it: whole millionths of a dollar, counts that fit its columns.
+fn ledger_call(call: &Call) -> crate::library::money::ledger::Call<'_> {
+    let signed = |count: u64| i64::try_from(count).unwrap_or(i64::MAX);
+    crate::library::money::ledger::Call {
+        model: &call.model,
+        purpose: &call.purpose,
+        input_tokens: signed(call.tokens.input),
+        output_tokens: signed(call.tokens.output),
+        cache_read_tokens: signed(call.tokens.cache_read),
+        cache_write_tokens: signed(call.tokens.cache_written()),
+        price_micros: call.cost().map(|cost| signed(cost.picodollars().div_ceil(1_000_000))),
+    }
 }
 
 /// The calls of a session, in memory.
@@ -526,21 +661,45 @@ impl Recorder for Mutex<Vec<Call>> {
 /// standard error (never with its prompt) rather than lost silently.
 impl Recorder for Library {
     fn record(&self, call: Call) {
-        let signed = |count: u64| i64::try_from(count).unwrap_or(i64::MAX);
-        // the ledger keeps whole millionths of a dollar
-        let micros = call.cost().map(|cost| signed(cost.picodollars().div_ceil(1_000_000)));
-        let kept = self.record_call(&crate::library::ledger::Call {
-            model: &call.model,
-            purpose: &call.purpose,
-            input_tokens: signed(call.tokens.input),
-            output_tokens: signed(call.tokens.output),
-            cache_read_tokens: signed(call.tokens.cache_read),
-            cache_write_tokens: signed(call.tokens.cache_written()),
-            price_micros: micros,
-        });
-        if let Err(error) = kept {
+        if let Err(error) = self.record_call(&ledger_call(&call)) {
             eprintln!("constellate: a call to {} for {} could not be recorded: {error}", call.model, call.purpose);
         }
+    }
+
+    /// The answer and its cost in one transaction of this library, which is the one the answer is kept in.
+    fn keep_paid(
+        &self,
+        _library: &Library,
+        slot: &crate::library::Slot,
+        model: &str,
+        prompt: u32,
+        content: &str,
+        calls: Vec<Call>,
+    ) -> Result<(), crate::library::LibraryError> {
+        let ledger: Vec<_> = calls.iter().map(ledger_call).collect();
+        let kept = self.keep_paid(slot, model, prompt, content, &ledger);
+        if kept.is_err() {
+            // the answer could not be kept: its cost is still recorded, as a call paid for either way, and with it
+            // the intent goes, since the ledger then says what it cost
+            let recorded = Library::record_paid(self, slot, &ledger).is_ok();
+            drop(ledger);
+            if !recorded {
+                for call in calls {
+                    self.record(call);
+                }
+            }
+        }
+        kept
+    }
+
+    fn record_paid(
+        &self,
+        _library: &Library,
+        slot: &crate::library::Slot,
+        calls: Vec<Call>,
+    ) -> Result<(), crate::library::LibraryError> {
+        let ledger: Vec<_> = calls.iter().map(ledger_call).collect();
+        Library::record_paid(self, slot, &ledger)
     }
 }
 
@@ -567,6 +726,13 @@ pub enum Unavailable {
     /// What is missing or wrong in how a provider other than the Claude API is set up.
     #[error(transparent)]
     Setup(#[from] Setup),
+    /// The settings that say which provider to ask cannot be read (a damaged or hand-edited file): no provider is
+    /// asked rather than one guessed.
+    #[error(
+        "The settings file (settings.json in the data folder) cannot be read, so which provider to ask is not known: \
+         fix the file or remove it"
+    )]
+    SettingsUnreadable,
 }
 
 /// What is missing or wrong in a provider's variables, naming the variable (never its value).
@@ -652,7 +818,8 @@ struct Spending {
 }
 
 /// What a batch of calls may spend, shared by its calls (from any thread). A call holds its worst case before it
-/// starts and is refused if that would pass the limit; when it ends, what it really took replaces what it held.
+/// starts ([`Budget::reserve`]) and is refused if that would pass the limit; when it ends, what it really took
+/// replaces what it held ([`Hold::settle`]), or, when nothing was billed, what it held is given back.
 pub struct Budget {
     limit: Limit,
     spending: Mutex<Spending>,
@@ -665,9 +832,73 @@ struct Held {
     usd: Usd,
 }
 
+/// A call's worst case held against a [`Budget`] while the call is under way: what [`Budget::reserve`] hands back.
+///
+/// It cannot be forgotten. It is either settled at what the call took ([`Hold::settle`], which consumes it), given
+/// back ([`Hold::release`], the same as dropping it), or dropped on any other way out: an early return, an error, a
+/// panic unwinding through the call. Each happens exactly once, so a call that ends in any way never leaves what it
+/// held on the budget, where it would refuse every later call of the batch.
+#[must_use = "a hold dropped at once gives back what it held: settle it with what the call took"]
+pub struct Hold<'b> {
+    budget: &'b Budget,
+    /// `None` once settled.
+    held: Option<Held>,
+}
+
+impl fmt::Debug for Hold<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("Hold").field("held", &self.held).finish()
+    }
+}
+
+impl Hold<'_> {
+    /// The call took `took` and cost `cost` (`None` when its price is not known): that replaces what was held.
+    pub fn settle(mut self, took: &Tokens, cost: Option<Usd>) {
+        if let Some(held) = self.held.take() {
+            self.budget.settle(held, took, cost);
+        }
+    }
+
+    /// Whether it was billed is not known (the request was sent and then lost): what was held, its worst case, is
+    /// counted as spent.
+    pub fn spend_all(mut self) {
+        if let Some(held) = self.held.take() {
+            let took = Tokens { input: held.tokens, ..Tokens::default() };
+            self.budget.settle(held, &took, None);
+        }
+    }
+
+    /// Nothing was billed: what was held is given back.
+    pub fn release(mut self) {
+        if let Some(held) = self.held.take() {
+            self.budget.give_back(held);
+        }
+    }
+}
+
+impl Drop for Hold<'_> {
+    fn drop(&mut self) {
+        if let Some(held) = self.held.take() {
+            self.budget.give_back(held);
+        }
+    }
+}
+
+impl fmt::Debug for Budget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (tokens, usd) = self.spent();
+        formatter.debug_struct("Budget").field("limit", &self.limit).field("spent", &(tokens, usd)).finish()
+    }
+}
+
 impl Budget {
     pub fn new(limit: Limit) -> Self {
         Self { limit, spending: Mutex::new(Spending::default()) }
+    }
+
+    /// What it is held to.
+    pub fn limit(&self) -> Limit {
+        self.limit
     }
 
     /// What the batch's calls have taken so far: tokens, and dollars (of priced calls).
@@ -680,11 +911,29 @@ impl Budget {
         self.spending.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn hold(&self, model: &str, worst: &Tokens) -> Result<Held, OverBudget> {
+    /// Tokens spent and held, read together.
+    #[cfg(test)]
+    fn taken(&self) -> (u64, u64) {
+        let spending = self.lock();
+        (spending.tokens, spending.held_tokens)
+    }
+
+    /// What calls under way hold at present: tokens, and dollars. Nothing once every call has ended.
+    pub fn held(&self) -> (u64, Usd) {
+        let spending = self.lock();
+        (spending.held_tokens, spending.held_usd)
+    }
+
+    /// Hold the worst case of a call, `worst`, that may be billed by `models` (price keys: the model asked, then
+    /// every model the provider may hand the request to, [`answered_by`]), counted as [`worst_of`] says: refused
+    /// when that would take spent and held together past the limit. A budget in dollars refuses a call any of whose
+    /// models has no known price, rather than guess what it would cost.
+    pub fn reserve<S: AsRef<str>>(&self, models: &[S], worst: &Tokens) -> Result<Hold<'_>, OverBudget> {
+        let (most_tokens, most_usd) = worst_of(models, worst);
         let mut spending = self.lock();
         let held = match self.limit {
             Limit::Tokens(limit) => {
-                let needed = worst.all();
+                let needed = most_tokens;
                 let taken = spending.tokens.saturating_add(spending.held_tokens);
                 if taken.saturating_add(needed) > limit {
                     return Err(OverBudget::Tokens { limit, spent: spending.tokens, needed });
@@ -692,7 +941,7 @@ impl Budget {
                 Held { tokens: needed, usd: Usd::ZERO }
             }
             Limit::Dollars(limit) => {
-                let needed = price_of(model, worst).ok_or_else(|| OverBudget::Unpriced(model.to_owned()))?;
+                let needed = most_usd.map_err(OverBudget::Unpriced)?;
                 if spending.usd + spending.held_usd + needed > limit {
                     return Err(OverBudget::Dollars { limit, spent: spending.usd, needed });
                 }
@@ -702,14 +951,22 @@ impl Budget {
         spending.held_tokens = spending.held_tokens.saturating_add(held.tokens);
         spending.held_usd =
             Usd::from_picodollars(spending.held_usd.picodollars().saturating_add(held.usd.picodollars()));
-        Ok(held)
+        Ok(Hold { budget: self, held: Some(held) })
+    }
+
+    fn unhold(spending: &mut Spending, held: Held) {
+        spending.held_tokens = spending.held_tokens.saturating_sub(held.tokens);
+        spending.held_usd =
+            Usd::from_picodollars(spending.held_usd.picodollars().saturating_sub(held.usd.picodollars()));
+    }
+
+    fn give_back(&self, held: Held) {
+        Self::unhold(&mut self.lock(), held);
     }
 
     fn settle(&self, held: Held, took: &Tokens, cost: Option<Usd>) {
         let mut spending = self.lock();
-        spending.held_tokens = spending.held_tokens.saturating_sub(held.tokens);
-        spending.held_usd =
-            Usd::from_picodollars(spending.held_usd.picodollars().saturating_sub(held.usd.picodollars()));
+        Self::unhold(&mut spending, held);
         spending.tokens = spending.tokens.saturating_add(took.all());
         // a call whose price is not known is counted at what it held, so that a budget in dollars still sees it
         spending.usd += cost.unwrap_or(held.usd);
@@ -756,44 +1013,118 @@ pub struct Planned {
     pub max_tokens: u32,
 }
 
-/// What a batch is likely to cost, before it is started: what the interface shows as "about N dollars".
+/// What asking would cost, before anything is sent: what the interface shows as "about N dollars" (or, for a
+/// model whose price is not known, as so many tokens at most). Every feature's estimate is one of these
+/// (`AskingCost` in the contracts), so that each says the same things: which provider and model, how tokens were
+/// reckoned and the prefix counted, and the worst case in tokens a budget can be held to when dollars cannot.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Estimate {
+    pub provider: Provider,
     pub model: String,
     pub calls: u64,
     /// Likely tokens, by how they are billed.
     pub tokens: Tokens,
-    /// Likely cost; `None` when the model's price is not known.
+    /// Likely cost; `None` when the model's price is not known (or it runs on this computer).
     pub usd: Option<Usd>,
     /// If every answer took `max_tokens` and nothing was read from the cache.
     pub most_usd: Option<Usd>,
+    /// Tokens of every kind in that worst case: what a budget in tokens is held to when there is no price.
+    pub most_tokens: u64,
     /// How the prompt's tokens were reckoned: it is an estimate either way.
     pub counting: Counting,
     /// How the shared prefix was counted: written once and read after, or, for a provider that reports no caching
     /// ([`Caching::NotReported`]), paid for in full by every question.
     pub caching: Caching,
+    /// The model runs on this computer (a server on loopback): it costs no API fee, and its cost is not in
+    /// dollars.
+    pub on_this_computer: bool,
 }
 
-/// What `planned` calls to the Claude API's `model` are likely to cost, and at most. Prompt caching is counted as
-/// it works when the questions over one shared part are asked one after the other within five minutes: the first
-/// writes the cache, the others read it.
-pub fn estimate(model: &str, planned: &[Planned], counting: Counting) -> Estimate {
-    estimate_for(Provider::Anthropic, model, planned, counting)
+/// The most characters [`Client::ask`] adds to a question it asks once more, after an answer that did not follow
+/// the schema: what was wrong with it, and the request to answer again. Counted in an estimate's worst case.
+const RETRY_CHARS: u64 = 600;
+
+/// Where a model's calls are sent, as far as what they cost goes: the provider (whose prices they are billed at),
+/// whether the model runs on this computer (which costs no API fee, whatever its id), and how JSON answers are had
+/// there (where the schema is written into the question, it is paid for as part of it, and an answer that does not
+/// follow it is asked for once more). What an estimate is reckoned by, so that it counts what is really sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pricing {
+    pub provider: Provider,
+    pub on_this_computer: bool,
+    pub answers: Answers,
 }
 
-/// [`estimate`] for `model` of any provider, its prompt caching counted as that provider caches
-/// ([`Capabilities::caching`]): marked or written at a price of its own, the first question writes the prefix and
-/// the rest read it; cached by itself at no extra price, the first pays for it in full and the rest read it; not
-/// reported, every question pays for it in full. The most is always every answer at `max_tokens` and nothing read.
+impl Pricing {
+    /// How `endpoint` is priced.
+    pub fn of(endpoint: &Endpoint) -> Self {
+        Self {
+            provider: endpoint.provider(),
+            on_this_computer: endpoint.on_this_computer(),
+            answers: endpoint.capabilities().answers,
+        }
+    }
+
+    /// How `provider` is priced when its endpoint is not set up (yet): as its row says.
+    pub fn listed(provider: Provider) -> Self {
+        Self { provider, on_this_computer: false, answers: provider.about().capabilities.answers }
+    }
+
+    /// The characters of `ask`'s question as it is sent here: with the schema written into it where the provider
+    /// cannot be held to one.
+    pub fn question_chars(self, ask: &Ask<'_>) -> u64 {
+        let count = |text: &str| u64::try_from(text.chars().count()).unwrap_or(u64::MAX);
+        match (self.provider, ask.form) {
+            (Provider::Anthropic, _) | (_, Form::Text) => count(ask.question),
+            (_, Form::Json(schema)) => count(&schema::question(ask.question, schema, self.answers, None)),
+        }
+    }
+
+    /// What `planned` calls to `model` are likely to cost here, and at most ([`estimate_for`] the provider). A
+    /// model on this computer has no dollar figure; where answers are not held to the schema by the provider, the
+    /// worst case counts every question asked twice, as the client does when an answer does not follow it.
+    pub fn estimate(self, model: &str, planned: &[Planned], counting: Counting) -> Estimate {
+        let asked_again = self.provider != Provider::Anthropic && self.answers != Answers::Enforced;
+        let estimate = reckon(self.provider, model, planned, counting, asked_again);
+        if self.on_this_computer {
+            Estimate { usd: None, most_usd: None, on_this_computer: true, ..estimate }
+        } else {
+            estimate
+        }
+    }
+}
+
+/// What `planned` calls to `model` of `provider` are likely to cost, and at most, at the prices of that provider
+/// ([`price_key`]), its prompt caching counted as that provider caches ([`Capabilities::caching`]): marked or
+/// written at a price of its own, the first question writes the prefix and the rest read it; cached by itself at no
+/// extra price, the first pays for it in full and the rest read it; not reported, every question pays for it in
+/// full. The cache is counted as it works when the questions over one shared part are asked one after the other
+/// within a few minutes. The most is always every answer at `max_tokens` and nothing read. A feature estimates
+/// through [`Pricing::estimate`], which also counts what the provider's way of answering in JSON adds.
 pub fn estimate_for(provider: Provider, model: &str, planned: &[Planned], counting: Counting) -> Estimate {
+    reckon(provider, model, planned, counting, false)
+}
+
+/// [`estimate_for`], with each question's worst case counted twice when `asked_again`.
+fn reckon(provider: Provider, model: &str, planned: &[Planned], counting: Counting, asked_again: bool) -> Estimate {
     let priced = price_key(provider, model);
+    // the worst case at each model the request may be answered by (a server-side fallback): the most is the
+    // dearest of them, so that "at most" is what the budget holds
+    let answering = answered_by(provider, model);
     let caching = provider.about().capabilities.caching;
     let mut likely = Tokens::default();
     let mut likely_usd = Some(Usd::ZERO);
     let mut most_usd = Some(Usd::ZERO);
+    let mut most_tokens = 0u64;
     let mut calls = 0u64;
     let add = |total: &mut Option<Usd>, tokens: &Tokens| {
         *total = total.and_then(|sum| price_of(&priced, tokens).map(|cost| sum + cost));
+    };
+    // each call as a budget holds it ([`worst_of`]): unpriced when any model that may bill it has no price
+    let add_most = |total: &mut Option<Usd>, most_tokens: &mut u64, tokens: &Tokens| {
+        let (all, usd) = worst_of(&answering, tokens);
+        *total = total.and_then(|sum| usd.ok().map(|cost| sum + cost));
+        *most_tokens = most_tokens.saturating_add(all);
     };
     for plan in planned {
         let shared = counting.tokens(plan.shared_chars);
@@ -831,11 +1162,27 @@ pub fn estimate_for(provider: Provider, model: &str, planned: &[Planned], counti
             };
             add(&mut likely_usd, &call);
             likely = likely + call;
-            add(&mut most_usd, &worst);
+            add_most(&mut most_usd, &mut most_tokens, &worst);
+            if asked_again {
+                // the second attempt: the same prompt with what was wrong added after the question
+                let again = Tokens { input: worst.input + counting.tokens(RETRY_CHARS), ..worst };
+                add_most(&mut most_usd, &mut most_tokens, &again);
+            }
             calls += 1;
         }
     }
-    Estimate { model: model.to_owned(), calls, tokens: likely, usd: likely_usd, most_usd, counting, caching }
+    Estimate {
+        provider,
+        model: model.to_owned(),
+        calls,
+        tokens: likely,
+        usd: likely_usd,
+        most_usd,
+        most_tokens,
+        counting,
+        caching,
+        on_this_computer: false,
+    }
 }
 
 /// The id a model's price is kept under in the prices file, and its calls in the ledger: the Claude API's models by
@@ -966,6 +1313,66 @@ fn retry_after_header(reply: &Reply) -> Option<Duration> {
         .and_then(|seconds| Duration::try_from_secs_f64(seconds.min(LONGEST_WAIT.as_secs_f64() + 1.0)).ok())
 }
 
+/// The most characters of a provider's own error message shown ([`NoAnswer::Rejected`]).
+const MESSAGE_CHARS: usize = 300;
+/// The most read of it before it is [`scrubbed`]: more than is shown, so that a key that runs past what is shown
+/// is still seen whole, and hidden, before the message is cut.
+const RAW_MESSAGE_CHARS: usize = 4_000;
+/// What stands in for words of a message that are not shown.
+const HIDDEN: &str = "[hidden]";
+/// The shapes of keys the repository's hooks refuse to commit, one regular expression a line: what a message from a
+/// provider (or a gateway in front of it) must not echo to the interface either.
+const KEY_SHAPES_TEXT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.githooks/secrets.txt"));
+static KEY_SHAPES: std::sync::LazyLock<Vec<regex::Regex>> = std::sync::LazyLock::new(|| {
+    KEY_SHAPES_TEXT
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| regex::Regex::new(line).ok())
+        .collect()
+});
+/// Where a message that echoes the request starts to carry its headers: it is cut there.
+const HEADER_NAMES: [&str; 6] = ["authorization", "x-api-key", "x-goog-api-key", "bearer ", "cookie", "proxy-"];
+
+/// A provider's error message made safe to show: control characters made spaces; the endpoint's own key, anything
+/// shaped like a key ([`KEY_SHAPES`]) and any long unbroken run of token characters hidden; cut where it starts to
+/// echo request headers ([`HEADER_NAMES`]); and at most [`MESSAGE_CHARS`] characters. An arbitrary gateway's
+/// message is shown, so it is never trusted to leave a secret out by itself.
+fn scrubbed(message: &str, key: &ApiKey) -> String {
+    let mut text: String = message.chars().map(|letter| if letter.is_control() { ' ' } else { letter }).collect();
+    if !key.0.is_empty() {
+        text = text.replace(&key.0, HIDDEN);
+    }
+    for shape in KEY_SHAPES.iter() {
+        // a shape may begin with the character before the key (`(^|[^A-Za-z0-9_-])sk-...`): that one stays
+        text = shape
+            .replace_all(&text, |found: &regex::Captures<'_>| {
+                let before: String = found[0].chars().take_while(|letter| !letter.is_ascii_alphanumeric()).collect();
+                format!("{before}{HIDDEN}")
+            })
+            .into_owned();
+    }
+    // ASCII lower-casing keeps every byte where it was, so a place found in it is a place in `text`
+    let lower = text.to_ascii_lowercase();
+    if let Some(at) = HEADER_NAMES.iter().filter_map(|name| lower.find(name)).min() {
+        text.truncate(at);
+        text.push_str("[the rest is not shown]");
+    }
+    let token = |letter: char| letter.is_ascii_alphanumeric() || "-_+/=.".contains(letter);
+    let words: Vec<String> =
+        text.split(' ')
+            .map(|word| {
+                if word.chars().count() >= 32 && word.chars().all(token) { HIDDEN.to_owned() } else { word.to_owned() }
+            })
+            .collect();
+    let joined = words.join(" ");
+    let mut shown: String = joined.trim().chars().take(MESSAGE_CHARS).collect();
+    if joined.trim().chars().count() > MESSAGE_CHARS {
+        shown.push('…');
+    }
+    shown
+}
+
 /// Is this worth asking again, and after how long?
 fn retry_after(error: &AskError, reply_says: Option<&str>, attempt: u32) -> Option<Duration> {
     if reply_says == Some("false") {
@@ -977,6 +1384,8 @@ fn retry_after(error: &AskError, reply_says: Option<&str>, attempt: u32) -> Opti
             let wait = retry_after.unwrap_or(backoff);
             (wait <= LONGEST_WAIT).then_some(wait)
         }
+        // stopped; or sent and perhaps answered and billed, which a second request could pay for twice
+        AskError::NoAnswer(NoAnswer::Transport(TransportError::Cancelled | TransportError::Lost)) => None,
         AskError::NoAnswer(NoAnswer::Overloaded | NoAnswer::ServerError(_) | NoAnswer::Transport(_)) => Some(backoff),
         _ => None,
     }
@@ -1052,11 +1461,22 @@ impl<'a> Client<'a> {
     /// What a request that failed with `reply.status` means, in the words of the provider's API.
     fn failure(&self, reply: &Reply, model: &str) -> AskError {
         let provider = self.endpoint.provider;
-        match provider.about().api {
+        let error = match provider.about().api {
             Api::Messages => failure(reply, model),
             Api::Responses => responses::failure(reply, model, provider),
             Api::GenerateContent => gemini::failure(reply, model),
             Api::ChatCompletions(_) => chat::openai_style_failure(reply, model, provider),
+        };
+        self.scrubbed(error)
+    }
+
+    /// `error` with the provider's own words in it made safe to show ([`scrubbed`]).
+    fn scrubbed(&self, error: AskError) -> AskError {
+        match error {
+            AskError::NoAnswer(NoAnswer::Rejected(message)) => {
+                NoAnswer::Rejected(scrubbed(&message, &self.endpoint.key)).into()
+            }
+            other => other,
         }
     }
 
@@ -1112,10 +1532,13 @@ impl<'a> Client<'a> {
             return self.ask_provider(ask, budget);
         }
         self.stopped()?;
-        let held = budget.hold(ask.model, &self.worst(ask))?;
+        // held at the dearest model that may answer: a fallback may cost more than the model asked
+        let answering = answered_by(Provider::Anthropic, ask.model);
+        let answering: Vec<&str> = answering.iter().map(String::as_str).collect();
+        let held = budget.reserve(&answering, &self.worst(ask))?;
         let mut body = ask.body();
         body["max_tokens"] = json!(ask.max_tokens);
-        if model(ask.model).is_some_and(|model| model.fallback == Fallback::ServerSide) {
+        if falls_back(Provider::Anthropic, ask.model) {
             body["fallbacks"] = json!("default");
         }
         let headers = self.headers(ask.model, true);
@@ -1123,7 +1546,13 @@ impl<'a> Client<'a> {
         let reply = match sent {
             Ok(reply) => reply,
             Err(error) => {
-                budget.settle(held, &Tokens::default(), Some(Usd::ZERO)); // a failed request is not billed
+                // a request that was refused or never sent is not billed; one lost after it was sent may have been, at
+                // worst what it held, which stays counted so that the rest of the batch keeps to the budget
+                if error == AskError::NoAnswer(NoAnswer::Transport(TransportError::Lost)) {
+                    held.spend_all();
+                } else {
+                    held.release();
+                }
                 return Err(error);
             }
         };
@@ -1132,20 +1561,38 @@ impl<'a> Client<'a> {
             // recorded and counted, rather than nothing
             let worst = self.worst(ask);
             let call = Call { model: ask.model.to_owned(), purpose: ask.purpose.to_owned(), tokens: worst };
-            budget.settle(held, &worst, call.cost());
+            held.settle(&worst, call.cost());
             self.recorder.record(call);
             return Err(NoAnswer::Unexpected.into());
         };
         // paid for whether or not the answer is usable: recorded before it is looked at
-        let (answered, tokens, cost) = self.record(ask.purpose, ask.model, &message);
-        budget.settle(held, &tokens, cost);
+        let (answered, tokens, cost) = match message.usage {
+            Some(_) => self.record(ask.purpose, ask.model, &message),
+            // an answer that says nothing of what it took (a gateway that drops the usage) is counted at its worst
+            // case, as one in no shape known is, not as nothing: its thinking cannot be counted from its text
+            None => {
+                let worst = self.worst(ask);
+                let model = message.model.clone().unwrap_or_else(|| ask.model.to_owned());
+                let call = Call { model: model.clone(), purpose: ask.purpose.to_owned(), tokens: worst };
+                let cost = call.cost();
+                self.recorder.record(call);
+                (model, worst, cost)
+            }
+        };
+        held.settle(&tokens, cost);
         match message.stop_reason.as_deref() {
             Some("refusal") => {
                 let category = message.stop_details.and_then(|details| details.category);
                 return Err(NoAnswer::Refused { category }.into());
             }
-            Some("max_tokens") => return Err(NoAnswer::Cut.into()),
-            _ => {}
+            // the answer ran into the model's context window rather than `max_tokens` (a stop reason the API's
+            // reference documents for models from 4.5 on), or stopped at a stop sequence (none is sent): cut off
+            Some("max_tokens" | "model_context_window_exceeded" | "stop_sequence") => return Err(NoAnswer::Cut.into()),
+            // finished: what it wrote is the answer (a gateway that leaves the reason out is taken at its word)
+            Some("end_turn") | None => {}
+            // a turn paused for a server tool, a tool call, a compaction, or a reason not documented when this was
+            // written: none is a finished answer to these requests, which use no tools
+            Some(_) => return Err(NoAnswer::Unexpected.into()),
         }
         let text: String = message
             .content
@@ -1213,9 +1660,11 @@ impl<'a> Client<'a> {
     /// its own, and as plain input everywhere else (where an unpriced cache would make the worst case unpriced).
     fn worst_asked(&self, asked: &Asked<'_>) -> Tokens {
         let counting = self.counting();
-        let count = |text: &str| counting.tokens(u64::try_from(text.chars().count()).unwrap_or(u64::MAX));
-        let prefix = count(asked.ask.system) + asked.ask.shared.map_or(0, count);
-        let question = count(&asked.question);
+        let chars = |text: &str| u64::try_from(text.chars().count()).unwrap_or(u64::MAX);
+        // the prefix counted as one text, as an estimate counts it: two parts rounded up apart would be a token
+        // more than the estimate's worst case, and a budget of exactly that worst case would refuse the call
+        let prefix = counting.tokens(chars(asked.ask.system) + asked.ask.shared.map_or(0, chars));
+        let question = counting.tokens(chars(&asked.question));
         let output = u64::from(asked.ask.max_tokens);
         match self.endpoint.provider.about().capabilities.caching {
             Caching::Marked | Caching::AutomaticWritesBilled => {
@@ -1227,12 +1676,28 @@ impl<'a> Client<'a> {
         }
     }
 
-    /// What a call took when the server did not say: its prompt and its answer, estimated from their characters.
-    fn estimated(&self, asked: &Asked<'_>, answer: &str) -> Tokens {
-        let counting = self.counting();
-        let count = |text: &str| counting.tokens(u64::try_from(text.chars().count()).unwrap_or(u64::MAX));
-        let prompt = count(asked.ask.system) + asked.ask.shared.map_or(0, count) + count(&asked.question);
-        Tokens { input: prompt, output: count(answer), ..Tokens::default() }
+    /// The most [`Client::ask`] can spend on `ask`, every attempt counted as the budget holds it: tokens of every
+    /// kind, and US dollars (`None` when a model that may bill it has no known price). What is written down before
+    /// the call is sent (`library::money::asking`), as what it may have cost should its outcome be lost.
+    pub fn most(&self, ask: &Ask<'_>) -> (u64, Option<Usd>) {
+        let provider = self.endpoint.provider;
+        if provider == Provider::Anthropic {
+            let (tokens, usd) = worst_of(&answered_by(provider, ask.model), &self.worst(ask));
+            return (tokens, usd.ok());
+        }
+        let priced = [price_key(provider, ask.model)];
+        let first = self.worst_asked(&self.asked(ask, None));
+        let (mut tokens, mut usd) = worst_of(&priced, &first);
+        let asked_again =
+            matches!(ask.form, Form::Json(_)) && self.endpoint.capabilities().answers != Answers::Enforced;
+        if asked_again {
+            // an answer that did not follow the schema is asked for once more, with what was wrong after the question
+            let again = Tokens { input: first.input + self.counting().tokens(RETRY_CHARS), ..first };
+            let (more_tokens, more_usd) = worst_of(&priced, &again);
+            tokens = tokens.saturating_add(more_tokens);
+            usd = usd.and_then(|usd| more_usd.map(|more| usd + more));
+        }
+        (tokens, usd.ok())
     }
 
     /// [`Client::ask`] for any provider but the Claude API.
@@ -1248,35 +1713,45 @@ impl<'a> Client<'a> {
             self.stopped()?;
             let asked = self.asked(ask, wrong.as_deref());
             let worst = self.worst_asked(&asked);
-            let held = budget.hold(&priced, &worst)?;
+            let held = match (budget.reserve(&[priced.as_str()], &worst), &wrong) {
+                (Ok(held), _) => held,
+                // the first attempt was paid for: this is an answer that was not the JSON asked for, not a call
+                // that was never started, which a batch would start again from the beginning (and pay for again)
+                (Err(_), Some(why)) => return Err(NoAnswer::NotJson(why.clone()).into()),
+                (Err(over), None) => return Err(over.into()),
+            };
             let Request { path, body } = self.request(&asked);
             let reply = match self.send(&path, ask.model, &[], body.to_string().as_bytes()) {
                 Ok(reply) => reply,
                 Err(error) => {
-                    budget.settle(held, &Tokens::default(), Some(Usd::ZERO)); // a failed request is not billed
+                    // a request that was refused or never sent is not billed; one lost after it was sent may have been, at
+                    // worst what it held, which stays counted so that the rest of the batch keeps to the budget
+                    if error == AskError::NoAnswer(NoAnswer::Transport(TransportError::Lost)) {
+                        held.spend_all();
+                    } else {
+                        held.release();
+                    }
                     return Err(error);
                 }
             };
             let Some(read) = self.read(&reply.body, ask.model) else {
                 // answered, and so probably billed, but in no shape this knows: its worst case is recorded
                 let call = Call { model: priced.clone(), purpose: ask.purpose.to_owned(), tokens: worst };
-                budget.settle(held, &worst, call.cost());
+                held.settle(&worst, call.cost());
                 self.recorder.record(call);
                 return Err(NoAnswer::Unexpected.into());
             };
             let answered = read.model.clone().unwrap_or_else(|| ask.model.to_owned());
-            let said = match &read.outcome {
-                Outcome::Text(text) => text.as_str(),
-                _ => "",
-            };
-            // a server that reports no usage (some local ones) is counted from characters rather than as nothing
-            let tokens = read.tokens.unwrap_or_else(|| self.estimated(&asked, said));
+            // a server that reports no usage (some local ones) is counted at the worst case the request allows, as
+            // the Claude API's answer without usage is: the answer's characters would leave out hidden thinking,
+            // which a budget in tokens must count
+            let tokens = read.tokens.unwrap_or(worst);
             // a dated id of the model asked for (gpt-6.2-sol-2026-11-01) has its price; another model has its own
             let recorded = if dated_of(&answered, ask.model) { ask.model } else { answered.as_str() };
             let call = Call { model: price_key(provider, recorded), purpose: ask.purpose.to_owned(), tokens };
             let cost = call.cost();
             // paid for whether or not the answer is usable: recorded before it is looked at
-            budget.settle(held, &tokens, cost);
+            held.settle(&tokens, cost);
             self.recorder.record(call);
             let text = match read.outcome {
                 Outcome::Text(text) => text,
@@ -1284,7 +1759,7 @@ impl<'a> Client<'a> {
                 Outcome::Cut => return Err(NoAnswer::Cut.into()),
                 Outcome::Failed(error) => {
                     self.stop(&error);
-                    return Err(error);
+                    return Err(self.scrubbed(error));
                 }
             };
             if text.is_empty() {
@@ -1333,7 +1808,7 @@ impl<'a> Client<'a> {
     }
 
     /// Measure how many characters a token is for prompts like `ask`, with one token count, and reckon later
-    /// prompts with it: what makes [`estimate`] and the budget's worst cases closer to what calls will cost.
+    /// prompts with it: what makes [`estimate_for`] and the budget's worst cases closer to what calls will cost.
     ///
     /// A provider that cannot count tokens is not asked: the counting stays [`Counting::Assumed`], which says that
     /// what is reckoned with it is an estimate from characters.
@@ -1650,6 +2125,189 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_without_its_usage_is_counted_at_its_worst_case_not_as_free() {
+        let mut answer = message("claude-opus-5-5", r#"{"answer": "x"}"#, "end_turn", Value::Null);
+        answer.as_object_mut().unwrap().remove("usage");
+        let fake = Fake::new(vec![Ok(ok(&answer))]);
+        let calls = Mutex::new(Vec::new());
+        let client = Client::new(&fake, endpoint(), &calls);
+        let schema = schema();
+        let budget = Budget::new(Limit::Tokens(100_000));
+        let answered = client.ask(&ask(&schema, Some("The paper's text.")), &budget).unwrap();
+        assert_eq!(answered.answer, r#"{"answer": "x"}"#);
+        assert_eq!(answered.tokens.output, 2_000, "max_tokens: the thinking it took is not known");
+        assert_eq!(budget.spent().0, answered.tokens.all());
+        let calls = calls.into_inner().unwrap();
+        assert_eq!(calls[0].tokens, answered.tokens);
+        assert!(calls[0].cost().is_some_and(|cost| cost > Usd::ZERO));
+    }
+
+    #[test]
+    fn prose_cut_off_by_the_context_window_is_not_shown_as_a_whole_answer() {
+        let cut = message(
+            "claude-opus-5-5",
+            "The paper shows that merging",
+            "model_context_window_exceeded",
+            usage(30, 9, 0, 0),
+        );
+        let fake = Fake::new(vec![Ok(ok(&cut))]);
+        let calls = Mutex::new(Vec::new());
+        let client = Client::new(&fake, endpoint(), &calls);
+        let schema = schema();
+        let prose = Ask { form: Form::Text, ..ask(&schema, None) };
+        assert_eq!(client.ask(&prose, &plenty()), Err(AskError::NoAnswer(NoAnswer::Cut)));
+    }
+
+    #[test]
+    fn every_documented_stop_reason_is_told_before_the_content_is_read() {
+        let schema = schema();
+        let prose = Ask { form: Form::Text, ..ask(&schema, None) };
+        let asked = |reason: &str| {
+            let fake = Fake::new(vec![Ok(ok(&message("claude-opus-5-5", "Some words", reason, usage(3, 3, 0, 0))))]);
+            let calls = Mutex::new(Vec::new());
+            Client::new(&fake, endpoint(), &calls).ask(&prose, &plenty()).map(|answered| answered.answer)
+        };
+        assert_eq!(asked("end_turn"), Ok("Some words".to_owned()));
+        for cut in ["max_tokens", "model_context_window_exceeded", "stop_sequence"] {
+            assert_eq!(asked(cut), Err(NoAnswer::Cut.into()), "{cut}");
+        }
+        for unfinished in ["pause_turn", "tool_use", "compaction", "a_reason_not_yet_documented"] {
+            assert_eq!(asked(unfinished), Err(NoAnswer::Unexpected.into()), "{unfinished}: not an answer");
+        }
+        assert!(matches!(asked("refusal"), Err(AskError::NoAnswer(NoAnswer::Refused { .. }))));
+    }
+
+    #[test]
+    fn a_providers_error_message_is_shown_without_keys_headers_or_more_than_its_length() {
+        // made at run time, so that no key-shaped text is ever written in the repository
+        let own = format!("{}{}", "own-", "q".repeat(24));
+        let shaped = format!("sk-{}", "Z9".repeat(20));
+        let key = ApiKey(own.clone());
+        let message = format!("invalid request for {own}, see {shaped} and\nnext\tline");
+        let said = scrubbed(&message, &key);
+        assert!(!said.contains(&own) && !said.contains(&shaped), "{said}");
+        assert!(said.contains("invalid request for [hidden]") && said.contains("next line"), "{said}");
+        let echoed = "bad request: headers were Authorization: Bearer whatever x-api-key: whatever";
+        assert_eq!(scrubbed(echoed, &key), "bad request: headers were [the rest is not shown]");
+        let opaque = format!("token {} refused", "a1B2".repeat(10));
+        assert_eq!(scrubbed(&opaque, &key), "token [hidden] refused", "a long opaque run is taken for a token");
+        let long = "word ".repeat(200);
+        let cut = scrubbed(&long, &key);
+        assert!(cut.chars().count() <= MESSAGE_CHARS + 1 && cut.ends_with('…'), "{cut}");
+        // through the client: what the API refused, with the key it echoed hidden
+        let fake = Fake::new(vec![Ok(error(400, "invalid_request_error", &format!("bad key {shaped}")))]);
+        let calls = Mutex::new(Vec::new());
+        let schema = schema();
+        let refused = Client::new(&fake, endpoint(), &calls).ask(&ask(&schema, None), &plenty()).unwrap_err();
+        assert_eq!(refused, NoAnswer::Rejected("bad key [hidden]".to_owned()).into());
+    }
+
+    #[test]
+    fn a_fallback_to_a_dearer_model_is_held_and_estimated_at_its_price_and_never_passes_the_budget() {
+        let schema = schema();
+        let asked = ask(&schema, Some("The paper's text."));
+        let calls = Mutex::new(Vec::new());
+        let nothing = Fake::new(Vec::new());
+        let worst = Client::new(&nothing, endpoint(), &calls).worst(&asked);
+        // the model asked's worst case alone, as was held before: room for it, not for a fallback after it
+        let alone = Budget::new(Limit::Dollars(price_of("claude-opus-5-5", &worst).unwrap()));
+        let refused = Client::new(&nothing, endpoint(), &calls).ask(&asked, &alone);
+        assert!(matches!(refused, Err(AskError::OverBudget(OverBudget::Dollars { .. }))), "{refused:?}");
+        assert!(nothing.sent().is_empty(), "refused before anything was sent");
+
+        // the estimate's "at most" is what is held: the model asked and the dearer of its fallbacks, at worst
+        let (shared, question) = asked.characters();
+        let planned = Planned {
+            shared_chars: shared,
+            question_chars: question,
+            questions: 1,
+            answer_tokens: 100,
+            max_tokens: 2_000,
+        };
+        let estimate = estimate_for(Provider::Anthropic, "claude-opus-5-5", &[planned], Counting::ASSUMED);
+        let opus_5 = price_of("claude-opus-5", &worst).unwrap();
+        assert!(opus_5 > price_of("claude-opus-5-5", &worst).unwrap(), "the fallback is the dearer");
+        assert_eq!(estimate.most_usd, Some(price_of("claude-opus-5-5", &worst).unwrap() + opus_5));
+        assert_eq!(estimate.most_tokens, 2 * worst.all());
+
+        // the API answers as Claude Opus 5 after the model asked declined part way: both at their worst
+        let part = |model: &str, kind: &str| {
+            json!({"type": kind, "model": model, "input_tokens": worst.input, "output_tokens": worst.output,
+                   "cache_creation_input_tokens": worst.cache_write_5m})
+        };
+        let mut answered = message("claude-opus-5", r#"{"answer": "x"}"#, "end_turn", usage(1, 1, 0, 0));
+        answered["usage"]["iterations"] =
+            json!([part("claude-opus-5-5", "message"), part("claude-opus-5", "fallback_message")]);
+        let fake = Fake::new(vec![Ok(ok(&answered))]);
+        let budget = Budget::new(Limit::Dollars(estimate.most_usd.unwrap()));
+        let reply = Client::new(&fake, endpoint(), &calls).ask(&asked, &budget).unwrap();
+        assert_eq!(reply.model, "claude-opus-5");
+        assert!(budget.spent().1 <= estimate.most_usd.unwrap(), "{:?} spent", budget.spent());
+        assert_eq!(budget.held(), (0, Usd::ZERO));
+    }
+
+    #[test]
+    fn a_model_asked_without_fallbacks_is_held_and_estimated_once() {
+        assert_eq!(answered_by(Provider::Anthropic, "claude-haiku-5-5"), ["claude-haiku-5-5"]);
+        assert_eq!(answered_by(Provider::OpenAi, "gpt-6.2-sol"), ["openai:gpt-6.2-sol"]);
+        assert_eq!(answered_by(Provider::Anthropic, "claude-opus-5-5").len(), 1 + FALLBACK_TARGETS.len());
+        let worst = Tokens { input: 100, output: 100, ..Tokens::default() };
+        assert_eq!(worst_of(&["claude-haiku-5-5"], &worst), (200, Ok(price_of("claude-haiku-5-5", &worst).unwrap())));
+        // a fallback whose price is not known makes the call unpriced, never guessed
+        assert_eq!(worst_of(&["claude-opus-5-5", "claude-unknown-9"], &worst).1, Err("claude-unknown-9".to_owned()));
+        for target in FALLBACK_TARGETS {
+            assert!(
+                model_price(target).is_some(),
+                "{target} has a price, so a call that may fall back to it is priced"
+            );
+        }
+    }
+
+    #[test]
+    fn holds_reserved_settled_and_dropped_from_many_threads_never_pass_the_limit_and_all_come_back() {
+        use rand::rngs::StdRng;
+        use rand::{Rng, SeedableRng};
+        const LIMIT: u64 = 10_000;
+        let tokens = |input: u64| Tokens { input, ..Tokens::default() };
+        for seed in 0..16u64 {
+            let budget = Budget::new(Limit::Tokens(LIMIT));
+            std::thread::scope(|scope| {
+                for thread in 0..6u64 {
+                    let budget = &budget;
+                    scope.spawn(move || {
+                        let mut random = StdRng::seed_from_u64(seed * 1_000 + thread);
+                        let mut holds: Vec<(Hold<'_>, u64)> = Vec::new();
+                        for _ in 0..400 {
+                            match random.gen_range(0..4) {
+                                0 | 1 => {
+                                    let worst = random.gen_range(1..3_000);
+                                    if let Ok(hold) = budget.reserve(&["claude-opus-5-5"], &tokens(worst)) {
+                                        holds.push((hold, worst));
+                                    }
+                                }
+                                2 if !holds.is_empty() => {
+                                    let (hold, worst) = holds.swap_remove(random.gen_range(0..holds.len()));
+                                    let took = random.gen_range(0..=worst);
+                                    hold.settle(&tokens(took), None);
+                                }
+                                3 if !holds.is_empty() => {
+                                    drop(holds.swap_remove(random.gen_range(0..holds.len())));
+                                }
+                                _ => {}
+                            }
+                            let (spent, held) = budget.taken();
+                            assert!(spent + held <= LIMIT, "spent {spent} and held {held} of {LIMIT}");
+                        }
+                        // whatever is still held is dropped here, as a thread that ends would
+                    });
+                }
+            });
+            assert_eq!(budget.held(), (0, Usd::ZERO), "seed {seed}: every hold came back");
+            assert!(budget.spent().0 <= LIMIT);
+        }
+    }
+
+    #[test]
     fn a_fallback_s_tokens_are_recorded_by_each_model_that_worked_on_the_answer() {
         let mut answered = message("claude-opus-4-8", r#"{"answer": "x"}"#, "end_turn", usage(30, 40, 0, 0));
         answered["usage"]["iterations"] = json!([
@@ -1802,7 +2460,12 @@ mod tests {
         // 739 papers of 40,000 characters, three questions each
         let plan =
             Planned { shared_chars: 40_000, question_chars: 300, questions: 3, answer_tokens: 800, max_tokens: 4_000 };
-        let estimated = estimate("claude-opus-5-5", &vec![plan; 739], Counting::Measured { chars_per_token: 4.0 });
+        let estimated = estimate_for(
+            Provider::Anthropic,
+            "claude-opus-5-5",
+            &vec![plan; 739],
+            Counting::Measured { chars_per_token: 4.0 },
+        );
         assert_eq!(estimated.calls, 739 * 3);
         assert_eq!(estimated.tokens.cache_write_5m, 739 * 10_000);
         assert_eq!(estimated.tokens.cache_read, 739 * 2 * 10_000);
@@ -1812,7 +2475,7 @@ mod tests {
         // per paper: 10000 written at $5, 20000 read at $0.20, 225 question tokens at $4, 2400 answer tokens at $20
         let per_paper = 10_000 * 5_000_000 + 20_000 * 200_000 + 225 * 4_000_000 + 2_400 * 20_000_000;
         assert_eq!(likely, Usd::from_picodollars(739 * per_paper));
-        assert_eq!(estimate("claude-unknown-1", &[plan], Counting::ASSUMED).usd, None);
+        assert_eq!(estimate_for(Provider::Anthropic, "claude-unknown-1", &[plan], Counting::ASSUMED).usd, None);
         assert_eq!(Counting::ASSUMED, Counting::Assumed { chars_per_token: CHARS_PER_TOKEN });
     }
 
@@ -1994,6 +2657,24 @@ mod every_provider {
     }
 
     #[test]
+    fn an_answer_not_in_json_whose_second_try_the_budget_cannot_take_is_not_json_not_a_call_never_started() {
+        let schema = schema();
+        let fake = Fake::new(vec![Ok(ok(&completion("MiniMax-M3", "Sure, it merges.", chat_usage(50, 10, 0))))]);
+        let calls = Mutex::new(Vec::new());
+        let client = Client::new(&fake, endpoint(Provider::MiniMax), &calls);
+        let ask = ask("MiniMax-M3", &schema);
+        // room for the first attempt's worst case, not for a second one after what the first took
+        let first = client.worst_asked(&client.asked(&ask, None)).all();
+        let budget = Budget::new(Limit::Tokens(first + 10));
+        let error = client.ask(&ask, &budget).unwrap_err();
+        // a batch starts a call refused by the budget again once room is made: this one was paid for already
+        assert_eq!(error, NoAnswer::NotJson("it is not JSON".to_owned()).into());
+        assert_eq!(fake.sent().len(), 1);
+        assert_eq!(calls.into_inner().unwrap().len(), 1, "the first attempt is recorded");
+        assert_eq!(budget.spent().0, 60);
+    }
+
+    #[test]
     fn a_compatible_server_can_be_told_to_take_json_in_the_prompt() {
         let endpoint = Endpoint::for_provider(Provider::Compatible, |name| match name {
             "CONSTELLATE_MODEL_BASE_URL" => Some("http://127.0.0.1:1234/v1".to_owned()),
@@ -2012,7 +2693,7 @@ mod every_provider {
     }
 
     #[test]
-    fn a_server_that_reports_no_usage_is_counted_from_characters_and_its_cost_is_not_known() {
+    fn a_server_that_reports_no_usage_is_counted_at_its_worst_case_and_its_cost_is_not_known() {
         let schema = schema();
         let mut answer = completion("qwen3:32b", r#"{"answer": "it merges"}"#, Value::Null);
         answer.as_object_mut().unwrap().remove("usage");
@@ -2021,7 +2702,9 @@ mod every_provider {
         let client = Client::new(&fake, endpoint(Provider::Compatible), &calls);
         let budget = Budget::new(Limit::Tokens(100_000));
         let answered = client.ask(&ask("qwen3:32b", &schema), &budget).unwrap();
-        assert!(answered.tokens.input > 0 && answered.tokens.output > 0, "{:?}", answered.tokens);
+        assert!(answered.tokens.input > 0, "{:?}", answered.tokens);
+        let max_tokens = u64::from(ask("qwen3:32b", &schema).max_tokens);
+        assert_eq!(answered.tokens.output, max_tokens, "hidden thinking may have taken all the answer was allowed");
         assert_eq!(answered.cost, None, "not known, which is not free");
         assert_eq!(budget.spent().0, answered.tokens.all());
     }
@@ -2082,7 +2765,41 @@ mod every_provider {
         // 10000 written at $2.50, 20000 read at $0.10, 225 question tokens at $2, 2400 answer tokens at $10
         let expected = 10_000 * 2_500_000 + 20_000 * 100_000 + 225 * 2_000_000 + 2_400 * 10_000_000;
         assert_eq!(openai.usd, Some(Usd::from_picodollars(expected)));
-        assert_eq!(estimate("claude-opus-5-5", &[plan], counting).caching, Caching::Marked);
+        assert_eq!(estimate_for(Provider::Anthropic, "claude-opus-5-5", &[plan], counting).caching, Caching::Marked);
+    }
+
+    #[test]
+    fn an_estimate_counts_what_the_providers_way_of_answering_in_json_adds_and_no_fee_on_this_computer() {
+        let plan =
+            Planned { shared_chars: 40_000, question_chars: 300, questions: 3, answer_tokens: 800, max_tokens: 4_000 };
+        let counting = Counting::ASSUMED;
+        let held = Pricing::listed(Provider::OpenAi).estimate("gpt-6.2-sol", &[plan], counting);
+        assert_eq!(held, estimate_for(Provider::OpenAi, "gpt-6.2-sol", &[plan], counting), "held to the schema");
+        // not held to it: an answer that does not follow it is asked for once more, which the worst case counts
+        let prompted = Pricing::listed(Provider::Meta);
+        let once = estimate_for(Provider::Meta, "muse-spark-1.3", &[plan], counting);
+        let twice = prompted.estimate("muse-spark-1.3", &[plan], counting);
+        assert_eq!(twice.tokens, once.tokens, "the likely cost is one answer each");
+        assert!(twice.most_tokens > 2 * once.most_tokens, "{} {}", twice.most_tokens, once.most_tokens);
+        // the schema written into the question is part of what is sent
+        let schema = json!({"type": "object", "properties": {"said": {"type": "string"}}});
+        let ask = Ask {
+            purpose: "a test",
+            model: "muse-spark-1.3",
+            system: "",
+            shared: None,
+            question: "What?",
+            form: Form::Json(&schema),
+            effort: Effort::Low,
+            max_tokens: 10,
+        };
+        assert!(prompted.question_chars(&ask) > 5 + schema.to_string().chars().count() as u64);
+        assert_eq!(Pricing::listed(Provider::Anthropic).question_chars(&ask), 5);
+        // on this computer: no dollars, said so, and the worst case in tokens all the same
+        let here = Pricing { on_this_computer: true, ..Pricing::listed(Provider::Compatible) };
+        let local = here.estimate("qwen3:32b", &[plan], counting);
+        assert_eq!((local.usd, local.most_usd, local.on_this_computer), (None, None, true));
+        assert!(local.most_tokens > local.tokens.all());
     }
 
     #[test]

@@ -19,6 +19,7 @@
 //! the work's to do: it is told through [`Tracker::cancelled`], starts nothing new, and returns what it has. The
 //! job stays `running` until then, so whoever follows it waits for what was done, not for a guess.
 
+use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -26,15 +27,41 @@ use std::thread;
 
 use serde::Serialize;
 
+use crate::library::{Feature, Subject};
 use crate::threads::{Progress as Counter, panic_message};
 use crate::usage::Usd;
+
+/// What a finished job of the engine's made, for whoever follows it (`JobOutcome` in the contracts). Only a run is
+/// opened by the interface's job follower; a feature's component recognises its own outcome and shows its answers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Finished {
+    /// A run was made (or made again): its name.
+    Run { run: String },
+    /// A feature finished asking about this subject: its answers are kept and can be shown.
+    Feature { feature: Feature, subject: Subject },
+    /// Nothing to open (citing sentences read for the whole library, say).
+    Nothing,
+}
+
+/// What a feature's job is about, set as it starts ([`Job::start_about`]) and kept with it until the next one: so
+/// that whoever looks, from any window and at any moment of the job, can tell which section of the interface a
+/// running job belongs to, without waiting for the job to say so in its log.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct About {
+    pub feature: Feature,
+    pub subject: Subject,
+    /// The one item of the subject the job asks about, when it is one (a question's id among a run's questions).
+    pub item: Option<String>,
+}
 
 /// How far a job that does many things has got.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct Progress {
     pub done: u64,
     pub of: u64,
-    /// What it has spent so far (on the Claude API), in US dollars as the interface is told them.
+    /// What it has spent so far on the language model's API, in US dollars as the interface is told them (of the
+    /// calls whose price is known).
     pub usd: Usd,
 }
 
@@ -132,18 +159,43 @@ pub struct Busy {
     pub kind: String,
 }
 
+/// The most lines a job's log keeps: a job over thousands of papers may log a line for each, and the log is held
+/// in memory and sent to whoever follows the job. The earliest go first; the line numbers `since` counts in stay
+/// those of every line logged.
+const LOG_LINES: usize = 5_000;
+
+/// How a job says how far it has got: one of the two, never both, since a job is started one way or the other.
+enum Measure {
+    /// Through its tracker ([`Job::start_tracked`], [`Job::start`]): the last progress it reported, if any.
+    Tracked(Option<Progress>),
+    /// By the papers its threads count ([`Job::start_counted`]), without this lock.
+    Counted(Arc<Counter>),
+}
+
 struct Inner<T> {
     /// Counts the jobs started; 0 until the first.
     id: u64,
     kind: String,
+    /// What a feature's job is about ([`Job::start_about`]); none for other jobs.
+    about: Option<About>,
     state: State<T>,
-    log: Vec<String>,
-    /// The last progress the work reported; none for work that does not report any.
-    progress: Option<Progress>,
+    /// The log's last [`LOG_LINES`] lines.
+    log: VecDeque<String>,
+    /// Lines logged before those kept.
+    dropped: usize,
+    measure: Measure,
     /// The running job's request to stop; a new one for every job.
     cancel: Cancel,
-    /// How far the job's papers are, counted by its threads without this lock.
-    counted: Arc<Counter>,
+}
+
+impl<T> Inner<T> {
+    fn log(&mut self, line: String) {
+        if self.log.len() == LOG_LINES {
+            self.log.pop_front();
+            self.dropped += 1;
+        }
+        self.log.push_back(line);
+    }
 }
 
 /// What a job looks like at one moment.
@@ -151,12 +203,14 @@ struct Inner<T> {
 pub struct Snapshot<T> {
     pub id: u64,
     pub kind: String,
+    /// What a feature's job is (or was) about, when it was started with it.
+    pub about: Option<About>,
     pub state: Phase,
     pub result: Option<T>,
     pub error: Option<String>,
     /// The log's lines from `since` on.
     pub log: Vec<String>,
-    /// How many lines the log has in all.
+    /// How many lines were logged in all: the earliest of a very long log are no longer kept ([`LOG_LINES`]).
     pub total: usize,
     pub progress: Option<Progress>,
     /// How many of its papers the job has done, of how many, when it counts them.
@@ -187,11 +241,12 @@ impl<T> Default for Job<T> {
             inner: Arc::new(Mutex::new(Inner {
                 id: 0,
                 kind: String::new(),
+                about: None,
                 state: State::Idle,
-                log: Vec::new(),
-                progress: None,
+                log: VecDeque::new(),
+                dropped: 0,
+                measure: Measure::Tracked(None),
                 cancel: Cancel::new(),
-                counted: Arc::default(),
             })),
         }
     }
@@ -228,7 +283,7 @@ impl<T: Clone + Send + 'static> Job<T> {
     {
         let counted = Arc::new(Counter::new());
         let lent = Arc::clone(&counted);
-        self.launch(kind, counted, move |tracker| work(&|line: &str| tracker.log(line), &lent))
+        self.launch(kind, None, Measure::Counted(counted), move |tracker| work(&|line: &str| tracker.log(line), &lent))
     }
 
     /// [`Job::start`] for work that reports its progress and can be asked to stop: `work` is given a [`Tracker`].
@@ -236,11 +291,21 @@ impl<T: Clone + Send + 'static> Job<T> {
     where
         F: FnOnce(&Tracker<'_>) -> Result<T, String> + Send + 'static,
     {
-        self.launch(kind, Arc::default(), work)
+        self.launch(kind, None, Measure::Tracked(None), work)
     }
 
-    /// Begin `work` as the one running job; `counted` is where it counts its papers, if it counts any.
-    fn launch<F>(&self, kind: &str, counted: Arc<Counter>, work: F) -> Result<u64, Busy>
+    /// [`Job::start_tracked`] for a feature's work, with what it is about set as it starts ([`About`]): a snapshot
+    /// taken at any moment of the job says so.
+    pub fn start_about<F>(&self, kind: &str, about: About, work: F) -> Result<u64, Busy>
+    where
+        F: FnOnce(&Tracker<'_>) -> Result<T, String> + Send + 'static,
+    {
+        self.launch(kind, Some(about), Measure::Tracked(None), work)
+    }
+
+    /// Begin `work` as the one running job, saying how far it has got by `measure`. A thread that cannot be
+    /// started for it (the system has none left) makes the job failed at once, never running for ever.
+    fn launch<F>(&self, kind: &str, about: Option<About>, measure: Measure, work: F) -> Result<u64, Busy>
     where
         F: FnOnce(&Tracker<'_>) -> Result<T, String> + Send + 'static,
     {
@@ -251,33 +316,44 @@ impl<T: Clone + Send + 'static> Job<T> {
             }
             job.id += 1;
             job.kind = kind.to_owned();
+            job.about = about;
             job.state = State::Running;
             job.log.clear();
-            job.progress = None;
+            job.dropped = 0;
+            job.measure = measure;
             job.cancel = Cancel::new();
-            job.counted = counted;
             (job.id, job.cancel.clone())
         };
         let inner = Arc::clone(&self.inner);
-        thread::spawn(move || {
-            let log = |line: &str| open(&inner).log.push(line.to_owned());
-            let progress = |progress: Progress| open(&inner).progress = Some(progress);
+        let spawned = thread::Builder::new().name("job".to_owned()).spawn(move || {
+            let log = |line: &str| open(&inner).log(line.to_owned());
+            let progress = |progress: Progress| {
+                if let Measure::Tracked(last) = &mut open(&inner).measure {
+                    *last = Some(progress);
+                }
+            };
             let tracker = Tracker::new(&log, &progress, &cancel);
             let outcome = catch_unwind(AssertUnwindSafe(|| work(&tracker)));
             let mut job = open(&inner);
             job.state = match outcome {
                 Ok(Ok(result)) => State::Done(result),
                 Ok(Err(error)) => {
-                    job.log.push(format!("ERROR: {error}"));
+                    job.log(format!("ERROR: {error}"));
                     State::Failed(error)
                 }
                 Err(panic) => {
                     let said = panic_message(&*panic);
-                    job.log.push(format!("ERROR: {said}"));
+                    job.log(format!("ERROR: {said}"));
                     State::Failed(said)
                 }
             };
         });
+        if spawned.is_err() {
+            let mut job = open(&self.inner);
+            let said = "no thread could be started for the job".to_owned();
+            job.log(format!("ERROR: {said}"));
+            job.state = State::Failed(said);
+        }
         Ok(id)
     }
 
@@ -289,16 +365,23 @@ impl<T: Clone + Send + 'static> Job<T> {
             State::Failed(error) => (None, Some(error.clone())),
             State::Idle | State::Running => (None, None),
         };
+        let (progress, papers) = match &job.measure {
+            Measure::Tracked(progress) => (*progress, None),
+            Measure::Counted(counted) => {
+                (None, (counted.total() > 0).then(|| Counted { done: counted.done(), of: counted.total() }))
+            }
+        };
         Snapshot {
             id: job.id,
             kind: job.kind.clone(),
+            about: job.about.clone(),
             state: job.state.phase(),
             result,
             error,
-            log: job.log.iter().skip(since).cloned().collect(),
-            total: job.log.len(),
-            progress: job.progress,
-            papers: (job.counted.total() > 0).then(|| Counted { done: job.counted.done(), of: job.counted.total() }),
+            log: job.log.iter().skip(since.saturating_sub(job.dropped)).cloned().collect(),
+            total: job.dropped + job.log.len(),
+            progress,
+            papers,
         }
     }
 
@@ -311,8 +394,10 @@ impl<T: Clone + Send + 'static> Job<T> {
         }
         if !job.cancel.is_cancelled() {
             job.cancel.cancel();
-            job.counted.cancel();
-            job.log.push("Asked to stop.".to_owned());
+            if let Measure::Counted(counted) = &job.measure {
+                counted.cancel();
+            }
+            job.log("Asked to stop.".to_owned());
         }
         Ok(())
     }
@@ -336,6 +421,29 @@ mod tests {
             assert!(Instant::now() < deadline, "the job never finished");
             thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    #[test]
+    fn a_feature_s_job_says_what_it_is_about_from_the_moment_it_starts_until_the_next_one() {
+        let job: Job<String> = Job::new();
+        let (go, wait) = mpsc::channel::<()>();
+        let about = About {
+            feature: Feature::Answers,
+            subject: Subject::Run("r1".to_owned()),
+            item: Some("question".to_owned()),
+        };
+        job.start_about("answering a question", about.clone(), move |_| {
+            wait.recv().ok();
+            Ok(String::new())
+        })
+        .unwrap();
+        // before the work has run a single line
+        let now = job.snapshot(0);
+        assert_eq!((now.state, now.about.as_ref(), now.log.len()), (Phase::Running, Some(&about), 0));
+        go.send(()).unwrap();
+        assert_eq!(finished(&job).about, Some(about), "still said once it is done");
+        job.start("a run", |_| Ok(String::new())).unwrap();
+        assert_eq!(job.snapshot(0).about, None, "another job is about nothing it did not say");
     }
 
     #[test]
@@ -505,6 +613,72 @@ mod tests {
         assert_eq!(told["papers"]["of"], 10_000);
         job.start("a run", |_| Ok(1)).unwrap();
         assert_eq!(finished(&job).papers, None, "a job that counts nothing says nothing about papers");
+    }
+
+    #[test]
+    fn a_long_log_keeps_its_last_lines_and_counts_every_line_logged() {
+        let job: Job<u32> = Job::new();
+        job.start("a run", |log| {
+            for line in 0..LOG_LINES + 10 {
+                log(&format!("line {line}"));
+            }
+            Err("stopped".to_owned())
+        })
+        .unwrap();
+        let now = finished(&job);
+        assert_eq!(now.total, LOG_LINES + 11);
+        assert_eq!(now.log.len(), LOG_LINES, "the first lines went");
+        assert_eq!(now.log[0], "line 11");
+        assert_eq!(now.log.last().map(String::as_str), Some("ERROR: stopped"), "the failure is always kept");
+        // `since` counts every line logged, kept or not
+        assert_eq!(job.snapshot(LOG_LINES + 9).log, ["line 5009", "ERROR: stopped"]);
+        assert_eq!(job.snapshot(LOG_LINES + 11).log, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_job_says_how_far_it_has_got_in_one_way_only() {
+        let job: Job<u32> = Job::new();
+        let (reported, wait) = mpsc::channel::<()>();
+        let (release, go) = mpsc::channel::<()>();
+        job.start_tracked("asking", move |tracker| {
+            tracker.progress(Progress { done: 1, of: 3, usd: Usd::ZERO });
+            reported.send(()).map_err(|error| error.to_string())?;
+            go.recv().map_err(|error| error.to_string())?;
+            Ok(1)
+        })
+        .unwrap();
+        wait.recv().unwrap();
+        let tracked = job.snapshot(0);
+        assert_eq!((tracked.progress.map(|progress| progress.done), tracked.papers), (Some(1), None));
+        release.send(()).unwrap();
+        finished(&job);
+        job.start_counted("reading", |_, counter| {
+            counter.expect(4);
+            counter.advance();
+            Ok(1)
+        })
+        .unwrap();
+        let counted = finished(&job);
+        assert_eq!((counted.progress, counted.papers), (None, Some(Counted { done: 1, of: 4 })));
+    }
+
+    #[test]
+    fn a_finished_job_says_what_it_made_in_the_interfaces_words() {
+        let made = |finished: Finished| serde_json::to_value(finished).unwrap();
+        assert_eq!(
+            made(Finished::Run { run: "neurips2025".to_owned() }),
+            serde_json::json!({"kind": "run", "run": "neurips2025"})
+        );
+        assert_eq!(
+            made(Finished::Feature { feature: Feature::Critique, subject: Subject::Paper("p1".to_owned()) }),
+            serde_json::json!({"kind": "feature", "feature": "critique", "subject": {"paper": "p1"}})
+        );
+        let community = Subject::Community { run: "r1".to_owned(), community: "c0.1".to_owned() };
+        assert_eq!(
+            made(Finished::Feature { feature: Feature::CitationKinds, subject: community }),
+            serde_json::json!({"kind": "feature", "feature": "citation_kinds", "subject": {"community": {"run": "r1", "community": "c0.1"}}})
+        );
+        assert_eq!(made(Finished::Nothing), serde_json::json!({"kind": "nothing"}));
     }
 
     #[test]

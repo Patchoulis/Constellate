@@ -1,10 +1,11 @@
 name: CI
 
-# Every pull request and every push to main. The jobs here are the checks a pull request must pass to be merged.
+# Every pull request, and every push to main and to the branches work is done on. The jobs here are the checks a
+# pull request must pass to be merged.
 on:
   pull_request:
   push:
-    branches: [main, "feat/**", "fix/**"]
+    branches: [main, "feat/**", "fix/**", "perf/**", "review/**", "chore/**", "refactor/**", "docs/**", "test/**", "ci/**"]
 
 permissions:
   contents: read
@@ -13,34 +14,52 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Actions are pinned to the commit of a release (named in the comment): a tag can be moved, a commit cannot.
 jobs:
   checks:
-    # The same command contributors run before asking for review: formatting, lint, types and every test.
-    # On Windows, because that is where the app runs.
+    # The same command contributors run before asking for review: formatting, lint, types and every test (the
+    # engine's, the interface's, the shell's with the two servers started for real, and the embedded reader's
+    # confinement in a real Electron). On Windows, where most of the app's users are.
     name: Checks (npm run pr)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: apps/backend/requirements-test.txt
-      - uses: actions/setup-node@v4
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
-      - run: pip install -r apps/backend/requirements-test.txt
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: engine-windows-${{ hashFiles('Cargo.lock') }}
       - run: npm ci
-      - run: npm run pr
+      # the advisories have a workflow of their own (advisories.yml): a new advisory in some dependency must not hide
+      # a pull request's own results
+      - run: npm run pr -- --skip=advisories
 
-  engine-linux:
-    # The engine on a real Linux distribution (Ubuntu), not only on Windows: built, linted and tested there.
+  linux:
+    # The engine and the shell on a real Linux distribution (Ubuntu), not only on Windows: the engine built, linted
+    # and tested; the shell's tests with the two servers started for real (the engine finds the library ONNX Runtime
+    # loads beside it, as in the packages: scripts/build.mjs links it to look in its own folder).
+    # the name the rules for main require (.github/rulesets/main.json)
     name: Engine on Linux
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -C link-arg=-Wl,-rpath,$ORIGIN
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -49,7 +68,32 @@ jobs:
           key: engine-linux-${{ hashFiles('Cargo.lock') }}
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --quiet -- -D warnings
-      - run: cargo test --quiet
+      # A failing test is also said as an annotation on the run's summary: which test, and its first lines. The
+      # summary is readable by anyone the repository is, where a job's log needs a sign-in.
+      - name: cargo test --quiet --locked
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo test --quiet --locked 2>&1 | tee test.log; then
+            # one annotation holding the failure's lines (GitHub shows only a few annotations per step)
+            said=$(grep -E -A14 '^(---- .* ----|error(\[E[0-9]+\])?:)' test.log | grep -v '^--$' | head -60 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=cargo test::${said}"
+            exit 1
+          fi
+      - run: npm ci
+      - run: node scripts/build.mjs --interface
+      - name: The shell's tests
+        working-directory: apps/desktop
+        run: node --test *.test.cjs
+      # The embedded reader's confinement in a real Electron, under a virtual display. Not required yet: Electron's
+      # sandbox needs unprivileged user namespaces, which Ubuntu's AppArmor holds back by default, and whether the
+      # test holds on the runner is still being seen. Windows runs it as a required check (above).
+      - name: The reader in Electron (not required)
+        continue-on-error: true
+        working-directory: apps/desktop
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          xvfb-run --auto-servernum npx electron reader.electron.cjs
 
   title:
     name: Conventional title
@@ -62,7 +106,7 @@ jobs:
         run: |
           pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9-]+\))?!?: [^ ].*[^.]$'
           if ! printf '%s' "$TITLE" | grep -Eq "$pattern"; then
-            echo "::error::The title is not a Conventional Commit, e.g. \"fix(backend): read checklist answers written [N/A]\""
+            echo "::error::The title is not a Conventional Commit, e.g. \"fix(engine): read checklist answers written [N/A]\""
             exit 1
           fi
 
@@ -70,16 +114,35 @@ jobs:
     name: No secrets
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
       - name: Nothing shaped like a key in the files or their history
+        # bash with pipefail; and every way this could pass having looked at nothing fails instead
+        shell: bash
         run: |
-          pattern='sk-ant-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|hf_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
-          found="$(git log -p --all | grep -Ec "$pattern" || true)"
-          if [ "$found" != "0" ]; then
+          patterns=.githooks/secrets.txt
+          if [ ! -s "$patterns" ] || grep -qx '' "$patterns"; then
+            echo "::error::$patterns is missing, empty, or has an empty line (which matches everything)"
+            exit 1
+          fi
+          # the shapes do find a key (put together here, so that this file holds none)
+          printf 'value = "AK%s%s"\n' IA ABCDEFGHIJKLMNOP | grep -Eq -f "$patterns"
+          if [ "$(git rev-list --all --count)" -lt 2 ]; then
+            echo "::error::the history was not fetched: nothing to scan"
+            exit 1
+          fi
+          git log -p --all > "$RUNNER_TEMP/history.patch"
+          test -s "$RUNNER_TEMP/history.patch"
+          status=0
+          grep -En -f "$patterns" "$RUNNER_TEMP/history.patch" > "$RUNNER_TEMP/found.txt" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::the history could not be scanned (grep exited $status)"
+            exit 1
+          fi
+          if [ "$status" -eq 0 ]; then
             # where, but not what: the log of a public repository's run is public too
-            git log -p --all | grep -En "$pattern" | cut -c1-24
-            echo "::error::$found lines shaped like a secret are in the repository's history: revoke the key and rewrite the history"
+            cut -d: -f1 "$RUNNER_TEMP/found.txt" | sed 's/^/line /'
+            echo "::error::$(wc -l < "$RUNNER_TEMP/found.txt") lines shaped like a secret are in the repository's history: revoke the key and rewrite the history"
             exit 1
           fi

@@ -25,10 +25,20 @@
 //! [`threads::caught`]). Should it be poisoned all the same, it is taken again: every change under it leaves the
 //! schedule whole. A schedule lives for one call, so nothing outlives a call to be bricked by it.
 //!
-//! Two limits of that, for whoever wires it in: the rules hold within one call, so two batches running at once
-//! (or a batch beside the arXiv API's own [`super::citations::Pacer`]) each keep them separately, and the engine
-//! must run one download batch at a time (its one background job does); and a host is the one the address names,
-//! so a publisher's address that redirects to arXiv is paced as the publisher.
+//! The rules of a schedule hold within one call (the engine runs one download batch at a time: its one background
+//! job does). What holds across every call is arXiv's pace, below.
+//!
+//! # arXiv's one pace
+//!
+//! Everything the engine sends to arXiv (its API for listings and lookups, its PDFs, a publisher's redirect to an
+//! arXiv PDF) waits for a turn at one [`ArxivPace`], [`ARXIV_PACE`]: one request at a time (arXiv asks programs
+//! for a single connection), the next one [`crate::sources::arxiv::citations::PAUSE`] after the last ended (it asks for no more
+//! than one request every three seconds), and after a refusal (429, 503) as long as the refusal asks, else
+//! [`FIRST_BACK_OFF`] doubling with each refusal in a row. Turns are given in the order they were asked for:
+//! a reader opening a paper while a run reads its PDFs waits behind the requests asked before it, never behind
+//! those asked after. The network ([`super::Http`]) takes the turn for every address on arXiv, so no caller can
+//! forget to: [`Paced`] does it for any [`Fetch`]. A request that would wait longer than its own time limit is
+//! told so at once instead of holding its caller.
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, VecDeque};
@@ -48,9 +58,9 @@ pub struct Rule {
     pub pause: Duration,
 }
 
-/// arXiv: one request at a time, three seconds apart, as it asks of programs (the API's own pace,
-/// [`super::citations::PAUSE`]).
-pub const ARXIV: Rule = Rule { at_once: 1, pause: super::citations::PAUSE };
+/// arXiv within a batch: one request at a time, so that a batch holds at most one turn at [`ARXIV_PACE`]; the
+/// pause between requests is the pace's, kept across everything the engine sends to arXiv.
+pub const ARXIV: Rule = Rule { at_once: 1, pause: Duration::ZERO };
 /// A publisher's site (proceedings): two at a time, as a browser opening two papers would.
 pub const PUBLISHER: Rule = Rule { at_once: 2, pause: Duration::ZERO };
 /// Requests under way at once, over every host.
@@ -211,7 +221,8 @@ impl<T> Schedule<T> {
 }
 
 /// A [`Fetch`] that notes whether the host refused, and how long it asked to be left alone. It is made for one
-/// attempt on one thread, and never shared.
+/// attempt on one thread, and never shared. A redirect to arXiv needs nothing of it: every request to arXiv waits
+/// for its turn at [`ARXIV_PACE`] in the network itself ([`Paced`]).
 struct Watched<'a> {
     fetch: &'a (dyn Fetch + Sync),
     refusal: Cell<Option<Option<Duration>>>,
@@ -222,9 +233,202 @@ impl Fetch for Watched<'_> {
         let answer = self.fetch.get(url, limits);
         // the last answer of the attempt decides: a refusal followed by an answer is not a refusal
         if let Ok(response) = &answer {
-            self.refusal.set(matches!(response.status, 429 | 503).then_some(response.retry_after));
+            self.refusal.set(refused(response));
         }
         answer
+    }
+}
+
+/// A refusal to be asked so often, and how long it asks to be left alone when it says.
+fn refused(response: &Response) -> Option<Option<Duration>> {
+    matches!(response.status, 429 | 503).then_some(response.retry_after)
+}
+
+/// Whose turn it is at arXiv.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Turn {
+    /// Nobody's: the next in line may begin at `next` (at once when `None`).
+    Free { next: Option<Instant> },
+    /// A request is under way.
+    Taken,
+}
+
+/// The line of requests waiting for arXiv, and whose turn it is.
+#[derive(Debug)]
+struct Line {
+    /// Tickets of those waiting, in the order they asked.
+    waiting: VecDeque<u64>,
+    issued: u64,
+    turn: Turn,
+    /// Refusals in a row, for the back-off.
+    refusals: u32,
+}
+
+/// arXiv's one pace: see the module's "arXiv's one pace". [`ARXIV_PACE`] is the engine's; a test makes its own
+/// with a short pause.
+#[derive(Debug)]
+pub struct ArxivPace {
+    pause: Duration,
+    line: Mutex<Line>,
+    changed: Condvar,
+}
+
+/// The pace everything the engine sends to arXiv keeps.
+pub static ARXIV_PACE: ArxivPace = ArxivPace::new(crate::sources::arxiv::citations::PAUSE);
+
+/// A turn at arXiv, held while one request is under way; given back when dropped (on a panic too), with the
+/// pause, or the back-off a refusal asked for, before the next turn.
+pub struct Granted<'a> {
+    pace: &'a ArxivPace,
+    refusal: Option<Option<Duration>>,
+}
+
+impl Granted<'_> {
+    /// What the request was answered: a refusal (429, 503) keeps arXiv waiting for as long as it asks.
+    pub fn answered(&mut self, response: &Response) {
+        self.refusal = refused(response);
+    }
+}
+
+impl Drop for Granted<'_> {
+    fn drop(&mut self) {
+        let mut line = self.pace.lock();
+        let wait = match self.refusal {
+            Some(asked) => {
+                line.refusals = line.refusals.saturating_add(1);
+                let doubled = FIRST_BACK_OFF.saturating_mul(2u32.saturating_pow(line.refusals - 1));
+                asked.unwrap_or(doubled).min(LONGEST_WAIT).max(self.pace.pause)
+            }
+            None => {
+                line.refusals = 0;
+                self.pace.pause
+            }
+        };
+        line.turn = Turn::Free { next: Some(Instant::now() + wait) };
+        drop(line);
+        self.pace.changed.notify_all();
+    }
+}
+
+/// Leaves the line when the one waiting gives up (or panics), so that whoever is behind is not held up.
+struct InLine<'a> {
+    pace: &'a ArxivPace,
+    ticket: u64,
+    served: bool,
+}
+
+impl Drop for InLine<'_> {
+    fn drop(&mut self) {
+        if !self.served {
+            self.pace.lock().waiting.retain(|ticket| *ticket != self.ticket);
+            self.pace.changed.notify_all();
+        }
+    }
+}
+
+impl ArxivPace {
+    /// A pace of `pause` between the end of one request and the beginning of the next.
+    pub const fn new(pause: Duration) -> Self {
+        Self {
+            pause,
+            line: Mutex::new(Line {
+                waiting: VecDeque::new(),
+                issued: 0,
+                turn: Turn::Free { next: None },
+                refusals: 0,
+            }),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Line> {
+        // every change under the lock is whole: a panic elsewhere leaves the line as it was
+        self.line.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Wait in line for a turn, at most `patience`. Turns are given in the order they were asked for. When the
+    /// turn cannot come within `patience` (arXiv asked to be left alone for longer, or the line is too long), the
+    /// answer is how long until arXiv may next be asked, and the line is left at once.
+    pub fn turn(&self, patience: Duration) -> Result<Granted<'_>, Duration> {
+        let deadline = Instant::now() + patience;
+        let mut line = self.lock();
+        let ticket = line.issued;
+        line.issued += 1;
+        line.waiting.push_back(ticket);
+        let mut in_line = InLine { pace: self, ticket, served: false };
+        loop {
+            let now = Instant::now();
+            let first = line.waiting.front() == Some(&ticket);
+            let free_at = match line.turn {
+                Turn::Free { next } => Some(next.unwrap_or(now)),
+                Turn::Taken => None,
+            };
+            match free_at {
+                Some(at) if first && at <= now => {
+                    line.waiting.pop_front();
+                    line.turn = Turn::Taken;
+                    in_line.served = true;
+                    return Ok(Granted { pace: self, refusal: None });
+                }
+                // arXiv asked to be left alone past the deadline: no use waiting for it
+                Some(at) if at > deadline => {
+                    drop(line);
+                    return Err(at - now);
+                }
+                _ if now >= deadline => {
+                    drop(line);
+                    return Err(free_at.map_or(self.pause, |at| at.saturating_duration_since(now).max(self.pause)));
+                }
+                _ => {}
+            }
+            let until = match free_at {
+                Some(at) if first => at.min(deadline),
+                _ => deadline,
+            };
+            line = self
+                .changed
+                .wait_timeout(line, until.saturating_duration_since(now))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+}
+
+/// A [`Fetch`] whose every request to arXiv waits for its turn at an [`ArxivPace`]; requests to other hosts go as
+/// they come. The network ([`super::Http`]) is one, at [`ARXIV_PACE`].
+pub struct Paced<'p, F> {
+    pub inner: F,
+    pub pace: &'p ArxivPace,
+}
+
+impl<F: Fetch> Fetch for Paced<'_, F> {
+    fn get(&self, url: &str, limits: Limits) -> Result<Response, FetchError> {
+        if site(url) != "arxiv.org" {
+            return self.inner.get(url, limits);
+        }
+        let mut turn = self.pace.turn(limits.time).map_err(|left| {
+            FetchError::Unreachable(
+                url.to_owned(),
+                format!("arXiv is to be left alone for {} more seconds", left.as_secs().max(1)),
+            )
+        })?;
+        let answer = self.inner.get(url, limits);
+        if let Ok(response) = &answer {
+            turn.answered(response);
+        }
+        answer
+    }
+}
+
+impl<F: Fetch + ?Sized> Fetch for std::sync::Arc<F> {
+    fn get(&self, url: &str, limits: Limits) -> Result<Response, FetchError> {
+        (**self).get(url, limits)
+    }
+}
+
+impl<F: Fetch + ?Sized> Fetch for &F {
+    fn get(&self, url: &str, limits: Limits) -> Result<Response, FetchError> {
+        (**self).get(url, limits)
     }
 }
 
@@ -235,7 +439,7 @@ fn open<T>(schedule: &Mutex<Schedule<T>>) -> MutexGuard<'_, Schedule<T>> {
 /// `fetch_one` for every one of `addresses`, under `politeness`; one outcome per address, in their order.
 ///
 /// `fetch_one` is given a [`Fetch`] to fetch with and the address, and does whatever fetching the address means
-/// (following redirects, checking that a PDF is a PDF: [`super::proceedings::download_pdf`]). Why the answer does
+/// (following redirects, checking that a PDF is a PDF: [`crate::sources::conferences::proceedings::download_pdf`]). Why the answer does
 /// not depend on how the threads shared the work: each address's outcome is what `fetch_one` made of that address
 /// alone, kept in the address's place.
 pub fn fetch_all<T, F>(
@@ -374,7 +578,107 @@ mod tests {
         assert_eq!(site("https://notarxiv.org/a.pdf"), "notarxiv.org");
         assert_eq!(site("not an address"), "");
         assert_eq!(Politeness::default().rule("arxiv.org"), ARXIV);
-        assert_eq!(ARXIV, Rule { at_once: 1, pause: Duration::from_secs(3) });
+        assert_eq!(ARXIV, Rule { at_once: 1, pause: Duration::ZERO }, "the pause is the one pace's");
+        assert_eq!(ARXIV_PACE.pause, Duration::from_secs(3));
+    }
+
+    /// Requests to arXiv through `pace`, each taking `lasting`, from `threads` threads that ask one after another
+    /// (thread 0 first); answers the order they began in.
+    fn line_up(pace: &ArxivPace, threads: usize, lasting: Duration) -> Vec<usize> {
+        let began = Mutex::new(Vec::new());
+        let busy = Mutex::new(0usize);
+        std::thread::scope(|scope| {
+            for thread in 0..threads {
+                let (began, busy) = (&began, &busy);
+                scope.spawn(move || {
+                    let turn = pace.turn(Duration::from_secs(10)).unwrap();
+                    {
+                        let mut now = busy.lock().unwrap();
+                        *now += 1;
+                        assert_eq!(*now, 1, "two requests at arXiv at once");
+                    }
+                    began.lock().unwrap().push(thread);
+                    std::thread::sleep(lasting);
+                    *busy.lock().unwrap() -= 1;
+                    drop(turn);
+                });
+                // one after another: each is in line before the next asks
+                while pace.lock().issued <= thread as u64 {
+                    std::thread::yield_now();
+                }
+            }
+        });
+        began.into_inner().unwrap()
+    }
+
+    #[test]
+    fn arxiv_is_asked_once_at_a_time_in_the_order_turns_were_asked_for_with_its_pause_between() {
+        let pace = ArxivPace::new(Duration::from_millis(40));
+        let started = Instant::now();
+        let began = line_up(&pace, 6, Duration::from_millis(5));
+        assert_eq!(began, (0..6).collect::<Vec<_>>(), "first come, first served");
+        // six requests of 5 ms, with five pauses of 40 ms between them
+        assert!(started.elapsed() >= Duration::from_millis(5 * 40 + 6 * 5), "{:?}", started.elapsed());
+        assert!(pace.lock().waiting.is_empty());
+    }
+
+    #[test]
+    fn a_refusal_keeps_arxiv_waiting_as_long_as_it_asks_and_a_turn_that_cannot_come_in_time_is_refused_at_once() {
+        let pace = ArxivPace::new(Duration::from_millis(10));
+        {
+            let mut turn = pace.turn(Duration::from_secs(1)).unwrap();
+            turn.answered(&Response { retry_after: Some(Duration::from_secs(120)), ..status(429) });
+        }
+        let started = Instant::now();
+        let left = pace.turn(Duration::from_secs(5)).err().unwrap();
+        assert!(started.elapsed() < Duration::from_millis(500), "told at once, not after waiting");
+        assert!(left > Duration::from_secs(100), "{left:?}");
+        assert!(pace.lock().waiting.is_empty(), "a request that gives up leaves the line");
+        assert_eq!(pace.lock().refusals, 1);
+
+        // a refusal that does not say how long: the back-off, then answered again, the pause only
+        let pace = ArxivPace::new(Duration::from_millis(10));
+        let mut turn = pace.turn(Duration::from_secs(1)).unwrap();
+        turn.answered(&status(503));
+        drop(turn);
+        assert!(pace.turn(FIRST_BACK_OFF - Duration::from_secs(5)).is_err());
+        let Turn::Free { next: Some(next) } = pace.lock().turn else { panic!() };
+        assert!(next > Instant::now() + FIRST_BACK_OFF - Duration::from_secs(2));
+    }
+
+    #[test]
+    fn one_who_gives_up_waiting_does_not_hold_up_those_behind() {
+        let pace = ArxivPace::new(Duration::ZERO);
+        let held = pace.turn(Duration::from_secs(1)).unwrap();
+        std::thread::scope(|scope| {
+            let impatient = scope.spawn(|| pace.turn(Duration::from_millis(30)).is_err());
+            while pace.lock().issued < 2 {
+                std::thread::yield_now();
+            }
+            let patient = scope.spawn(|| pace.turn(Duration::from_secs(5)).map(drop).is_ok());
+            assert!(impatient.join().unwrap(), "gave up");
+            drop(held);
+            assert!(patient.join().unwrap(), "served once the turn was free, though one ahead had left");
+        });
+        assert!(pace.lock().waiting.is_empty());
+    }
+
+    #[test]
+    fn a_paced_fetch_waits_its_turn_only_for_arxiv() {
+        static PACE: ArxivPace = ArxivPace::new(Duration::from_millis(60));
+        let fake = Fake::new()
+            .with("https://arxiv.org/pdf/1", ok("application/pdf", "one"))
+            .with("https://export.arxiv.org/api/query?x", ok("text/xml", "two"))
+            .with("https://proceedings.mlr.press/a.pdf", ok("application/pdf", "three"));
+        let paced = Paced { inner: &fake, pace: &PACE };
+        for address in
+            ["https://arxiv.org/pdf/1", "https://proceedings.mlr.press/a.pdf", "https://export.arxiv.org/api/query?x"]
+        {
+            assert_eq!(paced.get(address, LIMITS).unwrap().status, 200);
+        }
+        let began = fake.began("*");
+        assert!(began[1] - began[0] < Duration::from_millis(50), "another host does not wait");
+        assert!(began[2] - began[0] >= Duration::from_millis(60), "the API and the PDFs keep one pace");
     }
 
     #[test]
@@ -431,6 +735,40 @@ mod tests {
         assert!((1..=6).contains(&fetched), "only those already begun: {fetched}");
         assert_eq!(fake.asked().len(), fetched);
         assert_eq!(outcomes.iter().filter(|outcome| **outcome == Outcome::Cancelled).count(), 40 - fetched);
+    }
+
+    #[test]
+    fn a_publishers_redirect_to_arxiv_waits_for_its_turn_at_arxiv() {
+        // four publisher addresses that each redirect to an arXiv PDF, beside four arXiv addresses of its own
+        let mut fake = Fake::new().slow(Duration::from_millis(10));
+        let mut addresses = Vec::new();
+        for paper in 0..4 {
+            let publisher = format!("https://proceedings.mlr.press/{paper}.pdf");
+            let arxiv = format!("https://arxiv.org/pdf/{paper}");
+            let redirected = format!("https://arxiv.org/pdf/moved-{paper}");
+            fake = fake
+                .with(&publisher, super::super::fake::redirect(302, &redirected))
+                .with(&redirected, ok("application/pdf", &redirected))
+                .with(&arxiv, ok("application/pdf", &arxiv));
+            addresses.push(publisher);
+            addresses.push(arxiv);
+        }
+        let follow = |fetch: &dyn Fetch, address: &str| -> Result<String, String> {
+            let (_, response) = super::super::get_following(fetch, address, LIMITS, &super::super::any_https)
+                .map_err(|e| e.to_string())?;
+            Ok(response.text())
+        };
+        // as through the network: every request to arXiv waits for its turn at the one pace
+        static PACE: ArxivPace = ArxivPace::new(Duration::from_millis(40));
+        let paced = Paced { inner: &fake, pace: &PACE };
+        let outcomes = fetch_all(&paced, &addresses, &quick(), &Progress::new(), follow);
+        assert!(outcomes.iter().all(|outcome| matches!(outcome, Outcome::Done(Ok(_)))), "{outcomes:?}");
+        assert_eq!(fake.most_at_once("arxiv.org"), 1, "arXiv was asked more than once at a time");
+        let began = fake.began("arxiv.org");
+        assert_eq!(began.len(), 8);
+        for pair in began.windows(2) {
+            assert!(pair[1] - pair[0] >= Duration::from_millis(40), "{:?} apart", pair[1] - pair[0]);
+        }
     }
 
     #[test]

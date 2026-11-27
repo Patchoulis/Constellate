@@ -24,12 +24,21 @@ pub(super) fn question(question: &str, schema: &Value, answers: Answers, wrong: 
         asked.push_str(&schema.to_string());
     }
     if let Some(wrong) = wrong {
-        asked.push_str("\n\nYour previous answer could not be used: ");
-        asked.push_str(wrong);
-        asked.push_str(". Answer again with JSON that follows the schema exactly.");
+        asked.push_str(AGAIN_BEFORE);
+        // what was wrong may quote the answer (a field's name) or the schema (an enum of a hundred ids): it is cut
+        // so that what is added stays within what the estimate's worst case counts for asking again
+        let room = usize::try_from(super::RETRY_CHARS)
+            .unwrap_or(usize::MAX)
+            .saturating_sub(AGAIN_BEFORE.len() + AGAIN_AFTER.len());
+        asked.extend(wrong.chars().take(room));
+        asked.push_str(AGAIN_AFTER);
     }
     asked
 }
+
+/// What is put around what was wrong with the first answer, when it is asked for again.
+const AGAIN_BEFORE: &str = "\n\nYour previous answer could not be used: ";
+const AGAIN_AFTER: &str = ". Answer again with JSON that follows the schema exactly.";
 
 /// The JSON in an answer, as text: the answer itself, or what is inside a code fence, or from the first `{` or `[`
 /// to the last `}` or `]` when a model wrote words around it.
@@ -155,7 +164,7 @@ fn walk(value: &Value, schema: &Value, at: &str) -> Result<(), String> {
 /// Whether OpenAI's strict mode can take `schema`: every object closed (`additionalProperties: false`) and every
 /// property required, which strict mode refuses a schema without. When not, the schema is sent without `strict`
 /// and the answer checked here.
-pub(super) fn strict_ready(schema: &Value) -> bool {
+pub fn strict_ready(schema: &Value) -> bool {
     match schema {
         Value::Object(fields) => {
             let closed_and_complete = match fields.get("properties").and_then(Value::as_object) {
@@ -250,6 +259,20 @@ mod tests {
         assert!(prompted.starts_with("Q?\n\n") && prompted.contains("\"additionalProperties\":false"));
         let again = question("Q?", &schema, Answers::Requested, Some("the answer lacks \"name\""));
         assert!(again.ends_with("follows the schema exactly.") && again.contains("lacks \"name\""));
+    }
+
+    #[test]
+    fn what_was_wrong_adds_no_more_to_the_question_asked_again_than_the_worst_case_counts() {
+        // an enum of many paper ids, or a field the model named at length, is quoted in what was wrong
+        let ids: Vec<String> = (0..300).map(|n| format!("2601.{n:05}")).collect();
+        let schema = json!({"type": "object", "properties": {"paper": {"enum": ids}}});
+        let why = check(&json!({"paper": "9999.99999"}), &schema).unwrap_err();
+        assert!(why.len() > 2_000, "{}", why.len());
+        let first = question("Q?", &schema, Answers::Prompted, None);
+        let again = question("Q?", &schema, Answers::Prompted, Some(&why));
+        let added = again.chars().count() - first.chars().count();
+        assert!(added <= usize::try_from(super::super::RETRY_CHARS).unwrap(), "{added} characters added");
+        assert!(again.ends_with("follows the schema exactly."));
     }
 
     #[test]

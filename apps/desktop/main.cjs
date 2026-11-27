@@ -1,60 +1,74 @@
 /**
- * The desktop shell: one window around the app's two local servers.
+ * The desktop shell: one window around the app's two local servers (engine.cjs starts both).
  *
- *   backend   python -m rp.server           the pipeline and its HTTP API, on 127.0.0.1:8765
- *   web       Next's standalone server.js   the UI, on a free port; it forwards /api to the backend
+ *   engine     constellate (apps/engine)     everything the app does but drawing it: its HTTP API on 127.0.0.1,
+ *                                            on a port of its own choosing, answered only with its token
+ *   interface  Next's standalone server.js   the pages, on the port remembered in the data folder (port.cjs); it
+ *                                            forwards /api and /auth to the engine, adding the token itself
  *
- * Both are child processes of this shell and die with it. The web server is run by Electron's own Node
- * (process.execPath + ELECTRON_RUN_AS_NODE=1), so no Node installation is needed. The installed app also brings
- * its own Python: setup.cjs makes it on the first start, shown in a small window. From the repository, the
- * Python on the path is used (RP_PYTHON to choose another).
+ * Both are child processes of this shell and stop with it. The interface's server is run by Electron's own Node
+ * (process.execPath + ELECTRON_RUN_AS_NODE=1), so no Node installation is needed. Nothing is installed at the first
+ * start: the app opens at once, and the first run the user makes downloads the embedding model (about 1.2 GB)
+ * as one of its steps, shown with the run's progress.
  *
  * Two ways to run:
- *   - built (the default): the servers come from apps/web/.next/standalone and apps/backend when started from
- *     the repository, or from the app's resources folder when packaged. `npm run build` makes them.
- *   - RP_DEV_URL=http://localhost:3210: nothing is spawned; the window shows servers started by `npm run dev`.
+ *   - built (the default): the engine and the interface come from target/release and apps/web/.next/standalone
+ *     when started from the repository (`npm run build` makes them), or from the app's resources when packaged.
+ *     CONSTELLATE_DATA, when set to a folder, is the data folder instead of the usual one.
+ *   - RP_DEV_URL=http://localhost:3210: nothing is spawned; the window shows the servers `npm run dev` started.
  *
- * Where the app is between opening and closing is one explicit state machine, lifecycle.cjs: every decision
- * below that depends on it (may a process start, does a window closing mean stop) asks it rather than a flag.
+ * Where the app is between opening and closing is lifecycle.cjs: every decision below that depends on it (may a
+ * process start, does a window closing mean quit, may the app end yet) asks it rather than a flag.
  */
-const { app, BrowserWindow, dialog, session, shell } = require("electron");
+const { app, BrowserWindow, dialog, nativeImage, session, shell } = require("electron");
 const { spawn } = require("node:child_process");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
-const http = require("node:http");
 const path = require("node:path");
-const { Lifecycle } = require("./lifecycle.cjs");
+const { EngineLog, WINDOW_COOKIE, answers, interfaceEnvironment, startEngine } = require("./engine.cjs");
+const { Lifecycle, withParent } = require("./lifecycle.cjs");
 const { interfacePort } = require("./port.cjs");
-const setup = require("./setup.cjs");
+const { holdAppWindow, quietNetwork, readerGuard, question } = require("./reader-guard.cjs");
 
-const BACKEND_PORT = 8765; // the web build forwards /api here (apps/web/next.config.ts)
-// How often a starting server is asked whether it answers, and how many times: the window opens once both answer,
-// so a server that is up waits half the interval on average before anyone notices. Asking is one local request.
-// The limit is a number of tries, not a time: where a refused connection itself takes a second or two (Windows
-// retries it), a slow first start gets as long as it always had.
+// How often the starting interface is asked whether it answers, and how many times: the window opens once it
+// does. The limit is a number of tries, not a time: where a refused connection itself takes a second or two
+// (Windows retries it), a slow first start gets as long as it always had.
 const START_POLL_MS = 100;
 const START_TRIES = 600;
+/** How long a child has to stop once asked (its standard input closed) before it is ended. */
+const STOP_GRACE_MS = 4000;
 const DEV_URL = process.env.RP_DEV_URL;
 const REPO = path.join(__dirname, "..", "..");
+const ENGINE_FILE = process.platform === "win32" ? "constellate.exe" : "constellate";
+/** This launch's key of the window, for the interface's server (engine.cjs `interfaceEnvironment`). */
+const WINDOW_KEY = crypto.randomBytes(32).toString("hex");
+/** The oldest C library the engine's ONNX Runtime loads with on Linux (Ubuntu 24.04 has it). */
+const LEAST_GLIBC = [2, 38];
 
 /** Where the two servers and the data live: inside the installed app, or in the repository. */
 const places = app.isPackaged
 	? {
-			backend: path.join(process.resourcesPath, "backend"),
-			uv: path.join(process.resourcesPath, "uv", process.platform === "win32" ? "uv.exe" : "uv"),
-			python: path.join(localData(), "python"),
+			engine: path.join(process.resourcesPath, "engine", ENGINE_FILE),
 			web: path.join(process.resourcesPath, "web", "apps", "web", "server.js"),
-			data: path.join(localData(), "data"),
+			data: dataFolder(path.join(localData(), "data")),
 		}
 	: {
-			backend: path.join(REPO, "apps", "backend"),
+			engine: path.join(REPO, "target", "release", ENGINE_FILE),
 			web: path.join(REPO, "apps", "web", ".next", "standalone", "apps", "web", "server.js"),
-			data: path.join(REPO, "data"),
+			data: dataFolder(path.join(REPO, "data")),
 		};
 
+/** The data folder: CONSTELLATE_DATA when it names one (a whole path), else `usual`. */
+function dataFolder(usual) {
+	const asked = process.env.CONSTELLATE_DATA?.trim();
+	return asked && path.isAbsolute(asked) ? asked : usual;
+}
+
 /**
- * The installed app's own data: its library and its Python. Always the system's folder for one program's local
- * data, which nothing syncs: the library is a database that is open while the app runs, and a sync client
- * copying it mid-write can corrupt it. (Electron's "userData" is the roaming folder on Windows.)
+ * The installed app's own data. Always the system's folder for one program's local data, which nothing syncs:
+ * the library is a database that is open while the app runs, and a sync client copying it mid-write can corrupt
+ * it. (Electron's "userData" is the roaming folder on Windows.) The library and runs are in its `data` folder, where
+ * they have always been, so an update finds them.
  */
 function localData() {
 	if (process.platform === "win32" && process.env.LOCALAPPDATA) return path.join(process.env.LOCALAPPDATA, "Constellate");
@@ -66,12 +80,43 @@ function localData() {
 	return app.getPath("userData");
 }
 
-const life = new Lifecycle();
-const children = []; // the two servers
-let installer = null; // the process setting Python up, while there is one
+/** The app's name, as everything it shows says it: never "Electron", whatever program runs it. */
+const NAME = "Constellate";
+/** The app's identity to Windows (electron-builder.yml appId): what the taskbar and the system's own prompts group
+ *  and name its windows by. Without it, a copy run from the repository is shown as "Electron". */
+const APP_ID = "app.constellate.desktop";
+app.setName(NAME);
+if (process.platform === "win32") app.setAppUserModelId(APP_ID);
+// Nothing of Chromium's listens beyond this computer (reader-guard.cjs): set before the app is ready, for all of it.
+quietNetwork(app);
+// No page is ever handed a certificate of the user's: Electron's default would give the first one there is.
+app.on("select-client-certificate", (event, _contents, _url, _certificates, callback) => {
+	event.preventDefault();
+	callback();
+});
 
-// One Constellate at a time: a second one would set Python up a second time alongside the first, share the
-// first one's backend and lose it when the first closes. The second one does nothing at all but quit.
+const ICON_FILE = path.join(__dirname, "icon.png");
+/** The app's icon for a window or a dialog; nothing when it has not been drawn yet (npm run build draws it). */
+function appIcon() {
+	if (!fs.existsSync(ICON_FILE)) return undefined;
+	const icon = nativeImage.createFromPath(ICON_FILE);
+	return icon.isEmpty() ? undefined : icon;
+}
+
+/**
+ * Ask or tell the user something in a dialog of the app's own: its title is the app's name and its picture the
+ * app's icon, so that it is plain which program is asking. `kind` is the system's picture when there is no icon.
+ */
+function appDialog(kind, options) {
+	const icon = appIcon();
+	return { type: icon ? "none" : kind, icon, title: NAME, noLink: true, ...options };
+}
+
+const life = new Lifecycle();
+const children = []; // the engine and the interface's server
+
+// One Constellate at a time: a second one would open the same library beside the first one's engine. The second
+// one does nothing at all but quit.
 const first = app.requestSingleInstanceLock();
 if (!first) app.quit();
 app.on("second-instance", () => {
@@ -81,141 +126,81 @@ app.on("second-instance", () => {
 	window.focus();
 });
 
-function answers(url) {
-	return new Promise((resolve) => {
-		const request = http.get(url, (response) => {
-			response.resume();
-			resolve(true);
-		});
-		request.once("error", () => resolve(false));
-		request.setTimeout(2000, () => request.destroy());
+/** A child the shell started: kept to be stopped, and reported if it ends once the app is ready (while starting
+ *  up, whoever waits for it reports it). */
+function adopt(name, child, tail) {
+	children.push(child);
+	child.once("exit", (code) => {
+		if (life.childExitIsFailure) fail(new Error(`${name} stopped (code ${code}).\n\n${tail()}`));
 	});
 }
 
-/** Start a child server and resolve once `url` answers; reject if it exits first or takes too long. */
-async function serve(name, command, args, options, url) {
-	if (await answers(url)) {
-		// From the repository that is the backend `npm run dev` started. The installed app starts its own, and one
-		// that is already there belongs to something else and would refuse this window's requests.
-		if (!app.isPackaged) return;
-		throw new Error(
-			`${name} cannot start: something else is already answering at ${url}. Close it (an earlier Constellate may still be running: end "python.exe" in Task Manager) and open Constellate again.`,
-		);
-	}
-	if (!life.maySpawn) throw new Error(`${name} was not started: the app is closing.`);
-	// stdin stays open as long as this shell lives: the backend watches it and stops when it closes (RP_EXIT_WITH_PARENT)
-	const child = spawn(command, args, { ...options, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-	children.push(child);
+/**
+ * On Linux, the engine's ONNX Runtime needs glibc 2.38 or newer: said plainly, rather than as the system loader's
+ * complaint about a missing symbol. Null when it can run here.
+ */
+function tooOldForTheEngine() {
+	if (process.platform !== "linux") return null;
+	const version = process.report?.getReport?.().header?.glibcVersionRuntime;
+	if (typeof version !== "string") return null; // not glibc (or not told): let the engine try
+	const [major, minor] = version.split(".").map(Number);
+	if (major > LEAST_GLIBC[0] || (major === LEAST_GLIBC[0] && minor >= LEAST_GLIBC[1])) return null;
+	return `${NAME} needs a Linux with glibc ${LEAST_GLIBC.join(".")} or newer (Ubuntu 24.04, Debian 13, Fedora 39 or later). This system has glibc ${version}.`;
+}
+
+/** Start the interface's server and resolve once it answers at `url`; reject if it ends first or never answers. */
+async function startInterface(port, url, engine) {
+	if (!life.maySpawn) throw new Error("The interface was not started: the app is closing.");
+	const child = spawn(process.execPath, withParent(places.web), {
+		cwd: path.dirname(places.web),
+		env: interfaceEnvironment(process.env, { port, engine: engine.url, token: engine.token, windowKey: WINDOW_KEY }),
+		stdio: ["pipe", "pipe", "pipe"],
+		windowsHide: true,
+	});
 	let output = "";
 	const keep = (chunk) => (output = (output + chunk).slice(-4000));
 	child.stdout.on("data", keep);
 	child.stderr.on("data", keep);
+	adopt("The interface", child, () => output);
 	const exited = new Promise((_, reject) => {
-		child.once("error", (error) => reject(new Error(`${name} could not start: ${error.message}`)));
-		child.once("exit", (code) => {
-			const stopped = new Error(`${name} stopped (code ${code}).\n\n${output}`);
-			if (life.childExitIsFailure)
-				fail(stopped); // nobody is waiting for it any more: say so and close
-			else reject(stopped); // still starting up: whoever is waiting below reports it
-		});
+		child.once("error", (error) => reject(new Error(`The interface could not start: ${error.message}`)));
+		child.once("exit", (code) => reject(new Error(`The interface stopped (code ${code}).\n\n${output}`)));
 	});
 	const up = (async () => {
 		for (let attempt = 0; attempt < START_TRIES; attempt++) {
 			if (await answers(url)) return;
-			if (!life.maySpawn) throw new Error(`${name} is no longer waited for: the app is closing.`);
+			if (!life.maySpawn) throw new Error("The interface is no longer waited for: the app is closing.");
 			await new Promise((resolve) => setTimeout(resolve, START_POLL_MS));
 		}
-		throw new Error(`${name} did not answer at ${url}.\n\n${output}`);
+		throw new Error(`The interface did not answer at ${url}.\n\n${output}`);
 	})();
 	await Promise.race([up, exited]);
 }
 
-/** The Python the backend runs on: the installed app's own (set up by the Installation Wizard the first time),
- *  or the one on the path. */
-async function backendPython() {
-	if (!app.isPackaged) return process.env.RP_PYTHON || "python";
-	const wanted = { uv: places.uv, folder: places.python, requirements: path.join(places.backend, "requirements.txt") };
-	let wizard = null; // the window that shows the setup, opened only if there is something to set up
-	const log = (line) => {
-		if (!life.is("installing")) return; // stopping: nothing more to show
-		if (!wizard) {
-			wizard = new BrowserWindow({
-				width: 660,
-				height: 440,
-				backgroundColor: "#141414",
-				autoHideMenuBar: true,
-				resizable: false,
-				title: `${app.getName()} Installation Wizard`,
-				icon: path.join(__dirname, "icon.png"),
-			});
-			void wizard.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(WIZARD_PAGE)}`);
-			// The user closing it means "not now": stop the download and quit; the next start carries on from there.
-			// When the shell closes it (below), the lifecycle has already left "installing", so this does nothing.
-			wizard.once("closed", () => {
-				if (!life.wizardCloseMeansStop) return;
-				life.move("quitting");
-				installer?.kill();
-				app.quit();
-			});
-		}
-		if (wizard.isDestroyed()) return;
-		const show = `document.getElementById("log").textContent += ${JSON.stringify(`${line}\n`)}; window.scrollTo(0, document.body.scrollHeight);`;
-		wizard.webContents.executeJavaScript(show).catch(() => {});
-	};
-	life.move("installing");
-	try {
-		const python = await setup.ensure({ ...wanted, log, started: (child) => (installer = life.maySpawn ? child : (child.kill(), null)) });
-		life.move("serving"); // before the wizard is closed, so that closing it is not taken for the user's doing
-		return python;
-	} finally {
-		installer = null;
-		if (wizard && !wizard.isDestroyed()) wizard.close();
-	}
-}
-
-const WIZARD_PAGE = `<body style="margin:0;padding:20px;background:#141414;color:#d4d4d4;font:13px/1.5 ui-monospace,Consolas,monospace">
-<h1 style="font-size:15px;margin:0 0 6px">Installation Wizard</h1>
-<p style="margin:0 0 12px;color:#8a8a8a">Constellate is downloading the Python packages it runs on: a few gigabytes, once. It can take several minutes. Closing this window stops it; opening Constellate again carries on where it stopped.</p>
-<pre id="log" style="margin:0;white-space:pre-wrap;color:#a3a3a3"></pre></body>`;
-
-/** The environment without API keys: the interface's server shows pages and has no use for them. */
-function withoutKeys(env) {
-	return Object.fromEntries(
-		Object.entries(env).filter(([name]) => !/^(ANTHROPIC|OPENAI|HF|HUGGING)/i.test(name) && !/(KEY|TOKEN|SECRET)$/i.test(name)),
-	);
-}
-
 async function startServers() {
 	if (DEV_URL) return DEV_URL;
-	if (!fs.existsSync(places.web)) throw new Error(`The app is not built yet (${places.web} is missing). Run: npm run build`);
-	const python = await backendPython();
-	life.move("serving"); // from the repository there was nothing to install: straight to serving
-	if (!life.is("serving")) throw new Error("The app is closing.");
+	if (!life.move("serving")) throw new Error("The app is closing.");
+	const old = tooOldForTheEngine();
+	if (old) throw new Error(old);
+	for (const [what, file] of [
+		["The interface", places.web],
+		["The engine", places.engine],
+	]) {
+		if (!fs.existsSync(file)) throw new Error(`${what} is not built yet (${file} is missing). Run: npm run build`);
+	}
+	fs.mkdirSync(places.data, { recursive: true });
 	// the same port as last time, so the window still has what it remembered (marked papers, panel sizes)
 	const port = await interfacePort(path.join(places.data, "interface-port"));
 	const url = `http://127.0.0.1:${port}`;
-	await Promise.all([
-		serve(
-			"The backend (python -m rp.server)",
-			python,
-			["-W", "ignore", "-m", "rp.server"],
-			{
-				cwd: places.backend,
-				env: { ...process.env, RP_PORT: String(BACKEND_PORT), RP_DATA: places.data, RP_ORIGIN: url, RP_EXIT_WITH_PARENT: "1" },
-			},
-			`http://127.0.0.1:${BACKEND_PORT}/api/settings`,
-		),
-		serve(
-			"The interface",
-			process.execPath,
-			[places.web],
-			{
-				cwd: path.dirname(places.web),
-				env: { ...withoutKeys(process.env), ELECTRON_RUN_AS_NODE: "1", PORT: String(port), HOSTNAME: "127.0.0.1" },
-			},
-			url,
-		),
-	]);
+	const log = new EngineLog(path.join(places.data, "logs"));
+	const engine = await startEngine({
+		binary: places.engine,
+		data: places.data,
+		origin: url,
+		log,
+		admit: (child) => life.maySpawn && (adopt("The engine", child, () => log.recent), true),
+	});
+	await startInterface(port, url, engine);
 	return url;
 }
 
@@ -227,95 +212,74 @@ function openWindow(url) {
 		minHeight: 640,
 		backgroundColor: "#141414",
 		autoHideMenuBar: true,
-		title: app.getName(),
-		icon: path.join(__dirname, "icon.png"),
-		// the reader shows a paper's own page (and its reviews) inside the window, in an embedded view
-		webPreferences: { webviewTag: true },
+		title: NAME,
+		icon: appIcon(),
+		// the reader shows a paper's own page (and its reviews) inside the window, in an embedded view; the
+		// app's own page needs nothing of this computer either: no Node, a sandboxed process
+		webPreferences: { webviewTag: true, sandbox: true, contextIsolation: true, nodeIntegration: false },
 	});
-	// An embedded view shows somebody else's web page: it gets no access to this app at all, its own storage
-	// (the "reader" partition, set by the interface), no permissions, and only the sites papers live on.
-	window.webContents.on("will-attach-webview", (event, preferences, params) => {
-		delete preferences.preload;
-		delete preferences.preloadURL;
-		preferences.nodeIntegration = false;
-		preferences.nodeIntegrationInSubFrames = false;
-		preferences.contextIsolation = true;
-		preferences.sandbox = true;
-		preferences.webSecurity = true;
-		if (!readable(params.src) || params.partition !== READER) event.preventDefault();
-	});
-	window.webContents.on("did-attach-webview", (_event, guest) => {
-		// The view itself only goes to the sites papers live on. A page cannot send the user's browser anywhere
-		// by navigating: only a link the user opens in a new window (below) leaves the app.
-		const stay = (event, target) => {
-			if (event.isMainFrame !== false && !readable(target)) event.preventDefault();
-		};
-		guest.on("will-navigate", stay);
-		guest.on("will-redirect", stay);
-		// A frame inside a shown page must not load this app's own interface or API.
-		guest.on("will-frame-navigate", (event) => {
-			if (!event.isMainFrame && local(event.url)) event.preventDefault();
-		});
-		guest.setWindowOpenHandler(({ url: target }) => {
-			if (/^https:\/\//.test(target)) void shell.openExternal(target);
-			return { action: "deny" };
-		});
-	});
-	// Nothing opens a second app window: a link that leaves the app goes to the user's browser.
-	window.webContents.setWindowOpenHandler(({ url: target }) => {
-		if (/^https:\/\//.test(target)) void shell.openExternal(target);
-		return { action: "deny" };
-	});
+	// An embedded view shows somebody else's web page: it gets no access to this app at all (reader-guard.cjs).
+	reader.guardWindow(window);
+	// The app's own window shows the app and nothing else, its frames included (reader-guard.cjs).
+	holdAppWindow(window, url, (address) => void shell.openExternal(address));
 	void window.loadURL(url);
 }
 
-/** The embedded reader's storage partition, and the sites it may show: where papers and their reviews live. */
-const READER = "reader";
-const READER_SITES = [
-	"openreview.net",
-	"arxiv.org",
-	"proceedings.neurips.cc",
-	"proceedings.mlr.press",
-	"openaccess.thecvf.com",
-	"aclanthology.org",
-];
+/**
+ * The embedded reader's guard (reader-guard.cjs). A site on no list is opened only when the user, asked in a
+ * dialog of the app's own that no page can reach, chooses to; the safe answer is the default.
+ */
+const reader = readerGuard({
+	openOutside: (address) => void shell.openExternal(address),
+	ask: async (host) => {
+		const asked = question(host);
+		const [window] = BrowserWindow.getAllWindows();
+		const options = appDialog("warning", {
+			message: asked.message,
+			detail: asked.detail,
+			buttons: asked.buttons,
+			defaultId: 0,
+			cancelId: 0,
+		});
+		const { response } = window ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options);
+		return asked.answers[response] ?? "no";
+	},
+});
 
-function readable(address) {
-	try {
-		const { protocol, hostname } = new URL(address);
-		return protocol === "https:" && READER_SITES.some((site) => hostname === site || hostname.endsWith(`.${site}`));
-	} catch {
-		return false;
-	}
-}
-
-function local(address) {
-	try {
-		return ["127.0.0.1", "localhost", "[::1]", "::1"].includes(new URL(address).hostname);
-	} catch {
-		return false;
-	}
-}
-
-/** Nothing in this app needs the camera, the microphone, the location...: every permission request is refused. */
+/**
+ * Nothing in this app needs the camera, the microphone, the location...: every permission request is refused,
+ * in the app's own window and in the reader, whose pages are also kept to the paper sites (reader-guard.cjs).
+ */
 function refusePermissions() {
-	for (const each of [session.defaultSession, session.fromPartition(READER)]) {
-		each.setPermissionRequestHandler((_contents, _permission, answer) => answer(false));
-		each.setPermissionCheckHandler(() => false);
-	}
+	session.defaultSession.setPermissionRequestHandler((_contents, _permission, answer) => answer(false));
+	session.defaultSession.setPermissionCheckHandler(() => false);
+	reader.confineSession(session);
 }
 
-/** Stop everything this shell started. Whatever state it was in, nothing new starts after this. */
-function stopEverything() {
-	life.move("quitting");
-	installer?.kill();
-	for (const child of children) child.kill();
+/** Has this child ended? */
+const ended = (child) => child.exitCode !== null || child.signalCode !== null;
+
+/**
+ * Stop every child: each is asked first, by closing its standard input (the engine then finishes what it is
+ * answering and saves nothing half-written), and ended if it has not stopped within STOP_GRACE_MS.
+ */
+async function stopChildren() {
+	await Promise.all(
+		children.map(async (child) => {
+			if (ended(child)) return;
+			const gone = new Promise((resolve) => child.once("exit", resolve));
+			child.stdin?.end();
+			const late = setTimeout(() => child.kill(), STOP_GRACE_MS);
+			await gone;
+			clearTimeout(late);
+		}),
+	);
 }
 
 /** Something went wrong that the user has to know about: say it once, then close. */
 function fail(error) {
 	if (!life.move("failed")) return; // already failing or quitting: one message is enough, and a quit needs none
-	dialog.showErrorBox(app.getName(), error.message);
+	dialog.showMessageBoxSync(appDialog("error", { message: `${NAME} could not start.`, detail: error.message, buttons: ["Close"] }));
 	app.quit();
 }
 
@@ -323,6 +287,11 @@ if (first) {
 	app.whenReady().then(async () => {
 		try {
 			const url = await startServers();
+			// the window's key (engine.cjs interfaceEnvironment): a cookie no page can read and no other site sends;
+			// set while still starting, so that a failure is reported and a quit meanwhile opens no window
+			if (!DEV_URL) {
+				await session.defaultSession.cookies.set({ url, name: WINDOW_COOKIE, value: WINDOW_KEY, httpOnly: true, sameSite: "strict" });
+			}
 			if (!life.move("ready")) return; // closed while the servers were starting
 			refusePermissions();
 			openWindow(url);
@@ -332,4 +301,16 @@ if (first) {
 	});
 }
 app.on("window-all-closed", () => life.quitsWhenWindowsClose && app.quit());
-app.on("before-quit", stopEverything);
+// Every way the app quits passes here: the children are stopped first, and only then does the app end.
+app.on("before-quit", (event) => {
+	if (life.mayEnd) return;
+	event.preventDefault();
+	if (!life.move("quitting")) return; // already stopping them: this quit happens when they have stopped
+	void stopChildren().then(() => {
+		life.move("stopped");
+		app.quit();
+	});
+});
+// Ctrl+C in the terminal that ran `npm run app`, or the system asking the app to end: quit the ordinary way, so
+// that before-quit stops the servers (by default Node would end this process alone).
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => app.quit());

@@ -7,15 +7,15 @@ the style they follow. This file is the short version, plus what an automated as
 
 ## Layout
 
-| Path                 | What                                                                |
-| -------------------- | ------------------------------------------------------------------- |
-| `apps/backend`       | Python package `rp`: the pipeline and a Flask API on 127.0.0.1:8765 |
-| `apps/web`           | The interface: Next.js, React, Tailwind, a d3 canvas                |
-| `apps/desktop`       | Electron shell, first-start setup of the app's Python, installer    |
-| `packages/contracts` | TypeScript types shared by the interface and described by the API   |
-| `scripts/build.mjs`  | `npm run build` / `npm run app` / `npm run dist`                    |
-| `scripts/pr.mjs`     | `npm run pr`: everything a pull request must pass                   |
-| `data/`              | The library and runs. Never committed.                              |
+| Path                 | What                                                                                             |
+| -------------------- | ------------------------------------------------------------------------------------------------ |
+| `apps/engine`        | The Rust engine `constellate`: the pipeline, the library, the HTTP API on 127.0.0.1 (its README) |
+| `apps/web`           | The interface: Next.js, React, Tailwind, a d3 canvas; its server forwards /api to the engine     |
+| `apps/desktop`       | Electron shell: starts the engine and the interface's server, opens the window; the packages     |
+| `packages/contracts` | TypeScript types shared by the interface and described by the API                                |
+| `scripts/build.mjs`  | `npm run build` / `npm run app` / `npm run dist`                                                 |
+| `scripts/pr.mjs`     | `npm run pr`: everything a pull request must pass                                                |
+| `data/`              | The library and runs when the app runs from the repository. Never committed.                     |
 
 ## Commands
 
@@ -23,7 +23,8 @@ the style they follow. This file is the short version, plus what an automated as
 npm run app            build and open the desktop app
 npm run pr             format check, lint, types, every test (what CI runs)
 npm run pr -- --fix    the same, formatting and fixing what it can
-npm run dist           build the Windows installer into dist/
+npm run dist           build this system's packages into dist/ (Windows installer; Linux AppImage and .deb)
+npm run dev            the engine and the interface with hot reload, on http://localhost:3210
 ```
 
 ## Secrets: never commit them
@@ -31,8 +32,14 @@ npm run dist           build the Windows installer into dist/
 - Anything sensitive, and every endpoint the app talks to or listens on, is configured through environment variables
   or a `.env` file, never written in code or a tracked file. `.env.example` lists every name with no values; add a
   new variable there when you add one.
-- API keys live in environment variables only (`ANTHROPIC_API_KEY`). Never write a key, token or password into a
-  file in this repository, a test, a fixture, a log line, a commit message or the changelog.
+- API keys live in the environment or in the `.env` the engine reads from its working folder, which for the desktop
+  app is its data folder (`<data>/.env`, README.md "Keys"); never in this repository. Only the engine is given them:
+  the interface's server and the pages never are. Never write a key, token or password into a file in this
+  repository, a test, a fixture, a log line, a commit message or the changelog.
+- The engine makes up its token at each start, and the shell reads it from the engine's startup line, which is
+  never logged or written anywhere. The shell gives it to the interface's server alone (`CONSTELLATE_ENGINE_TOKEN`),
+  which adds it to what it forwards to the engine. It must never reach a page, a response header, a `NEXT_PUBLIC_`
+  variable or a log (`apps/desktop/servers.test.cjs` checks).
 - Never commit `data/`, `.env*`, `*.pem`, `*.key`, or `.claude/settings.local.json`. They are in `.gitignore`;
   do not remove them from it and do not use `git add -f` on them.
 - Stage files by name or by folder you have looked at (`git add apps packages ...`), then read
@@ -54,7 +61,8 @@ npm run dist           build the Windows installer into dist/
 5. **Commit** with a Conventional Commit message (below).
 6. **Release**: move the Unreleased entries under a new version heading with today's date, set that version in
    the root `package.json`, commit (`chore(release): vX.Y.Z`), merge, then tag `vX.Y.Z` on `main` and push the
-   tag. The Release workflow builds the installer and publishes the GitHub release from the changelog section.
+   tag. The Release workflow builds the Windows installer and the Linux AppImage and .deb, and publishes one GitHub
+   release with them and their checksums, its notes from the changelog section.
    Version by SemVer: `fix` raises the patch, `feat` the minor, a breaking change the major (while 0.x: the minor).
 
 ## Commit messages
@@ -66,7 +74,7 @@ npm run dist           build the Windows installer into dist/
 ```
 
 Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
-Scopes: `backend`, `web`, `desktop`, `contracts`, `build`, `release` (optional).
+Scopes: `engine`, `web`, `desktop`, `contracts`, `build`, `release` (optional).
 
 **A message describes the change and nothing else.** No mention of who or what wrote it: no assistant or tool
 names, no `Co-Authored-By` lines for assistants, no "generated with". The same goes for pull request titles and
@@ -74,19 +82,23 @@ descriptions, the changelog and code comments. The `commit-msg` hook rejects suc
 
 ## Style (the full list is in CONTRIBUTING.md)
 
-- Formatting is the formatter's: Prettier for TypeScript, JSON, Markdown, YAML; `ruff format` for Python.
-- `ruff check` clean, `tsc` clean. A caught error is named `error` in both languages.
-- Explicit state machines (`rp/jobs.py`, `useJob`, `useAsync`, `apps/desktop/setup.cjs`), small modules, no
-  repeated code.
-- Work that was done is not done again: everything fetched or computed is kept by id in `data/library`.
-- Files in the library are written through `rp/store.py` (atomic replace, lock), never directly.
+- Formatting is the formatter's: `cargo fmt` for Rust; Prettier for TypeScript, JSON, Markdown, YAML.
+- `cargo clippy -- -D warnings` clean, `tsc` clean. A caught error is named `error`.
+- Explicit states, each set written down in one place (`apps/engine/src/jobs.rs`, `useJob`, `useAsync`,
+  `apps/desktop/lifecycle.cjs`), small modules, no repeated code.
+- Work that was done is not done again: everything fetched or computed is kept by id in the library.
+- The library is written through `apps/engine/src/library` (the database; `store` for files, replaced whole) and
+  the `store.rs` of each feature in `apps/engine/src/features`, never directly.
 - Anything shown as a fact about a paper that is really an estimate or a program's reading (AI detected,
   declaration flags, ratings) says so where it is shown.
 
 ## Things that look wrong but are deliberate
 
-- `rp/embed.py` sets `HF_DEACTIVATE_ASYNC_LOAD` before importing transformers: without it, loading a model crashes
-  the interpreter on the newest Python on Windows (PyTorch in transformers' loader threads). Leave it.
 - OpenReview serves a bot challenge to programs. Do not work around it. Reviews are read only from the page the
   user opens in the reader.
-- The installed app does not use the machine's Python: it sets up its own on first start (`setup.cjs`).
+- The shell starts the engine in the data folder: that is how the `.env` it reads from its working folder is the
+  data folder's. And it sets how the engine listens (`CONSTELLATE_BIND`, `CONSTELLATE_PORT`, an empty
+  `CONSTELLATE_TOKEN`, ...) explicitly, so that a `.env` cannot turn the desktop app's engine into a server
+  (`apps/desktop/engine.cjs`).
+- The interface's server forwards /api and /auth in `apps/web/proxy.ts`, not with rewrites in `next.config.ts`: a
+  rewrite cannot add the engine's token to each request.

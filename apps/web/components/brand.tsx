@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 
 /**
  * The app's mark: bodies on a spiral orbit. The paths are the "universe" icon of Tabler Icons
- * (https://tabler.io/icons, MIT licence, (c) Pawel Kuna); see THIRD_PARTY_NOTICES.md.
+ * (https://tabler.io/icons, MIT licence, (c) Pawel Kuna); see docs/licenses/third-party-notices.md.
  */
 export function Logo({ className }: { className?: string }) {
 	return (

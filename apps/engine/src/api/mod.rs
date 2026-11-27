@@ -2,34 +2,26 @@
 //!
 //! | module       | what lives there                                                                   |
 //! |--------------|------------------------------------------------------------------------------------|
-//! | [`config`]   | how the engine listens, from the environment: this computer only, or a network     |
-//! | [`connections`] | how many connections there may be, and how long one may stay silent             |
-//! | [`security`] | the checks every request passes (address, origin, token or session) and its headers |
-//! | [`login`]    | across a network: the owner's sign-in, with Google or a password, and sessions     |
-//! | [`routes`]   | the routes, the state they share and how errors are told                           |
-//! | [`reviews`]  | a paper's reviews read from the page the user opened, and what they come to        |
-//! | [`passages`] | a paper's text from its PDF, and where a quote is in it                            |
-//! | [`stances`]  | where a community's papers agree and disagree on a question                        |
+//! | [`routes`]   | the route table, the state the routes share and how errors are told                |
+//! | [`guard`]    | what every request passes first: how the engine listens, connections, checks, sign-in |
+//! | [`papers`]   | one paper: its record, PDF, declarations, passages, reviews and citations          |
+//! | [`runs`]     | the runs: making one, listing, serving, renaming, deleting; the catalogue           |
 //! | [`models`]   | the language models' providers and models, for the interface to choose from        |
+//! | [`usage`]    | what the language model has cost: in all, by model and purpose, and this session   |
 //!
 //! [`Server`] puts them together: bound to its address, it says once where it is ([`Server::startup_line`]) and
 //! serves until it is told to stop.
 
-pub mod answers;
-pub mod citation_contexts;
-pub mod claim_tree;
-pub mod config;
-pub mod connections;
-pub mod critique;
-pub mod explanation;
-pub mod extraction;
-pub mod login;
+#[cfg(test)]
+pub(crate) mod contract;
+pub mod guard;
 pub mod models;
-pub mod passages;
-pub mod reviews;
+#[cfg(test)]
+pub(crate) mod other_providers;
+pub mod papers;
 pub mod routes;
-pub mod security;
-pub mod stances;
+pub mod runs;
+pub mod usage;
 
 use std::future::Future;
 use std::io;
@@ -43,12 +35,12 @@ use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use hyper_util::rt::{TokioExecutor, TokioTimer};
 use hyper_util::server::conn::auto::Builder;
 
-use config::{Listen, Transport};
-use connections::Seats;
-use login::oidc::{self, Provider};
-use login::password::{Hashing, PasswordError, SetupCode};
+use guard::config::{Listen, Transport};
+use guard::connections::Seats;
+use guard::login::oidc::{self, Provider};
+use guard::login::password::{Hashing, PasswordError, SetupCode};
+use guard::security::{Admission, Guard};
 use routes::{Engine, Shared};
-use security::{Admission, Guard};
 
 /// How long a client may take to send a request's headers before its connection is closed.
 const HEADERS_PATIENCE: Duration = Duration::from_secs(10);
@@ -99,7 +91,7 @@ impl Server {
     ) -> io::Result<Server> {
         let bound = listener.local_addr()?;
         let (app, engine, setup) = application(&listen, bound, engine, routes, provider, hashing)?;
-        Ok(Server { listener, bound, listen, engine, app, quiet: connections::QUIET, setup })
+        Ok(Server { listener, bound, listen, engine, app, quiet: guard::connections::QUIET, setup })
     }
 
     /// Tell whoever runs the server, on standard error, the code to set the owner's first password with, if
@@ -189,7 +181,7 @@ pub(crate) fn application(
     let (admission, setup) =
         Admission::new(listen, &engine.data, provider, hashing).map_err(|error| io::Error::other(error.to_string()))?;
     let routes = match admission.login() {
-        Some(login) => routes.merge(login::routes(login)),
+        Some(login) => routes.merge(guard::login::routes(login)),
         None => routes,
     };
     let engine = Arc::new(engine);
@@ -205,17 +197,17 @@ fn patient(builder: &mut Builder<TokioExecutor>) {
         .timer(TokioTimer::new())
         .max_header_list_size(LARGEST_HEADERS as u32)
         // a peer that stops answering pings is gone: its connection is closed
-        .keep_alive_interval(Some(connections::QUIET / 2))
+        .keep_alive_interval(Some(guard::connections::QUIET / 2))
         .keep_alive_timeout(HEADERS_PATIENCE);
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
-mod tests {
-    use super::config::tests::{STRONG, certificate_in};
-    use super::config::{Environment, Listen};
+pub(crate) mod tests {
     use super::routes::{Engine, routes};
     use super::*;
+    use crate::api::guard::config::tests::{STRONG, certificate_in};
+    use crate::api::guard::config::{Environment, Listen};
     use crate::settings::Choices;
 
     use axum::body::{Body, to_bytes};
@@ -246,7 +238,7 @@ mod tests {
 
     /// The router as served for `listen` at `at`, with `engine`, a provider nobody reaches and quick hashing.
     pub(crate) fn served(listen: &Listen, at: &str, engine: Engine) -> (Router, Option<SetupCode>) {
-        let provider = Arc::new(login::oidc::tests::Fake::new(&[]));
+        let provider = Arc::new(guard::login::oidc::tests::Fake::new(&[]));
         let (router, _, code) =
             application(listen, at.parse().unwrap(), engine, routes(), provider, || Ok(Hashing::light())).unwrap();
         (router, code)
@@ -377,6 +369,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn on_this_computer_a_request_forwarded_for_a_name_that_is_not_this_computers_is_refused() {
+        // the interface's server rewrites Host to the engine's and says the browser's name in X-Forwarded-Host:
+        // a page whose name was pointed at this computer (DNS rebinding) shows only there
+        let (router, _data) = local();
+        for (forwarded, expected) in [
+            ("127.0.0.1:3000", StatusCode::OK),
+            ("localhost:3000", StatusCode::OK),
+            ("[::1]:3000", StatusCode::OK),
+            ("rebound.evil.example:3000", StatusCode::FORBIDDEN),
+            ("127.0.0.1.evil.example", StatusCode::FORBIDDEN),
+            ("localhost:3000, evil.example", StatusCode::FORBIDDEN),
+            ("localhost/evil", StatusCode::FORBIDDEN),
+        ] {
+            let request =
+                asked("GET", "/api/status").header("x-forwarded-host", forwarded).body(Body::empty()).unwrap();
+            assert_eq!(answer(&router, request).await.0, expected, "{forwarded}");
+        }
+        let twice = asked("GET", "/api/status")
+            .header("x-forwarded-host", "localhost:3000")
+            .header("x-forwarded-host", "evil.example")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(answer(&router, twice).await.0, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
     async fn a_page_of_another_site_is_refused_even_with_the_token_and_the_interface_is_not() {
         let (router, _data) = local();
         for origin in ["http://evil.example", "http://127.0.0.1:3001", "null", "http://127.0.0.1:3000.evil.example"] {
@@ -413,7 +431,7 @@ mod tests {
             (status, told),
             (StatusCode::PAYLOAD_TOO_LARGE, json!({"error": "the request body is larger than 4 MB"}))
         );
-        let huge = format!("{{\"describe\": \"{}\"}}", "x".repeat(security::LARGEST_BODY));
+        let huge = format!("{{\"describe\": \"{}\"}}", "x".repeat(guard::security::LARGEST_BODY));
         // no Content-Length header: cut off as it is read
         let undeclared = asked("PUT", "/api/settings")
             .header(header::CONTENT_TYPE, "application/json")
@@ -463,7 +481,7 @@ mod tests {
                 log("[1/2] download");
                 log("[2/2] embed");
                 wait.recv().map_err(|error| error.to_string())?;
-                Ok("neurips2025".to_owned())
+                Ok(crate::jobs::Finished::Run { run: "neurips2025".to_owned() })
             })
             .unwrap();
         let at = "192.0.2.7:8765";
@@ -517,6 +535,39 @@ mod tests {
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS); // even the right token, so a guess cannot be confirmed
         assert!(response.headers().contains_key(header::RETRY_AFTER));
         assert_eq!(answer(&router, from("198.51.100.10:4000", STRONG)).await.0, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn behind_a_trusted_proxy_the_client_it_names_is_counted_and_its_neighbours_are_not_locked_out() {
+        let data = tempfile::tempdir().unwrap();
+        let listen = listen(&network(&[("CONSTELLATE_TRUSTED_PROXIES", "192.0.2.50")]));
+        let at = "192.0.2.7:8765";
+        let (router, _) = served(&listen, at, Engine::new(data.path().to_path_buf(), choices()));
+        let via = |remote: &str, client: &str, token: &str| {
+            let mut request = Request::get("/api/status")
+                .header(header::HOST, at)
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header("x-forwarded-for", client)
+                .body(Body::empty())
+                .unwrap();
+            request.extensions_mut().insert(ConnectInfo::<SocketAddr>(remote.parse().unwrap()));
+            request
+        };
+        for guess in 0..10 {
+            let guessed = via("192.0.2.50:4000", "203.0.113.7", &format!("guess{guess}"));
+            assert_eq!(answer(&router, guessed).await.0, StatusCode::UNAUTHORIZED);
+        }
+        let waits = via("192.0.2.50:4000", "203.0.113.7", STRONG);
+        assert_eq!(answer(&router, waits).await.0, StatusCode::TOO_MANY_REQUESTS, "the guesser waits");
+        let neighbour = via("192.0.2.50:4000", "203.0.113.8", STRONG);
+        assert_eq!(answer(&router, neighbour).await.0, StatusCode::OK, "another client of the same proxy does not");
+        // a client that is not the proxy cannot name someone else to be counted against
+        for guess in 0..10 {
+            let spoofed = via("198.51.100.20:4000", &format!("203.0.113.{}", 100 + guess), "wrong");
+            assert_eq!(answer(&router, spoofed).await.0, StatusCode::UNAUTHORIZED);
+        }
+        let caught = via("198.51.100.20:4000", "203.0.113.200", STRONG);
+        assert_eq!(answer(&router, caught).await.0, StatusCode::TOO_MANY_REQUESTS);
     }
 
     /// Serve `server` in the background; dropping the answer stops it.
@@ -599,7 +650,7 @@ mod tests {
             ("CONSTELLATE_TLS_CERT", certificate.to_str().unwrap()),
             ("CONSTELLATE_TLS_KEY", key.to_str().unwrap()),
         ]);
-        assert_eq!(listen.mode(), config::Mode::Network);
+        assert_eq!(listen.mode(), guard::config::Mode::Network);
         let socket = TcpListener::bind("127.0.0.1:0").unwrap();
         let mut server =
             Server::on(socket, listen, Engine::new(folder.path().join("data"), choices()), routes()).unwrap();

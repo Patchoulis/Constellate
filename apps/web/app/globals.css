@@ -37,7 +37,7 @@
 	--ring: #8d8d8d;
 	--success: #22c55e;
 	--warning: #f59e0b;
-	/* a paper the user marked; the graph draws its ring in the same colour (components/graph-canvas.ts) */
+	/* a paper the user marked; the graph draws its ring in the same colour (components/graph/graph-canvas.ts) */
 	--mark: #fde047;
 }
 

@@ -1,0 +1,58 @@
+# What `cargo deny check` holds the engine's crates (Cargo.lock) to. `npm run pr` and CI's Advisories job run it.
+#   cargo deny check advisories licenses
+# Install the tool with: cargo install cargo-deny --locked
+
+[graph]
+# every platform the engine is built for, so that a crate only Linux or only Windows pulls in is checked too
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
+all-features = false
+
+[advisories]
+# the RustSec advisory database (https://rustsec.org): any vulnerability in a crate of Cargo.lock fails the check,
+# and so does a yanked crate; an unmaintained crate is reported only when the engine depends on it itself
+yanked = "deny"
+unmaintained = "workspace"
+# Each exception says why the advisory does not reach Constellate and what would remove it. Look at them again when
+# the crate that brings them in has a new major version.
+ignore = [
+	# rsa 0.9 (Marvin attack: timing of private-key decryption and signing). It comes with jsonwebtoken, which here only
+	# verifies the signature of a sign-in's ID token with the provider's public key (apps/engine/src/api/guard/login/oidc.rs);
+	# the engine holds no RSA private key (the tests make throwaway ones). Fixed in rsa 0.10, which jsonwebtoken 12 uses.
+	{ id = "RUSTSEC-2023-0071", reason = "only RSA public-key verification is used; fixed by jsonwebtoken 12 (rsa 0.10)" },
+	# crypto-bigint 0.5 (operations meant to be constant-time that branch on secret integers). It comes with p256/p384
+	# under jsonwebtoken, used here only to verify an ES256 signature, whose inputs are all public. Fixed in 0.7.6, which
+	# jsonwebtoken 12 (elliptic-curve 0.14) uses.
+	{ id = "RUSTSEC-2026-0387", reason = "only ECDSA verification of public values is used; fixed by jsonwebtoken 12" },
+	# chrono is unmaintained (no vulnerability). The engine uses it for dates of papers and sessions; moving to jiff or
+	# time is a change to the engine's code, to be made on its own.
+	{ id = "RUSTSEC-2026-0543", reason = "unmaintained, no known vulnerability; replacing it is a code change of its own" },
+]
+
+[licenses]
+# The app ships these crates: every licence must allow that in a closed installer, with only a notice kept
+# (apps/desktop/after-pack.cjs gathers them).
+allow = [
+	"0BSD",
+	"Apache-2.0",
+	"BSD-2-Clause",
+	"BSD-3-Clause",
+	"BSL-1.0",
+	"CDLA-Permissive-2.0",
+	"ISC",
+	"MIT",
+	"Unicode-3.0",
+	"Unlicense",
+	"Zlib",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+# Constellate's own crate is not published (publish = false)
+ignore = true
+
+[bans]
+multiple-versions = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -45,7 +45,7 @@ pub fn told(providers: &Providers, settings: &Settings) -> Told {
     Told {
         providers: providers.listing(),
         chosen: Chosen {
-            provider: settings.describe_provider.clone(),
+            provider: settings.describe_provider.id().to_owned(),
             model: settings.describe_model.clone(),
             effort: settings.describe_effort,
         },
