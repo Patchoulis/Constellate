@@ -287,12 +287,13 @@ if (first) {
 	app.whenReady().then(async () => {
 		try {
 			const url = await startServers();
-			if (!life.move("ready")) return; // closed while the servers were starting
-			refusePermissions();
-			// the window's key (engine.cjs interfaceEnvironment): a cookie no page can read and no other site sends
+			// the window's key (engine.cjs interfaceEnvironment): a cookie no page can read and no other site sends;
+			// set while still starting, so that a failure is reported and a quit meanwhile opens no window
 			if (!DEV_URL) {
 				await session.defaultSession.cookies.set({ url, name: WINDOW_COOKIE, value: WINDOW_KEY, httpOnly: true, sameSite: "strict" });
 			}
+			if (!life.move("ready")) return; // closed while the servers were starting
+			refusePermissions();
 			openWindow(url);
 		} catch (error) {
 			fail(error);

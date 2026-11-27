@@ -28,6 +28,8 @@ const path = require("node:path");
 /** How long the engine has to say where it listens. It binds a port and nothing more before it does; the rest is a
  *  margin for a slow disk or a virus scanner looking at a new program for the first time. */
 const STARTUP_DEADLINE_MS = 60_000;
+/** The most of an unfinished line the log holds back before writing it anyway. */
+const LONGEST_LINE = 64 * 1024;
 
 /**
  * The language model's keys and addresses the engine reads (apps/engine/src/model/language/provider.rs
@@ -197,6 +199,13 @@ class EngineLog {
 		const end = all.lastIndexOf("\n");
 		this.pending[stream] = all.slice(end + 1);
 		if (end >= 0) this.append(all.slice(0, end + 1));
+		// a line that never ends is written in pieces, keeping back enough to blank a token cut between two of them
+		const rest = this.pending[stream];
+		const kept = this.secret ? this.secret.length - 1 : 0;
+		if (rest.length > LONGEST_LINE) {
+			this.append(rest.slice(0, rest.length - kept));
+			this.pending[stream] = rest.slice(rest.length - kept);
+		}
 	}
 
 	/** Write the unfinished lines too (the engine ended). */
