@@ -123,27 +123,36 @@ export const api = {
 				`${stancesAt(name, scope)}/estimate`,
 				send("POST", { question, include_unrelated: includeUnrelated, papers: "papers" in scope ? scope.papers : [] }),
 			),
-		/** start the job that asks the most central papers ("sample") or all of them */
-		ask: (name: string, scope: StanceScope, question: string, includeUnrelated: boolean, part: "sample" | "all") =>
+		/** start the job that asks the most central papers ("sample") or all of them, on the terms the user was shown:
+		 *  the model and the most it could cost (the engine refuses a job that would now ask another or cost more) */
+		ask: (
+			name: string,
+			scope: StanceScope,
+			question: string,
+			includeUnrelated: boolean,
+			part: "sample" | "all",
+			approved: StanceApproved,
+		) =>
 			call<import("@rp/contracts").StanceStarted>(
 				`${stancesAt(name, scope)}/ask`,
-				send("POST", { question, include_unrelated: includeUnrelated, part, papers: "papers" in scope ? scope.papers : [] }),
+				send("POST", { question, include_unrelated: includeUnrelated, part, papers: "papers" in scope ? scope.papers : [], ...approved }),
 			),
 		result: (name: string, scope: StanceScope, id: string) =>
 			call<import("@rp/contracts").StanceResult>(`${stancesAt(name, scope)}/${encodeURIComponent(id)}`),
 		/** forget this question's answers for a fresh reading (the next ask pays again) */
 		redo: (name: string, scope: StanceScope, id: string) =>
 			call<import("@rp/contracts").StanceAsked>(`${stancesAt(name, scope)}/${encodeURIComponent(id)}/redo`, { method: "POST" }),
-		proposalEstimate: (name: string, community: string) =>
-			call<import("@rp/contracts").StanceProposalPlan>(`${stancesAt(name, { community })}/proposals/estimate`, { method: "POST" }),
-		propose: (name: string, community: string) =>
-			call<import("@rp/contracts").StanceStarted>(`${stancesAt(name, { community })}/proposals`, { method: "POST" }),
-		redoProposals: (name: string, community: string) =>
-			call<{ round: number }>(`${stancesAt(name, { community })}/proposals/redo`, { method: "POST" }),
+		/** what proposing questions would cost; `fresh` to propose anew past the proposals kept */
+		proposalEstimate: (name: string, community: string, fresh: boolean) =>
+			call<import("@rp/contracts").StanceProposalPlan>(`${stancesAt(name, { community })}/proposals/estimate`, send("POST", { fresh })),
+		propose: (name: string, community: string, fresh: boolean, approved: StanceApproved) =>
+			call<import("@rp/contracts").StanceStarted>(`${stancesAt(name, { community })}/proposals`, send("POST", { fresh, ...approved })),
 	},
 };
 
 type StanceScope = import("@rp/contracts").StanceScope;
+/** What the user was shown when they clicked: the model and the estimate's "at most" in US dollars (null: price not known). */
+type StanceApproved = { model: string; approved_usd: number | null };
 
 /** Where a scope's stances routes are: a community's, or the run's marked papers'. */
 function stancesAt(name: string, scope: StanceScope): string {

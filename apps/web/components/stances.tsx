@@ -53,7 +53,7 @@ type Step =
 type Proposing =
 	| { kind: "idle" }
 	| { kind: "estimating" }
-	| { kind: "estimated"; plan: StanceProposalPlan }
+	| { kind: "estimated"; plan: StanceProposalPlan; fresh: boolean }
 	| { kind: "asking"; job: number }
 	| { kind: "failed"; error: string };
 
@@ -196,6 +196,7 @@ function ResultView({
 	scope,
 	id,
 	version,
+	busy,
 	onAskRest,
 	onRedo,
 	onOpenPaper,
@@ -204,6 +205,8 @@ function ResultView({
 	scope: StanceScope;
 	id: string;
 	version: number;
+	/** a job is running: offer nothing that starts another */
+	busy: boolean;
 	onAskRest: (result: StanceResult) => void;
 	onRedo: (result: StanceResult) => void;
 	onOpenPaper: (id: string) => void;
@@ -241,7 +244,8 @@ function ResultView({
 				</details>
 			)}
 			<Groups result={result} onOpenPaper={onOpenPaper} />
-			<div className="flex flex-wrap gap-2">
+			{/* nothing new is started while a job runs: it is followed until it ends */}
+			<div className={cn("flex flex-wrap gap-2", busy && "hidden")}>
 				{result.answered < result.to_ask && (
 					<Button variant="outline" onClick={() => onAskRest(result)}>
 						Ask the other {count(result.to_ask - result.answered, "paper")}…
@@ -351,16 +355,15 @@ function Proposals({
 		[onChanged],
 	);
 	const progress = useJobProgress(step.kind === "asking" ? step.job : null, end);
-	// proposing again forgets the proposals shown first, so that the cost shown is what asking again costs
+	// with proposals shown, proposing again is a fresh call: its cost is the one shown, and the proposals shown stay
+	// until the user clicks Propose
 	const estimate = () => {
+		const fresh = proposals !== null;
 		setStep({ kind: "estimating" });
-		const fresh = proposals ? api.stances.redoProposals(run, community).then(onChanged) : Promise.resolve();
-		fresh
-			.then(() => api.stances.proposalEstimate(run, community))
-			.then(
-				(plan) => setStep({ kind: "estimated", plan }),
-				(error: Error) => setStep({ kind: "failed", error: error.message }),
-			);
+		api.stances.proposalEstimate(run, community, fresh).then(
+			(plan) => setStep({ kind: "estimated", plan, fresh }),
+			(error: Error) => setStep({ kind: "failed", error: error.message }),
+		);
 	};
 	return (
 		<div className="flex flex-col gap-1.5">
@@ -391,7 +394,7 @@ function Proposals({
 					onClick={estimate}
 				>
 					<Sparkles />
-					{proposals ? "Forget these and propose again…" : "Propose questions with the model…"}
+					{proposals ? "Propose new questions…" : "Propose questions with the model…"}
 				</Button>
 			)}
 			{step.kind === "estimating" && <p className="text-xs text-muted-foreground">Working out the cost…</p>}
@@ -404,7 +407,7 @@ function Proposals({
 					<Button
 						title={costNote(step.plan.estimate)}
 						onClick={() =>
-							api.stances.propose(run, community).then(
+							api.stances.propose(run, community, step.fresh, { model: step.plan.model, approved_usd: step.plan.estimate.most_usd }).then(
 								(started) => setStep({ kind: "asking", job: started.job }),
 								(error: Error) => setStep({ kind: "failed", error: error.message }),
 							)
@@ -442,13 +445,7 @@ export function CommunityStances({ run, scope, onOpenPaper }: { run: string; sco
 	const [step, setStep] = useState<Step>({ kind: "choosing" });
 	const [open, setOpen] = useState<string | null>(null);
 	const [version, setVersion] = useState(0);
-
-	// another community: start over
-	useEffect(() => {
-		setStep({ kind: "choosing" });
-		setOpen(null);
-		setQuestion("");
-	}, [run, scopeKey]);
+	// mounted once per scope (keyed by it where it is shown), so nothing here is left from another community
 
 	const estimate = useCallback(
 		(asked: string, includeUnrelated: boolean) => {
@@ -524,13 +521,18 @@ export function CommunityStances({ run, scope, onOpenPaper }: { run: string; sco
 					onInclude={(include) => estimate(step.plan.question, include)}
 					onCancel={() => setStep({ kind: "choosing" })}
 					onAsk={(part) =>
-						api.stances.ask(run, scope, step.plan.question, step.includeUnrelated, part).then(
-							(started) => {
-								setOpen(started.id);
-								setStep({ kind: "asking", job: started.job, id: started.id });
-							},
-							(error: Error) => setStep({ kind: "failed", error: error.message }),
-						)
+						api.stances
+							.ask(run, scope, step.plan.question, step.includeUnrelated, part, {
+								model: step.plan.model,
+								approved_usd: (part === "sample" ? step.plan.sample : step.plan.all).estimate.most_usd,
+							})
+							.then(
+								(started) => {
+									setOpen(started.id);
+									setStep({ kind: "asking", job: started.job, id: started.id });
+								},
+								(error: Error) => setStep({ kind: "failed", error: error.message }),
+							)
 					}
 				/>
 			)}
@@ -563,10 +565,12 @@ export function CommunityStances({ run, scope, onOpenPaper }: { run: string; sco
 			)}
 			{open && (
 				<ResultView
+					key={open}
 					run={run}
 					scope={scope}
 					id={open}
 					version={version}
+					busy={step.kind === "asking"}
 					onOpenPaper={onOpenPaper}
 					onAskRest={(result) => estimate(result.question, result.filter.include_unrelated)}
 					onRedo={(result) =>

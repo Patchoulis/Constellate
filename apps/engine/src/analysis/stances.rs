@@ -31,11 +31,11 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::evidence::{self, Cited, Claim, Evidence, PaperText, Papers, Rules};
+use crate::evidence::{self, Cited, Claim, Established, Evidence, PaperText, Papers, Rules};
 use crate::library::{AnswerKey, Feature, PaperReading, Slot, Subject};
 use crate::model::batch::Item;
 use crate::model::language::{Ask, Effort, Form};
-use crate::text::passages::{Kind, Part, Passages};
+use crate::text::passages::{Kind, Match, Part, Passages};
 
 /// The version of the per-paper prompt and answer: raised when either changes, so kept answers are asked again.
 pub const PROMPT: u32 = 1;
@@ -149,13 +149,17 @@ pub fn place(paper: &str, said: &Said, text: &PaperText) -> Placed {
             not_found += 1;
             continue;
         }
-        match Evidence::locate(paper, text, quote) {
-            Ok(found) => {
+        // only the paper's exact words: a close match may differ by a "not", which turns a yes into a no
+        let exact = Evidence::locate(paper, text, quote).ok().filter(|found| match found.established() {
+            Established::Verified { matched, .. } | Established::Abstract { matched, .. } => *matched == Match::Exact,
+        });
+        match exact {
+            Some(found) => {
                 if !evidence.contains(&found) {
                     evidence.push(found);
                 }
             }
-            Err(_) => not_found += 1,
+            None => not_found += 1,
         }
     }
     if evidence.is_empty() {
@@ -286,7 +290,7 @@ pub fn items<'a>(
         .map(|paper| Item {
             slot: Slot {
                 feature: Feature::Stances,
-                key: AnswerKey::new(Feature::Stances, model, PROMPT, &[paper.paper.as_str()], key_question),
+                key: answer_key(model, &paper.paper, paper.read, key_question),
                 subject: Subject::Paper(paper.paper.clone()),
             },
             prompt: PROMPT,
@@ -306,8 +310,14 @@ pub fn items<'a>(
 }
 
 /// The key an answer about `paper` is kept under: what [`items`] uses, for looking it up without asking.
-pub fn answer_key(model: &str, paper: &str, key_question: &str) -> AnswerKey {
-    AnswerKey::new(Feature::Stances, model, PROMPT, &[paper], key_question)
+/// What the paper was read from is in the key: an answer from its abstract is not taken for one from its PDF, so a
+/// paper whose PDF arrives later is asked again with its whole text, and its label says what was read.
+pub fn answer_key(model: &str, paper: &str, read: Read, key_question: &str) -> AnswerKey {
+    let from = match read {
+        Read::Pdf => "pdf",
+        Read::Abstract => "abstract",
+    };
+    AnswerKey::new(Feature::Stances, model, PROMPT, &[paper], &format!("{key_question}\nread from {from}"))
 }
 
 /// Words that say nothing about what a question or a paper is about.
@@ -597,8 +607,11 @@ pub fn recurring_terms(community: &[Record<'_>], run: &[Record<'_>], most: usize
     // best first; equal ones in the order of their words, so the answer is the same every time
     found.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.2.cmp(b.2)));
     let mut chosen: Vec<(Recurring, &str)> = Vec::new();
+    let pairs: Vec<&str> =
+        found.iter().take(4 * most).map(|(_, _, term)| *term).filter(|term| term.contains(' ')).collect();
     for (_, recurring, term) in found {
-        let inside_a_pair = chosen.iter().any(|(_, kept)| kept.split(' ').any(|word| word == term));
+        // a single word inside a pair that is shown (whichever ranks higher) is said by the pair
+        let inside_a_pair = !term.contains(' ') && pairs.iter().any(|pair| pair.split(' ').any(|word| word == term));
         if !inside_a_pair && chosen.len() < most {
             chosen.push((recurring, term));
         }
@@ -993,7 +1006,8 @@ mod tests {
         assert!(matches!(asked.outcomes[0], Outcome::Kept(_)));
         assert!(matches!(asked.outcomes[1], Outcome::Answered(_)));
         assert_eq!(asked.sent.len(), 1);
-        let kept = library.kept::<Said>(Feature::Stances, &answer_key(MODEL, "2601.00001", &key)).unwrap().unwrap();
+        let key = answer_key(MODEL, "2601.00001", Read::Pdf, &key);
+        let kept = library.kept::<Said>(Feature::Stances, &key).unwrap().unwrap();
         assert_eq!(kept.answer.stance, Stance::Supports);
     }
 
@@ -1002,8 +1016,25 @@ mod tests {
         let one = prepare("2601.00001", &pdf_paper()).unwrap();
         let two = prepare("2601.00001", &pdf_paper()).unwrap();
         assert_eq!(one.shared, two.shared, "byte for byte, so the prompt cache is read");
-        assert_ne!(answer_key(MODEL, "p", &key_question("q?", 0)), answer_key(MODEL, "p", &key_question("q?", 1)));
-        assert_ne!(answer_key(MODEL, "p", "q"), answer_key("another-model", "p", "q"), "the model is in the key");
+        let key = |model: &str, read: Read, question: &str| answer_key(model, "p", read, question);
+        assert_ne!(key(MODEL, Read::Pdf, &key_question("q?", 0)), key(MODEL, Read::Pdf, &key_question("q?", 1)));
+        assert_ne!(key(MODEL, Read::Pdf, "q"), key("another-model", Read::Pdf, "q"), "the model is in the key");
+        assert_ne!(key(MODEL, Read::Pdf, "q"), key(MODEL, Read::Abstract, "q"), "an abstract's answer is not a PDF's");
+    }
+
+    #[test]
+    fn a_quote_found_only_with_letters_changed_does_not_place_the_paper() {
+        // "no gain" read as "a gain": a close match, which could turn a no into a yes
+        let placed = place(
+            "icml-2026-7",
+            &said(
+                Stance::Supports,
+                "",
+                &["Synthetic pre-training data brought a gain in downstream accuracy over real data"],
+            ),
+            &text(&no_pdf_paper()),
+        );
+        assert!(matches!(placed, Placed::NotVerified { .. }), "{placed:?}");
     }
 
     #[test]

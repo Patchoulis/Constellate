@@ -451,7 +451,12 @@ function Communities({
 				<div className="min-h-0 flex-1 overflow-y-auto">
 					<Detail node={selected} marks={marks} onSelect={onSelect} onOverview={onOverview} onOpenPaper={onOpenPaper} />
 					<CommunityReviews run={result.name} treePath={selected.community.tree_path} onOpenPaper={onOpenPaper} />
-					<CommunityStances run={result.name} scope={{ community: selected.community.tree_path }} onOpenPaper={onOpenPaper} />
+					<CommunityStances
+						key={`${result.name}/${selected.community.tree_path}`}
+						run={result.name}
+						scope={{ community: selected.community.tree_path }}
+						onOpenPaper={onOpenPaper}
+					/>
 				</div>
 			) : (
 				<>

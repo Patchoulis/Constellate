@@ -10,7 +10,6 @@
 //! POST /api/runs/{run}/communities/{community}/stances/{id}/redo          ask that question again from scratch
 //! POST /api/runs/{run}/communities/{community}/stances/proposals/estimate the cost of proposing questions
 //! POST /api/runs/{run}/communities/{community}/stances/proposals          the job that proposes them
-//! POST /api/runs/{run}/communities/{community}/stances/proposals/redo     propose again from scratch
 //! ```
 //!
 //! and the same for a set of marked papers, which travels in the body: `POST /api/runs/{run}/marked/stances/list`,
@@ -46,7 +45,7 @@ use crate::evidence::Papers;
 use crate::jobs::Tracker;
 use crate::library::store::read_json;
 use crate::library::{AnswerKey, Feature, Library, Paper, Slot, Subject};
-use crate::model::batch::{self, Asking, BatchEstimate, IN_FLIGHT, Item, Outcome};
+use crate::model::batch::{self, Asking, BatchEstimate, Failure, IN_FLIGHT, Item, Outcome, Stopped};
 use crate::model::language::{Budget, Counting, DEFAULT_MODEL, Limit};
 use crate::settings;
 
@@ -65,7 +64,6 @@ pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
         ("/api/runs/{run}/communities/{community}/stances/ask", post(community_ask)),
         ("/api/runs/{run}/communities/{community}/stances/proposals/estimate", post(proposals_estimate)),
         ("/api/runs/{run}/communities/{community}/stances/proposals", post(proposals_ask)),
-        ("/api/runs/{run}/communities/{community}/stances/proposals/redo", post(proposals_redo)),
         ("/api/runs/{run}/communities/{community}/stances/{id}", get(community_result)),
         ("/api/runs/{run}/communities/{community}/stances/{id}/redo", post(community_redo)),
         ("/api/runs/{run}/marked/stances/list", post(marked_listing)),
@@ -272,16 +270,29 @@ struct Plan {
     /// Positions in the scope's order of the papers to ask, most central first.
     candidates: Vec<usize>,
     include_unrelated: bool,
+    /// The scope's papers the library has.
+    present: usize,
 }
 
 impl Plan {
+    /// Only the papers the library has are read and counted: one it lacks can be neither asked nor skipped.
     fn of(papers: &InScope, question: &str, include_unrelated: bool) -> Plan {
-        let relevance = stances::relevance(question, &papers.records());
-        let candidates = (0..papers.order.len())
-            .filter(|position| papers.records[*position].is_some())
-            .filter(|position| include_unrelated || relevance.related[*position])
-            .collect();
-        Plan { relevance, candidates, include_unrelated }
+        let present: Vec<usize> =
+            (0..papers.order.len()).filter(|position| papers.records[*position].is_some()).collect();
+        let records = papers.records();
+        let kept: Vec<Record<'_>> = present.iter().map(|position| records[*position]).collect();
+        let found = stances::relevance(question, &kept);
+        let mut related = vec![false; papers.order.len()];
+        for (position, is) in present.iter().zip(&found.related) {
+            related[*position] = *is;
+        }
+        let candidates = present.iter().copied().filter(|position| include_unrelated || related[*position]).collect();
+        Plan {
+            relevance: Relevance { terms: found.terms, related },
+            candidates,
+            include_unrelated,
+            present: present.len(),
+        }
     }
 
     fn related(&self) -> usize {
@@ -319,6 +330,39 @@ struct AskBody {
     #[serde(flatten)]
     question: QuestionBody,
     part: Part,
+    #[serde(flatten)]
+    approved: Approved,
+}
+
+/// What the user was shown and clicked: the model and the most it could cost. A job that would now cost more, or
+/// ask another model, is refused rather than run on terms the user did not see.
+#[derive(Clone, Debug, Deserialize)]
+struct Approved {
+    model: String,
+    /// The estimate's "at most", in US dollars; null when the model's price is not known.
+    approved_usd: Option<f64>,
+}
+
+impl Approved {
+    fn check_model(&self, model: &str) -> Result<(), ApiError> {
+        if self.model == model {
+            Ok(())
+        } else {
+            Err(ApiError::Invalid("the model chosen in the settings changed: look at the cost again".to_owned()))
+        }
+    }
+
+    /// The budget of a batch whose estimate is `estimate`, if it is within what was approved.
+    fn budget(&self, items: &[Item<'_>], estimate: &BatchEstimate) -> Result<Budget, String> {
+        let changed = || "the cost changed since it was shown: look at the cost again".to_owned();
+        match (estimate.most_usd, self.approved_usd) {
+            // a hundredth of a cent of slack for the rounding of the figure as it travelled
+            (Some(most), Some(approved)) if most.dollars() <= approved + 1e-4 => Ok(budget(items, estimate)),
+            (None, None) => Ok(budget(items, estimate)),
+            _ if estimate.to_ask == 0 => Ok(budget(items, estimate)),
+            _ => Err(changed()),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -356,11 +400,11 @@ pub struct Filtered {
     pub terms: Vec<String>,
 }
 
-fn filtered(papers: &InScope, plan: &Plan) -> Filtered {
+fn filtered(plan: &Plan) -> Filtered {
     Filtered {
-        papers: papers.order.len(),
+        papers: plan.present,
         related: plan.related(),
-        unrelated: papers.order.len() - plan.related(),
+        unrelated: plan.present - plan.related(),
         include_unrelated: plan.include_unrelated,
         terms: plan.relevance.terms.clone(),
     }
@@ -439,7 +483,7 @@ fn estimate(engine: &Shared, run: &str, scope: Scope, asked: QuestionBody) -> Re
     Ok(StancePlan {
         sample: part_estimate(&library, sample, &question, &key, &model)?,
         all: part_estimate(&library, &all, &question, &key, &model)?,
-        filter: filtered(&papers, &plan),
+        filter: filtered(&plan),
         id,
         question,
         model,
@@ -468,21 +512,36 @@ fn budget(items: &[Item<'_>], estimate: &BatchEstimate) -> Budget {
 }
 
 /// Ask `items`, kept answers skipped, within the budget their estimate set; a line for the job's log.
-fn ask_items<T>(engine: &Shared, library: &Library, items: &[Item<'_>], tracker: &Tracker<'_>) -> Result<String, String>
+/// The job fails, with why, when the model could not be asked (a refused key, billing, the budget) or answered
+/// none of what was asked: the interface shows a failed job's error, not a finished one's log.
+fn ask_items<T>(
+    engine: &Shared,
+    library: &Library,
+    items: &[Item<'_>],
+    approved: &Approved,
+    tracker: &Tracker<'_>,
+) -> Result<String, String>
 where
     T: serde::de::DeserializeOwned + Serialize + Send + Clone,
 {
     let endpoint = engine.language.clone().map_err(|why| why.to_string())?;
     let estimate = batch::estimate_batch::<T>(library, items, Counting::ASSUMED).map_err(|error| error.to_string())?;
-    let budget = budget(items, &estimate);
+    let budget = approved.budget(items, &estimate)?;
     let transport = transport();
     let asking = Asking { library, transport: &transport, endpoint, recorder: library, in_flight: IN_FLIGHT };
     let outcomes = batch::ask_all::<T>(asking, items, &budget, tracker).map_err(|error| error.to_string())?;
     let count = |wanted: fn(&Outcome<T>) -> bool| outcomes.iter().filter(|outcome| wanted(outcome)).count();
     let stopped = outcomes.iter().find_map(|outcome| match outcome {
+        Outcome::NotStarted(Stopped::Cancelled) => None,
         Outcome::NotStarted(why) => Some(why.to_string()),
+        Outcome::Failed(Failure::Unavailable(why)) => Some(why.to_string()),
         _ => None,
     });
+    let answered = count(|outcome| matches!(outcome, Outcome::Answered(_) | Outcome::Kept(_)));
+    let failed = count(|outcome| matches!(outcome, Outcome::Failed(_)));
+    let failing = stopped
+        .clone()
+        .or_else(|| (answered == 0 && failed > 0).then(|| "the model gave no usable answer for any paper".to_owned()));
     let line = format!(
         "{} answered now, {} kept from before, {} without a usable answer, {} not asked{}",
         count(|outcome| matches!(outcome, Outcome::Answered(_))),
@@ -492,7 +551,11 @@ where
         stopped.map(|why| format!(" ({why})")).unwrap_or_default(),
     );
     tracker.log(&line);
-    Ok(line)
+    match failing {
+        // what was answered is kept all the same
+        Some(why) => Err(format!("{why} ({line})")),
+        None => Ok(line),
+    }
 }
 
 /// `{job}`: the number of the job started, for `/api/status` and its stop button; and the question's id.
@@ -502,7 +565,14 @@ pub struct Started {
     pub id: String,
 }
 
-fn ask(engine: &Shared, run: &str, scope: Scope, asked: QuestionBody, part: Part) -> Result<Started, ApiError> {
+fn ask(
+    engine: &Shared,
+    run: &str,
+    scope: Scope,
+    asked: QuestionBody,
+    part: Part,
+    approved: Approved,
+) -> Result<Started, ApiError> {
     let question = checked(&asked.question)?;
     engine.language.as_ref().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
     let library = engine.library()?;
@@ -510,6 +580,7 @@ fn ask(engine: &Shared, run: &str, scope: Scope, asked: QuestionBody, part: Part
     let plan = Plan::of(&papers, &question, asked.include_unrelated);
     let id = question_id(&question, scope_papers(&papers.scope));
     let model = model(engine)?;
+    approved.check_model(&model)?;
     let ids: Vec<String> = plan.part(part).iter().map(|position| papers.id(*position).to_owned()).collect();
     let round = change_questions(&library, run, &papers.scope, |kept| {
         let include_unrelated = asked.include_unrelated;
@@ -547,7 +618,7 @@ fn ask(engine: &Shared, run: &str, scope: Scope, asked: QuestionBody, part: Part
         let schema = stances::schema();
         let prompt = stances::question_prompt(&question);
         let items = stances::items(&prepared, &prompt, &key, &model, &schema);
-        ask_items::<Said>(&worker, &library, &items, tracker)?;
+        ask_items::<Said>(&worker, &library, &items, &approved, tracker)?;
         Ok(run_name)
     })?;
     Ok(Started { job, id })
@@ -601,21 +672,30 @@ fn result(engine: &Shared, run: &str, scope: &Scope, id: &str) -> Result<StanceR
     let plan = Plan::of(&papers, &asked.question, asked.include_unrelated);
     let model = model(engine)?;
     let key = stances::key_question(&asked.question, asked.round);
-    let mut answered: Vec<(usize, Said)> = Vec::new();
+    // an answer kept for either reading first (cheap), then the papers' texts only for those; the answer shown is
+    // the one of what the paper reads as now
+    let kept = |position: usize, read: Read| -> Result<Option<Said>, ApiError> {
+        let key = stances::answer_key(&model, papers.id(position), read, &key);
+        Ok(library.kept::<Said>(Feature::Stances, &key)?.map(|kept| kept.answer))
+    };
+    let mut answered: Vec<(usize, Option<Said>, Option<Said>)> = Vec::new();
     for position in plan.part(Part::All) {
-        let kept = library.kept::<Said>(Feature::Stances, &stances::answer_key(&model, papers.id(*position), &key))?;
-        if let Some(kept) = kept {
-            answered.push((*position, kept.answer));
+        let (pdf, from_abstract) = (kept(*position, Read::Pdf)?, kept(*position, Read::Abstract)?);
+        if pdf.is_some() || from_abstract.is_some() {
+            answered.push((*position, pdf, from_abstract));
         }
     }
-    let ids: Vec<&str> = answered.iter().map(|(position, _)| papers.id(*position)).collect();
+    let ids: Vec<&str> = answered.iter().map(|(position, ..)| papers.id(*position)).collect();
     let readings = library.paper_texts(&ids)?;
     let sample: Vec<usize> = plan.part(Part::Sample).to_vec();
-    let rows = answered
+    let rows: Vec<Row> = answered
         .iter()
         .zip(readings)
-        .filter_map(|((position, said), reading)| {
-            let read = if reading.passages().is_some() { Read::Pdf } else { Read::Abstract };
+        .filter_map(|((position, pdf, from_abstract), reading)| {
+            let (read, said) = match reading.passages() {
+                Some(_) => (Read::Pdf, pdf.as_ref()?),
+                None => (Read::Abstract, from_abstract.as_ref()?),
+            };
             let text = reading.into_text()?;
             let record = papers.records[*position].as_ref()?;
             let paper = papers.id(*position);
@@ -635,9 +715,9 @@ fn result(engine: &Shared, run: &str, scope: &Scope, id: &str) -> Result<StanceR
         question: asked.question,
         asked_at: asked.asked_at,
         model,
-        filter: filtered(&papers, &plan),
+        filter: filtered(&plan),
         to_ask: plan.candidates.len(),
-        answered: answered.len(),
+        answered: rows.len(),
         sample: sample.len(),
         rows,
     })
@@ -742,11 +822,30 @@ pub struct ProposalPlan {
     pub estimate: BatchEstimate,
 }
 
-fn proposal_plan(engine: &Shared, run: &str, community: &str) -> Result<ProposalPlan, ApiError> {
+/// Proposing: `fresh` to propose anew, past the proposals kept (which stay shown until the new ones are asked for).
+#[derive(Deserialize)]
+struct ProposalBody {
+    #[serde(default)]
+    fresh: bool,
+}
+
+#[derive(Deserialize)]
+struct ProposeBody {
+    #[serde(default)]
+    fresh: bool,
+    #[serde(flatten)]
+    approved: Approved,
+}
+
+fn proposal_round(library: &Library, run: &str, scope: &Scope, fresh: bool) -> Result<u32, ApiError> {
+    Ok(questions(library, run, scope)?.proposal_round + u32::from(fresh))
+}
+
+fn proposal_plan(engine: &Shared, run: &str, community: &str, fresh: bool) -> Result<ProposalPlan, ApiError> {
     let library = engine.library()?;
     let scope = Scope::Community(community.to_owned());
     let papers = read_run(engine, &library, run, scope)?;
-    let round = questions(&library, run, &papers.scope)?.proposal_round;
+    let round = proposal_round(&library, run, &papers.scope, fresh)?;
     let sent = proposal_papers(&papers);
     let model = model(engine)?;
     let shared = stances::proposal_text(&sent);
@@ -757,18 +856,20 @@ fn proposal_plan(engine: &Shared, run: &str, community: &str) -> Result<Proposal
     Ok(ProposalPlan { papers: sent.len(), model, estimate })
 }
 
-fn propose(engine: &Shared, run: &str, community: &str) -> Result<Started, ApiError> {
+fn propose(engine: &Shared, run: &str, community: &str, body: ProposeBody) -> Result<Started, ApiError> {
     engine.language.as_ref().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
     let library = engine.library()?;
     let scope = Scope::Community(community.to_owned());
     let papers = read_run(engine, &library, run, scope)?;
-    let round = questions(&library, run, &papers.scope)?.proposal_round;
+    let round = proposal_round(&library, run, &papers.scope, body.fresh)?;
+    let approved = body.approved;
     let sent: Vec<(String, String, String)> = proposal_papers(&papers)
         .into_iter()
         .map(|(id, record)| (id.to_owned(), record.title.to_owned(), record.abstract_text.to_owned()))
         .collect();
     let subject = papers.scope.subject(run);
     let model = model(engine)?;
+    approved.check_model(&model)?;
     let worker = Shared::clone(engine);
     let run_name = run.to_owned();
     let job = engine.job.start_tracked("proposing questions for a community", move |tracker| {
@@ -779,20 +880,17 @@ fn propose(engine: &Shared, run: &str, community: &str) -> Result<Started, ApiEr
         let prompt = stances::proposal_prompt();
         let schema = stances::proposal_schema();
         let items = proposal_slot_items(&records, &shared, &prompt, round, &model, &schema, subject);
-        ask_items::<Proposals>(&worker, &library, &items, tracker)?;
+        ask_items::<Proposals>(&worker, &library, &items, &approved, tracker)?;
         Ok(run_name)
     })?;
+    // proposing anew: from now on the new round's proposals are the ones shown
+    if body.fresh {
+        change_questions(&library, run, &papers.scope, |kept| {
+            kept.proposal_round = kept.proposal_round.max(round);
+            Ok(())
+        })?;
+    }
     Ok(Started { job, id: "proposals".to_owned() })
-}
-
-fn redo_proposals(engine: &Shared, run: &str, community: &str) -> Result<u32, ApiError> {
-    let library = engine.library()?;
-    let scope = Scope::Community(community.to_owned());
-    read_run(engine, &library, run, scope.clone())?;
-    change_questions(&library, run, &scope, |kept| {
-        kept.proposal_round += 1;
-        Ok(kept.proposal_round)
-    })
 }
 
 /// How a job's transport is made: the network in the app, the tests' own transport in tests, so that no test can
@@ -828,8 +926,8 @@ async fn community_ask(
     Path((run, community)): Path<(String, String)>,
     body: Result<Json<AskBody>, JsonRejection>,
 ) -> Result<Json<Started>, ApiError> {
-    let Json(AskBody { question, part }) = body?;
-    Ok(Json(on_the_side(move || ask(&engine, &run, Scope::Community(community), question, part)).await?))
+    let Json(AskBody { question, part, approved }) = body?;
+    Ok(Json(on_the_side(move || ask(&engine, &run, Scope::Community(community), question, part, approved)).await?))
 }
 
 async fn community_result(
@@ -849,23 +947,19 @@ async fn community_redo(
 async fn proposals_estimate(
     State(engine): State<Shared>,
     Path((run, community)): Path<(String, String)>,
+    body: Result<Json<ProposalBody>, JsonRejection>,
 ) -> Result<Json<ProposalPlan>, ApiError> {
-    Ok(Json(on_the_side(move || proposal_plan(&engine, &run, &community)).await?))
+    let Json(ProposalBody { fresh }) = body?;
+    Ok(Json(on_the_side(move || proposal_plan(&engine, &run, &community, fresh)).await?))
 }
 
 async fn proposals_ask(
     State(engine): State<Shared>,
     Path((run, community)): Path<(String, String)>,
+    body: Result<Json<ProposeBody>, JsonRejection>,
 ) -> Result<Json<Started>, ApiError> {
-    Ok(Json(on_the_side(move || propose(&engine, &run, &community)).await?))
-}
-
-async fn proposals_redo(
-    State(engine): State<Shared>,
-    Path((run, community)): Path<(String, String)>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let round = on_the_side(move || redo_proposals(&engine, &run, &community)).await?;
-    Ok(Json(serde_json::json!({ "round": round })))
+    let Json(body) = body?;
+    Ok(Json(on_the_side(move || propose(&engine, &run, &community, body)).await?))
 }
 
 async fn marked_listing(
@@ -892,9 +986,9 @@ async fn marked_ask(
     Path(run): Path<String>,
     body: Result<Json<AskBody>, JsonRejection>,
 ) -> Result<Json<Started>, ApiError> {
-    let Json(AskBody { mut question, part }) = body?;
+    let Json(AskBody { mut question, part, approved }) = body?;
     let papers = std::mem::take(&mut question.papers);
-    Ok(Json(on_the_side(move || ask(&engine, &run, marked(papers)?, question, part)).await?))
+    Ok(Json(on_the_side(move || ask(&engine, &run, marked(papers)?, question, part, approved)).await?))
 }
 
 async fn marked_result(
@@ -1083,8 +1177,23 @@ pub(super) mod tests {
         assert!(plan["all"]["estimate"]["usd"].as_f64().unwrap() > 0.0);
         assert_eq!(posts(), before, "the estimate sends nothing");
         let id = plan["id"].as_str().unwrap().to_owned();
+        let sample_most = plan["sample"]["estimate"]["most_usd"].clone();
+        let all_most = plan["all"]["estimate"]["most_usd"].clone();
 
-        let ask = json!({"question": QUESTION, "part": "sample"});
+        // a click on terms the user was not shown starts nothing, or stops before sending anything
+        let other =
+            json!({"question": QUESTION, "part": "sample", "model": "another-model", "approved_usd": sample_most});
+        assert_eq!(call(&router, "POST", &format!("{C0}/ask"), Some(other)).await.0, StatusCode::BAD_REQUEST);
+        let cheap =
+            json!({"question": QUESTION, "part": "sample", "model": "claude-opus-5-5", "approved_usd": 0.000_001});
+        assert_eq!(call(&router, "POST", &format!("{C0}/ask"), Some(cheap)).await.0, StatusCode::OK);
+        let refused = finished(&router).await;
+        assert_eq!(refused["state"], "failed");
+        assert!(refused["error"].as_str().unwrap().contains("the cost changed"), "{refused}");
+        assert_eq!(posts(), before, "nothing was sent past what was approved");
+
+        let ask =
+            json!({"question": QUESTION, "part": "sample", "model": "claude-opus-5-5", "approved_usd": sample_most});
         let (status, started) = call(&router, "POST", &format!("{C0}/ask"), Some(ask.clone())).await;
         assert_eq!((status, started["id"].as_str()), (StatusCode::OK, Some(id.as_str())));
         let done = finished(&router).await;
@@ -1111,8 +1220,9 @@ pub(super) mod tests {
         );
 
         // asked again, and about the sub-community: what is kept is not paid for twice
-        call(&router, "POST", &format!("{C0}/ask"), Some(json!({"question": QUESTION, "part": "all"}))).await;
-        finished(&router).await;
+        let all = json!({"question": QUESTION, "part": "all", "model": "claude-opus-5-5", "approved_usd": all_most});
+        call(&router, "POST", &format!("{C0}/ask"), Some(all)).await;
+        assert_eq!(finished(&router).await["state"], "done");
         let sub = "/api/runs/r1/communities/c0.0/stances";
         call(&router, "POST", &format!("{sub}/ask"), Some(ask.clone())).await;
         finished(&router).await;
@@ -1166,13 +1276,16 @@ pub(super) mod tests {
         );
         let huge = Body::from(format!("{{\"question\": \"{}\"}}", "a".repeat(super::super::security::LARGEST_BODY)));
         assert_eq!(call_raw(&router, "POST", &format!("{C0}/estimate"), huge).await.0, StatusCode::PAYLOAD_TOO_LARGE);
-        let (status, refused) =
-            call(&router, "POST", &format!("{C0}/ask"), Some(json!({"question": QUESTION, "part": "sample"}))).await;
+        let approved = json!({"question": QUESTION, "part": "sample", "model": "claude-opus-5-5", "approved_usd": 1.0});
+        let (status, refused) = call(&router, "POST", &format!("{C0}/ask"), Some(approved)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(refused["error"].as_str().unwrap().starts_with("the model cannot be asked"));
         assert_eq!(call(&router, "GET", "/api/status", None).await.1["state"], "idle", "no job was started");
-        let (status, _) = call(&router, "POST", &format!("{C0}/proposals"), None).await;
+        let propose = json!({"model": "claude-opus-5-5", "approved_usd": 1.0});
+        let (status, _) = call(&router, "POST", &format!("{C0}/proposals"), Some(propose)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+        let unapproved = json!({"question": QUESTION, "part": "sample"});
+        assert_eq!(call(&router, "POST", &format!("{C0}/ask"), Some(unapproved)).await.0, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -1190,7 +1303,8 @@ pub(super) mod tests {
             call(&router, "POST", "/api/runs/r1/marked/stances/estimate", Some(stranger)).await.0,
             StatusCode::BAD_REQUEST
         );
-        let (status, proposals) = call(&router, "POST", &format!("{C0}/proposals/estimate"), None).await;
+        let (status, proposals) =
+            call(&router, "POST", &format!("{C0}/proposals/estimate"), Some(json!({"fresh": false}))).await;
         assert_eq!((status, proposals["papers"].clone()), (StatusCode::OK, json!(3)));
         assert_eq!(proposals["estimate"]["to_ask"], 1);
     }
