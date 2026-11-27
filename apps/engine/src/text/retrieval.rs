@@ -50,10 +50,9 @@ use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use unicode_normalization::UnicodeNormalization;
-use unicode_normalization::char::is_combining_mark;
 
 use super::passages::{Kind, Part, Passages};
+use super::words::{is_stop_word, singular, split};
 
 /// BM25's term-frequency saturation.
 pub const K1: f64 = 1.2;
@@ -76,50 +75,14 @@ pub const CACHE_BUDGET: usize = 256 * 1024 * 1024;
 /// Passages kept of a read paper once its index is full: its title and abstract, as a rule.
 pub const CAPPED_PASSAGES: usize = 4;
 
-/// Words that match nearly every passage and say nothing about what it is about.
-const STOP_WORDS: [&str; 44] = [
-    "a", "an", "and", "are", "as", "at", "be", "by", "can", "do", "does", "for", "from", "has", "have", "how", "in",
-    "into", "is", "it", "its", "of", "on", "or", "our", "paper", "that", "the", "their", "them", "these", "they",
-    "this", "to", "use", "using", "was", "we", "what", "when", "which", "while", "with", "why",
-];
-
-/// The words of `text` as the index compares them: lower case, accents and a plural `s` dropped, stop words and
-/// single letters left out (single digits stay: "3D", "k 2").
+/// The words of `text` as the index compares them ([`super::words`]): lower case, accents and a plural `s`
+/// dropped, stop words and single letters left out (single digits stay: "3D", "k 2").
 pub fn words(text: &str) -> Vec<String> {
-    let mut words = Vec::new();
-    let mut word = String::new();
-    let mut finish = |word: &mut String| {
-        if !word.is_empty() {
-            let folded = folded(word);
-            if !(folded.chars().count() < 2 && !folded.chars().all(|c| c.is_ascii_digit()))
-                && !STOP_WORDS.contains(&folded.as_str())
-            {
-                words.push(folded);
-            }
-            word.clear();
-        }
-    };
-    for c in text.nfkd().filter(|c| !is_combining_mark(*c)) {
-        if c.is_alphanumeric() {
-            word.extend(c.to_lowercase());
-        } else {
-            finish(&mut word);
-        }
-    }
-    finish(&mut word);
-    words
-}
-
-/// A plural folded to its singular, roughly: "methods" and "method", "studies" and "study".
-fn folded(word: &str) -> String {
-    let length = word.chars().count();
-    if length > 4 && word.ends_with("ies") {
-        return format!("{}y", &word[..word.len() - 3]);
-    }
-    if length > 3 && word.ends_with('s') && !word.ends_with("ss") && !word.ends_with("us") && !word.ends_with("is") {
-        return word[..word.len() - 1].to_owned();
-    }
-    word.to_owned()
+    split(text)
+        .into_iter()
+        .map(|word| singular(&word))
+        .filter(|word| !(word.chars().count() < 2 && !word.chars().all(|c| c.is_ascii_digit())) && !is_stop_word(word))
+        .collect()
 }
 
 /// Why a paper is in an index by its title and abstract only.

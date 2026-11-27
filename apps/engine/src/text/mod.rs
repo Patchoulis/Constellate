@@ -11,6 +11,7 @@
 //! | [`review_points`] | what each reviewer raised, point by point, with the authors' replies          |
 //! | [`reviews`]      | the scores reviewers gave, from the text of a reviews page                     |
 //! | [`discussion`]   | the whole thread of a reviews page: reviews by section, replies, the decision  |
+//! | [`words`]        | words as the lexical matchers compare them: one cut, one plural, one stop-list  |
 //!
 //! Positions and lengths in the readers count characters, not bytes, as the Python readers they replace did:
 //! a statement is cut after 1,500 characters whatever script it is written in.
@@ -23,6 +24,7 @@ pub mod references;
 pub mod retrieval;
 pub mod review_points;
 pub mod reviews;
+pub mod words;
 
 use regex::Regex;
 

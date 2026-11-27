@@ -37,6 +37,7 @@ use crate::model::batch::Item;
 use crate::model::chosen::Chosen;
 use crate::model::language::{Ask, Form};
 use crate::text::passages::{Kind, Match, Part, Passages};
+use crate::text::words;
 
 /// The version of the per-paper prompt and answer: raised when either changes, so kept answers are asked again.
 pub const PROMPT: u32 = 1;
@@ -321,7 +322,7 @@ pub fn answer_key(chosen: &Chosen, paper: &str, read: Read, key_question: &str) 
     chosen.key(Feature::Stances, PROMPT, &[paper], &format!("{key_question}\nread from {from}"))
 }
 
-/// Words that say nothing about what a question or a paper is about.
+/// Words that say nothing about what a question or a paper is about, besides [`words::STOP_WORDS`].
 const STOPWORDS: &[&str] = &[
     "a",
     "about",
@@ -451,28 +452,26 @@ const STOPWORDS: &[&str] = &[
 ];
 
 /// A word folded so that its plural and its common endings meet: "models" and "model", "training" and "train".
+/// A plural folded as every lexical matcher folds it ([`crate::text::words::singular`]), and here also "-ing" and
+/// "-ed" cut, which a yes/no question's verbs need ("does training on X help" and "trained on X").
 fn stem(word: &str) -> String {
-    let word = word.to_lowercase();
     let cut = |suffix: &str, keep: usize| {
         word.strip_suffix(suffix).filter(|stem| stem.chars().count() >= keep).map(str::to_owned)
     };
-    if let Some(stem) = cut("ies", 3) {
-        return format!("{stem}y");
+    if word.ends_with("ies") {
+        return words::singular(word);
     }
-    cut("ing", 4)
-        .or_else(|| cut("ed", 4))
-        .or_else(|| (!word.ends_with("ss")).then(|| cut("s", 3)).flatten())
-        .unwrap_or(word)
+    cut("ing", 4).or_else(|| cut("ed", 4)).unwrap_or_else(|| words::singular(word))
 }
 
 /// The words of a text that can say what it is about, folded, in order (for word pairs).
 fn content_words(text: &str) -> Vec<Option<String>> {
-    text.split(|c: char| !c.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .map(|word| {
-            let lower = word.to_lowercase();
+    words::split(text)
+        .into_iter()
+        .map(|lower| {
             let useful = lower.chars().count() >= 3
                 && !STOPWORDS.contains(&lower.as_str())
+                && !words::is_stop_word(&lower)
                 && !lower.chars().all(|c| c.is_ascii_digit());
             useful.then(|| stem(&lower))
         })

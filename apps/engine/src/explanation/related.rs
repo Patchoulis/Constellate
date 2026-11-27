@@ -23,6 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rayon::prelude::*;
 
 use crate::text::passages::{Address, Kind, Passages, chars_of, sentence_spans};
+use crate::text::words::{is_stop_word, singular, split};
 
 /// The most results told, over all papers.
 pub const MOST_RESULTS: usize = 10;
@@ -33,7 +34,7 @@ pub const FEWEST_SHARED: usize = 2;
 /// The most shared words shown with a result.
 pub const WORDS_SHOWN: usize = 6;
 
-/// Words too common to say what a passage is about.
+/// Words too common to say what a passage is about, besides [`crate::text::words::STOP_WORDS`].
 const STOPWORDS: &str = "the and for are with that this from which these those have has had was were been being \
     can could would should may might must will shall not but its their them they than then there here where when \
     what who how all any each both such into onto over under between about also only more most other some one \
@@ -76,30 +77,19 @@ pub struct Found {
     pub score: f64,
 }
 
-/// A word as compared: lower case, a plural's "s" dropped ("models" is "model").
-fn stem(word: &str) -> String {
-    let word = word.to_lowercase();
-    let length = word.chars().count();
-    if length > 4 && word.ends_with("ies") {
-        format!("{}y", &word[..word.len() - 3])
-    } else if length > 3 && word.ends_with('s') && !word.ends_with("ss") && !word.ends_with("us") {
-        word[..word.len() - 1].to_owned()
-    } else {
-        word
-    }
-}
-
 fn common(word: &str) -> bool {
-    STOPWORDS.split_whitespace().any(|common| common == word)
+    is_stop_word(word) || STOPWORDS.split_whitespace().any(|common| common == word)
 }
 
-/// The words of `text` that say what it is about, as compared, in order (repeats kept). A word is common as
-/// written ("this", "does") or once its plural's "s" is dropped ("shows").
+/// The words of `text` that say what it is about, as compared ([`crate::text::words`]: lower case, accents and a
+/// plural's "s" dropped), in order (repeats kept). A word is common as written ("this", "does") or once its
+/// plural's "s" is dropped ("shows").
 pub fn words_of(text: &str) -> Vec<String> {
-    text.split(|c: char| !c.is_alphanumeric())
+    split(text)
+        .into_iter()
         .filter(|word| word.chars().count() >= 3 && !word.chars().all(|c| c.is_ascii_digit()))
-        .filter(|word| !common(&word.to_lowercase()))
-        .map(stem)
+        .filter(|word| !common(word))
+        .map(|word| singular(&word))
         .filter(|word| !common(word))
         .collect()
 }
