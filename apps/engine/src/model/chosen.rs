@@ -78,7 +78,7 @@ impl Chosen {
         let provider = endpoint.as_ref().map_or(wanted, Endpoint::provider);
         let about = provider.about();
         let set = settings.describe_model.trim();
-        let model = if settings.describe_provider == provider.id() && !set.is_empty() {
+        let model = if settings.describe_provider == provider && !set.is_empty() {
             set.to_owned()
         } else {
             // the settings' model is another provider's: never sent here
@@ -291,7 +291,7 @@ mod tests {
 
     fn settings(provider: &str, model: &str, effort: Effort) -> Settings {
         Settings {
-            describe_provider: provider.to_owned(),
+            describe_provider: Provider::from_id(provider).unwrap(),
             describe_model: model.to_owned(),
             describe_effort: effort,
             ..Settings::default()

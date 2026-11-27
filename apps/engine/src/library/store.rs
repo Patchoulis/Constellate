@@ -101,13 +101,21 @@ pub fn write_json<T: Serialize + ?Sized>(path: &Path, content: &T) -> Result<(),
 struct BetweenProcesses(PathBuf);
 
 impl BetweenProcesses {
+    /// Take the lock, waiting for another holder at most until its lock is `stale` and then [`PATIENCE`] more: a
+    /// lock that can be neither made nor taken over by then (a folder the engine may not write in, a folder of
+    /// that name) is an error, never a wait without end with every other update queued behind it.
     fn hold(path: &Path, stale: Duration) -> Result<Self, StoreError> {
         let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
         let lock = path.with_file_name(format!("{name}.lock"));
         if let Some(folder) = lock.parent() {
             fs::create_dir_all(folder).map_err(io_error(folder))?;
         }
+        let deadline = Instant::now() + stale + PATIENCE;
         loop {
+            if Instant::now() >= deadline {
+                let held = io::Error::new(io::ErrorKind::TimedOut, "the lock could not be taken");
+                return Err(io_error(&lock)(held));
+            }
             match fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
                 Ok(_) => return Ok(Self(lock)),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -116,7 +124,9 @@ impl BetweenProcesses {
                         .map(|written| SystemTime::now().duration_since(written).unwrap_or_default());
                     match age {
                         Ok(age) if age >= stale => {
-                            let _ = fs::remove_file(&lock); // its owner is gone
+                            if fs::remove_file(&lock).is_err() {
+                                thread::sleep(Duration::from_millis(20)); // tried again until the deadline
+                            } // else its owner is gone, and it is taken at once
                         }
                         Ok(_) => thread::sleep(Duration::from_millis(20)),
                         Err(_) => {} // released just now: try again at once
@@ -239,6 +249,24 @@ mod tests {
         .unwrap();
         assert_eq!(written["CAD"], 1.42);
         assert_eq!(files_in(folder.path()), ["rates.json"]);
+    }
+
+    #[test]
+    fn a_lock_that_can_never_be_taken_is_an_error_not_a_wait_without_end() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("settings.json");
+        // a folder where the lock file would be: it can be neither created nor removed as a file
+        fs::create_dir(folder.path().join("settings.json.lock")).unwrap();
+        let (sent, answered) = std::sync::mpsc::channel();
+        let waiting = thread::spawn(move || {
+            let _ = sent.send(update_json_with(&path, Duration::ZERO, |content| content.clear()).is_err());
+        });
+        let refused = answered.recv_timeout(PATIENCE * 4).expect("the update waited for ever");
+        assert!(refused);
+        waiting.join().unwrap();
+        // and the next update is not held up behind it
+        let other = folder.path().join("rates.json");
+        assert!(update_json(&other, |content| content.clear()).is_ok());
     }
 
     #[test]

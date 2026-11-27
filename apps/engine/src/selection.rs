@@ -16,6 +16,11 @@ const MOST_NAMED: usize = 3;
 
 #[allow(clippy::unwrap_used)] // a pattern written here either always compiles or never does: the tests say which
 static NAME_AND_YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^.+ \d{4}$").unwrap());
+/// An arXiv category as arXiv writes them: `cs.LG`, `hep-th`, `astro-ph.CO`, `cond-mat.mes-hall`. Nothing else may
+/// be one, since a category goes into the run's folder name and into the query sent to arXiv.
+#[allow(clippy::unwrap_used)]
+static CATEGORY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z]+(?:-[A-Za-z]+)*(?:\.[A-Za-z]+(?:-[A-Za-z]+)*)?$").unwrap());
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Selection {
@@ -34,6 +39,8 @@ pub enum Invalid {
     Dates,
     #[error("The start date is after the end date")]
     Backwards,
+    #[error("Write each category as arXiv does, e.g. cs.LG or hep-th")]
+    Category,
 }
 
 /// The values that say something: trimmed, and without the empty ones.
@@ -64,7 +71,11 @@ impl Selection {
         if start > end {
             return Err(Invalid::Backwards);
         }
-        Ok(Self::Dates { start, end, categories: clean(categories) })
+        let categories = clean(categories);
+        if categories.iter().any(|category| !CATEGORY.is_match(category)) {
+            return Err(Invalid::Category);
+        }
+        Ok(Self::Dates { start, end, categories })
     }
 
     /// The folder name of the run: the same selection always gets the same name.
@@ -174,6 +185,21 @@ mod tests {
             assert_eq!(Selection::parse(&[], start, end, &[], false), Err(Invalid::Dates), "{start:?} {end:?}");
         }
         assert_eq!(Invalid::Dates.to_string(), "Give conferences, or a start date and an end date (YYYY-MM-DD)");
+    }
+
+    #[test]
+    fn a_category_is_one_arxiv_writes_and_nothing_that_could_leave_the_runs_folder() {
+        let dates = |categories: &[&str]| {
+            Selection::parse(&[], Some("2026-01-05"), Some("2026-01-11"), &all(categories), false)
+        };
+        for good in ["cs.LG", "stat.ML", "hep-th", "astro-ph.CO", "cond-mat.mes-hall", "q-bio.NC", "math"] {
+            assert!(dates(&[good]).is_ok(), "{good}");
+        }
+        for bad in ["../../outside", "cs/LG", "cs.LG\\x", "cs.LG OR all:x", "cs.LG:", "C:", ".hidden", "cs..LG", "-"] {
+            assert_eq!(dates(&["cs.LG", bad]), Err(Invalid::Category), "{bad}");
+        }
+        let named = dates(&["cs.LG", "../../outside"]).map(|selection| selection.name());
+        assert!(named.is_err(), "a run would be named {named:?}");
     }
 
     #[test]

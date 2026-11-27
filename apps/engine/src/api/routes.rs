@@ -107,8 +107,11 @@ impl Engine {
     /// read at start, or why it cannot be asked (its key is not set). Every feature that asks the model asks
     /// here, so that the choice in the interface is the one that is used.
     pub fn endpoint(&self) -> Result<Endpoint, Unavailable> {
-        let settings = settings::load(&self.settings_file(), &self.choices).ok();
-        self.endpoint_for(settings.as_ref().map_or(Provider::Anthropic, wanted))
+        let chosen = settings::load(&self.settings_file(), &self.choices)
+            .ok()
+            .map(|settings| settings.describe_provider)
+            .unwrap_or(Provider::Anthropic);
+        self.endpoint_for(chosen)
     }
 
     fn endpoint_for(&self, provider: Provider) -> Result<Endpoint, Unavailable> {
@@ -123,18 +126,13 @@ impl Engine {
     /// estimates, keys its answers under and sends cannot be of different providers.
     pub fn chosen(&self) -> Result<Chosen, ApiError> {
         let settings = settings::load(&self.settings_file(), &self.choices)?;
-        let provider = wanted(&settings);
+        let provider = settings.describe_provider;
         Chosen::new(self.endpoint_for(provider), provider, &settings).map_err(|why| ApiError::Invalid(why.to_string()))
     }
 
     pub fn settings_file(&self) -> PathBuf {
         self.data.join("settings.json")
     }
-}
-
-/// The provider the settings choose (the Claude API for an id this engine does not know).
-fn wanted(settings: &Settings) -> Provider {
-    Provider::from_id(&settings.describe_provider).unwrap_or(Provider::Anthropic)
 }
 
 /// Why a request was not answered, told as `{ "error": "..." }` with the status that says what kind of reason it
