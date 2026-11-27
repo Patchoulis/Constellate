@@ -183,7 +183,7 @@ export function estimateLine(estimate: ClaimsEstimate): string {
 }
 
 export const ESTIMATE_NOTE =
-	"Estimated from the paper's length, not counted: tokens are reckoned at three characters each, which errs high. The budget sent with the request is the estimate's most, so nothing past it is spent.";
+	"Estimated from the paper's length, not counted: tokens are reckoned at three characters each, which errs high. The budget sent with the request is the estimate's most, rounded up to the cent: nothing past it is spent.";
 
 /** The most the calls may spend: the estimate's worst case, rounded up to the cent. Null when it cannot be priced. */
 export function budgetFor(estimate: ClaimsEstimate): number | null {

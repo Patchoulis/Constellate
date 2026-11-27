@@ -432,7 +432,7 @@ export function PaperReader({
 					{paper.status === "loading" && <p className="text-sm text-muted-foreground">Loading…</p>}
 					{found && view === "citations" && <Citations paper={found} run={run} onOpen={onOpen} />}
 					{found && view === "claims" && (
-						<ClaimsView id={found.id} onOpenReviews={from.reviews && EMBEDS ? () => setView("reviews") : undefined} />
+						<ClaimsView key={found.id} id={found.id} onOpenReviews={from.reviews && EMBEDS ? () => setView("reviews") : undefined} />
 					)}
 					{found && view === "text" && (
 						// a new citation starts afresh: nothing of the last one may stay highlighted while this one is found

@@ -382,6 +382,8 @@ function Outline({ view, nodes, onOpenReviews }: { view: View; nodes: ClaimNode[
 	const [focused, setFocused] = useState<string | null>(nodes[0]?.id ?? null);
 	const refs = useRef(new Map<string, HTMLDivElement>());
 	const rows = useMemo(() => outline(nodes, view.node_reviews, open, onlyContested), [nodes, view.node_reviews, open, onlyContested]);
+	// the row that takes the keyboard: the one last focused while it is shown, else the first, so that Tab always reaches the tree
+	const current = rows.some((row) => row.node.id === focused) ? focused : (rows[0]?.node.id ?? null);
 	const mapping = view.mapping.state === "made" ? view.mapping.mapping : null;
 	const reviews = view.reviews;
 	const reviewers = reviews?.reviewers ?? [];
@@ -393,7 +395,9 @@ function Outline({ view, nodes, onOpenReviews }: { view: View; nodes: ClaimNode[
 			return next;
 		});
 	const onKey = (event: React.KeyboardEvent) => {
-		const moved = move(rows, focused, event.key);
+		// keys pressed on a button inside a row (a point, a citation) are that button's
+		if ((event.target as HTMLElement).getAttribute("role") !== "treeitem") return;
+		const moved = move(rows, current, event.key);
 		if (!moved) return;
 		event.preventDefault();
 		if ("toggle" in moved) toggle(moved.toggle);
@@ -412,7 +416,7 @@ function Outline({ view, nodes, onOpenReviews }: { view: View; nodes: ClaimNode[
 							{ value: "all", label: "All claims" },
 							{
 								value: "contested",
-								label: `Only contested (${view.contested})`,
+								label: `Only contested (${count(view.contested, "claim")})`,
 								title: "Claims at least one reviewer challenged, and what they stand under",
 							},
 						]}
@@ -435,8 +439,8 @@ function Outline({ view, nodes, onOpenReviews }: { view: View; nodes: ClaimNode[
 							role="treeitem"
 							aria-level={row.depth}
 							aria-expanded={row.hasChildren ? row.open : undefined}
-							aria-selected={focused === row.node.id}
-							tabIndex={focused === row.node.id ? 0 : -1}
+							aria-selected={current === row.node.id}
+							tabIndex={current === row.node.id ? 0 : -1}
 							onFocus={() => setFocused(row.node.id)}
 							className={cn(
 								"flex flex-col gap-1 rounded-md py-1.5 pr-2 outline-none focus-visible:ring-1 focus-visible:ring-ring",
@@ -494,7 +498,13 @@ function Outline({ view, nodes, onOpenReviews }: { view: View; nodes: ClaimNode[
 						</div>
 					);
 				})}
-				{rows.length === 0 && <p className="font-ui text-xs text-muted-foreground">No claim here was challenged by a reviewer.</p>}
+				{rows.length === 0 && (
+					<p className="font-ui text-xs text-muted-foreground">
+						{nodes.length === 0
+							? "Nothing of the model's answer is shown: none of its statements' quotes were found in the paper."
+							: "No claim was challenged by a reviewer."}
+					</p>
+				)}
 			</div>
 		</section>
 	);
