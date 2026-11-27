@@ -111,6 +111,10 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if let Err(error) = place::create_private(&data) {
+        eprintln!("constellate: not started: the data folder {} cannot be made: {error}", data.display());
+        return ExitCode::FAILURE;
+    }
 
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,
