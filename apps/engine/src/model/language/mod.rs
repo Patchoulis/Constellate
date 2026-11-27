@@ -1395,7 +1395,13 @@ impl<'a> Client<'a> {
             self.stopped()?;
             let asked = self.asked(ask, wrong.as_deref());
             let worst = self.worst_asked(&asked);
-            let held = budget.hold(&priced, &worst)?;
+            let held = match (budget.hold(&priced, &worst), &wrong) {
+                (Ok(held), _) => held,
+                // the first attempt was paid for: this is an answer that was not the JSON asked for, not a call
+                // that was never started, which a batch would start again from the beginning (and pay for again)
+                (Err(_), Some(why)) => return Err(NoAnswer::NotJson(why.clone()).into()),
+                (Err(over), None) => return Err(over.into()),
+            };
             let Request { path, body } = self.request(&asked);
             let reply = match self.send(&path, ask.model, &[], body.to_string().as_bytes()) {
                 Ok(reply) => reply,
@@ -2143,6 +2149,24 @@ mod every_provider {
         );
         assert_eq!(fake.sent().len(), 2);
         assert!(fake.sent()[0].body["messages"][1]["content"].as_str().unwrap().contains("What does the paper claim?"));
+    }
+
+    #[test]
+    fn an_answer_not_in_json_whose_second_try_the_budget_cannot_take_is_not_json_not_a_call_never_started() {
+        let schema = schema();
+        let fake = Fake::new(vec![Ok(ok(&completion("MiniMax-M3", "Sure, it merges.", chat_usage(50, 10, 0))))]);
+        let calls = Mutex::new(Vec::new());
+        let client = Client::new(&fake, endpoint(Provider::MiniMax), &calls);
+        let ask = ask("MiniMax-M3", &schema);
+        // room for the first attempt's worst case, not for a second one after what the first took
+        let first = client.worst_asked(&client.asked(&ask, None)).all();
+        let budget = Budget::new(Limit::Tokens(first + 10));
+        let error = client.ask(&ask, &budget).unwrap_err();
+        // a batch starts a call refused by the budget again once room is made: this one was paid for already
+        assert_eq!(error, NoAnswer::NotJson("it is not JSON".to_owned()).into());
+        assert_eq!(fake.sent().len(), 1);
+        assert_eq!(calls.into_inner().unwrap().len(), 1, "the first attempt is recorded");
+        assert_eq!(budget.spent().0, 60);
     }
 
     #[test]
