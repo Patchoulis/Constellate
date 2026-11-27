@@ -29,7 +29,7 @@ There is nothing else to install.
   their distinguishing terms. To set it: Start, "Edit environment variables for your account", New.
 
 **Uninstall:** Windows Settings, Apps, Installed apps, Constellate, Uninstall. The uninstaller asks whether to also
-remove what the app downloaded and computed, all of which is in `%APPDATA%\\Constellate`: its own Python and
+remove what the app downloaded and computed, all of which is in `%LOCALAPPDATA%\\Constellate`: its own Python and
 packages (several GB) and your library of papers, embeddings and runs. Answer No to keep them for a later
 reinstall. The embedding model sits in the shared Hugging Face cache (`%USERPROFILE%\\.cache\\huggingface`),
 which other programs may use too, so it is left alone: delete that folder by hand if nothing else needs it.

@@ -35,15 +35,30 @@ const places = app.isPackaged
 	? {
 			backend: path.join(process.resourcesPath, "backend"),
 			uv: path.join(process.resourcesPath, "uv", process.platform === "win32" ? "uv.exe" : "uv"),
-			python: path.join(app.getPath("userData"), "python"),
+			python: path.join(localData(), "python"),
 			web: path.join(process.resourcesPath, "web", "apps", "web", "server.js"),
-			data: path.join(app.getPath("userData"), "data"),
+			data: path.join(localData(), "data"),
 		}
 	: {
 			backend: path.join(REPO, "apps", "backend"),
 			web: path.join(REPO, "apps", "web", ".next", "standalone", "apps", "web", "server.js"),
 			data: path.join(REPO, "data"),
 		};
+
+/**
+ * The installed app's own data: its library and its Python. Always the system's folder for one program's local
+ * data, which nothing syncs: the library is a database that is open while the app runs, and a sync client
+ * copying it mid-write can corrupt it. (Electron's "userData" is the roaming folder on Windows.)
+ */
+function localData() {
+	if (process.platform === "win32" && process.env.LOCALAPPDATA) return path.join(process.env.LOCALAPPDATA, "Constellate");
+	if (process.platform === "darwin") return path.join(app.getPath("home"), "Library", "Application Support", "Constellate");
+	if (process.platform === "linux") {
+		const shared = process.env.XDG_DATA_HOME;
+		return path.join(shared && path.isAbsolute(shared) ? shared : path.join(app.getPath("home"), ".local", "share"), "constellate");
+	}
+	return app.getPath("userData");
+}
 
 const life = new Lifecycle();
 const children = []; // the two servers

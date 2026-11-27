@@ -59,6 +59,7 @@ pub mod embeddings;
 pub mod import;
 pub mod ledger;
 pub mod papers;
+pub mod place;
 pub mod preferences;
 pub mod readings;
 pub mod schema;

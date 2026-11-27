@@ -26,7 +26,7 @@ wins over the same one in `.env`. `.env` is ignored by git; never commit it, sin
 | `CONSTELLATE_TLS_KEY`   |             | A PEM file with that certificate's private key.                                                                                                                                   |
 | `CONSTELLATE_ORIGIN`    |             | The interface's exact origin (`http://127.0.0.1:3000`): the only web page whose requests are answered.                                                                            |
 | `CONSTELLATE_HOST`      |             | The names the engine is reached by, separated by commas (`engine.example.org`). Needed when `CONSTELLATE_BIND` is `0.0.0.0` or `::`.                                              |
-| `CONSTELLATE_DATA`      | `data`      | The data folder: `settings.json`, the library, the runs.                                                                                                                          |
+| `CONSTELLATE_DATA`      | see below   | The data folder: `settings.json`, the library, the runs.                                                                                                                          |
 
 An empty value counts as unset. A value that is wrong stops the engine at once with a message on standard error
 that says what to do; messages never repeat a value (the token could be one).
@@ -113,3 +113,17 @@ running (naming it) and `413` for a body that is too large.
 
 Adding a route is a line in `routes()` in `src/api/routes.rs`; it is served behind the same checks as the others.
 A route that takes a name in its path (a run) checks it with `routes::one_name` first.
+
+## Where the data is kept
+
+Unless `CONSTELLATE_DATA` says otherwise, the engine keeps its data in the system's folder for a program's own
+local data, never in the folder it was started from and never in a folder that syncs:
+
+| System  | Folder                                                        |
+| ------- | ------------------------------------------------------------- |
+| Windows | `%LOCALAPPDATA%\Constellate`                                  |
+| macOS   | `~/Library/Application Support/Constellate`                   |
+| Linux   | `$XDG_DATA_HOME/constellate`, or `~/.local/share/constellate` |
+
+The library is a database that is open while the app runs. A sync client (OneDrive, Dropbox, iCloud) that uploads
+its files mid-write can leave them inconsistent, so do not point `CONSTELLATE_DATA` into a synced folder.

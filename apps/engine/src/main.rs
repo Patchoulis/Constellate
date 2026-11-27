@@ -5,12 +5,13 @@
 //! Whoever starts the engine must not copy it into a log. Everything meant for a person goes to standard error.
 
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 
 use constellate::api::Server;
 use constellate::api::config::{DATA, Environment, Listen};
 use constellate::api::routes::{Engine, routes};
+use constellate::library::place;
 use constellate::settings::Choices;
 
 /// The choices among the settings. Until the modules that own them are ported (clustering, the acceptance
@@ -94,7 +95,14 @@ fn main() -> ExitCode {
         }
     };
     shout(&listen.warnings());
-    let data = environment.get(DATA).map_or_else(|| PathBuf::from("data"), PathBuf::from);
+    // never the folder the engine happened to be started from: this system's place for a program's own data
+    let data = match place::data_folder(environment.get(DATA).map(str::to_owned)) {
+        Ok(data) => data,
+        Err(error) => {
+            eprintln!("constellate: not started: {error}");
+            return ExitCode::from(2);
+        }
+    };
 
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,
