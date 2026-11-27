@@ -21,6 +21,35 @@ export function percent(share: number): string {
 	return `${Math.round(100 * share)}%`;
 }
 
+/** A score's scale: its lowest and highest possible score. Reviewers' scales differ by venue and year. */
+export interface ScoreScale {
+	minimum: number;
+	maximum: number;
+}
+
+const score = (value: number) => (Number.isInteger(value) ? String(value) : value.toFixed(1));
+
+/** "the 1 to 10 scale". */
+export function scaleName(scale: ScoreScale): string {
+	return `the ${scale.minimum} to ${scale.maximum} scale`;
+}
+
+/** A figure on its venue's scale, the scale named: "5.5 of 10 mean rating" (0-based scales say so: "4 of 0 to 10"). */
+export function onScale(value: number, scale: ScoreScale, what: string): string {
+	const top = scale.minimum === 1 ? String(scale.maximum) : `${scale.minimum} to ${scale.maximum}`;
+	return `${score(value)} of ${top} ${what}`;
+}
+
+/** How far apart reviewers' scores are, in points of the scale: "1.2 points spread". */
+export function spreadPoints(spread: number): string {
+	return `${spread.toFixed(1)} points spread`;
+}
+
+/** A position within a scale (0 at its lowest, 1 at its highest), said to be normalised: "56% of the scale, normalised". */
+export function normalised(position: number): string {
+	return `${percent(position)} of the scale, normalised`;
+}
+
 /** "38k tokens", "1.2M tokens". */
 export function tokens(amount: number): string {
 	const short = amount >= 1e6 ? `${+(amount / 1e6).toFixed(1)}M` : amount >= 1e3 ? `${+(amount / 1e3).toFixed(1)}k` : String(amount);

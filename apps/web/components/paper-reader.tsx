@@ -7,6 +7,7 @@ import { AcceptanceTag, AiTag, FlagTag, RatingTags } from "@/components/brand";
 import { Citations } from "@/components/citation-network";
 import { CommunityDot, MarkButton } from "@/components/community-panel";
 import { MathText } from "@/components/math-text";
+import { PaperReviewFigures } from "@/components/review-summary";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
@@ -381,6 +382,7 @@ export function PaperReader({
 					<X />
 				</Button>
 			</div>
+			{view === "reviews" && <PaperReviewFigures id={id} version={read} />}
 			{shown && found ? (
 				<Page key={view} source={shown} title={`${found.title}: ${view}`} onText={view === "reviews" ? readRatings : undefined} />
 			) : (

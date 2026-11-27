@@ -5,6 +5,7 @@ import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronLeft, Star, Telescope, T
 import type { Community, GraphNode, RunResult } from "@rp/contracts";
 import { AcceptanceTag, AiTag } from "@/components/brand";
 import { MathText } from "@/components/math-text";
+import { CommunityReviews } from "@/components/review-summary";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { CITATIONS_NOTE, citationsNote, citedByFigure, citedByOf, citesFigure, citesOf } from "@/lib/citations";
@@ -448,6 +449,7 @@ function Communities({
 			{selected ? (
 				<div className="min-h-0 flex-1 overflow-y-auto">
 					<Detail node={selected} marks={marks} onSelect={onSelect} onOverview={onOverview} onOpenPaper={onOpenPaper} />
+					<CommunityReviews run={result.name} treePath={selected.community.tree_path} onOpenPaper={onOpenPaper} />
 				</div>
 			) : (
 				<>
