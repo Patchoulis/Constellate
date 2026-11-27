@@ -49,6 +49,8 @@ npm run app
 ```
 
 `make setup`, `make run`, `make pr` do the same for people who reach for make; `make` alone lists every command.
+On Linux the engine needs glibc 2.38 or newer for now (Ubuntu 24.04, Debian 13, Fedora 39 and later), and a C
+compiler (`build-essential` or your distribution's equivalent). It uses any graphics card through Vulkan.
 While the backend is being moved from Python to Rust, running the app from source also needs Python 3.12 or
 newer with `pip install -r apps/backend/requirements.txt`.
 
