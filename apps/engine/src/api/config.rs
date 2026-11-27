@@ -998,6 +998,32 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn every_variable_the_engine_reads_is_documented_and_every_one_documented_is_read() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let example = fs::read_to_string(root.join("..").join("..").join(".env.example")).unwrap();
+        let readme = fs::read_to_string(root.join("README.md")).unwrap();
+        let listed: Vec<&str> = example
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .filter_map(|line| line.split_once('=').map(|(name, _)| name.trim()))
+            .collect();
+        let read: Vec<&str> = VARIABLES.into_iter().chain(crate::model::language::variables()).collect();
+        for variable in &read {
+            assert!(listed.contains(variable), "{variable} is read but not in .env.example");
+            assert!(readme.contains(&format!("`{variable}`")), "{variable} is read but not in apps/engine/README.md");
+        }
+        // read elsewhere, from the process environment only: the citation look-up's address, and the Python
+        // backend's model download
+        let elsewhere = [crate::sources::citations::ARXIV_API_VARIABLE, "HF_ENDPOINT"];
+        for variable in listed {
+            assert!(
+                read.contains(&variable) || elsewhere.contains(&variable),
+                "{variable} is in .env.example but nothing reads it"
+            );
+        }
+    }
+
+    #[test]
     fn the_computing_threads_are_every_core_or_the_cap_and_a_wrong_cap_stops_the_engine() {
         let cores = std::thread::available_parallelism().unwrap();
         assert_eq!(threads(&Environment::default()), Ok(cores));
