@@ -37,10 +37,12 @@ const engine = await startEngine({
 	log,
 });
 console.log(`> the engine listens at ${engine.url} (its log: ${join(data, "logs", "engine.log")})`);
-const web = spawn("npm run dev -w @rp/web", {
-	cwd: repo,
+// Next's own program run by this Node, with no shell between (as `npm run dev -w @rp/web` would run it): stopping it
+// then stops it, where on Windows it would stop only the shell
+const next = require.resolve("next/dist/bin/next", { paths: [join(repo, "apps", "web")] });
+const web = spawn(process.execPath, [next, "dev", "-H", "localhost", "-p", "3210"], {
+	cwd: join(repo, "apps", "web"),
 	stdio: "inherit",
-	shell: true,
 	// the interface's server has no use for a provider's key, here as in the app
 	env: { ...withoutKeys(process.env), CONSTELLATE_ENGINE: engine.url, CONSTELLATE_ENGINE_TOKEN: engine.token },
 });
