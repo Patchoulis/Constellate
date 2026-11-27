@@ -32,8 +32,8 @@ use serde_json::Value as JsonValue;
 
 use super::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::analysis::extraction::{
-    self, Cell, Column, LeftOut, MOST_PAPERS, Plan, Read, SAMPLE, SaidCell, by_centrality, check_columns,
-    checked_rows, default_columns, extrapolate, kept_cells, prompt_text,
+    self, Cell, Column, LeftOut, MOST_PAPERS, Plan, Read, SAMPLE, SaidCell, by_centrality, check_columns, checked_rows,
+    default_columns, extrapolate, kept_cells, prompt_text,
 };
 use crate::evidence::PaperText;
 use crate::jobs::{Finished, Tracker};
@@ -466,11 +466,8 @@ fn costing(engine: &Shared, run: &str, scope: &Scope, part: Part) -> Result<Cost
     // a paper with a PDF is taken to be read from it (one that cannot be read is then reckoned at more than its
     // abstract costs: never less)
     let with_pdf: Vec<bool> = rest.iter().map(|id| library.pdf_file(id).is_file()).collect();
-    let read: Vec<(&str, Read)> = rest
-        .iter()
-        .zip(&with_pdf)
-        .map(|(id, pdf)| (*id, if *pdf { Read::Pdf } else { Read::Abstract }))
-        .collect();
+    let read: Vec<(&str, Read)> =
+        rest.iter().zip(&with_pdf).map(|(id, pdf)| (*id, if *pdf { Read::Pdf } else { Read::Abstract })).collect();
     let kept = kept_cells(&library, &chosen, &columns, &read)?;
     let records = library.papers(&rest)?;
     let mut characters = Vec::new();
@@ -595,7 +592,8 @@ async fn start(
     Ok(Json(Begun { ok: true, id }))
 }
 
-/// How many cells were forgotten.
+/// How many kept answers were forgotten: the papers' cells and the whole answers they came from, of every model
+/// and provider and in every run's table (a paper's cells are its own, not a run's), as the interface warns.
 #[derive(Serialize)]
 pub struct Forgotten {
     pub forgotten: usize,
@@ -811,6 +809,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_answer_of_the_routes_fits_its_type_in_the_contracts() {
+        use crate::api::contract::assert_fits;
+
+        let data = data();
+        let (router, _) = served_at(&data, false);
+        let (_, columns) = ask(&router, "GET", "/api/runs/r1/extraction/columns", None).await;
+        assert_fits("ExtractionColumns", &columns, &[]);
+        keep(
+            &data,
+            "p01",
+            "task",
+            stated("task", "Image classification", "We study image classification with sparse mixtures"),
+        );
+        keep(
+            &data,
+            "p01",
+            "compute",
+            stated("compute", "512 TPUs", "trained on 512 TPU v4 chips for two weeks in all"),
+        );
+        let (_, table) = post(&router, "/api/runs/r1/extraction/table", json!({"scope": {"community": "c0"}})).await;
+        assert_eq!(table["rows"][0]["cells"].as_array().map(Vec::len), Some(8), "{table}");
+        assert_fits("ExtractionTable", &table, &[]);
+        for part in ["sample", "rest"] {
+            let (_, cost) =
+                post(&router, "/api/runs/r1/extraction/estimate", json!({"scope": {"community": "c0"}, "part": part}))
+                    .await;
+            assert_fits("ExtractionEstimate", &cost, &[]);
+        }
+    }
+
+    #[tokio::test]
     async fn columns_are_the_defaults_until_saved_and_then_survive_a_restart() {
         let data = data();
         let (router, _) = served_at(&data, false);
@@ -903,9 +932,7 @@ mod tests {
     #[tokio::test]
     async fn a_run_needs_a_key_a_budget_and_no_other_job_running() {
         let data = data();
-        let started = |budget: f64| {
-            json!({"scope": {"community": "c0.0"}, "part": "sample", "budget_usd": budget, "provider": "anthropic", "model": MODEL})
-        };
+        let started = |budget: f64| json!({"scope": {"community": "c0.0"}, "part": "sample", "budget_usd": budget, "provider": "anthropic", "model": MODEL});
         let (no_key, _) = served_at(&data, false);
         let (status, told) = post(&no_key, "/api/runs/r1/extraction/run", started(1.0)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);

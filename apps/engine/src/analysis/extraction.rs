@@ -1314,6 +1314,28 @@ mod tests {
     }
 
     #[test]
+    fn a_budget_reached_part_way_keeps_and_shows_what_was_answered_and_counts_what_was_not_asked() {
+        let (_folder, library) = library();
+        let columns = columns();
+        let (plan, _) = plan(&library, &columns);
+        // room for one paper's worst case, not for all three: an estimate that was too low
+        let most = plan.estimate(&library).unwrap().cost.most_tokens;
+        let budget = Budget::new(Limit::Tokens(most / 2));
+        let model = model();
+        let ran = ask(&library, &model, &plan, &budget);
+        assert!(budget.spent().0 <= most / 2, "the budget is never passed");
+        assert!(ran.answered >= 1 && ran.not_started >= 1, "{ran:?}");
+        assert_eq!(ran.answered + ran.kept + ran.failed + ran.not_started, ran.papers);
+        assert!(ran.stopped.as_deref().is_some_and(|why| why.contains("allowed")), "{ran:?}");
+        assert_eq!(model.sent().len(), ran.answered, "nothing sent that was not answered and kept");
+        let rows = table(&library, &columns);
+        let shown = rows.iter().filter(|row| row.iter().any(|cell| *cell != Cell::NotAsked)).count();
+        assert_eq!(shown, ran.answered, "what was answered is shown, the rest is not asked");
+        let (next, _) = super::tests::plan(&library, &columns);
+        assert_eq!(next.papers(), ran.not_started, "and is what the next run asks");
+    }
+
+    #[test]
     fn the_table_is_the_same_whatever_the_number_of_threads() {
         let columns = columns();
         let papers: Vec<String> = (0..24).map(|n| format!("q{n}")).collect();
