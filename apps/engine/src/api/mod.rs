@@ -549,6 +549,39 @@ pub(crate) mod tests {
         assert_eq!(answer(&router, from("198.51.100.10:4000", STRONG)).await.0, StatusCode::OK);
     }
 
+    #[tokio::test]
+    async fn behind_a_trusted_proxy_the_client_it_names_is_counted_and_its_neighbours_are_not_locked_out() {
+        let data = tempfile::tempdir().unwrap();
+        let listen = listen(&network(&[("CONSTELLATE_TRUSTED_PROXIES", "192.0.2.50")]));
+        let at = "192.0.2.7:8765";
+        let (router, _) = served(&listen, at, Engine::new(data.path().to_path_buf(), choices()));
+        let via = |remote: &str, client: &str, token: &str| {
+            let mut request = Request::get("/api/status")
+                .header(header::HOST, at)
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header("x-forwarded-for", client)
+                .body(Body::empty())
+                .unwrap();
+            request.extensions_mut().insert(ConnectInfo::<SocketAddr>(remote.parse().unwrap()));
+            request
+        };
+        for guess in 0..10 {
+            let guessed = via("192.0.2.50:4000", "203.0.113.7", &format!("guess{guess}"));
+            assert_eq!(answer(&router, guessed).await.0, StatusCode::UNAUTHORIZED);
+        }
+        let waits = via("192.0.2.50:4000", "203.0.113.7", STRONG);
+        assert_eq!(answer(&router, waits).await.0, StatusCode::TOO_MANY_REQUESTS, "the guesser waits");
+        let neighbour = via("192.0.2.50:4000", "203.0.113.8", STRONG);
+        assert_eq!(answer(&router, neighbour).await.0, StatusCode::OK, "another client of the same proxy does not");
+        // a client that is not the proxy cannot name someone else to be counted against
+        for guess in 0..10 {
+            let spoofed = via("198.51.100.20:4000", &format!("203.0.113.{}", 100 + guess), "wrong");
+            assert_eq!(answer(&router, spoofed).await.0, StatusCode::UNAUTHORIZED);
+        }
+        let caught = via("198.51.100.20:4000", "203.0.113.200", STRONG);
+        assert_eq!(answer(&router, caught).await.0, StatusCode::TOO_MANY_REQUESTS);
+    }
+
     /// Serve `server` in the background; dropping the answer stops it.
     fn serve(
         server: Server,
