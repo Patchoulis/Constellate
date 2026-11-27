@@ -28,6 +28,9 @@ npm run dist           build the Windows installer into dist/
 
 ## Secrets: never commit them
 
+- Anything sensitive, and every endpoint the app talks to or listens on, is configured through environment variables
+  or a `.env` file, never written in code or a tracked file. `.env.example` lists every name with no values; add a
+  new variable there when you add one.
 - API keys live in environment variables only (`ANTHROPIC_API_KEY`). Never write a key, token or password into a
   file in this repository, a test, a fixture, a log line, a commit message or the changelog.
 - Never commit `data/`, `.env*`, `*.pem`, `*.key`, or `.claude/settings.local.json`. They are in `.gitignore`;
