@@ -90,6 +90,9 @@ pub enum ImportError {
     /// A `.npy` file that is not a C-order little-endian float32 matrix, or is cut short.
     #[error("{}: {reason}", path.display())]
     Vectors { path: PathBuf, reason: String },
+    /// A file that is not what it should be (not JSON at all).
+    #[error("{}: {reason}", path.display())]
+    Unreadable { path: PathBuf, reason: String },
 }
 
 impl From<rusqlite::Error> for ImportError {
@@ -216,6 +219,15 @@ impl<T> Part<T> {
         }
     }
 
+    /// The same, its reason naming files within the data folder (`data`, as displayed) rather than where that
+    /// folder is on the computer: what is told goes to whoever holds the engine's token.
+    fn told_in(self, data: &str) -> Self {
+        match self {
+            Part::Failed { why } if !data.is_empty() => Part::Failed { why: why.replace(data, "the data folder") },
+            other => other,
+        }
+    }
+
     fn failed(&self) -> Option<&str> {
         match self {
             Part::Failed { why } => Some(why),
@@ -273,7 +285,9 @@ impl Library {
         let files = Part::of(self.import_once(folder));
         let ledger = Part::of(self.import_ledger(folder).map(|rows| (rows > 0).then_some(rows)));
         let detector = Part::of(self.import_detector_once(folder));
-        Moved { files, ledger, detector }
+        // what is told names the files within the data folder, never where that folder is on the computer
+        let data = folder.parent().unwrap_or(folder).display().to_string();
+        Moved { files: files.told_in(&data), ledger: ledger.told_in(&data), detector: detector.told_in(&data) }
     }
 
     /// The detector's part of [`Library::import_old`]: moved and then recorded; moving it again before the record
@@ -287,6 +301,16 @@ impl Library {
         };
         if self.read(|connection| Ok(recorded(connection)?))? || !folder.join(DETECTOR).exists() {
             return Ok(None);
+        }
+        // a training file that does not read is told, and the part tried again at the next start: never recorded
+        // as moved with nothing in it, which would lose the training set for good
+        let training = folder.join(DETECTOR).join("training.json");
+        if training.is_file() {
+            let text =
+                fs::read_to_string(&training).map_err(|source| StoreError::Io { path: training.clone(), source })?;
+            if let Err(error) = serde_json::from_str::<serde::de::IgnoredAny>(&text) {
+                return Err(ImportError::Unreadable { path: training, reason: error.to_string() });
+            }
         }
         let moved = self.import_detector(folder)?;
         self.write(|transaction| {
@@ -449,7 +473,11 @@ impl Files {
             ai_scores: object(&folder.join("ai_detection").join("scores.json"))?,
             descriptions: object(&folder.join("descriptions.json"))?,
             overviews: object(&folder.join("overviews.json"))?,
-            ledger: store::read_json(&folder.join(LEDGER))?,
+            // a damaged ledger keeps only itself out: the ledger's own part ([`Library::import_ledger`]) tells it
+            ledger: store::read_json(&folder.join(LEDGER)).unwrap_or_else(|error| {
+                eprintln!("library: the old ledger is left for its own part of the move: {error}");
+                None
+            }),
             rates: object(&folder.join("rates.json"))?,
             settings,
         })
@@ -986,6 +1014,37 @@ mod tests {
         assert_eq!((files.papers, files.ledger_rows), (3, 0), "the ledger is not counted twice");
         assert_eq!((again.ledger, again.detector), (Part::Already, Part::Already));
         assert_eq!(library.spending().unwrap().total.calls, 5);
+    }
+
+    #[test]
+    fn a_damaged_ledger_or_training_file_keeps_out_only_its_own_part_says_so_without_the_folders_place_and_is_moved_once_mended()
+     {
+        let (data, folder) = files_based_library();
+        with_detector(&folder);
+        let (ledger, training) = (folder.join("usage.json"), folder.join("ai_detection").join("training.json"));
+        let (ledger_text, training_text) =
+            (fs::read_to_string(&ledger).unwrap(), fs::read_to_string(&training).unwrap());
+        fs::write(&ledger, "{ cut short").unwrap();
+        fs::write(&training, "{ cut short").unwrap();
+        let library = Library::open(&folder).unwrap();
+        let moved = library.import_old(&folder);
+        let Part::Moved { added: files } = &moved.files else { panic!("{moved:?}") };
+        assert_eq!((files.papers, files.ledger_rows), (3, 0), "the papers are moved without the ledger");
+        assert!(matches!(&moved.ledger, Part::Failed { why } if why.contains("usage.json")), "{moved:?}");
+        assert!(matches!(&moved.detector, Part::Failed { why } if why.contains("training.json")), "{moved:?}");
+        let problems = moved.problems();
+        assert_eq!(problems.len(), 2);
+        let place = data.path().display().to_string();
+        assert!(
+            problems.iter().all(|problem| !problem.contains(&place) && problem.contains("the data folder")),
+            "{problems:?}"
+        );
+        fs::write(&ledger, ledger_text).unwrap();
+        fs::write(&training, training_text).unwrap();
+        let again = library.import_old(&folder);
+        assert_eq!((again.files.clone(), again.ledger.clone()), (Part::Already, Part::Moved { added: 2 }));
+        assert!(matches!(again.detector, Part::Moved { .. }), "{again:?}");
+        assert_eq!(library.detector_counts(crate::library::detector::POOL).unwrap(), (2, 1));
     }
 
     #[test]

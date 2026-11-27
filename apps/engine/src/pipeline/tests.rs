@@ -802,7 +802,8 @@ fn a_run_with_nothing_accepted_is_made_without_names_and_sends_nothing() {
     let selection = Selection::parse(&["NeurIPS 2025".into()], None, None, &[], false).unwrap();
     let (fetch, words) = (conference_fetch(90), Words { asked: Mutex::new(0) });
     let transport = crate::writing::describe::tests::scripted();
-    let naming = kept_only(&naming_settings());
+    // a model that could be asked (its key set): nothing is sent all the same, since nothing was accepted
+    let naming = seams::Naming::KeptOnly(crate::writing::describe::tests::chosen("claude-opus-5-5"));
     let (name, log) = make_named(
         data.path(),
         &library,
