@@ -20,4 +20,5 @@ pub mod analysis;
 pub mod jobs;
 pub mod library;
 pub mod model;
+pub mod runs;
 pub mod selection;
