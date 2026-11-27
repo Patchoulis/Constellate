@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import type { Catalog, Ratings, ReaderTarget } from "@rp/contracts";
 import { RunAsk } from "@/components/ask";
@@ -12,6 +12,7 @@ import { PaperReader } from "@/components/paper-reader";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
 import { communityTree, type CommunityNode } from "@/lib/community";
+import { ANSWER_OWNER, GraphColouringContext, colouringStep, type GraphColouring, type PaperColouring } from "@/lib/graph-colouring";
 import { useMarks } from "@/lib/marks";
 import type { Job } from "@/lib/use-job";
 import { ready, useAsync } from "@/lib/use-async";
@@ -111,6 +112,23 @@ export function Workspace({
 		}),
 		[known, goToPaper],
 	);
+	// the graph coloured by a feature's groups of papers (lib/graph-colouring.ts): none for a run just opened
+	const [colouring, colour] = useReducer(colouringStep, null);
+	// the same functions for as long as the run is open: a feature may clear its colouring when it goes away
+	const setColouring = useCallback((one: PaperColouring) => colour({ kind: "set", colouring: one }), []);
+	const clearColouring = useCallback((owner: string) => colour({ kind: "clear", owner }), []);
+	const colourings = useMemo<GraphColouring>(
+		() => ({ colouring, set: setColouring, clear: clearColouring }),
+		[colouring, setColouring, clearColouring],
+	);
+	const onCitedPapers = useCallback(
+		(papers: string[]) =>
+			colour({
+				kind: "offer", // never in place of a colouring the user chose
+				colouring: { owner: ANSWER_OWNER, title: "The papers the answer cites", groups: [{ name: "cited", hue: 48, papers }] },
+			}),
+		[],
+	);
 	const markedPapers = useMemo(() => {
 		const byId = new Map(graph?.nodes.map((node) => [node.id, node]));
 		return marks.marked.flatMap((id) => {
@@ -145,58 +163,60 @@ export function Workspace({
 		.sort((a, b) => b.similarity - a.similarity);
 	return (
 		<EvidenceProvider value={evidence}>
-			<main className="relative min-w-0 flex-1">
-				<GraphView
-					graph={graph}
+			<GraphColouringContext value={colourings}>
+				<main className="relative min-w-0 flex-1">
+					<GraphView
+						graph={graph}
+						roots={roots}
+						focus={selected}
+						selectedPaper={paper}
+						ratings={ratings}
+						marked={marks.marked}
+						goTo={goTo}
+						onPickPaper={openPaper}
+						onMarkPaper={marks.toggle}
+					/>
+					{children}
+					<RunAsk run={name} papers={graph.nodes.length} onCitedPapers={onCitedPapers} />
+					{overview && (
+						<OverviewPanel
+							key={overview.community.tree_path}
+							run={name}
+							node={overview}
+							model={model}
+							onOpenPaper={openPaper}
+							onClose={() => setOverview(null)}
+						/>
+					)}
+					{paper && (
+						<PaperReader
+							key={paper}
+							id={paper}
+							community={paperNode && roots[paperNode.community]}
+							related={related.map((other) => ({ ...other, community: roots[other.community] }))}
+							catalog={catalog}
+							marked={marks.has(paper)}
+							onToggleMark={() => marks.toggle(paper)}
+							run={name}
+							at={place}
+							onRatings={onRatings}
+							onOpen={openPaper}
+							onClose={() => openPaper(null)}
+						/>
+					)}
+				</main>
+				<CommunityPanel
+					result={result}
 					roots={roots}
-					focus={selected}
-					selectedPaper={paper}
-					ratings={ratings}
-					marked={marks.marked}
-					goTo={goTo}
-					onPickPaper={openPaper}
-					onMarkPaper={marks.toggle}
+					selected={selected}
+					onSelect={setSelected}
+					onOverview={setOverview}
+					onOpenPaper={openPaper}
+					marks={marks}
+					markedPapers={markedPapers}
+					onGoToPaper={goToPaper}
 				/>
-				{children}
-				<RunAsk run={name} papers={graph.nodes.length} />
-				{overview && (
-					<OverviewPanel
-						key={overview.community.tree_path}
-						run={name}
-						node={overview}
-						model={model}
-						onOpenPaper={openPaper}
-						onClose={() => setOverview(null)}
-					/>
-				)}
-				{paper && (
-					<PaperReader
-						key={paper}
-						id={paper}
-						community={paperNode && roots[paperNode.community]}
-						related={related.map((other) => ({ ...other, community: roots[other.community] }))}
-						catalog={catalog}
-						marked={marks.has(paper)}
-						onToggleMark={() => marks.toggle(paper)}
-						run={name}
-						at={place}
-						onRatings={onRatings}
-						onOpen={openPaper}
-						onClose={() => openPaper(null)}
-					/>
-				)}
-			</main>
-			<CommunityPanel
-				result={result}
-				roots={roots}
-				selected={selected}
-				onSelect={setSelected}
-				onOverview={setOverview}
-				onOpenPaper={openPaper}
-				marks={marks}
-				markedPapers={markedPapers}
-				onGoToPaper={goToPaper}
-			/>
+			</GraphColouringContext>
 		</EvidenceProvider>
 	);
 }

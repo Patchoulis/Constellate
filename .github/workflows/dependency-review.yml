@@ -1,0 +1,30 @@
+name: Dependency review
+
+# On a pull request: what the change adds to or moves in the lockfiles, refused when it brings in a dependency with
+# a known vulnerability or a licence the app may not ship. The Advisories workflow checks everything already there;
+# this one stops a new problem at the door, and says so on the pull request itself.
+on:
+  pull_request:
+    branches: [main, "feat/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # to write its summary as a comment on the pull request
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          fail-on-severity: moderate
+          # copyleft licences that would bind the whole app; deny.toml holds the full allow-list for Rust
+          deny-licenses: AGPL-1.0-only, AGPL-1.0-or-later, AGPL-3.0-only, AGPL-3.0-or-later, GPL-2.0-only, GPL-2.0-or-later, GPL-3.0-only, GPL-3.0-or-later
+          comment-summary-in-pr: on-failure

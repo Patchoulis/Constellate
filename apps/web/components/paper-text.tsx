@@ -199,7 +199,7 @@ export function PaperText({
 
 	if (read.status === "failed")
 		// a backend without the route (the Python one), or no PDF the engine can read: nothing went wrong
-		return missingRoute(read.error) ? (
+		return missingRoute(read.problem) ? (
 			<p className="text-sm text-muted-foreground">
 				The paper&apos;s text is not available here{onOpenPdf ? ": its PDF is in the Paper tab." : "."}
 			</p>

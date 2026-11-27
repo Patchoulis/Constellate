@@ -174,15 +174,29 @@ export function lineKind(
 	return kinds.get(edgeKey(citing, cited)) ?? null;
 }
 
-/** "Citing sentences read for 212 of 739 papers of this run: 480 have no PDF kept". */
-export function coverageLine(coverage: { papers: number; read: number; without_pdf: number }): string {
-	const base = `Citing sentences read for ${coverage.read.toLocaleString()} of ${count(coverage.papers, "paper")} of this run`;
-	return coverage.without_pdf > 0 ? `${base}: ${count(coverage.without_pdf, "has", "have")} no PDF kept` : base;
+/** How far the citing sentences of a run's (or a community's) papers were read; `unreadable` is absent from older engines. */
+export interface SentencesCoverage {
+	papers: number;
+	read: number;
+	without_pdf: number;
+	/** papers with a PDF that could not be read: neither read nor waiting to be */
+	unreadable?: number;
 }
 
-/** Are there papers of the run with a PDF whose citing sentences have not been read? */
-export function moreToRead(coverage: { papers: number; read: number; without_pdf: number }): boolean {
-	return coverage.read < coverage.papers - coverage.without_pdf;
+/** "Citing sentences read for 212 of 739 papers of this run: 480 have no PDF kept, 7 have one that cannot be read". */
+export function coverageLine(coverage: SentencesCoverage): string {
+	const base = `Citing sentences read for ${coverage.read.toLocaleString()} of ${count(coverage.papers, "paper")} of this run`;
+	const unreadable = coverage.unreadable ?? 0;
+	const why = [
+		coverage.without_pdf > 0 ? `${count(coverage.without_pdf, "has", "have")} no PDF kept` : null,
+		unreadable > 0 ? `${count(unreadable, "has", "have")} one that cannot be read` : null,
+	].filter((part) => part !== null);
+	return why.length > 0 ? `${base}: ${why.join(", ")}` : base;
+}
+
+/** Are there papers of the run with a readable PDF whose citing sentences have not been read? */
+export function moreToRead(coverage: SentencesCoverage): boolean {
+	return coverage.read < coverage.papers - coverage.without_pdf - (coverage.unreadable ?? 0);
 }
 
 /**

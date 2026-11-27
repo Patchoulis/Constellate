@@ -20,7 +20,7 @@ import {
 	BACKGROUND_NOTE,
 	MODEL_NOTE,
 	PART_HEADING,
-	askFirst,
+	asksUnconfirmed,
 	byPart,
 	costLine,
 	costNote,
@@ -172,7 +172,7 @@ function AskBelow({ value, onChange }: { value: number | null; onChange: (value:
 	return (
 		<label
 			className="flex items-center gap-1.5 font-ui text-xs text-muted-foreground"
-			title="Kept in this browser only. The amount compared is the most an explanation could cost, not its likely cost."
+			title="Off unless ticked. Kept in this browser only. The amount compared is the most an explanation could cost, not its likely cost; a model with no known price is always asked about first, and so is any estimate other than the first one shown for a passage. Applies from the next passage."
 		>
 			<input
 				type="checkbox"
@@ -183,7 +183,7 @@ function AskBelow({ value, onChange }: { value: number | null; onChange: (value:
 					onChange(next);
 				}}
 			/>
-			Do not ask again when it costs at most USD
+			Explain the next passages without this click when the most they could cost is known and at most USD
 			<input
 				type="number"
 				min={0.001}
@@ -285,9 +285,16 @@ function ExplainView({
 		const first = firstEstimate.current;
 		firstEstimate.current = false;
 		const below = autoBelow.current;
-		if (!first || !estimate || !found.api_key_set || below === undefined || askedOnce.has(key) || asking.state !== "idle") return;
-		if (askFirst(estimate, below)) return;
-		start();
+		if (below === undefined) return; // the setting not read yet: never taken for "on"
+		const unconfirmed = asksUnconfirmed({
+			askBelow: below,
+			current: estimate,
+			first,
+			keySet: found.api_key_set,
+			askedBefore: askedOnce.has(key),
+			idle: asking.state === "idle",
+		});
+		if (unconfirmed) start();
 		// start is a fresh closure every render; only the first answer can lead to asking unconfirmed
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [prepared.status, found]);

@@ -6,8 +6,8 @@
  * set's most central papers), its estimate shown before, its cost after; then on the rest, with a second click.
  * Nothing is shown when the engine has no such route (the Python backend).
  */
-import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Download, Plus, RotateCcw, Square, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Download, Palette, Plus, RotateCcw, Square, X } from "lucide-react";
 import type {
 	ExtractionCell,
 	ExtractionColumn,
@@ -25,6 +25,7 @@ import { Button, Heading } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import {
 	cellText,
+	columnColouring,
 	columnId,
 	coverage,
 	filterOptions,
@@ -39,9 +40,11 @@ import {
 } from "@/lib/extraction";
 import { choiceKey, currentEstimate, useChosenModel } from "@/lib/chosen-model";
 import { budgetOf, costWords, shownModel } from "@/lib/cost";
+import { useColouringBy } from "@/lib/graph-colouring";
 import { ready, useAsync } from "@/lib/use-async";
 import { elsewhereLine, notAskedLine, useFollowedJob } from "@/lib/use-followed-job";
 import { count, money, tokens } from "@/lib/units";
+import { cn } from "@/lib/utils";
 
 const USD = { code: "USD", rate: 1, date: null };
 const usd = (amount: number) => money(amount, USD);
@@ -240,14 +243,29 @@ function ColumnsEditor({ run, given, onSaved }: { run: string; given: Extraction
 function Grid({
 	run,
 	table,
+	colouredAs,
 	onOpenPaper,
 	onForgotten,
 }: {
 	run: string;
 	table: Table;
+	/** who this table is when it colours the graph by a column (lib/graph-colouring.ts) */
+	colouredAs: string;
 	onOpenPaper: (id: string) => void;
 	onForgotten: () => void;
 }) {
+	const colouring = useColouringBy(colouredAs);
+	// the table read again (a run ended, a row forgotten): the column shown on the graph is worked out again
+	const shownColumn = colouring?.shown ?? null;
+	const refreshColouring = useRef(colouring?.refresh);
+	refreshColouring.current = colouring?.refresh;
+	useEffect(() => {
+		const index = table.columns.findIndex((column) => column.id === shownColumn);
+		if (index >= 0)
+			refreshColouring.current?.(table.columns[index].id, () => columnColouring(table.rows, index, table.columns[index].label));
+		// only a new table: the colouring it sets changes `shownColumn` to the same value
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [table]);
 	const [sort, setSort] = useState<{ column: number; descending: boolean } | null>(null);
 	const [filter, setFilter] = useState<{ column: number; key: string } | null>(null);
 	const columns = table.columns;
@@ -335,6 +353,27 @@ function Grid({
 										{column.label}
 										{sort?.column === index && (sort.descending ? <ArrowDown className="size-3" /> : <ArrowUp className="size-3" />)}
 									</button>
+									{/* only a column with something to colour by: a value read, or "not stated" */}
+									{colouring &&
+										table.rows.some((row) => row.cells[index]?.kind === "stated" || row.cells[index]?.kind === "not_stated") && (
+											<button
+												type="button"
+												aria-pressed={colouring.shown === column.id}
+												className={cn(
+													"mt-1 flex items-center gap-1 text-muted-foreground hover:text-foreground",
+													colouring.shown === column.id && "text-foreground",
+												)}
+												title={
+													colouring.shown === column.id
+														? "Colour the graph by its communities again"
+														: "Colour the graph by this column's values: its most common values each in a colour, every other paper dimmed"
+												}
+												onClick={() => colouring.toggle(column.id, () => columnColouring(table.rows, index, column.label))}
+											>
+												<Palette className="size-3" />
+												{colouring.shown === column.id ? "on the graph" : "colour the graph"}
+											</button>
+										)}
 								</th>
 							))}
 						</tr>
@@ -365,6 +404,7 @@ function RowView({
 }) {
 	const asked = row.cells.some((cell) => cell.kind !== "not_asked");
 	const [confirming, setConfirming] = useState(false);
+	const [forgetError, setForgetError] = useState<string | null>(null);
 	return (
 		<tr className="border-b last:border-b-0">
 			<td className="sticky left-0 w-56 bg-card p-2 align-top">
@@ -394,7 +434,7 @@ function RowView({
 							variant="ghost"
 							size="icon"
 							className="size-5"
-							title="Forget this paper's answers, so that it is asked again at the next run (asks first)"
+							title="Forget this paper's answers, by every model and in every run, so that it is asked again at the next run (asks first)"
 							onClick={() => setConfirming(true)}
 						>
 							<RotateCcw />
@@ -402,11 +442,18 @@ function RowView({
 					)}
 					{confirming && (
 						<span className="flex flex-wrap items-center gap-1 text-foreground">
-							Forget its answers in every table? This cannot be undone, and asking again costs money.
+							Forget its answers, given by every model, in every run&apos;s table? This cannot be undone, and asking again costs money.
 							<Button
 								variant="outline"
 								className="h-6 px-2"
-								onClick={() => void api.forgetExtraction(run, [row.paper]).then(onForgotten, onForgotten)}
+								onClick={() => {
+									setForgetError(null);
+									void api.forgetExtraction(run, [row.paper]).then(onForgotten, (error: Error) => {
+										setForgetError(`Its answers could not be forgotten: ${error.message}`);
+										setConfirming(false);
+										onForgotten();
+									});
+								}}
 							>
 								Forget
 							</Button>
@@ -415,6 +462,7 @@ function RowView({
 							</Button>
 						</span>
 					)}
+					{forgetError && <span className="text-destructive">{forgetError}</span>}
 				</div>
 			</td>
 			{row.cells.map((cell, index) => (
@@ -580,6 +628,7 @@ function Opened({
 					key={shownTable.columns.map((column) => column.id).join(" ")}
 					run={run}
 					table={shownTable}
+					colouredAs={`extraction:${run}:${where}`}
 					onOpenPaper={onOpenPaper}
 					onForgotten={again}
 				/>
