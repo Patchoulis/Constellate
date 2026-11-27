@@ -28,6 +28,7 @@ wins over the same one in `.env`. `.env` is ignored by git; never commit it, sin
 | `CONSTELLATE_ORIGIN`    |             | The interface's exact origin (`http://127.0.0.1:3000`): the only web page whose requests are answered. Required in network mode.                                                                                               |
 | `CONSTELLATE_HOST`      |             | The names the engine is reached by, separated by commas (`engine.example.org`). Needed when `CONSTELLATE_BIND` is `0.0.0.0` or `::`.                                                                                           |
 | `CONSTELLATE_DATA`      | see below   | The data folder: `settings.json`, the library, the runs.                                                                                                                                                                       |
+| `CONSTELLATE_THREADS`   | every core  | The most threads the engine computes on: a whole number from 1. More than the computer's cores counts as all of them. See [Threads](#threads).                                                                                 |
 
 Network mode only, for the owner's sign-in ([Running a server](#running-a-server)):
 
@@ -219,3 +220,23 @@ local data, never in the folder it was started from and never in a folder that s
 
 The library is a database that is open while the app runs. A sync client (OneDrive, Dropbox, iCloud) that uploads
 its files mid-write can leave them inconsistent, so do not point `CONSTELLATE_DATA` into a synced folder.
+
+## Threads
+
+The engine computes on one pool of threads, built once at start: as many as the computer has cores, or
+`CONSTELLATE_THREADS` if that is fewer. It says how many on standard error (`constellate: computing on 24 threads`).
+Everything that computes uses that pool and nothing else, so a part that runs inside another never adds threads:
+
+- the similarity graph, nearest neighbours, k-means and the eigenvectors are cut into rows on the pool; the matrix
+  library is built without threads of its own;
+- the embedding model on the processor uses as many threads as the pool has, and runs one batch at a time;
+- downloads wait on the network, so they have a few threads of their own (6 requests at once in all, 2 to one
+  publisher's site, arXiv one at a time and three seconds apart, a refusal waited out as long as it asks).
+
+Requests are answered on other threads, so the interface stays responsive while a run is computed. On a 4-core
+laptop that also has other work to do, `CONSTELLATE_THREADS=3` leaves a core free.
+
+Whatever the number of threads, the results are the same bit for bit: work is shared out by rows or by papers and
+put back in their order, sums are added up in a fixed order, and random choices come from seeds, never from which
+thread ran first. `cargo run --release --example threads_bench` times the heavy stages on made-up inputs of the size
+of a large run.

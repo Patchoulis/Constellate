@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use constellate::api::Server;
-use constellate::api::config::{DATA, Environment, Listen};
+use constellate::api::config::{self, DATA, Environment, Listen};
 use constellate::api::routes::{Engine, routes};
 use constellate::library::place;
 use constellate::model::language;
@@ -86,9 +86,10 @@ fn shout(warnings: &[String]) {
 fn main() -> ExitCode {
     let started = Environment::read(Path::new(".")).and_then(|environment| {
         let listen = Listen::from_environment(&environment)?;
-        Ok((environment, listen))
+        let threads = config::threads(&environment)?;
+        Ok((environment, listen, threads))
     });
-    let (environment, listen) = match started {
+    let (environment, listen, threads) = match started {
         Ok(started) => started,
         Err(error) => {
             eprintln!("constellate: not started: {error}");
@@ -96,6 +97,12 @@ fn main() -> ExitCode {
         }
     };
     shout(&listen.warnings());
+    // the one pool everything computes on, built before anything can compute (src/threads.rs)
+    if let Err(error) = constellate::threads::start(threads) {
+        eprintln!("constellate: not started: {error}");
+        return ExitCode::FAILURE;
+    }
+    eprintln!("constellate: computing on {threads} threads");
     // never the folder the engine happened to be started from: this system's place for a program's own data
     let data = match place::data_folder(environment.get(DATA).map(str::to_owned)) {
         Ok(data) => data,

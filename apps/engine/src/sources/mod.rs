@@ -13,6 +13,7 @@
 //! | [`acceptance`]  | how a conference accepted a paper, the same whatever the conference calls it        |
 //! | [`proceedings`] | where each conference publishes its PDFs, and downloading one safely                |
 //! | [`download`]    | a selection cut into the slices that are fetched, and fetching one                  |
+//! | [`polite`]      | many addresses fetched at once, within each host's limits and pauses                |
 //!
 //! Nothing here keeps anything. Every function returns papers and outcomes, and the library decides what to
 //! store; an outcome says whether what came back is complete, so that a failure is never stored as a finish.
@@ -26,6 +27,7 @@ pub mod catalog;
 pub mod citations;
 pub mod conferences;
 pub mod download;
+pub mod polite;
 pub mod proceedings;
 
 use std::io::Read;
@@ -105,6 +107,8 @@ pub struct Response {
     pub content_type: Option<String>,
     /// Where a redirect points, as written (it may be relative).
     pub location: Option<String>,
+    /// How long a refusal (429, 503) asks to be left alone, when it says so in seconds (`Retry-After`).
+    pub retry_after: Option<Duration>,
     /// At most `max_bytes + 1` bytes of the body: one more than allowed is how a caller tells "too large".
     pub body: Vec<u8>,
 }
@@ -232,6 +236,9 @@ impl Fetch for Http {
             self.agent.get(url).config().timeout_global(Some(limits.time)).build().call().map_err(failed)?;
         let header = |name: &str| response.headers().get(name).and_then(|value| value.to_str().ok()).map(str::to_owned);
         let (content_type, location) = (header("content-type"), header("location"));
+        // the date form of Retry-After is not read: a refusal without seconds is waited out by the default
+        let retry_after =
+            header("retry-after").and_then(|value| value.trim().parse::<u64>().ok()).map(Duration::from_secs);
         let mut body = Vec::new();
         response.body_mut().as_reader().take(limits.max_bytes.saturating_add(1)).read_to_end(&mut body).map_err(
             |error| {
@@ -248,15 +255,19 @@ impl Fetch for Http {
                 }
             },
         )?;
-        Ok(Response { status: response.status().as_u16(), content_type, location, body })
+        Ok(Response { status: response.status().as_u16(), content_type, location, retry_after, body })
     }
 }
 
-/// Canned answers for the tests: an address it was not given answers 404, and every address asked is noted.
+/// Canned answers for the tests: an address it was not given answers 404, and every address asked is noted. It
+/// may be asked from many threads at once, and then also notes how many requests each host had at once at most,
+/// and when each request began; [`Fake::slow`] makes every answer take a while, so that requests overlap.
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 pub(crate) mod fake {
-    use std::cell::RefCell;
     use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
 
     use super::{Fetch, FetchError, Limits, Paper, Response};
 
@@ -280,19 +291,53 @@ pub(crate) mod fake {
     #[derive(Default)]
     pub struct Fake {
         answers: HashMap<String, Result<Response, FetchError>>,
-        pub asked: RefCell<Vec<String>>,
+        /// Answers given before the standing one, first first, for an address asked more than once.
+        first: Mutex<HashMap<String, Vec<Response>>>,
+        asked: Mutex<Vec<String>>,
+        delay: Duration,
+        hosts: Mutex<HashMap<String, Load>>,
+    }
+
+    /// What one host was asked: requests under way now, the most at once, and when each began.
+    #[derive(Default)]
+    struct Load {
+        now: usize,
+        most: usize,
+        began: Vec<Instant>,
     }
 
     pub fn ok(content_type: &str, body: &str) -> Response {
-        Response { status: 200, content_type: Some(content_type.to_owned()), location: None, body: body.into() }
+        Response {
+            status: 200,
+            content_type: Some(content_type.to_owned()),
+            location: None,
+            retry_after: None,
+            body: body.into(),
+        }
     }
 
     pub fn status(status: u16) -> Response {
-        Response { status, content_type: Some("text/html".to_owned()), location: None, body: Vec::new() }
+        Response {
+            status,
+            content_type: Some("text/html".to_owned()),
+            location: None,
+            retry_after: None,
+            body: Vec::new(),
+        }
     }
 
     pub fn redirect(status: u16, location: &str) -> Response {
-        Response { status, content_type: None, location: Some(location.to_owned()), body: Vec::new() }
+        Response {
+            status,
+            content_type: None,
+            location: Some(location.to_owned()),
+            retry_after: None,
+            body: Vec::new(),
+        }
+    }
+
+    fn host_of(url: &str) -> String {
+        url::Url::parse(url).ok().and_then(|url| url.host_str().map(str::to_owned)).unwrap_or_default()
     }
 
     impl Fake {
@@ -310,15 +355,63 @@ pub(crate) mod fake {
             self
         }
 
+        /// `answer` the first time `url` is asked (then the next of these, then the standing answer).
+        pub fn first(self, url: &str, answer: Response) -> Self {
+            self.first.lock().unwrap().entry(url.to_owned()).or_default().push(answer);
+            self
+        }
+
+        /// Every answer takes `delay`.
+        pub fn slow(mut self, delay: Duration) -> Self {
+            self.delay = delay;
+            self
+        }
+
         pub fn asked(&self) -> Vec<String> {
-            self.asked.borrow().clone()
+            self.asked.lock().unwrap().clone()
+        }
+
+        /// The most requests `host` had at once (`*`: all hosts together).
+        pub fn most_at_once(&self, host: &str) -> usize {
+            self.hosts.lock().unwrap().get(host).map_or(0, |load| load.most)
+        }
+
+        /// When each request to `host` began, in order.
+        pub fn began(&self, host: &str) -> Vec<Instant> {
+            let mut began = self.hosts.lock().unwrap().get(host).map(|load| load.began.clone()).unwrap_or_default();
+            began.sort();
+            began
         }
     }
 
     impl Fetch for Fake {
         fn get(&self, url: &str, limits: Limits) -> Result<Response, FetchError> {
-            self.asked.borrow_mut().push(url.to_owned());
-            let mut answer = self.answers.get(url).cloned().unwrap_or_else(|| Ok(status(404)))?;
+            self.asked.lock().unwrap().push(url.to_owned());
+            // each host by its name, and every host together as "*"
+            let hosts = [host_of(url), "*".to_owned()];
+            for host in &hosts {
+                let mut counts = self.hosts.lock().unwrap();
+                let load = counts.entry(host.clone()).or_default();
+                load.now += 1;
+                load.most = load.most.max(load.now);
+                load.began.push(Instant::now());
+            }
+            std::thread::sleep(self.delay);
+            let queued = self
+                .first
+                .lock()
+                .unwrap()
+                .get_mut(url)
+                .filter(|queued| !queued.is_empty())
+                .map(|queued| queued.remove(0));
+            let answer = match queued {
+                Some(answer) => Ok(answer),
+                None => self.answers.get(url).cloned().unwrap_or_else(|| Ok(status(404))),
+            };
+            for host in hosts {
+                self.hosts.lock().unwrap().entry(host).or_default().now -= 1;
+            }
+            let mut answer = answer?;
             // as the real one does: never more than one byte past the limit
             answer.body.truncate(usize::try_from(limits.max_bytes.saturating_add(1)).unwrap_or(usize::MAX));
             Ok(answer)

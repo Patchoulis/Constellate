@@ -26,6 +26,7 @@ use std::thread;
 
 use serde::Serialize;
 
+use crate::threads::{Progress as Counter, panic_message};
 use crate::usage::Usd;
 
 /// How far a job that does many things has got.
@@ -141,6 +142,8 @@ struct Inner<T> {
     progress: Option<Progress>,
     /// The running job's request to stop; a new one for every job.
     cancel: Cancel,
+    /// How far the job's papers are, counted by its threads without this lock.
+    counted: Arc<Counter>,
 }
 
 /// What a job looks like at one moment.
@@ -156,6 +159,16 @@ pub struct Snapshot<T> {
     /// How many lines the log has in all.
     pub total: usize,
     pub progress: Option<Progress>,
+    /// How many of its papers the job has done, of how many, when it counts them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub papers: Option<Counted>,
+}
+
+/// Papers done, of how many.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Counted {
+    pub done: usize,
+    pub of: usize,
 }
 
 pub struct Job<T> {
@@ -178,6 +191,7 @@ impl<T> Default for Job<T> {
                 log: Vec::new(),
                 progress: None,
                 cancel: Cancel::new(),
+                counted: Arc::default(),
             })),
         }
     }
@@ -204,8 +218,29 @@ impl<T: Clone + Send + 'static> Job<T> {
         self.start_tracked(kind, move |tracker| work(&|line: &str| tracker.log(line)))
     }
 
+    /// [`Job::start`] for work over many papers: `work` is also given the job's [`Counter`], to count its papers
+    /// on ([`crate::threads::each`] does) and to look at between papers for a cancel ([`Job::cancel`]). The
+    /// snapshot then says how many papers are done, read from the counters without the job's lock being taken
+    /// for each paper.
+    pub fn start_counted<F>(&self, kind: &str, work: F) -> Result<u64, Busy>
+    where
+        F: FnOnce(&dyn Fn(&str), &Counter) -> Result<T, String> + Send + 'static,
+    {
+        let counted = Arc::new(Counter::new());
+        let lent = Arc::clone(&counted);
+        self.launch(kind, counted, move |tracker| work(&|line: &str| tracker.log(line), &lent))
+    }
+
     /// [`Job::start`] for work that reports its progress and can be asked to stop: `work` is given a [`Tracker`].
     pub fn start_tracked<F>(&self, kind: &str, work: F) -> Result<u64, Busy>
+    where
+        F: FnOnce(&Tracker<'_>) -> Result<T, String> + Send + 'static,
+    {
+        self.launch(kind, Arc::default(), work)
+    }
+
+    /// Begin `work` as the one running job; `counted` is where it counts its papers, if it counts any.
+    fn launch<F>(&self, kind: &str, counted: Arc<Counter>, work: F) -> Result<u64, Busy>
     where
         F: FnOnce(&Tracker<'_>) -> Result<T, String> + Send + 'static,
     {
@@ -220,6 +255,7 @@ impl<T: Clone + Send + 'static> Job<T> {
             job.log.clear();
             job.progress = None;
             job.cancel = Cancel::new();
+            job.counted = counted;
             (job.id, job.cancel.clone())
         };
         let inner = Arc::clone(&self.inner);
@@ -236,11 +272,7 @@ impl<T: Clone + Send + 'static> Job<T> {
                     State::Failed(error)
                 }
                 Err(panic) => {
-                    let said = panic
-                        .downcast_ref::<&str>()
-                        .map(|text| (*text).to_owned())
-                        .or_else(|| panic.downcast_ref::<String>().cloned())
-                        .unwrap_or_else(|| "the work stopped unexpectedly".to_owned());
+                    let said = panic_message(&*panic);
                     job.log.push(format!("ERROR: {said}"));
                     State::Failed(said)
                 }
@@ -266,6 +298,7 @@ impl<T: Clone + Send + 'static> Job<T> {
             log: job.log.iter().skip(since).cloned().collect(),
             total: job.log.len(),
             progress: job.progress,
+            papers: (job.counted.total() > 0).then(|| Counted { done: job.counted.done(), of: job.counted.total() }),
         }
     }
 
@@ -278,6 +311,7 @@ impl<T: Clone + Send + 'static> Job<T> {
         }
         if !job.cancel.is_cancelled() {
             job.cancel.cancel();
+            job.counted.cancel();
             job.log.push("Asked to stop.".to_owned());
         }
         Ok(())
@@ -434,6 +468,43 @@ mod tests {
         job.start_tracked("again", |tracker| Ok(u64::from(tracker.cancelled()))).unwrap();
         let next = finished(&job);
         assert_eq!((next.result, next.progress), (Some(0), None));
+    }
+
+    #[test]
+    fn a_job_over_many_papers_counts_them_and_stops_between_papers_when_cancelled() {
+        let job: Job<usize> = Job::new();
+        assert!(job.cancel(1).is_err(), "nothing is running");
+        let (started, wait) = mpsc::channel::<()>();
+        let (release, go) = mpsc::channel::<()>();
+        let go = Mutex::new(go); // a receiver is not shared between threads as it is
+        let papers: Vec<u32> = (0..10_000).collect();
+        let id = job
+            .start_counted("reading the declarations", move |_, progress| {
+                // one thread, so that no paper but the first is begun before the cancel
+                let outcomes = crate::threads::pool(1).install(|| {
+                    crate::threads::each(&papers, progress, |&paper| {
+                        if paper == 0 {
+                            started.send(()).map_err(|error| error.to_string())?;
+                            go.lock().map_err(|error| error.to_string())?.recv().map_err(|error| error.to_string())?;
+                        }
+                        Ok::<u32, String>(paper)
+                    })
+                });
+                Ok(outcomes.iter().filter(|outcome| matches!(outcome, crate::threads::Outcome::Done(_))).count())
+            })
+            .unwrap();
+        wait.recv().unwrap();
+        job.cancel(id).unwrap();
+        release.send(()).unwrap();
+        let now = finished(&job);
+        let papers = now.papers.unwrap();
+        assert_eq!(papers.of, 10_000);
+        assert_eq!(Some(papers.done), now.result);
+        assert_eq!(papers.done, 1, "the papers not begun before the cancel were not done");
+        let told = serde_json::to_value(job.snapshot(0)).unwrap();
+        assert_eq!(told["papers"]["of"], 10_000);
+        job.start("a run", |_| Ok(1)).unwrap();
+        assert_eq!(finished(&job).papers, None, "a job that counts nothing says nothing about papers");
     }
 
     #[test]

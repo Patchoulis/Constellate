@@ -6,6 +6,9 @@
 //! not for secrets; it is for choosing start vectors and k-means seeds, where only evenness and repeatability
 //! matter, and a few lines written here are easier to keep identical than a crate whose sequence may change.
 
+/// What the state moves by at every draw.
+const STEP: u64 = 0x9E37_79B9_7F4A_7C15;
+
 /// A random generator whose whole sequence is decided by its seed.
 #[derive(Clone, Debug)]
 pub struct Random {
@@ -19,7 +22,7 @@ impl Random {
 
     /// The next 64 random bits.
     pub fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        self.state = self.state.wrapping_add(STEP);
         let mut mixed = self.state;
         mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
         mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
@@ -36,6 +39,13 @@ impl Random {
         // 1 - uniform is in (0, 1], so the logarithm is finite
         let radius = (-2.0 * (1.0 - self.uniform()).ln()).sqrt();
         radius * (std::f64::consts::TAU * self.uniform()).cos()
+    }
+
+    /// Move on as `draws` calls of [`Random::next_u64`] would (each of the numbers here draws once), at once: the
+    /// state only ever moves by a fixed step. Work done side by side on threads can so start each piece where it
+    /// would have started had the pieces been done one after another.
+    pub fn skip(&mut self, draws: u64) {
+        self.state = self.state.wrapping_add(STEP.wrapping_mul(draws));
     }
 
     /// An index in `0..count`, each as likely as the others. `count` must not be 0.
@@ -55,6 +65,19 @@ mod tests {
         let other: Vec<u64> = (0..5).scan(Random::new(8), |random, _| Some(random.next_u64())).collect();
         assert_eq!(first, again);
         assert_ne!(first, other);
+    }
+
+    #[test]
+    fn skipping_draws_lands_where_drawing_them_would() {
+        let mut drawn = Random::new(11);
+        let mut skipped = Random::new(11);
+        for _ in 0..1_234 {
+            drawn.uniform();
+        }
+        skipped.skip(1_234);
+        assert_eq!(drawn.next_u64(), skipped.next_u64());
+        skipped.skip(0);
+        assert_eq!(drawn.normal().to_bits(), skipped.normal().to_bits()); // a normal draws twice
     }
 
     #[test]

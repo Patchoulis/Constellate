@@ -4,6 +4,10 @@
 //! Both read a paper's row of the similarity graph and want only its first few entries in order of similarity.
 //! Sorting a row of 12,000 to keep 15 would be wasted work, so the row is partly ordered instead: a selection puts
 //! the best few first (in linear time), and only those are sorted.
+//!
+//! Each paper's row is read on whichever thread rayon gives it, and its answer depends on that row alone (ties go
+//! to the lower index, so not even the selection's inner order shows); the answers are collected in the papers'
+//! order and joined afterwards on one thread. The links and the graph are the same however many threads did it.
 
 use ndarray::{Array2, ArrayView1, ArrayView2};
 use rayon::prelude::*;
@@ -21,19 +25,25 @@ pub struct Link {
 
 /// The `count` papers most similar to `paper` (never itself), most similar first; ties go to the lower index, so
 /// the answer does not depend on how the selection happened to run.
-fn nearest(row: ArrayView1<f32>, paper: usize, count: usize) -> Vec<usize> {
+///
+/// `others` is room to select in, a row long, kept by the thread from one paper to the next (rayon's
+/// `map_init`): it is cleared before use, so what it held before changes nothing. Without it every paper would
+/// allocate a row's worth of indexes, and keep it in its answer (a truncated vector keeps its room): for 15,000
+/// papers that was 1.8 GB allocated and freed again, which took as long as the selections.
+fn nearest(row: ArrayView1<f32>, paper: usize, count: usize, others: &mut Vec<usize>) -> Vec<usize> {
     let closer = |a: &usize, b: &usize| row[*b].total_cmp(&row[*a]).then(a.cmp(b));
-    let mut others: Vec<usize> = (0..row.len()).filter(|&other| other != paper).collect();
+    others.clear();
+    others.extend((0..row.len()).filter(|&other| other != paper));
     let count = count.min(others.len());
     if count == 0 {
         return Vec::new();
     }
     if count < others.len() {
         others.select_nth_unstable_by(count - 1, closer);
-        others.truncate(count);
     }
-    others.sort_unstable_by(closer);
-    others
+    let mut best = others[..count].to_vec();
+    best.sort_unstable_by(closer);
+    best
 }
 
 /// How many of a paper's best matches, given most similar first, come before the largest drop in similarity: where
@@ -60,9 +70,9 @@ pub fn natural_neighbours(adjacency: ArrayView2<f32>, most: usize) -> Vec<Link> 
     let count = (most + 1).min(papers.saturating_sub(1));
     let per_paper: Vec<Vec<Link>> = (0..papers)
         .into_par_iter()
-        .map(|paper| {
+        .map_init(Vec::new, |others, paper| {
             let row = adjacency.row(paper);
-            let best = nearest(row, paper, count);
+            let best = nearest(row, paper, count, others);
             let similarities: Vec<f32> = best.iter().map(|&other| row[other]).collect();
             let kept = before_the_largest_drop(&similarities);
             best[..kept]
@@ -146,8 +156,10 @@ impl SparseGraph {
 /// the weight it has in the similarity graph. Links of no similarity are left out, as they change nothing.
 pub fn knn_graph(adjacency: ArrayView2<f32>, neighbours: usize) -> SparseGraph {
     let papers = adjacency.nrows();
-    let chosen: Vec<Vec<usize>> =
-        (0..papers).into_par_iter().map(|paper| nearest(adjacency.row(paper), paper, neighbours)).collect();
+    let chosen: Vec<Vec<usize>> = (0..papers)
+        .into_par_iter()
+        .map_init(Vec::new, |others, paper| nearest(adjacency.row(paper), paper, neighbours, others))
+        .collect();
     let mut rows: Vec<Vec<(usize, f32)>> = vec![Vec::new(); papers];
     for (paper, targets) in chosen.iter().enumerate() {
         for &target in targets {
@@ -168,6 +180,7 @@ pub fn knn_graph(adjacency: ArrayView2<f32>, neighbours: usize) -> SparseGraph {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use ndarray::array;
@@ -215,9 +228,11 @@ mod tests {
     #[test]
     fn the_nearest_papers_come_most_similar_first_without_the_paper_itself() {
         let row = array![0.3, 0.0, 0.9, 0.3, 0.5];
-        assert_eq!(nearest(row.view(), 1, 3), vec![2, 4, 0]);
-        assert_eq!(nearest(row.view(), 2, 10), vec![4, 0, 3, 1]);
-        assert!(nearest(row.view(), 2, 0).is_empty());
+        // the room to select in holds whatever the last paper left there: it changes nothing
+        let mut others = vec![4, 4, 4, 9, 9, 9, 9];
+        assert_eq!(nearest(row.view(), 1, 3, &mut others), vec![2, 4, 0]);
+        assert_eq!(nearest(row.view(), 2, 10, &mut others), vec![4, 0, 3, 1]);
+        assert!(nearest(row.view(), 2, 0, &mut others).is_empty());
     }
 
     #[test]
@@ -226,6 +241,20 @@ mod tests {
         assert_eq!(before_the_largest_drop(&[1.0, 0.5, 0.0]), 1);
         assert_eq!(before_the_largest_drop(&[0.4]), 1);
         assert_eq!(before_the_largest_drop(&[]), 0);
+    }
+
+    #[test]
+    fn links_and_the_nearest_neighbour_graph_are_the_same_on_one_thread_and_on_many() {
+        let mut random = crate::analysis::random::Random::new(5);
+        let points = Array2::from_shape_simple_fn((400, 12), || random.normal() as f32);
+        let adjacency = crate::analysis::graph::adjacency_matrix(points.view(), true).unwrap();
+        let work = || {
+            let graph = knn_graph(adjacency.view(), KNN);
+            let block = Array2::from_shape_fn((400, 3), |(row, column)| (row * 3 + column) as f64);
+            (natural_neighbours(adjacency.view(), 8), graph.product(block.view()), graph)
+        };
+        let (one, many) = crate::threads::on_one_and_many(work);
+        assert_eq!(one, many);
     }
 
     #[test]

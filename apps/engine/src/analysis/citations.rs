@@ -26,6 +26,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use chrono::NaiveDate;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::text::references::{Confidence, Reference, title_key, title_words};
@@ -237,6 +238,15 @@ impl<'a> Linker<'a> {
             .collect();
         ReadPaper { paper: paper.to_owned(), references }
     }
+
+    /// Many papers' reference lists, each linked: [`Linker::read`] on every core, in the order given.
+    ///
+    /// The linker is only read (its indexes are built once, in [`Linker::new`]), and what a reference is linked to
+    /// depends on that reference alone: a close title that two papers match equally is linked to neither, so not
+    /// even the order the candidates are looked at shows. The answer is the same however many threads made it.
+    pub fn read_all(&self, papers: Vec<(String, Vec<Reference>)>) -> Vec<ReadPaper> {
+        papers.into_par_iter().map(|(paper, references)| self.read(&paper, references)).collect()
+    }
 }
 
 /// What a cited work is known as within a network: its library paper, its arXiv id, its DOI, else its title's
@@ -351,6 +361,9 @@ pub struct CitationNetwork {
 }
 
 /// Who cites each work, among the read papers: work key -> the citing papers' ids.
+///
+/// One thread builds it. Shared out among threads (each its own map, merged after) it was no faster for 20,000
+/// read papers: merging maps of a few hundred thousand works costs what building them does.
 fn citers(read: &[ReadPaper]) -> HashMap<String, BTreeSet<&str>> {
     let mut citers: HashMap<String, BTreeSet<&str>> = HashMap::new();
     for paper in read {
@@ -598,13 +611,15 @@ pub fn community_citations(read: &[ReadPaper], run: &[String], tree: &[Members])
             cited_by_inside: citing().filter(|citer| members.contains(*citer)).count(),
             cites_in_library: works.iter().filter(|work| work.starts_with("paper:")).count(),
             cites: works.len(),
-            children: community.children.iter().map(|child| of(child, read, cited_by)).collect(),
+            children: community.children.par_iter().map(|child| of(child, read, cited_by)).collect(),
         }
     }
+    // Every community, and every sub-community, is counted on a thread of its own: its figures are counts over
+    // its own papers in maps nobody writes any more, collected in the tree's order.
     RunCitations {
         papers: run.len(),
         papers_read: read_in_run.len(),
-        communities: tree.iter().map(|community| of(community, &read_in_run, &cited_by)).collect(),
+        communities: tree.par_iter().map(|community| of(community, &read_in_run, &cited_by)).collect(),
     }
 }
 
@@ -871,5 +886,65 @@ mod tests {
             &[Members { tree_path: "c0".to_owned(), papers: run.clone(), children: vec![] }],
         );
         assert_eq!((figures.papers_read, figures.communities[0].cited_by), (1, 1));
+    }
+
+    #[test]
+    fn linking_the_network_and_community_figures_are_the_same_on_one_thread_and_on_many() {
+        // 300 papers whose titles share words, each citing 12 others by title, by id, or as a near miss
+        let words = ["sparse", "attention", "graph", "kernel", "learning", "robust", "neural", "models", "scale"];
+        let papers: Vec<LibraryPaper> = (0..300)
+            .map(|index| {
+                let title: Vec<&str> = (0..6).map(|place| words[(index * 7 + place * index / 3 + place) % 9]).collect();
+                LibraryPaper {
+                    arxiv: (index % 4 == 0).then(|| format!("2501.{index:05}")),
+                    ..paper(&format!("p{index}"), &format!("{} {index}", title.join(" ")), 2020 + (index % 5) as u16)
+                }
+            })
+            .collect();
+        let lists: Vec<(String, Vec<Reference>)> = (0..300)
+            .map(|index| {
+                let references = (1..=12)
+                    .map(|step| {
+                        let other = &papers[(index * 31 + step * 17) % 300];
+                        match step % 3 {
+                            0 => Reference { arxiv: other.arxiv.clone(), ..cited(&other.title, 2024) },
+                            1 => cited(&other.title, other.year.unwrap_or(2020)),
+                            _ => cited(&format!("{} revisited", other.title), 2023),
+                        }
+                    })
+                    .collect();
+                (format!("p{index}"), references)
+            })
+            .collect();
+        let run: Vec<String> = (0..300).map(|index| format!("p{index}")).collect();
+        let tree: Vec<Members> = (0..6)
+            .map(|community| {
+                let members: Vec<String> = run.iter().skip(community).step_by(6).cloned().collect();
+                let half = members.len() / 2;
+                let child = |part: usize, papers: &[String]| Members {
+                    tree_path: format!("c{community}.{part}"),
+                    papers: papers.to_vec(),
+                    children: vec![],
+                };
+                Members {
+                    tree_path: format!("c{community}"),
+                    children: vec![child(0, &members[..half]), child(1, &members[half..])],
+                    papers: members,
+                }
+            })
+            .collect();
+        let built = NaiveDate::from_ymd_opt(2026, 11, 27).unwrap();
+        let work = || {
+            let linker = Linker::new(&papers);
+            let read = linker.read_all(lists.clone());
+            let around: Vec<CitationNetwork> =
+                ["p0", "p17", "p250"].iter().map(|seed| network(seed, &linker, &read, None, built)).collect();
+            (community_citations(&read, &run, &tree), around, read)
+        };
+        let (one, many) = crate::threads::on_one_and_many(work);
+        assert_eq!(one, many);
+        let (_, around, read) = one;
+        assert_eq!(read.iter().map(|paper| paper.paper.as_str()).collect::<Vec<_>>(), run, "in the order given");
+        assert!(around.iter().all(|network| network.totals.citations > 0), "the papers do cite each other");
     }
 }

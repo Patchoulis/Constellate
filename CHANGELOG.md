@@ -41,6 +41,10 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The engine computes on every core: the similarity graph, the communities, nearest neighbours and citation figures
+  are worked out several times faster with the same results, PDFs are read side by side, and downloads run a few at a
+  time within each site's limits (arXiv still one request every three seconds). `CONSTELLATE_THREADS` caps the
+  threads it uses.
 - The redo buttons say what they cover ("Embed all again"), a fourth redoes all of it, and every run in the sidebar
   has its own button to redo all of that run.
 - The installed app keeps its library in the system's folder for local, unsynced data (the local application-data

@@ -298,7 +298,9 @@ const ROWS_PER_PIECE: usize = 512;
 
 /// `a b` for a tall `a` (one row per paper) and a small `b`: the rows of `a` cut into pieces, each multiplied on
 /// its own core. The basis of the solver is thousands of rows by a few hundred columns, and the matrix library
-/// gives such products only a few threads.
+/// multiplies on one thread (it is built without threads of its own, so that these pieces do not each start
+/// more: [`crate::threads`]). Each piece is written by one thread and the pieces are put together in order, so
+/// the product does not depend on how they were shared out.
 fn tall_dot(a: ArrayView2<f64>, b: ArrayView2<f64>) -> Array2<f64> {
     let pieces: Vec<Array2<f64>> =
         a.axis_chunks_iter(Axis(0), ROWS_PER_PIECE).into_par_iter().map(|piece| piece.dot(&b)).collect();
