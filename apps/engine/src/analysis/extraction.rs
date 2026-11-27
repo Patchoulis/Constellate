@@ -367,18 +367,20 @@ fn is_minus(c: char) -> bool {
 
 /// Is the number `written` one of the numbers in `text`, with the same sign? Compared as digits
 /// ([`digits_of`]), so "1,024" in the paper is the model's "1024"; "84.3" is not "84.30", nor inside "184.3"; and
-/// "-0.5" is not the "0.5" of "improves by 0.5".
+/// "-0.5" is not the "0.5" of "improves by 0.5". A hyphen after a letter or a digit joins words or makes a range,
+/// so the 50 of "ResNet-50", the 25 of "2024-25" and the 20 of "10-20 epochs" are not negative.
 pub fn number_in(text: &str, written: &str) -> bool {
     let Some(wanted) = digits_of(written) else { return false };
     let negative = written.trim().starts_with(is_minus);
     let mut run = String::new();
-    let mut before = ' ';
+    // the two characters before this one
+    let (mut before, mut earlier) = (' ', ' ');
     let mut sign = false;
     let mut found = false;
     for c in text.chars().chain([' ']) {
         if c.is_ascii_digit() || (!run.is_empty() && (c == '.' || joins_digits(c))) {
             if run.is_empty() {
-                sign = is_minus(before);
+                sign = is_minus(before) && !earlier.is_alphanumeric();
             }
             run.push(c);
         } else if !run.is_empty() {
@@ -386,9 +388,7 @@ pub fn number_in(text: &str, written: &str) -> bool {
             found |= sign == negative && digits_of(piece).is_some_and(|digits| digits == wanted);
             run.clear();
         }
-        if run.is_empty() {
-            before = c;
-        }
+        (earlier, before) = (before, c);
     }
     found
 }
@@ -1334,6 +1334,13 @@ mod tests {
         assert!(!number_in("it improves by 0.5 points", "-0.5"), "the sign is checked too");
         assert!(!number_in("a loss of -0.5", "0.5"));
         assert!(number_in("in 2024-25 we saw 25 runs", "25"));
+        // a hyphen after a word or a number is no minus sign
+        assert!(number_in("we fine-tune ResNet-50 on it", "50"));
+        assert!(number_in("trained for 10-20 epochs", "20"));
+        assert!(number_in("in the 2024-25 season", "25"));
+        assert!(!number_in("trained for 10-20 epochs", "-20"));
+        assert!(number_in("a change of (-3.5) points", "-3.5"));
+        assert!(number_in("a change of \u{2212}3.5 points", "-3.5"));
         // a list keeps only the items its quotes name; a text's address must be in them
         let quotes = ["We evaluate on ImageNet-1k and on the COCO detection benchmark."];
         let list = Value::List { items: vec!["ImageNet 1k".to_owned(), "CIFAR-10".to_owned(), "coco".to_owned()] };
