@@ -28,7 +28,7 @@ use serde::Deserialize;
 
 pub use currency::{Rate, rate};
 pub use ledger::{Call, Summary, Tally};
-pub use prices::{ModelPrice, Usd, price};
+pub use prices::{CacheRates, ModelPrice, Tokens, Usd, model_price, price, price_of};
 
 /// The file as it is in the repository; `scripts/update-prices.mjs` is the only thing that rewrites it.
 const BUNDLED_TEXT: &str = include_str!("../../data/prices.json");

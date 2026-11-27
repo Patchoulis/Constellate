@@ -3,36 +3,76 @@
 	"models": {
 		"claude-opus-5-5": {
 			"input": 4,
-			"output": 20
+			"output": 20,
+			"cache": {
+				"read": 0.2,
+				"write_5m": 5,
+				"write_1h": 8
+			}
 		},
 		"claude-sonnet-5-5": {
 			"input": 2,
-			"output": 10
+			"output": 10,
+			"cache": {
+				"read": 0.1,
+				"write_5m": 2.5,
+				"write_1h": 4
+			}
 		},
 		"claude-haiku-5-5": {
 			"input": 0.1,
 			"output": 0.5,
+			"cache": {
+				"read": 0.01,
+				"write_5m": 0.125,
+				"write_1h": 0.2
+			},
 			"long_prompt": {
 				"above": 100000,
 				"input": 0.5,
-				"output": 2.5
+				"output": 2.5,
+				"cache": {
+					"read": 0.05,
+					"write_5m": 0.625,
+					"write_1h": 1
+				}
 			}
 		},
 		"claude-fable-5-2": {
 			"input": 8,
-			"output": 40
+			"output": 40,
+			"cache": {
+				"read": 0.2,
+				"write_5m": 10,
+				"write_1h": 16
+			}
 		},
 		"claude-opus-5": {
 			"input": 5,
-			"output": 25
+			"output": 25,
+			"cache": {
+				"read": 0.5,
+				"write_5m": 6.25,
+				"write_1h": 10
+			}
 		},
 		"claude-opus-4-8": {
 			"input": 5,
-			"output": 25
+			"output": 25,
+			"cache": {
+				"read": 0.5,
+				"write_5m": 6.25,
+				"write_1h": 10
+			}
 		},
 		"claude-sonnet-5": {
 			"input": 2,
-			"output": 10
+			"output": 10,
+			"cache": {
+				"read": 0.2,
+				"write_5m": 2.5,
+				"write_1h": 4
+			}
 		}
 	},
 	"rates": {

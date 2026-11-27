@@ -19,8 +19,12 @@ pub struct Call<'a> {
     pub model: &'a str,
     /// What it was for: naming communities, overviews, training the AI-text detector.
     pub purpose: &'a str,
+    /// The prompt read at the full rate.
     pub input_tokens: i64,
     pub output_tokens: i64,
+    /// Read from and written to the prompt cache, each billed at its own rate.
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
     /// What it cost in millionths of a US dollar; `None` for a model whose price is not known.
     pub price_micros: Option<i64>,
 }
@@ -31,6 +35,8 @@ pub struct Totals {
     pub calls: i64,
     pub input_tokens: i64,
     pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
     /// Of the priced calls only.
     pub price_micros: i64,
     pub unpriced_calls: i64,
@@ -54,7 +60,8 @@ pub struct Spending {
 
 /// The sums every total is made of, after `SELECT`, before `FROM`.
 const SUMS: &str = "COALESCE(SUM(calls), 0), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
-                    COALESCE(SUM(price_micros), 0), COALESCE(SUM(CASE WHEN price_micros IS NULL THEN calls ELSE 0 END), 0)";
+                    COALESCE(SUM(price_micros), 0), COALESCE(SUM(CASE WHEN price_micros IS NULL THEN calls ELSE 0 END), 0),
+                    COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_write_tokens), 0)";
 
 fn totals_from(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<Totals> {
     Ok(Totals {
@@ -63,15 +70,28 @@ fn totals_from(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<Totals
         output_tokens: row.get(first + 2)?,
         price_micros: row.get(first + 3)?,
         unpriced_calls: row.get(first + 4)?,
+        cache_read_tokens: row.get(first + 5)?,
+        cache_write_tokens: row.get(first + 6)?,
     })
 }
 
 /// `calls` calls, as one row (more than one only for totals moved in from the old ledger).
 pub(super) fn put_calls(connection: &Connection, at: &str, call: &Call<'_>, calls: i64) -> rusqlite::Result<usize> {
     connection.execute(
-        "INSERT INTO spending (at, model, purpose, calls, input_tokens, output_tokens, price_micros)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![at, call.model, call.purpose, calls, call.input_tokens, call.output_tokens, call.price_micros],
+        "INSERT INTO spending (at, model, purpose, calls, input_tokens, output_tokens, price_micros,
+                               cache_read_tokens, cache_write_tokens)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            at,
+            call.model,
+            call.purpose,
+            calls,
+            call.input_tokens,
+            call.output_tokens,
+            call.price_micros,
+            call.cache_read_tokens,
+            call.cache_write_tokens
+        ],
     )
 }
 
@@ -108,7 +128,15 @@ mod tests {
     use super::*;
 
     fn call<'a>(model: &'a str, purpose: &'a str, price_micros: Option<i64>) -> Call<'a> {
-        Call { model, purpose, input_tokens: 1_000, output_tokens: 200, price_micros }
+        Call {
+            model,
+            purpose,
+            input_tokens: 1_000,
+            output_tokens: 200,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            price_micros,
+        }
     }
 
     #[test]
@@ -128,7 +156,15 @@ mod tests {
         let spent = library.spending().unwrap();
         assert_eq!(
             spent.total,
-            Totals { calls: 3, input_tokens: 3_000, output_tokens: 600, price_micros: 16_000, unpriced_calls: 1 }
+            Totals {
+                calls: 3,
+                input_tokens: 3_000,
+                output_tokens: 600,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                price_micros: 16_000,
+                unpriced_calls: 1
+            }
         );
         assert_eq!(spent.total.usd(), 0.016);
         assert_eq!(spent.models["claude-opus-5-5"].calls, 2);

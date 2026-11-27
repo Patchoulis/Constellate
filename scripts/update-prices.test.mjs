@@ -68,6 +68,18 @@ test("what the engine would refuse is refused here too", () => {
 		/long_prompt: unknown field "abvoe"/,
 	);
 	assert.match(
+		problems((file) => (file.models["claude-opus-5-5"].cache.raed = 1)),
+		/claude-opus-5-5: cache: unknown field "raed"/,
+	);
+	assert.match(
+		problems((file) => (file.models["claude-opus-5-5"].cache.read = -1)),
+		/claude-opus-5-5: cache is not/,
+	);
+	assert.match(
+		problems((file) => delete file.models["claude-haiku-5-5"].long_prompt.cache.write_1h),
+		/claude-haiku-5-5: long_prompt: cache is not/,
+	);
+	assert.match(
 		problems((file) => (file.models["claude-opus-5-5"].input = 0.0000001)),
 		/claude-opus-5-5: input is not a price/,
 	);
@@ -181,10 +193,11 @@ test("the real changelog takes a new version", () => {
 	assert.equal(written.replace(/## \[9\.9\.9\][^]*?(?=## \[0\.1\.0\])/, ""), changelog);
 });
 
-test("a model's prices are set by hand, checked, and its long-prompt rate is kept", () => {
+test("a model's prices are set by hand, checked, and its cache and long-prompt rates are kept", () => {
 	const file = bundled();
 	const changed = withModel(file, "claude-haiku-5-5", "0.2", "1");
-	assert.deepEqual(changed.models["claude-haiku-5-5"], { input: 0.2, output: 1, long_prompt: file.models["claude-haiku-5-5"].long_prompt });
+	const { cache, long_prompt } = file.models["claude-haiku-5-5"];
+	assert.deepEqual(changed.models["claude-haiku-5-5"], { input: 0.2, output: 1, cache, long_prompt });
 	assert.deepEqual(withModel(file, "claude-new-6", "3", "15").models["claude-new-6"], { input: 3, output: 15 });
 	assert.equal(file.models["claude-haiku-5-5"].input, 0.1); // the file read is not changed
 	assert.throws(() => withModel(file, "Claude New", "3", "15"), /not a model id/);

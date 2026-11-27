@@ -136,6 +136,11 @@ pub const MIGRATIONS: &[&str] = &[
         at     TEXT NOT NULL
     );
     ",
+    // 2: what each call read from and wrote to the prompt cache, which is billed apart from the rest of its prompt
+    r"
+    ALTER TABLE spending ADD COLUMN cache_read_tokens BIGINT NOT NULL DEFAULT 0 CHECK (cache_read_tokens >= 0);
+    ALTER TABLE spending ADD COLUMN cache_write_tokens BIGINT NOT NULL DEFAULT 0 CHECK (cache_write_tokens >= 0);
+    ",
 ];
 
 /// Bring `connection` to the last of `migrations`. Refuses a database newer than the list.
