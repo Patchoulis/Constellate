@@ -9,6 +9,7 @@ import { OverviewPanel } from "@/components/overview";
 import { PaperReader } from "@/components/paper-reader";
 import { api } from "@/lib/api";
 import { communityTree, type CommunityNode } from "@/lib/community";
+import { useMarks } from "@/lib/marks";
 import type { Job } from "@/lib/use-job";
 import { useAsync } from "@/lib/use-async";
 
@@ -56,6 +57,21 @@ export function Workspace({ name, catalog, children }: { name: string; catalog: 
 	const [fresh, setFresh] = useState<Record<string, Ratings>>({});
 	const ratings = useMemo(() => ({ ...(kept.status === "ready" ? kept.data : {}), ...fresh }), [kept, fresh]);
 	const onRatings = useCallback((id: string, read: Ratings) => setFresh((before) => ({ ...before, [id]: read })), []);
+	// the papers marked in this run; none are shown until the graph says which papers the run has
+	const known = useMemo(() => (graph ? new Set(graph.nodes.map((node) => node.id)) : null), [graph]);
+	const marks = useMarks(name, known);
+	const [goTo, setGoTo] = useState<{ id: string } | null>(null);
+	const goToPaper = useCallback((id: string) => {
+		setPaper(id);
+		setGoTo({ id });
+	}, []);
+	const markedPapers = useMemo(() => {
+		const byId = new Map(graph?.nodes.map((node) => [node.id, node]));
+		return marks.marked.flatMap((id) => {
+			const node = byId.get(id);
+			return node ? [{ node, community: roots[node.community] }] : [];
+		});
+	}, [graph, roots, marks.marked]);
 
 	if (!result || !graph) {
 		return (
@@ -75,7 +91,17 @@ export function Workspace({ name, catalog, children }: { name: string; catalog: 
 	return (
 		<>
 			<main className="relative min-w-0 flex-1">
-				<GraphView graph={graph} roots={roots} focus={selected} selectedPaper={paper} ratings={ratings} onPickPaper={setPaper} />
+				<GraphView
+					graph={graph}
+					roots={roots}
+					focus={selected}
+					selectedPaper={paper}
+					ratings={ratings}
+					marked={marks.marked}
+					goTo={goTo}
+					onPickPaper={setPaper}
+					onMarkPaper={marks.toggle}
+				/>
 				{children}
 				{overview && (
 					<OverviewPanel
@@ -93,6 +119,8 @@ export function Workspace({ name, catalog, children }: { name: string; catalog: 
 						community={paperNode && roots[paperNode.community]}
 						related={related.map((other) => ({ ...other, community: roots[other.community] }))}
 						catalog={catalog}
+						marked={marks.has(paper)}
+						onToggleMark={() => marks.toggle(paper)}
 						onRatings={onRatings}
 						onOpen={setPaper}
 						onClose={() => setPaper(null)}
@@ -106,6 +134,9 @@ export function Workspace({ name, catalog, children }: { name: string; catalog: 
 				onSelect={setSelected}
 				onOverview={setOverview}
 				onOpenPaper={setPaper}
+				marks={marks}
+				markedPapers={markedPapers}
+				onGoToPaper={goToPaper}
 			/>
 		</>
 	);
