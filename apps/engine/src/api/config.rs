@@ -392,12 +392,13 @@ impl Environment {
     }
 }
 
-/// The one way the engine starts another program: with the secrets ([`SECRETS`]) taken out of what it inherits,
-/// so that a key set in the engine's environment never reaches a program that has no use for it. A test reads
-/// the engine's sources to see that no program is started any other way.
+/// The one way the engine starts another program: with the secrets ([`SECRETS`]) and every language model
+/// provider's key and address ([`crate::model::language::variables`]) taken out of what it inherits, so that a key
+/// set in the engine's environment never reaches a program that has no use for it. A test reads the engine's
+/// sources to see that no program is started any other way.
 pub fn child_process(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
     let mut command = std::process::Command::new(program);
-    for secret in SECRETS {
+    for secret in SECRETS.into_iter().chain(crate::model::language::variables()) {
         command.env_remove(secret);
     }
     command
@@ -963,6 +964,13 @@ pub(crate) mod tests {
             .collect();
         for secret in SECRETS {
             assert!(removed.iter().any(|name| name == secret), "{secret} is passed on");
+        }
+        // every provider's key and address, not only the Claude API's
+        for variable in ["OPENAI_API_KEY", "GEMINI_API_KEY", "CONSTELLATE_MODEL_API_KEY", "OPENROUTER_API_KEY"] {
+            assert!(removed.iter().any(|name| name == variable), "{variable} is passed on");
+        }
+        for variable in crate::model::language::variables() {
+            assert!(removed.iter().any(|name| name == variable), "{variable} is passed on");
         }
         // and no program is started any other way
         fn sources(folder: &Path, found: &mut Vec<PathBuf>) {
