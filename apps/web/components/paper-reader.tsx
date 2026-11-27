@@ -152,7 +152,13 @@ function OwnPdf({ url, title }: { url: string; title: string }) {
 	const loaded = (frame: HTMLIFrameElement) => {
 		try {
 			const page = frame.contentDocument;
-			if (page) setShown(framedPdf(page.contentType, page.body?.innerText));
+			if (page)
+				setShown(
+					framedPdf(
+						page.contentType,
+						page.querySelector("pre")?.textContent ?? page.body?.innerText /* the browser's JSON viewer adds controls around the text */,
+					),
+				);
 		} catch {
 			// not readable from here: the frame stays as the browser shows it
 		}
