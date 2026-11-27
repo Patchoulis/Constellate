@@ -32,12 +32,31 @@ function copyLicences(from, to) {
 	return files.length;
 }
 
+/** A file that must never ship: an environment file (keys live there), a private key or certificate store. */
+const SECRET = /^(\.env(\..*)?|.*\.env|.*\.pem|.*\.key|.*\.p12|.*\.pfx)$/i;
+
+/** Every file under `folder` named like a secret (the list of names, .env.example, holds none and is kept). */
+function secretFilesIn(folder) {
+	return fs
+		.readdirSync(folder, { recursive: true, withFileTypes: true })
+		.filter((entry) => entry.isFile() && SECRET.test(entry.name) && entry.name !== ".env.example")
+		.map((entry) => path.join(entry.parentPath, entry.name));
+}
+
+exports.secretFilesIn = secretFilesIn;
+
 exports.default = async function afterPack({ appOutDir }) {
 	const from = path.join(__dirname, "..", "web", ".next", "standalone");
 	const resources = path.join(appOutDir, "resources");
 	if (!fs.existsSync(path.join(from, "node_modules"))) throw new Error(`The interface is not built (${from}). Run: npm run build`);
 	fs.rmSync(path.join(resources, "web"), { recursive: true, force: true });
 	fs.cpSync(from, path.join(resources, "web"), { recursive: true, dereference: true });
+	// Next's standalone output can carry the interface's .env files, where a developer's keys may be: the
+	// interface needs none of them, and an installer is handed to other people.
+	for (const file of secretFilesIn(resources)) {
+		console.log(`  left out of the installer: ${path.relative(resources, file)}`);
+		fs.rmSync(file);
+	}
 	// The image library is traced in although the interface resizes no images (next.config.ts: unoptimized), and
 	// it brings LGPL code along: it is not shipped.
 	for (const unused of ["sharp", "@img"]) {

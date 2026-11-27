@@ -38,6 +38,23 @@ test("every file the shell requires is packaged into the app", () => {
 		assert.ok(files.includes(name), `${name} is required but not in electron-builder.yml's files`);
 });
 
+test("environment files and keys are found anywhere in what is packaged, and the list of names is not", () => {
+	const { secretFilesIn } = require("./after-pack.cjs");
+	const folder = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "rp-pack-"));
+	const nested = path.join(folder, "web", "apps", "web");
+	fs.mkdirSync(nested, { recursive: true });
+	for (const name of [".env", ".env.local", "production.env", "server.pem", "signing.key", ".env.example", "server.js"]) {
+		fs.writeFileSync(path.join(nested, name), "");
+	}
+	assert.deepEqual(
+		secretFilesIn(folder)
+			.map((file) => path.basename(file))
+			.sort(),
+		[".env", ".env.local", "production.env", "server.pem", "signing.key"],
+	);
+	fs.rmSync(folder, { recursive: true, force: true });
+});
+
 test("the shell's tests are not packaged", () => {
 	assert.deepEqual(
 		packaged().filter((name) => name.endsWith(".test.cjs")),
