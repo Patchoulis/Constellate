@@ -332,8 +332,10 @@ pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
     table.extend(super::explanation::table());
     table.extend(super::claim_tree::table());
     table.extend(super::citation_contexts::table());
+    table.extend(super::citations::table());
     table.extend(super::answers::table());
     table.extend(super::models::table());
+    table.extend(super::usage::table());
     table
 }
 

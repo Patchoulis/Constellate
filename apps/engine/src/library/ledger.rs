@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{Connection, params};
 use serde::Serialize;
 
@@ -120,6 +121,17 @@ impl Library {
             })
         })
     }
+
+    /// The calls recorded at `from` or later, added up: what was spent since then (since the engine started, say).
+    /// Every row is stamped as [`now`] writes it, UTC to the second in RFC 3339, which sorts as text; `from` is
+    /// written the same way, so the comparison is one of instants, to the second.
+    pub fn spending_since(&self, from: DateTime<Utc>) -> Result<Totals, LibraryError> {
+        let from = from.to_rfc3339_opts(SecondsFormat::Secs, true);
+        self.read(|connection| {
+            let sql = format!("SELECT {SUMS} FROM spending WHERE at >= ?1");
+            Ok(connection.query_row(&sql, [from], |row| totals_from(row, 0))?)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -190,6 +202,23 @@ mod tests {
         });
         let spent = library.spending().unwrap();
         assert_eq!((spent.total.calls, spent.total.price_micros), (200, 200));
+    }
+
+    #[test]
+    fn spending_since_an_instant_counts_the_calls_from_then_on_and_none_before() {
+        let folder = tempfile::tempdir().unwrap();
+        let library = Library::open(folder.path()).unwrap();
+        let at = |instant: &str| DateTime::parse_from_rfc3339(instant).unwrap().with_timezone(&Utc);
+        library
+            .write(|transaction| {
+                put_calls(transaction, "2026-11-26T09:59:59Z", &call("claude-opus-5-5", "p", Some(5)), 1)?;
+                put_calls(transaction, "2026-11-26T10:00:00Z", &call("claude-opus-5-5", "p", Some(7)), 2)?;
+                Ok(put_calls(transaction, "2026-11-27T08:00:00Z", &call("mystery", "p", None), 1)?)
+            })
+            .unwrap();
+        let since = library.spending_since(at("2026-11-26T10:00:00.250+00:00")).unwrap();
+        assert_eq!((since.calls, since.price_micros, since.unpriced_calls), (3, 7, 1));
+        assert_eq!(library.spending_since(at("2026-11-28T00:00:00Z")).unwrap(), Totals::default());
     }
 
     #[test]

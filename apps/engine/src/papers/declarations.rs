@@ -73,9 +73,10 @@ fn declared_in(text: &str) -> Result<Reading, LibraryError> {
 
 /// The declarations of one paper: kept, or read now (its PDF fetched first when needed) and kept.
 pub fn declarations_of(library: &Library, pdfs: &Pdfs, paper_id: &str) -> Result<Declared, LibraryError> {
-    Ok(read_many(library, pdfs, &[paper_id], &Progress::new())?.remove(paper_id).unwrap_or_else(|| {
-        Declared::NoPdf(PdfOutcome::NoAddress) // not reached: every paper asked has an answer
-    }))
+    // every paper asked has an answer; a paper the library does not have is an error before that
+    read_many(library, pdfs, &[paper_id], &Progress::new())?
+        .remove(paper_id)
+        .ok_or_else(|| LibraryError::UnknownPaper(paper_id.to_owned()))
 }
 
 /// What reading a run's papers came to, for the job's log.

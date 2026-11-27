@@ -85,6 +85,7 @@ pub mod preferences;
 pub mod proceedings;
 pub mod questions;
 pub mod readings;
+pub mod references;
 pub mod reviews;
 pub mod schema;
 pub mod store;

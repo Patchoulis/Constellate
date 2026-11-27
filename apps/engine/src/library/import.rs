@@ -131,6 +131,22 @@ impl Library {
         transaction.commit()?;
         Ok(imported)
     }
+
+    /// Move only the old ledger (`usage.json` in `folder`) into this database, in one transaction, and say how many
+    /// rows it added: what was spent before the engine is kept even when nothing else has been imported. It is
+    /// recorded as moved exactly as [`Library::import_files`] records it, so moving it twice, or moving it and then
+    /// importing the whole library, counts it once. No file there is nothing to move.
+    pub fn import_ledger(&self, folder: &Path) -> Result<usize, ImportError> {
+        let files = Files { ledger: store::read_json(&folder.join(LEDGER))?, ..Files::default() };
+        if files.ledger.is_none() {
+            return Ok(0);
+        }
+        let mut connection = self.connection();
+        let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let rows = files.write_ledger(&transaction, &mut 0)?;
+        transaction.commit()?;
+        Ok(rows)
+    }
 }
 
 /// One `embeddings/<folder>`: its index and its matrix.
@@ -738,6 +754,51 @@ mod tests {
         assert_eq!(library.spending().unwrap(), before);
         assert_eq!(library.settings().unwrap()["max_links"], 30);
         assert_eq!(library.paper_count().unwrap(), 4); // the three moved in, and the official one fetched since
+    }
+
+    #[test]
+    fn the_ledger_alone_is_moved_once_and_a_later_whole_import_does_not_count_it_again() {
+        let (_data, folder) = files_based_library();
+        let library = Library::open(&folder).unwrap();
+        assert_eq!(library.import_ledger(&folder).unwrap(), 2);
+        assert_eq!(library.paper_count().unwrap(), 0, "only the ledger is moved");
+        let spent = library.spending().unwrap();
+        assert_eq!(
+            (spent.since.as_deref(), spent.total.calls, spent.total.price_micros),
+            (Some("2026-10-01"), 5, 12_300)
+        );
+        assert_eq!(library.import_ledger(&folder).unwrap(), 0, "moving it twice is moving it once");
+        let whole = library.import_files(&folder).unwrap();
+        assert_eq!((whole.papers, whole.ledger_rows), (3, 0));
+        assert_eq!(library.spending().unwrap(), spent);
+    }
+
+    #[test]
+    fn a_ledger_moved_with_the_whole_library_is_not_moved_again_alone() {
+        let (_data, folder) = files_based_library();
+        let library = Library::open(&folder).unwrap();
+        assert_eq!(library.import_files(&folder).unwrap().ledger_rows, 2);
+        assert_eq!(library.import_ledger(&folder).unwrap(), 0);
+        assert_eq!(library.spending().unwrap().total.calls, 5);
+    }
+
+    #[test]
+    fn no_old_ledger_is_nothing_to_move_and_a_damaged_one_is_an_error_naming_it() {
+        let data = tempfile::tempdir().unwrap();
+        let folder = data.path().join("library");
+        let library = Library::open(&folder).unwrap();
+        assert_eq!(library.import_ledger(&folder).unwrap(), 0);
+        fs::write(folder.join("usage.json"), "{ not json").unwrap();
+        let error = library.import_ledger(&folder).unwrap_err();
+        assert!(error.to_string().contains("usage.json"), "{error}");
+        assert_eq!(library.spending().unwrap().total.calls, 0);
+        // once it can be read, it is moved: a damaged file marked nothing as moved
+        put(
+            &folder.join("usage.json"),
+            &json!({"since": "2026-09-01", "models": {"claude-haiku-5-5":
+            {"calls": 1, "input_tokens": 7, "output_tokens": 3, "usd": 0.0000022, "unpriced_calls": 0}}}),
+        );
+        assert_eq!(library.import_ledger(&folder).unwrap(), 1);
     }
 
     #[test]

@@ -763,7 +763,8 @@ export interface UsageEntry {
 	/** read from and written to the prompt cache, each billed at its own rate (absent from older backends) */
 	cache_read_tokens?: number;
 	cache_write_tokens?: number;
-	usd: number;
+	/** of the priced calls; null when none of its calls had a price, which is not a cost of 0 */
+	usd: number | null;
 	unpriced_calls: number;
 }
 

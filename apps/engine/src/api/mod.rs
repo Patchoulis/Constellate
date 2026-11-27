@@ -9,14 +9,17 @@
 //! | [`routes`]   | the routes, the state they share and how errors are told                           |
 //! | [`reviews`]  | a paper's reviews read from the page the user opened, and what they come to        |
 //! | [`passages`] | a paper's text from its PDF, and where a quote is in it                            |
+//! | [`citations`] | the citation network around a paper, from the reference lists read            |
 //! | [`stances`]  | where a community's papers agree and disagree on a question                        |
 //! | [`models`]   | the language models' providers and models, for the interface to choose from        |
+//! | [`usage`]    | what the language model has cost: in all, by model and purpose, and this session   |
 //!
 //! [`Server`] puts them together: bound to its address, it says once where it is ([`Server::startup_line`]) and
 //! serves until it is told to stop.
 
 pub mod answers;
 pub mod citation_contexts;
+pub mod citations;
 pub mod claim_tree;
 pub mod config;
 pub mod connections;
@@ -32,6 +35,7 @@ pub mod reviews;
 pub mod routes;
 pub mod security;
 pub mod stances;
+pub mod usage;
 
 use std::future::Future;
 use std::io;
