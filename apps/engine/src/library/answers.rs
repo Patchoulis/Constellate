@@ -266,6 +266,17 @@ impl Library {
         self.write(|transaction| Ok(forget_key(transaction, feature, key.as_str())? > 0))
     }
 
+    /// Forget the answers `feature` kept under any of `keys`, in one transaction: how many there were.
+    pub fn forget_keys(&self, feature: Feature, keys: &[AnswerKey]) -> Result<usize, LibraryError> {
+        self.write(|transaction| {
+            let mut forgotten = 0;
+            for key in keys {
+                forgotten += forget_key(transaction, feature, key.as_str())?;
+            }
+            Ok(forgotten)
+        })
+    }
+
     /// Forget every answer `feature` kept about any of `subjects` (a redo): they are asked for again. Answers of
     /// other features, and about other subjects, stay. Returns how many were forgotten.
     pub fn forget(&self, feature: Feature, subjects: &[Subject]) -> Result<usize, LibraryError> {
