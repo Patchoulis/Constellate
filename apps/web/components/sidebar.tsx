@@ -344,7 +344,7 @@ function RunsSection({
 					<RunRow
 						run={run}
 						active={current === run.name}
-						onSelect={() => onSelect(run.name)}
+						onSelect={() => run.problem === null && onSelect(run.name)} // one whose files cannot be read is said, not opened
 						onRename={(title) => onRename(run.name, title)}
 						onRedoAll={running || run.problem ? undefined : () => onRedoAll(run.name)}
 						onDelete={() => onDelete(run.name)}
