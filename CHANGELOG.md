@@ -99,6 +99,13 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Making a run again whose name exists asks first, saying whether its communities will change and how many of
+  them have names: a remade run's names, and what was asked about its communities, may no longer apply. Nothing
+  remakes a run unless you ask.
+- A run made without accepting the cost of naming it is made without names (names given before to the same papers
+  are kept), and nothing is sent to the language model.
+- Whatever of the earlier version's data could not be moved in when the app was updated is reported as a warning
+  and tried again at the next start, instead of being silently left out.
 - Naming a run's communities and writing a community's overview show what they would cost before anything is sent
   (in the run form, and on the overview's button); each point of an overview is shown only with quotes found in at
   least three of the papers it names, in the papers' own words, and the overview says how many points were left out.

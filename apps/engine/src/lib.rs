@@ -23,8 +23,8 @@
 //! | [`text`]    | what is read out of text: passages, authors' declarations, reviewers' scores, references |
 //! | [`threads`] | how many threads the engine computes on, and many papers' work run on them    |
 //!
-//! Still to come as the Python backend (`apps/backend`) is removed: connecting the AI-text estimate and the language
-//! model's descriptions as steps of a run (`pipeline/seams.rs`), and the routes about one paper.
+//! The engine is the app's only backend: everything the Python backend (`apps/backend`) did is done here, and its
+//! data folder is moved in at the first open of the library ([`library::Library::import_old`]).
 
 pub mod analysis;
 pub mod api;
