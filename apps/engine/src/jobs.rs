@@ -19,6 +19,7 @@
 //! the work's to do: it is told through [`Tracker::cancelled`], starts nothing new, and returns what it has. The
 //! job stays `running` until then, so whoever follows it waits for what was done, not for a guess.
 
+use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -147,6 +148,11 @@ pub struct Busy {
     pub kind: String,
 }
 
+/// The most lines a job's log keeps: a job over thousands of papers may log a line for each, and the log is held
+/// in memory and sent to whoever follows the job. The earliest go first; the line numbers `since` counts in stay
+/// those of every line logged.
+const LOG_LINES: usize = 5_000;
+
 /// How a job says how far it has got: one of the two, never both, since a job is started one way or the other.
 enum Measure {
     /// Through its tracker ([`Job::start_tracked`], [`Job::start`]): the last progress it reported, if any.
@@ -160,10 +166,23 @@ struct Inner<T> {
     id: u64,
     kind: String,
     state: State<T>,
-    log: Vec<String>,
+    /// The log's last [`LOG_LINES`] lines.
+    log: VecDeque<String>,
+    /// Lines logged before those kept.
+    dropped: usize,
     measure: Measure,
     /// The running job's request to stop; a new one for every job.
     cancel: Cancel,
+}
+
+impl<T> Inner<T> {
+    fn log(&mut self, line: String) {
+        if self.log.len() == LOG_LINES {
+            self.log.pop_front();
+            self.dropped += 1;
+        }
+        self.log.push_back(line);
+    }
 }
 
 /// What a job looks like at one moment.
@@ -176,7 +195,7 @@ pub struct Snapshot<T> {
     pub error: Option<String>,
     /// The log's lines from `since` on.
     pub log: Vec<String>,
-    /// How many lines the log has in all.
+    /// How many lines were logged in all: the earliest of a very long log are no longer kept ([`LOG_LINES`]).
     pub total: usize,
     pub progress: Option<Progress>,
     /// How many of its papers the job has done, of how many, when it counts them.
@@ -208,7 +227,8 @@ impl<T> Default for Job<T> {
                 id: 0,
                 kind: String::new(),
                 state: State::Idle,
-                log: Vec::new(),
+                log: VecDeque::new(),
+                dropped: 0,
                 measure: Measure::Tracked(None),
                 cancel: Cancel::new(),
             })),
@@ -272,13 +292,14 @@ impl<T: Clone + Send + 'static> Job<T> {
             job.kind = kind.to_owned();
             job.state = State::Running;
             job.log.clear();
+            job.dropped = 0;
             job.measure = measure;
             job.cancel = Cancel::new();
             (job.id, job.cancel.clone())
         };
         let inner = Arc::clone(&self.inner);
         thread::spawn(move || {
-            let log = |line: &str| open(&inner).log.push(line.to_owned());
+            let log = |line: &str| open(&inner).log(line.to_owned());
             let progress = |progress: Progress| {
                 if let Measure::Tracked(last) = &mut open(&inner).measure {
                     *last = Some(progress);
@@ -290,12 +311,12 @@ impl<T: Clone + Send + 'static> Job<T> {
             job.state = match outcome {
                 Ok(Ok(result)) => State::Done(result),
                 Ok(Err(error)) => {
-                    job.log.push(format!("ERROR: {error}"));
+                    job.log(format!("ERROR: {error}"));
                     State::Failed(error)
                 }
                 Err(panic) => {
                     let said = panic_message(&*panic);
-                    job.log.push(format!("ERROR: {said}"));
+                    job.log(format!("ERROR: {said}"));
                     State::Failed(said)
                 }
             };
@@ -323,8 +344,8 @@ impl<T: Clone + Send + 'static> Job<T> {
             state: job.state.phase(),
             result,
             error,
-            log: job.log.iter().skip(since).cloned().collect(),
-            total: job.log.len(),
+            log: job.log.iter().skip(since.saturating_sub(job.dropped)).cloned().collect(),
+            total: job.dropped + job.log.len(),
             progress,
             papers,
         }
@@ -342,7 +363,7 @@ impl<T: Clone + Send + 'static> Job<T> {
             if let Measure::Counted(counted) = &job.measure {
                 counted.cancel();
             }
-            job.log.push("Asked to stop.".to_owned());
+            job.log("Asked to stop.".to_owned());
         }
         Ok(())
     }
@@ -535,6 +556,26 @@ mod tests {
         assert_eq!(told["papers"]["of"], 10_000);
         job.start("a run", |_| Ok(1)).unwrap();
         assert_eq!(finished(&job).papers, None, "a job that counts nothing says nothing about papers");
+    }
+
+    #[test]
+    fn a_long_log_keeps_its_last_lines_and_counts_every_line_logged() {
+        let job: Job<u32> = Job::new();
+        job.start("a run", |log| {
+            for line in 0..LOG_LINES + 10 {
+                log(&format!("line {line}"));
+            }
+            Err("stopped".to_owned())
+        })
+        .unwrap();
+        let now = finished(&job);
+        assert_eq!(now.total, LOG_LINES + 11);
+        assert_eq!(now.log.len(), LOG_LINES, "the first lines went");
+        assert_eq!(now.log[0], "line 11");
+        assert_eq!(now.log.last().map(String::as_str), Some("ERROR: stopped"), "the failure is always kept");
+        // `since` counts every line logged, kept or not
+        assert_eq!(job.snapshot(LOG_LINES + 9).log, ["line 5009", "ERROR: stopped"]);
+        assert_eq!(job.snapshot(LOG_LINES + 11).log, Vec::<String>::new());
     }
 
     #[test]
