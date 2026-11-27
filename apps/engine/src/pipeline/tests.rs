@@ -737,10 +737,11 @@ fn naming_settings() -> Settings {
 /// Naming within what was accepted of the estimate before the run, as `POST /api/runs` builds it.
 fn accepted(settings: &Settings) -> (seams::Naming, f64) {
     use crate::model::chosen::Accepted;
-    let chosen = crate::writing::describe::tests::chosen("claude-opus-5-5");
-    let shown = crate::writing::describe::estimate_before_run(&chosen, settings);
+    let chosen = crate::features::writing::describe::tests::chosen("claude-opus-5-5");
+    let shown = crate::features::writing::describe::estimate_before_run(&chosen, settings);
     let most = shown.cost.most_usd.unwrap().dollars();
-    let budget = crate::writing::describe::budget_before_run(&chosen, settings, Accepted::Dollars(most)).unwrap();
+    let budget =
+        crate::features::writing::describe::budget_before_run(&chosen, settings, Accepted::Dollars(most)).unwrap();
     (seams::Naming::Within { chosen, budget }, most)
 }
 
@@ -750,7 +751,7 @@ fn a_run_named_within_what_was_accepted_carries_its_names_and_costs_the_estimate
     let library = Library::open(&data.path().join("library")).unwrap();
     let selection = Selection::parse(&["NeurIPS 2025".into()], None, None, &[], false).unwrap();
     let (fetch, words) = (conference_fetch(90), Words { asked: Mutex::new(0) });
-    let transport = crate::writing::describe::tests::scripted();
+    let transport = crate::features::writing::describe::tests::scripted();
     let (naming, most) = accepted(&naming_settings());
     let (name, log) = make_named(
         data.path(),
@@ -801,9 +802,9 @@ fn a_run_with_nothing_accepted_is_made_without_names_and_sends_nothing() {
     let library = Library::open(&data.path().join("library")).unwrap();
     let selection = Selection::parse(&["NeurIPS 2025".into()], None, None, &[], false).unwrap();
     let (fetch, words) = (conference_fetch(90), Words { asked: Mutex::new(0) });
-    let transport = crate::writing::describe::tests::scripted();
+    let transport = crate::features::writing::describe::tests::scripted();
     // a model that could be asked (its key set): nothing is sent all the same, since nothing was accepted
-    let naming = seams::Naming::KeptOnly(crate::writing::describe::tests::chosen("claude-opus-5-5"));
+    let naming = seams::Naming::KeptOnly(crate::features::writing::describe::tests::chosen("claude-opus-5-5"));
     let (name, log) = make_named(
         data.path(),
         &library,
@@ -828,19 +829,19 @@ fn a_budget_reached_part_way_stops_the_naming_and_the_run_is_made_with_the_names
     let library = Library::open(&data.path().join("library")).unwrap();
     let selection = Selection::parse(&["NeurIPS 2025".into()], None, None, &[], false).unwrap();
     let (fetch, words) = (conference_fetch(90), Words { asked: Mutex::new(0) });
-    let transport = crate::writing::describe::tests::scripted();
-    let chosen = crate::writing::describe::tests::chosen("claude-opus-5-5");
+    let transport = crate::features::writing::describe::tests::scripted();
+    let chosen = crate::features::writing::describe::tests::chosen("claude-opus-5-5");
     // the run made once without names, so that the worst case of each of its calls is known from its own prompts
     let (name, _) =
         make_run(data.path(), &library, &selection, naming_settings(), &fetch, &words, Redo::new()).unwrap();
     let folder = data.path().join("runs").join(&name);
-    let tree = crate::writing::read_tree(&folder).unwrap().unwrap();
-    let groups = crate::writing::describe::Group::from_stored(&tree.communities);
+    let tree = crate::features::writing::read_tree(&folder).unwrap().unwrap();
+    let groups = crate::features::writing::describe::Group::from_stored(&tree.communities);
     let ids = files::paper_ids(&folder).unwrap();
     let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
     let papers: Vec<Paper> = library.papers(&ids).unwrap().into_iter().map(Option::unwrap).collect();
     let embeddings = library.vectors(&naming_settings().embedding_model, &papers).unwrap();
-    let made = crate::writing::describe::Run {
+    let made = crate::features::writing::describe::Run {
         name: &name,
         folder: None,
         papers: &papers,
@@ -848,7 +849,7 @@ fn a_budget_reached_part_way_stops_the_naming_and_the_run_is_made_with_the_names
         communities: &groups,
         redo: false,
     };
-    let estimate = crate::writing::describe::estimate_run(&library, &made, &chosen).unwrap();
+    let estimate = crate::features::writing::describe::estimate_run(&library, &made, &chosen).unwrap();
     let worst = estimate.cost.most_tokens / u64::try_from(estimate.to_ask).unwrap();
     assert!(estimate.to_ask >= 2);
     // room for the worst case of one call and a little more, not for a second once the first has taken what it
@@ -878,7 +879,7 @@ fn a_budget_reached_part_way_stops_the_naming_and_the_run_is_made_with_the_names
 fn a_run_scores_its_abstracts_with_the_trained_detector_once_and_reuses_the_scores_when_made_again() {
     let data = tempfile::tempdir().unwrap();
     let library = Library::open(&data.path().join("library")).unwrap();
-    crate::detector::tests::build_in(&library);
+    crate::features::detector::tests::build_in(&library);
     let selection = Selection::parse(&["NeurIPS 2025".into()], None, None, &[], false).unwrap();
     let (fetch, words) = (conference_fetch(90), Words { asked: Mutex::new(0) });
     let settings = Settings { detect_ai: true, ..naming_settings() };

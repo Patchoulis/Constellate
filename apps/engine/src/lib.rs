@@ -28,9 +28,8 @@
 
 pub mod analysis;
 pub mod api;
-pub mod detector;
 pub mod evidence;
-pub mod explanation;
+pub mod features;
 pub mod jobs;
 pub mod library;
 pub mod machine;
@@ -44,4 +43,3 @@ pub mod sources;
 pub mod text;
 pub mod threads;
 pub mod usage;
-pub mod writing;

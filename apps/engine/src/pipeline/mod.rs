@@ -8,9 +8,9 @@
 //!
 //! # The seam with the other modules
 //!
-//! Two steps are other modules': scoring abstracts with the AI-text detector ([`Step::Detect`], [`crate::detector`])
+//! Two steps are other modules': scoring abstracts with the AI-text detector ([`Step::Detect`], [`crate::features::detector`])
 //! and naming and describing the communities with the language model ([`Step::Describe`],
-//! [`crate::writing::describe`]). The run calls them through [`seams::detect`] and [`seams::describe`]; [`seams`]
+//! [`crate::features::writing::describe`]). The run calls them through [`seams::detect`] and [`seams::describe`]; [`seams`]
 //! says what each is handed and must set. The model is asked only within what the person accepted with the run's
 //! request ([`seams::Naming`]). Both steps are optional: a failure is told in the log and the run is made without
 //! what it would have added.

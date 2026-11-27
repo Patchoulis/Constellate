@@ -21,7 +21,6 @@ pub mod discussion;
 pub mod passages;
 pub mod pdf;
 pub mod references;
-pub mod retrieval;
 pub mod review_points;
 pub mod reviews;
 pub mod words;

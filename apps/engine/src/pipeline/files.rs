@@ -198,9 +198,9 @@ pub fn replacing(folder: &Path, name: &str, settings: &Value, clustering: u32) -
         Some(version) => version == u64::from(clustering),
         None => stored["settings"]["clustering"] == "fiedler",
     };
-    let (communities, named) = match crate::writing::read_tree(folder)? {
+    let (communities, named) = match crate::features::writing::read_tree(folder)? {
         Some(tree) => {
-            fn named(stored: &[crate::writing::Stored]) -> usize {
+            fn named(stored: &[crate::features::writing::Stored]) -> usize {
                 stored
                     .iter()
                     .map(|community| {

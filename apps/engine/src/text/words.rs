@@ -1,4 +1,4 @@
-//! Words as the lexical matchers compare them: the passages index of cited answers ([`super::retrieval`]), the
+//! Words as the lexical matchers compare them: the passages index of cited answers ([`crate::features::answers::retrieval`]), the
 //! related passages of an explanation (`explanation::related`) and the stances' pre-filter
 //! (`analysis::stances`). One way to cut text into words, one way to fold a plural, and one list of words that
 //! say nothing about what a text is about, so that "studies" and "Studies" and "studíes" meet in all three.

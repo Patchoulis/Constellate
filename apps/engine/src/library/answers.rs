@@ -37,12 +37,12 @@ pub enum Feature {
     Explanation,
     /// A paper's claims as a tree, with its reviews mapped onto them.
     ClaimTree,
-    /// A community's name and description, written when a run is made ([`crate::writing::describe`]).
+    /// A community's name and description, written when a run is made ([`crate::features::writing::describe`]).
     Describing,
-    /// A community's overview, with every point's quotes ([`crate::writing::overview`]).
+    /// A community's overview, with every point's quotes ([`crate::features::writing::overview`]).
     Overview,
     /// What a model wrote for the AI-text detector's training set (a 2019 abstract written from its title, or
-    /// polished): kept here as it arrives, so that none is paid for twice (`crate::detector`).
+    /// polished): kept here as it arrives, so that none is paid for twice (`crate::features::detector`).
     Detector,
 }
 
@@ -335,7 +335,7 @@ fn put_answer(
 }
 
 /// [`Library::forget_key`] in a transaction of the caller's, the key as stored (hex): how many rows went.
-pub(super) fn forget_key(
+pub(crate) fn forget_key(
     connection: &rusqlite::Connection,
     feature: Feature,
     key: &str,

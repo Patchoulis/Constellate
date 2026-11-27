@@ -7,7 +7,7 @@
 //! the list is next asked for. The entries are kept as read, not linked: they are linked to the library as it is
 //! when the network is built, so that a paper added since is found.
 //!
-//! The citing sentences ([`super::citation_contexts`]) keep only the entries their paper's text cites, and only
+//! The citing sentences ([`crate::features::citation_contexts::store`]) keep only the entries their paper's text cites, and only
 //! once its passages are read; this keeps every entry, which is what a network of prior work needs.
 //!
 //! Looking an entry up on arXiv is slow (one request every three seconds), so it is done only when asked

@@ -347,7 +347,7 @@ pub fn one_name(name: &str) -> Result<&str, ApiError> {
 }
 
 /// Run file work (which may wait for a lock) off the threads that answer requests.
-pub(super) async fn on_the_side<T: Send + 'static>(
+pub(crate) async fn on_the_side<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, ApiError> + Send + 'static,
 ) -> Result<T, ApiError> {
     tokio::task::spawn_blocking(work).await.map_err(|_| ApiError::Internal)?
@@ -364,18 +364,18 @@ pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
     ];
     table.extend(super::reviews::table());
     table.extend(super::passages::table());
-    table.extend(super::critique::table());
-    table.extend(super::stances::table());
-    table.extend(super::extraction::table());
-    table.extend(super::explanation::table());
-    table.extend(super::claim_tree::table());
-    table.extend(super::citation_contexts::table());
+    table.extend(crate::features::critique::routes::table());
+    table.extend(crate::features::stances::routes::table());
+    table.extend(crate::features::extraction::routes::table());
+    table.extend(crate::features::explanation::routes::table());
+    table.extend(crate::features::claim_tree::routes::table());
+    table.extend(crate::features::citation_contexts::routes::table());
     table.extend(super::citations::table());
-    table.extend(super::answers::table());
+    table.extend(crate::features::answers::routes::table());
     table.extend(super::models::table());
-    table.extend(super::writing::table());
+    table.extend(crate::features::writing::routes::table());
     table.extend(super::runs::table());
-    table.extend(super::detector::table());
+    table.extend(crate::features::detector::routes::table());
     table.extend(super::usage::table());
     table.extend(super::papers::table());
     table

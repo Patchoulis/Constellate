@@ -18,18 +18,11 @@
 //! [`Server`] puts them together: bound to its address, it says once where it is ([`Server::startup_line`]) and
 //! serves until it is told to stop.
 
-pub mod answers;
-pub mod citation_contexts;
 pub mod citations;
-pub mod claim_tree;
 pub mod config;
 pub mod connections;
 #[cfg(test)]
 pub(crate) mod contract;
-pub mod critique;
-pub mod detector;
-pub mod explanation;
-pub mod extraction;
 pub mod login;
 pub mod models;
 #[cfg(test)]
@@ -40,9 +33,7 @@ pub mod reviews;
 pub mod routes;
 pub mod runs;
 pub mod security;
-pub mod stances;
 pub mod usage;
-pub mod writing;
 
 use std::future::Future;
 use std::io;

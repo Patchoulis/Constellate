@@ -29,6 +29,7 @@ use serde_json::{Value, json};
 
 use super::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::analysis::cluster::Method;
+use crate::features::writing::describe;
 use crate::jobs::Finished;
 use crate::model::chosen::Accepted;
 use crate::model::embed::Device;
@@ -43,7 +44,6 @@ use crate::selection::Selection;
 use crate::settings;
 use crate::sources::acceptance::Acceptance;
 use crate::text::declarations::Flag;
-use crate::writing::describe;
 
 /// The most conferences or categories one run may name.
 pub const MOST_PICKED: usize = 100;
@@ -448,7 +448,7 @@ fn machine_of(device: Option<Device>) -> Value {
 async fn library(State(engine): State<Shared>) -> Result<Json<Value>, ApiError> {
     let answer = on_the_side(move || {
         let library = engine.library()?;
-        let (detector, validation) = super::detector::library_part(&engine)?;
+        let (detector, validation) = crate::features::detector::routes::library_part(&engine)?;
         let problems = engine.import_problems();
         Ok(json!({
             "papers": library.paper_count()?,

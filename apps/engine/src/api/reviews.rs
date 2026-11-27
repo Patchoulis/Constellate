@@ -177,7 +177,7 @@ fn run_folder(engine: &Shared, run: &str) -> Result<PathBuf, ApiError> {
 }
 
 /// The ids of a run's papers, or of one of its communities' papers.
-pub(super) fn papers_of(engine: &Shared, run: &str, community: Option<&str>) -> Result<Vec<String>, ApiError> {
+pub(crate) fn papers_of(engine: &Shared, run: &str, community: Option<&str>) -> Result<Vec<String>, ApiError> {
     let folder = run_folder(engine, run)?;
     let graph: Graph = read_json(&folder.join("graph.json"))?.ok_or(ApiError::NotFound)?;
     let Some(tree_path) = community else {

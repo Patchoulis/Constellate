@@ -76,10 +76,7 @@
 
 pub mod answers;
 pub mod asking;
-pub mod citation_contexts;
-pub mod detector;
 pub mod embeddings;
-pub mod extraction;
 pub mod import;
 pub mod ledger;
 pub mod papers;
@@ -87,14 +84,12 @@ pub mod passages;
 pub mod place;
 pub mod preferences;
 pub mod proceedings;
-pub mod questions;
 pub mod readings;
 pub mod references;
 pub mod reviews;
 pub mod run_records;
 pub mod schema;
 pub mod store;
-pub mod writings;
 
 use std::fs;
 use std::io;
@@ -105,6 +100,7 @@ use std::time::{Duration, SystemTime};
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{Connection, ErrorCode, Transaction, TransactionBehavior};
 
+pub use crate::features::writing::store::{CitedPaper, Description, Overview, Point, Section, community_key};
 pub use answers::{AnswerKey, Feature, Kept, Slot, Subject};
 pub use embeddings::NotEmbedded;
 pub use import::{ImportError, Imported, import_files};
@@ -114,7 +110,6 @@ pub use passages::PaperReading;
 pub use preferences::Rate;
 pub use readings::{AiScore, Answer, ChecklistItem, Declarations, FieldRatings, Ratings, Reading, Statement};
 pub use reviews::{Keeping, KeptReviews, ReviewPage};
-pub use writings::{CitedPaper, Description, Overview, Point, Section, community_key};
 
 /// The database's file name inside the library folder.
 pub const DATABASE: &str = "library.sqlite3";
@@ -194,13 +189,16 @@ impl Library {
         &self.path
     }
 
-    fn connection(&self) -> MutexGuard<'_, Connection> {
+    pub(crate) fn connection(&self) -> MutexGuard<'_, Connection> {
         // a thread that panicked mid-transaction left nothing half-done: the transaction rolled back on unwind
         self.connection.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Run `work` as one write transaction: all of it is kept, or none of it.
-    fn write<T>(&self, work: impl FnOnce(&Transaction<'_>) -> Result<T, LibraryError>) -> Result<T, LibraryError> {
+    pub(crate) fn write<T>(
+        &self,
+        work: impl FnOnce(&Transaction<'_>) -> Result<T, LibraryError>,
+    ) -> Result<T, LibraryError> {
         let mut connection = self.connection();
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let result = work(&transaction)?;
@@ -209,7 +207,7 @@ impl Library {
     }
 
     /// Run `work` on one consistent view of the database, on a reader of its own.
-    fn read<T>(&self, work: impl FnOnce(&Connection) -> Result<T, LibraryError>) -> Result<T, LibraryError> {
+    pub(crate) fn read<T>(&self, work: impl FnOnce(&Connection) -> Result<T, LibraryError>) -> Result<T, LibraryError> {
         let idle = self.readers.lock().unwrap_or_else(PoisonError::into_inner).pop();
         let mut connection = match idle {
             Some(connection) => connection,
@@ -274,19 +272,22 @@ fn located(error: LibraryError, path: &Path) -> LibraryError {
 }
 
 /// Now, as kept in the database: UTC, to the second, in RFC 3339 (which sorts as text).
-fn now() -> String {
+pub(crate) fn now() -> String {
     DateTime::<Utc>::from(SystemTime::now()).to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
 /// A JSON column read back into its type; a value that does not parse is reported as that column's error.
-fn json_column<T: serde::de::DeserializeOwned>(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<T> {
+pub(crate) fn json_column<T: serde::de::DeserializeOwned>(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+) -> rusqlite::Result<T> {
     let text: String = row.get(index)?;
     serde_json::from_str(&text)
         .map_err(|error| rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, Box::new(error)))
 }
 
 /// `?, ?, ?` for a list of `count` values (never empty: callers return early on an empty list).
-fn placeholders(count: usize) -> String {
+pub(crate) fn placeholders(count: usize) -> String {
     vec!["?"; count].join(", ")
 }
 

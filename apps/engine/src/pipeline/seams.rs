@@ -1,9 +1,9 @@
 //! The two steps of a run that other modules do: scoring every abstract with the AI-text detector
-//! ([`crate::detector`]), and writing a name and a description for every community with the language model chosen
-//! in the settings ([`crate::writing::describe`]).
+//! ([`crate::features::detector`]), and writing a name and a description for every community with the language model chosen
+//! in the settings ([`crate::features::writing::describe`]).
 //!
 //! * [`detect`] is called after the papers are embedded and before they are filtered (a setting can leave the
-//!   flagged papers out). It sets `run.flagged[i]` for paper `run.papers[i]` from [`crate::detector::score_run`],
+//!   flagged papers out). It sets `run.flagged[i]` for paper `run.papers[i]` from [`crate::features::detector::score_run`],
 //!   which keeps every score in the library by classifier and text, so that no abstract is scored twice: a run made
 //!   again scores nothing it scored before.
 //! * [`describe`] is called once every community's record is made (`run.records`, the whole tree, with its terms
@@ -17,12 +17,12 @@
 
 use super::Made;
 use super::steps::{Skip, StepOutcome};
-use crate::detector::{self, Scoring, Skipped};
+use crate::features::detector::{self, Scoring, Skipped};
+use crate::features::writing::describe::{self, Group, Outcome, Run};
 use crate::jobs::Tracker;
 use crate::library::Library;
 use crate::model::chosen::Chosen;
 use crate::model::language::{Budget, Transport};
-use crate::writing::describe::{self, Group, Outcome, Run};
 
 /// What the person accepted for naming the run's communities, decided before the run starts.
 pub enum Naming {

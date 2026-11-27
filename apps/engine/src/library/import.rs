@@ -11,7 +11,7 @@
 //! | `proceedings/declarations.json`       | declarations                                   |
 //! | `reviews.json`                        | ratings                                        |
 //! | `ai_detection/scores.json`            | AI-text scores                                 |
-//! | `ai_detection/training.json`, `validation.json` | the AI-text detector's training set ([`super::detector`]) |
+//! | `ai_detection/training.json`, `validation.json` | the AI-text detector's training set ([`crate::features::detector::store`]) |
 //! | `descriptions.json`, `overviews.json` | descriptions, overviews                        |
 //! | `usage.json`                          | the ledger                                     |
 //! | `rates.json`                          | exchange rates                                 |
@@ -59,8 +59,8 @@ use super::papers::{exists, put_paper, put_slice, tag};
 use super::preferences::{Rate, put_rate, put_setting};
 use super::readings::{AiScore, Declarations, Ratings, Reading, put_ai_score, put_declarations, put_ratings};
 use super::store::{self, StoreError};
-use super::writings::{Description, Overview, put_description, put_overview};
 use super::{Known, Library, LibraryError, Origin, Paper, SliceOutcome, now};
+use crate::features::writing::store::{Description, Overview, put_description, put_overview};
 
 /// The model the Python embedded with unless the settings said otherwise.
 const DEFAULT_MODEL: &str = "Qwen/Qwen3-Embedding-0.6B";
@@ -112,7 +112,7 @@ pub struct Imported {
     pub ratings: usize,
     pub ai_scores: usize,
     /// The AI-text detector's training set ([`Library::import_detector`]), moved in its own transaction after the rest.
-    pub ai_training: super::detector::ImportedDetector,
+    pub ai_training: crate::features::detector::store::ImportedDetector,
     pub descriptions: usize,
     pub overviews: usize,
     pub ledger_rows: usize,
@@ -243,7 +243,7 @@ impl<T> Part<T> {
 pub struct Moved {
     pub files: Part<Imported>,
     pub ledger: Part<usize>,
-    pub detector: Part<super::detector::ImportedDetector>,
+    pub detector: Part<crate::features::detector::store::ImportedDetector>,
 }
 
 impl Default for Moved {
@@ -292,7 +292,10 @@ impl Library {
 
     /// The detector's part of [`Library::import_old`]: moved and then recorded; moving it again before the record
     /// (stopped between the two) adds nothing twice.
-    fn import_detector_once(&self, folder: &Path) -> Result<Option<super::detector::ImportedDetector>, ImportError> {
+    fn import_detector_once(
+        &self,
+        folder: &Path,
+    ) -> Result<Option<crate::features::detector::store::ImportedDetector>, ImportError> {
         let recorded = |connection: &Connection| -> rusqlite::Result<bool> {
             Ok(connection
                 .query_row("SELECT 1 FROM imported WHERE source = ?1", [DETECTOR], |_| Ok(()))
@@ -988,7 +991,7 @@ mod tests {
         fs::write(folder.join("papers.jsonl"), "not read again").unwrap();
         fs::write(folder.join("ai_detection").join("training.json"), "not read again").unwrap();
         assert_eq!(library.import_old(&folder), Moved::default());
-        assert_eq!(library.detector_counts(crate::library::detector::POOL).unwrap(), (2, 1), "nothing twice");
+        assert_eq!(library.detector_counts(crate::features::detector::store::POOL).unwrap(), (2, 1), "nothing twice");
         assert_eq!(library.spending().unwrap().total.calls, 5);
     }
 
@@ -1044,7 +1047,7 @@ mod tests {
         let again = library.import_old(&folder);
         assert_eq!((again.files.clone(), again.ledger.clone()), (Part::Already, Part::Moved { added: 2 }));
         assert!(matches!(again.detector, Part::Moved { .. }), "{again:?}");
-        assert_eq!(library.detector_counts(crate::library::detector::POOL).unwrap(), (2, 1));
+        assert_eq!(library.detector_counts(crate::features::detector::store::POOL).unwrap(), (2, 1));
     }
 
     #[test]
@@ -1055,7 +1058,7 @@ mod tests {
         library.import_detector(&folder).unwrap(); // moved, and then the app closed before it was recorded
         let moved = library.import_old(&folder);
         assert!(matches!(moved.detector, Part::Moved { .. }), "{moved:?}");
-        assert_eq!(library.detector_counts(crate::library::detector::POOL).unwrap(), (2, 1));
+        assert_eq!(library.detector_counts(crate::features::detector::store::POOL).unwrap(), (2, 1));
     }
 
     #[test]
