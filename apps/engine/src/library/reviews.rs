@@ -18,6 +18,7 @@ use serde::Serialize;
 use super::readings::{put_ratings, ratings_of};
 use super::{Library, LibraryError, Ratings, now, placeholders, text_hash};
 use crate::text::discussion::{Discussion, PARSER, read_discussion};
+use crate::threads::{self, Outcome, Progress};
 
 /// Papers asked about in one statement: well under SQLite's limit on bound values.
 const IDS_AT_ONCE: usize = 500;
@@ -245,14 +246,23 @@ impl Library {
                 return Ok(read);
             };
             after = last.clone();
-            let readings: Vec<(&str, &str, Discussion)> = pages
-                .par_iter()
-                .map(|(paper_id, text, hash)| {
-                    let discussion =
-                        read_discussion(text).unwrap_or(Discussion { parser: PARSER, venue: None, notes: Vec::new() });
-                    (paper_id.as_str(), hash.as_str(), discussion)
-                })
-                .collect();
+            // Read on every core; the readings are written below, by this thread alone, in one transaction. A
+            // page whose reading panics (a reader's bug, not the page's) is that page's failure: it is said on the
+            // engine's error output and left unread for a later reader, and the other pages are kept as usual.
+            let readings: Vec<(&str, &str, Discussion)> = threads::each(&pages, &Progress::new(), |(_, text, _)| {
+                read_discussion(text).unwrap_or(Discussion { parser: PARSER, venue: None, notes: Vec::new() })
+            })
+            .into_iter()
+            .zip(&pages)
+            .filter_map(|(outcome, (paper_id, _, hash))| match outcome {
+                Outcome::Done(discussion) => Some((paper_id.as_str(), hash.as_str(), discussion)),
+                Outcome::Panicked(said) => {
+                    eprintln!("library: the reviews page of {paper_id} could not be read: {said}");
+                    None
+                }
+                Outcome::Cancelled => None,
+            })
+            .collect();
             self.write(|transaction| {
                 let mut still = transaction.prepare_cached("SELECT text_hash FROM review_pages WHERE paper_id = ?1")?;
                 for (paper_id, hash, discussion) in &readings {
