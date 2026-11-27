@@ -331,14 +331,14 @@ async fn redo(
     body: Result<Json<Request>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let address = take(body)?;
-    on_the_side(move || {
+    let forgotten = on_the_side(move || {
         let opened = open(&engine, &paper, &address)?.map_err(no_text)?;
         // that one explanation only: the paper's others stay
-        opened.library.forget_key(Feature::Explanation, &opened.slot().key)?;
-        Ok(())
+        Ok(opened.library.forget_key(Feature::Explanation, &opened.slot().key)?)
     })
     .await?;
-    Ok(Json(serde_json::json!({ "redone": true })))
+    // false when there was no explanation to forget, said rather than a redo that did nothing
+    Ok(Json(serde_json::json!({ "redone": forgotten })))
 }
 
 /// The passages of a paper with an explanation kept: `ExplainedPassages` in the contracts.
@@ -772,6 +772,8 @@ mod tests {
 
         let (status, redone) = ask(&router, "DELETE", "/api/papers/2601.00001/explanation", body(&address)).await;
         assert_eq!((status, redone), (StatusCode::OK, json!({"redone": true})));
+        let (_, twice) = ask(&router, "DELETE", "/api/papers/2601.00001/explanation", body(&address)).await;
+        assert_eq!(twice, json!({"redone": false}), "nothing left to forget, and said so");
         let (_, again) = ask(&router, "POST", "/api/papers/2601.00001/explanation/prepare", body(&address)).await;
         assert_eq!(again["explained"], Value::Null);
         assert!(again["estimate"].is_object());

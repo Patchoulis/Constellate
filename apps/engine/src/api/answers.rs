@@ -46,7 +46,7 @@ use super::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::evidence::{Cited, PaperText, Papers};
 use crate::jobs::{Finished, Phase, Tracker};
 use crate::library::questions::Asked;
-use crate::library::{Feature, Library, PaperReading};
+use crate::library::{AnswerKey, Feature, Library, PaperReading};
 use crate::model::answers::{
     self, Answer, AnswerCounts, Found, LONGEST_QUESTION, MAX_TOKENS, NotAnswered, Outcome, PROMPT_TOKENS, Prepared,
     Said, SaidOutcome, Scope, Statement,
@@ -573,10 +573,10 @@ async fn redo(
     let forgotten = on_the_side(move || {
         let library = engine.library()?;
         let asked = library.question(&run, &id)?.ok_or(ApiError::NotFound)?;
-        let scope = Scope { run: asked.run.clone(), community: asked.community.clone() };
-        let (key, _) = answers::key_of(asked.provider, &asked.model, &scope, &asked.question, &asked.passages);
-        // that question's answer only: the run's other questions about the same scope keep theirs
-        Ok(library.forget_key(Feature::Answers, &key)?)
+        // the key the question was kept with, not one made again now: a question asked with an older prompt has
+        // its answer under the key of then. That question's answer only: the run's others keep theirs. False
+        // when there was no answer to forget.
+        Ok(library.forget_key(Feature::Answers, &AnswerKey::from_stored(asked.key))?)
     })
     .await?;
     Ok(Json(serde_json::json!({ "ok": true, "forgotten": forgotten })))
@@ -863,6 +863,41 @@ mod tests {
         assert_eq!(listed[0]["id"], started["id"]);
         assert_eq!((listed[0]["question"].clone(), listed[0]["answered"].clone()), (json!(QUESTION), json!(false)));
         assert_eq!(listed[0]["community"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn a_redo_forgets_the_answer_kept_with_the_question_even_one_of_an_older_prompt_and_says_when_there_was_none()
+    {
+        let data = data();
+        let library = Library::open(&data.path().join("library")).unwrap();
+        // a question kept with the key of an older prompt: not the key it would be made with now
+        let then = AnswerKey::from_stored("a".repeat(64));
+        let asked = Asked {
+            run: "r1".to_owned(),
+            key: then.as_str().to_owned(),
+            community: None,
+            question: QUESTION.to_owned(),
+            provider: crate::model::language::Provider::Anthropic,
+            model: "claude-opus-5-5".to_owned(),
+            passages: Vec::new(),
+            asked_at: String::new(),
+        };
+        library.keep_question(&asked).unwrap();
+        let slot = Slot {
+            feature: Feature::Answers,
+            key: then.clone(),
+            subject: crate::library::Subject::Run("r1".to_owned()),
+        };
+        library.keep(&slot, "claude-opus-5-5", 0, &json!({"outcome": "not_in_papers", "statements": []})).unwrap();
+        let router = router(engine(&data));
+        let path = format!("/api/runs/r1/answers/{}/redo", then.as_str());
+        let (status, redone) = ask(&router, "POST", &path, None).await;
+        assert_eq!((status, redone["forgotten"].clone()), (StatusCode::OK, json!(true)), "{redone}");
+        assert!(
+            library.kept::<Value>(Feature::Answers, &then).unwrap().is_none(),
+            "the answer the listing showed is gone"
+        );
+        assert_eq!(ask(&router, "POST", &path, None).await.1["forgotten"], json!(false), "nothing left to forget");
     }
 
     #[tokio::test]

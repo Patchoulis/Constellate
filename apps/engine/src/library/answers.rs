@@ -165,6 +165,12 @@ impl AnswerKey {
         Self(hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
     }
 
+    /// A key as it was kept (its hex), as another table holds it beside what it is the key of: for forgetting the
+    /// answer kept under it, whatever the key would be made as now.
+    pub fn from_stored(hex: String) -> Self {
+        Self(hex)
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
