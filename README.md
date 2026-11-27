@@ -110,6 +110,39 @@ glibc 2.38 or newer and a C compiler (`build-essential` or your distribution's e
 Run from the repository, the app keeps its data in `data/` (or `CONSTELLATE_DATA`) and reads keys from `data/.env`.
 How the engine is started, reached and configured is in [`apps/engine/README.md`](apps/engine/README.md).
 
+### Where things are in the interface
+
+`apps/web` has one folder per subject, and the same folders under `components/` (what is drawn), `lib/` (its
+logic, plain functions where it can be) and `tests/`, so that a subject's view, logic and tests are found by one name.
+The engine's own layout is in [`apps/engine/README.md`](apps/engine/README.md) ("Where things are").
+
+```text
+apps/web/
+  app/                       Next's routes: the one page, its layout and styles
+  proxy.ts                   the interface's server: forwards /api and /auth to the engine, the page's policy
+  components/                brand (the app's mark, a paper's tags), math-text (titles and abstracts with LaTeX)
+    features/                one folder per model feature, named as the engine names it:
+      answers/ citation_contexts/ claim_tree/ critique/ detector/ explanation/ extraction/ stances/
+    graph/                   the graph view and its canvas
+    reader/                  the paper reader, its Text tab, citation network, evidence links
+    community/               the community panel, overview, reviews taken together
+    shell/                   the page's frame: sidebar, run dialogs, settings, model choice, workspace, confirmation
+    ui/                      buttons, fields, menus, the resize handle
+  lib/                       what everything uses: costs, units, the chosen model, fetching, acceptance tags
+    features/                the same feature folders, and writing/ (naming communities)
+    graph/                   layout, labels, glow layer, pick, glide, colouring, the paper filter
+    reader/                  evidence, citations, the PDF frame
+    community/               the community tree, marks
+    shell/                   models, notices, the runs list, making a run again, settings saves, following jobs
+    net/                     requests to the engine, the engine's mode, addresses, the page's policy
+    ui/                      panel sizes, focus return
+  tests/                     the same folders as lib/; shared helpers and tests of the root's files at the root
+```
+
+**Adding a feature** is one folder of the engine's name for it under each of `components/features/`,
+`lib/features/` and `tests/features/`: its component(s), its logic and its tests. `npm test` finds a test file
+in any folder under `tests/`.
+
 ## What a run does
 
 The steps of a run (`apps/engine/src/pipeline`), each shown with its progress while the run is made:
