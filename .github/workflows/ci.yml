@@ -27,17 +27,22 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: apps/backend/requirements-test.txt
+          cache-dependency-path: |
+            apps/backend/requirements-test.txt
+            apps/backend/requirements.lock.txt
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
-      - run: pip install -r apps/backend/requirements-test.txt
+      # the backend's tests run on the versions the app installs (the lock)
+      - run: pip install -r apps/backend/requirements-test.txt -c apps/backend/requirements.lock.txt
       # the uv the installer carries (UV_VERSION in scripts/build.mjs), for the first-start setup's tests, which
       # fail rather than skip without it when CI is set (GitHub sets it)
       - run: pip install uv==0.13.10
       - run: npm ci
-      - run: npm run pr
+      # the advisories have a workflow of their own (advisories.yml): a new advisory in some dependency must not hide
+      # a pull request's own results
+      - run: npm run pr -- --skip=advisories
 
   engine-linux:
     # The engine on a real Linux distribution (Ubuntu), not only on Windows: built, linted and tested there.

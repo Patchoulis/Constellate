@@ -1,0 +1,75 @@
+# Dependabot opens pull requests that move dependencies on: at once for a security advisory (when "Dependabot
+# security updates" is on in Settings > Code security), and once a week for everything else, grouped so that a week
+# is one pull request per ecosystem rather than one per package. Each pull request runs CI and Advisories.
+#
+# Held back on purpose, so moved only by hand:
+#   electron   a new major is a new Chromium and new defaults: the reader's guard and the shell are checked by hand
+#   ort        pinned exactly (=2.0.0-rc.x): each release candidate may change the API and the ONNX Runtime it brings
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: electron
+        update-types: ["version-update:semver-major"]
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+      npm:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: ort
+        update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+      cargo:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # the backend's lock (requirements.lock.txt, made by `uv pip compile` from requirements.txt)
+  - package-ecosystem: pip
+    directory: /apps/backend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    # torch stays below what PyTorch's CUDA index (apps/desktop/setup.cjs) has: a newer one fails the first start of
+    # every computer with an NVIDIA card, and no check here would see it. Raised by hand together with that index.
+    ignore:
+      - dependency-name: torch
+        versions: [">=2.15"]
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+      python:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]

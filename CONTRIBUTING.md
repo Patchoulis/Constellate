@@ -89,6 +89,37 @@ Run one test with `python -m pytest apps/backend/tests -k name`, `npx tsx --test
 The shapes of secrets the git hooks and CI refuse are in `.githooks/secrets.txt`, one regular expression per line.
 A provider with a new key format gets a line there, and a sample in `scripts/hooks.test.mjs`.
 
+#### Dependencies and advisories
+
+`npm run pr` ends with the advisory checks (they need the network; `npm run pr -- --only=advisories` runs only
+them). CI runs them as a workflow of their own, Advisories, on every pull request and every Monday:
+
+- `npm audit --omit=dev --audit-level=moderate` for what ships, and `npm audit --audit-level=high` for everything,
+  the build tools included (they only ever read this repository's own files).
+- `cargo deny check advisories licenses sources` for the engine's crates, with `deny.toml`: RustSec advisories, the
+  licences the installer may carry, and crates only from crates.io. `npm run setup` installs cargo-deny.
+- `pip-audit` on `apps/backend/requirements.lock.txt`, for the packages of every system (`pip install pip-audit`,
+  or `pip install -r apps/backend/requirements-test.txt`).
+
+When one fails, move the package to the smallest version that fixes it. Some fixes need more than a bump:
+
+- **A package of the backend's Python** is pinned in `apps/backend/requirements.lock.txt`, the lock the app's first
+  start installs with (`apps/desktop/setup.cjs`). After changing `requirements.txt`, make the lock again:
+  `uv pip compile requirements.txt --universal --python-version 3.13 --no-annotate -o requirements.lock.txt` in
+  `apps/backend` (it keeps the versions already there unless asked: `--upgrade-package <name>`). `torch` stays below
+  the newest release that PyTorch's CUDA index in `setup.cjs` has, so both builds are one version.
+- **An npm package that comes with another one** is moved with an entry under `overrides` in the root
+  `package.json`, which takes no comments, so each is explained here:
+  - `minimatch@>=7.0.0 <11.0.1` -> `11.0.1`: GHSA-g3hv-75wg-m249, in electron-builder's packaging (app-builder-lib and
+    @electron/universal ask for 10.x and 9.x, which have no fixed release). Remove it once electron-builder asks for
+    11.0.1 or later itself.
+- **A crate** is moved with `cargo update -p <crate> --precise <version>`. The workspace's `rust-version` (1.88) is
+  the oldest Rust the fixed releases need; `clippy.toml` keeps clippy's suggestions at 1.85 until the code is moved on.
+- **An advisory that cannot be fixed yet** and does not reach Constellate goes in `deny.toml`'s `ignore` with the
+  reason and what would remove it. Look at those again when the crate that brings them in has a new major version.
+
+Dependabot (`.github/dependabot.yml`) opens the pull requests for all of this, grouped by ecosystem, once a week.
+
 #### Commits
 
 Keep changes logically grouped within commits. There is no limit to the number of commits in a pull request; if

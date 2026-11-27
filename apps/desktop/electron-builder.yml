@@ -21,6 +21,8 @@ extraResources:
     filter:
       - "rp/**/*.py"
       - requirements.txt
+      # the exact version of every package (setup.cjs installs with it)
+      - requirements.lock.txt
   # uv sets up the app's own Python on first start (setup.cjs); scripts/build.mjs puts it in bin/
   - from: bin
     to: uv

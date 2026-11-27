@@ -160,7 +160,12 @@ async function serve(name, command, args, options, url) {
  *  or the one on the path. */
 async function backendPython() {
 	if (!app.isPackaged) return process.env.RP_PYTHON || "python";
-	const wanted = { uv: places.uv, folder: places.python, requirements: path.join(places.backend, "requirements.txt") };
+	const wanted = {
+		uv: places.uv,
+		folder: places.python,
+		requirements: path.join(places.backend, "requirements.txt"),
+		constraints: path.join(places.backend, "requirements.lock.txt"),
+	};
 	let wizard = null; // the window that shows the setup, opened only if there is something to set up
 	const log = (line) => {
 		if (!life.is("installing")) return; // stopping: nothing more to show

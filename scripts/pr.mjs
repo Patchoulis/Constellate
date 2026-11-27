@@ -6,13 +6,21 @@
  *   types    tsc
  *   tests    cargo test, pytest, the interface's tests, every test of the desktop shell, and the scripts' and
  *            git hooks' tests
+ *   advisories   known vulnerabilities in the dependencies, from each ecosystem's own database (needs the network):
+ *            npm audit (what ships: moderate and above; everything, build tools included: high and above),
+ *            cargo deny (deny.toml: RustSec advisories, licences, sources), pip-audit (the backend's lock)
+ *
+ *   --only=<start>   only the steps whose name starts so (--only=advisories)
+ *   --skip=<start>   all steps but those (CI runs the advisories as a job of their own: --skip=advisories)
+ *
+ * A step whose tool is missing fails, and says how to install it: a check that did not run has not passed.
  *
  * The naming rule: a caught error is called `error`, in both languages: `except X as error`, `catch (error)`.
  * One name everywhere means a reader never has to look up what `e`, `err`, `ex` or `problem` is this time.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -84,7 +92,55 @@ const steps = [
 		"tests (scripts and hooks)",
 		() => run("node", ["--test", ...testsIn(join(root, "scripts"), ".test.mjs").map((file) => `scripts/${file}`)], root),
 	],
+	// What ships (the interface's server and its packages; Electron itself) at moderate and above: little ships, and a
+	// moderate flaw in it may be reachable from a page the reader shows. The build tools (electron-builder, turbo,
+	// tsx...) only ever see this repository's own files, so there high and above.
+	["advisories (npm, what ships)", () => run("npm", ["audit", "--omit=dev", "--audit-level=moderate"], root)],
+	["advisories (npm, build tools too)", () => run("npm", ["audit", "--audit-level=high"], root)],
+	[
+		"advisories (cargo)",
+		() =>
+			needs("cargo", ["deny", "--version"], "cargo install cargo-deny --locked") &&
+			run("cargo", ["deny", "--log-level", "error", "check", "advisories", "licenses", "sources"], root),
+	],
+	[
+		"advisories (python)",
+		() => {
+			if (!needs(python, ["-m", "pip_audit", "--version"], `${python} -m pip install pip-audit`)) return false;
+			const folder = mkdtempSync(join(tmpdir(), "rp-audit-"));
+			const pins = join(folder, "requirements.txt");
+			writeFileSync(pins, everyPlatform(readFileSync(join(backend, "requirements.lock.txt"), "utf8")));
+			try {
+				return run(
+					python,
+					["-m", "pip_audit", "--strict", "--no-deps", "--disable-pip", "--progress-spinner", "off", "-r", `"${pins}"`],
+					root,
+				);
+			} finally {
+				rmSync(folder, { recursive: true, force: true });
+			}
+		},
+	],
 ];
+
+/** Is `command` there? If not, say how to get it: the step then fails rather than passing having checked nothing. */
+function needs(command, probe, install) {
+	if (spawnSync([command, ...probe].join(" "), { env, stdio: "ignore", shell: true }).status === 0) return true;
+	console.error(`${command} ${probe.slice(0, -1).join(" ")} is not installed. Install it with: ${install}`);
+	return false;
+}
+
+/**
+ * The backend's lock with its platform markers taken off (`colorama==0.4.6 ; sys_platform == 'win32'`), so that
+ * pip-audit checks the packages of every system the app is set up on, not only of the one this runs on.
+ */
+export function everyPlatform(lock) {
+	const pins = lock
+		.split(/\r?\n/)
+		.map((line) => line.replace(/#.*/, "").split(";")[0].trim())
+		.filter(Boolean);
+	return `${[...new Set(pins)].join("\n")}\n`;
+}
 
 /** The names of the test files in `folder` (none is an error: the step would pass having tested nothing). */
 function testsIn(folder, ending) {
@@ -102,9 +158,16 @@ function run(command, args, cwd) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
 	const only = process.argv.find((arg) => arg.startsWith("--only="))?.slice(7);
-	const chosen = steps.filter(([name]) => !only || name.startsWith(only));
+	const skip = process.argv.find((arg) => arg.startsWith("--skip="))?.slice(7);
+	const names = steps.map(([name]) => name).join(", ");
+	// a --skip that names nothing would silently run what it was meant to leave out (or the other way round)
+	if (skip !== undefined && !steps.some(([name]) => name.startsWith(skip))) {
+		console.error(`--skip=${skip} names no step. The steps: ${names}.`);
+		process.exit(1);
+	}
+	const chosen = steps.filter(([name]) => (!only || name.startsWith(only)) && !(skip && name.startsWith(skip)));
 	if (chosen.length === 0) {
-		console.error(`--only=${only} names no step. The steps: ${steps.map(([name]) => name).join(", ")}.`);
+		console.error(`--only=${only} names no step. The steps: ${names}.`);
 		process.exit(1);
 	}
 	const failed = [];

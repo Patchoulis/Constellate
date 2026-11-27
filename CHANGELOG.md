@@ -165,6 +165,16 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- The app's own Python is now set up with an exact, checked version of every package (a lock), instead of whatever
+  was newest the day it was first set up and then kept: a computer set up earlier is brought to these versions the
+  next time the app starts. On a computer with an NVIDIA graphics card this replaces the setuptools 78.1.0 that came
+  with PyTorch's CUDA build (CVE-2025-47273, CVE-2026-59890, GHSA-xmj3-9gf7-h52w) with 84.2.1.
+- The engine's password check uses ctutils 0.4.4, whose comparisons are constant-time (RUSTSEC-2026-0385), and its
+  tests time 0.3.47 (RUSTSEC-2026-0009, CVE-2026-25727). The installer is built with minimatch 11.0.1
+  (GHSA-g3hv-75wg-m249).
+- Every dependency is now checked against the published advisories on each change and every week, and a new
+  advisory fails the check until it is dealt with.
+
 - Pages shown in the reader can no longer send anything to the app's own interface, its API or the engine on this
   computer, nor to the local network, nor open files: every request such a page makes is checked, not only the
   frames it opens.
