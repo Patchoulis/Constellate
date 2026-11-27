@@ -416,12 +416,22 @@ pub struct Reply {
 }
 
 /// Why no answer came back at all. No message: the transport's own could name the address.
+///
+/// The first two are before the request was taken in (nothing can have been billed); [`TransportError::Lost`]
+/// is after it was sent, when the provider may have answered and billed it: it is not sent again, which could
+/// pay twice, and the call's outcome is left as unknown (`library::asking`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum TransportError {
+    /// No connection could be made (the address, the network, TLS): nothing was sent.
     #[error("the language model's API could not be reached")]
     Unreachable,
+    /// The time to connect or to send the request ran out: it was not taken in.
     #[error("the language model's API took too long to answer")]
     TimedOut,
+    /// The request was sent, and then the connection was lost or the answer took too long or could not be read:
+    /// it may have been answered and billed.
+    #[error("the language model's API stopped answering part way: the request may have been answered, and billed")]
+    Lost,
     /// Not sent: the work was asked to stop while the request waited for its turn (after a rate limit).
     #[error("asking was stopped")]
     Cancelled,
@@ -523,10 +533,40 @@ impl Transport for Https {
     }
 }
 
+/// What a failure of `ureq` means for the request: not sent, or sent and maybe billed. Only what certainly comes
+/// before the request is taken in (resolving, connecting, TLS, sending) counts as not sent; anything else (an
+/// I/O error part way, a timeout waiting for the answer, an answer that cannot be read) is [`TransportError::Lost`].
 fn transport_failed(error: ureq::Error) -> TransportError {
+    use std::io::ErrorKind;
+    use ureq::Timeout;
     match error {
-        ureq::Error::Timeout(_) => TransportError::TimedOut,
-        _ => TransportError::Unreachable,
+        ureq::Error::Timeout(Timeout::Resolve | Timeout::Connect | Timeout::SendRequest | Timeout::SendBody) => {
+            TransportError::TimedOut
+        }
+        ureq::Error::Timeout(_) => TransportError::Lost,
+        ureq::Error::Io(io)
+            if matches!(
+                io.kind(),
+                ErrorKind::ConnectionRefused
+                    | ErrorKind::NetworkUnreachable
+                    | ErrorKind::HostUnreachable
+                    | ErrorKind::AddrNotAvailable
+                    | ErrorKind::NetworkDown
+            ) =>
+        {
+            TransportError::Unreachable
+        }
+        ureq::Error::HostNotFound
+        | ureq::Error::ConnectionFailed
+        | ureq::Error::BadUri(_)
+        | ureq::Error::Http(_)
+        | ureq::Error::InvalidProxyUrl
+        | ureq::Error::ConnectProxyFailed(_)
+        | ureq::Error::RequireHttpsOnly(_)
+        | ureq::Error::TlsRequired
+        | ureq::Error::Tls(_)
+        | ureq::Error::Pem(_) => TransportError::Unreachable,
+        _ => TransportError::Lost,
     }
 }
 
@@ -552,7 +592,9 @@ fn reply_of(mut response: ureq::http::Response<ureq::Body>) -> Result<Reply, Tra
     let retry_after = header("retry-after").or_else(in_millis);
     let should_retry = header("x-should-retry");
     let status = response.status().as_u16();
-    let body = response.body_mut().with_config().limit(LARGEST_ANSWER).read_to_vec().map_err(transport_failed)?;
+    // the status is in: the request was taken in, so an answer that cannot be read may still have been billed
+    let body =
+        response.body_mut().with_config().limit(LARGEST_ANSWER).read_to_vec().map_err(|_| TransportError::Lost)?;
     Ok(Reply { status, retry_after, should_retry, body })
 }
 
@@ -576,6 +618,21 @@ pub trait Recorder: Send + Sync {
             self.record(call);
         }
         kept
+    }
+
+    /// Record the `calls` a question in `slot` took that gave no answer to keep, and remove the intent written in
+    /// `library` before it was sent (`library::asking`): the ledger now knows what it cost. The library's own
+    /// ledger does both in one transaction ([`Library::record_paid`]).
+    fn record_paid(
+        &self,
+        library: &Library,
+        slot: &crate::library::Slot,
+        calls: Vec<Call>,
+    ) -> Result<(), crate::library::LibraryError> {
+        for call in calls {
+            self.record(call);
+        }
+        library.not_billed(slot).map(drop)
     }
 }
 
@@ -622,12 +679,27 @@ impl Recorder for Library {
         let ledger: Vec<_> = calls.iter().map(ledger_call).collect();
         let kept = self.keep_paid(slot, model, prompt, content, &ledger);
         if kept.is_err() {
-            // the answer could not be kept: its cost is still recorded, as a call paid for either way
-            for call in calls {
-                self.record(call);
+            // the answer could not be kept: its cost is still recorded, as a call paid for either way, and with it
+            // the intent goes, since the ledger then says what it cost
+            let recorded = Library::record_paid(self, slot, &ledger).is_ok();
+            drop(ledger);
+            if !recorded {
+                for call in calls {
+                    self.record(call);
+                }
             }
         }
         kept
+    }
+
+    fn record_paid(
+        &self,
+        _library: &Library,
+        slot: &crate::library::Slot,
+        calls: Vec<Call>,
+    ) -> Result<(), crate::library::LibraryError> {
+        let ledger: Vec<_> = calls.iter().map(ledger_call).collect();
+        Library::record_paid(self, slot, &ledger)
     }
 }
 
@@ -1243,7 +1315,8 @@ fn retry_after(error: &AskError, reply_says: Option<&str>, attempt: u32) -> Opti
             let wait = retry_after.unwrap_or(backoff);
             (wait <= LONGEST_WAIT).then_some(wait)
         }
-        AskError::NoAnswer(NoAnswer::Transport(TransportError::Cancelled)) => None,
+        // stopped; or sent and perhaps answered and billed, which a second request could pay for twice
+        AskError::NoAnswer(NoAnswer::Transport(TransportError::Cancelled | TransportError::Lost)) => None,
         AskError::NoAnswer(NoAnswer::Overloaded | NoAnswer::ServerError(_) | NoAnswer::Transport(_)) => Some(backoff),
         _ => None,
     }
@@ -1510,6 +1583,30 @@ impl<'a> Client<'a> {
                 Tokens { input: question + prefix, output, ..Tokens::default() }
             }
         }
+    }
+
+    /// The most [`Client::ask`] can spend on `ask`, every attempt counted as the budget holds it: tokens of every
+    /// kind, and US dollars (`None` when a model that may bill it has no known price). What is written down before
+    /// the call is sent (`library::asking`), as what it may have cost should its outcome be lost.
+    pub fn most(&self, ask: &Ask<'_>) -> (u64, Option<Usd>) {
+        let provider = self.endpoint.provider;
+        if provider == Provider::Anthropic {
+            let (tokens, usd) = worst_of(&answered_by(provider, ask.model), &self.worst(ask));
+            return (tokens, usd.ok());
+        }
+        let priced = [price_key(provider, ask.model)];
+        let first = self.worst_asked(&self.asked(ask, None));
+        let (mut tokens, mut usd) = worst_of(&priced, &first);
+        let asked_again =
+            matches!(ask.form, Form::Json(_)) && self.endpoint.capabilities().answers != Answers::Enforced;
+        if asked_again {
+            // an answer that did not follow the schema is asked for once more, with what was wrong after the question
+            let again = Tokens { input: first.input + self.counting().tokens(RETRY_CHARS), ..first };
+            let (more_tokens, more_usd) = worst_of(&priced, &again);
+            tokens = tokens.saturating_add(more_tokens);
+            usd = usd.and_then(|usd| more_usd.map(|more| usd + more));
+        }
+        (tokens, usd.ok())
     }
 
     /// [`Client::ask`] for any provider but the Claude API.

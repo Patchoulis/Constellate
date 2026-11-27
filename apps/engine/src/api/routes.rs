@@ -104,6 +104,13 @@ impl Engine {
         if let Err(error) = library.read_stored_pages_again() {
             eprintln!("library: reviews pages could not be read again: {error}");
         }
+        // calls left with their outcome unknown by an earlier run (a crash after the provider billed): told, never
+        // asked again by themselves
+        match library.unsettled().map(|unsettled| unsettled.said()) {
+            Ok(Some(said)) => eprintln!("constellate: {said}"),
+            Ok(None) => {}
+            Err(error) => eprintln!("library: the calls whose outcome is unknown could not be read: {error}"),
+        }
         *opened = Some(Arc::clone(&library));
         Ok(library)
     }
@@ -324,6 +331,7 @@ pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
         ("/api/status", get(status)),
         ("/api/job/cancel", post(cancel_job)),
         ("/api/settings", get(read_settings).put(change_settings)),
+        ("/api/usage/unsettled", get(unsettled)),
     ];
     table.extend(super::reviews::table());
     table.extend(super::passages::table());
@@ -433,6 +441,36 @@ async fn status(
     Ok(Json(serde_json::to_value(told).map_err(|_| ApiError::Internal)?))
 }
 
+/// `Unsettled` in the contracts: calls asked of the language model whose outcome is unknown (an intent left by a
+/// crash, a connection lost after sending: `library::asking`), told in the ledger's terms. They may have been
+/// billed, at most this much; they are not asked again until the user starts that work again.
+#[derive(Serialize)]
+struct UnsettledView {
+    calls: i64,
+    /// US dollars, at most, of the priced ones.
+    most_usd: f64,
+    /// Those of a model with no known price: `most_usd` leaves them out.
+    unpriced_calls: i64,
+    /// Tokens of every kind, at most, of all of them.
+    most_tokens: i64,
+    /// When the oldest was asked (UTC); null when there is none.
+    since: Option<String>,
+    /// The same in a sentence, with its units; null when there is none.
+    said: Option<String>,
+}
+
+async fn unsettled(State(engine): State<Shared>) -> Result<Json<UnsettledView>, ApiError> {
+    let unsettled = on_the_side(move || Ok(engine.library()?.unsettled()?)).await?;
+    Ok(Json(UnsettledView {
+        calls: unsettled.calls,
+        most_usd: unsettled.most_usd(),
+        unpriced_calls: unsettled.unpriced_calls,
+        most_tokens: unsettled.most_tokens,
+        said: unsettled.said(),
+        since: unsettled.since,
+    }))
+}
+
 #[derive(Deserialize)]
 struct Cancelling {
     id: u64,
@@ -511,6 +549,36 @@ mod tests {
         // read again once the file can be: the provider it names
         std::fs::write(engine.settings_file(), r#"{"describe_provider": "openai"}"#).unwrap();
         assert_eq!(engine.endpoint().unwrap().provider(), Provider::OpenAi);
+    }
+
+    #[tokio::test]
+    async fn calls_left_with_their_outcome_unknown_are_told_in_the_ledgers_terms_as_the_contract_has_them() {
+        use crate::library::asking::Intent;
+        use crate::library::{AnswerKey, Feature, Slot, Subject};
+        let data = tempfile::tempdir().unwrap();
+        let engine = Arc::new(Engine::new(data.path().to_path_buf(), Choices::default()));
+        let Json(none) = unsettled(State(Arc::clone(&engine))).await.unwrap();
+        let none = serde_json::to_value(none).unwrap();
+        crate::api::contract::assert_fits("Unsettled", &none, &[]);
+        assert_eq!((none["calls"].as_i64(), none["said"].is_null()), (Some(0), true));
+        let slot = Slot {
+            feature: Feature::Answers,
+            key: AnswerKey::new(Feature::Answers, Provider::Anthropic, "claude-opus-5-5", 1, &["p"], "q"),
+            subject: Subject::Run("r1".to_owned()),
+        };
+        let intent = Intent {
+            slot: &slot,
+            provider: "anthropic",
+            model: "claude-opus-5-5",
+            most_tokens: 9_000,
+            most_micros: Some(120_000),
+        };
+        engine.library().unwrap().intend(&intent).unwrap();
+        let Json(left) = unsettled(State(Arc::clone(&engine))).await.unwrap();
+        let left = serde_json::to_value(left).unwrap();
+        crate::api::contract::assert_fits("Unsettled", &left, &[]);
+        assert_eq!((left["calls"].as_i64(), left["most_usd"].as_f64()), (Some(1), Some(0.12)));
+        assert!(left["said"].as_str().unwrap().contains("may have been billed, about 0.1200 US dollars at most"));
     }
 
     #[test]

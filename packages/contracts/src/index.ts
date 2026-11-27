@@ -1775,3 +1775,21 @@ export interface AnswerView {
 	/** the papers the statements shown cite */
 	cited_papers: string[];
 }
+
+/**
+ * `GET /api/usage/unsettled` (engine): calls asked of the language model whose outcome is unknown, because the engine
+ * stopped after the provider billed and before the answer was kept, or the connection was lost after sending. They
+ * may have been billed, at most `most_usd` US dollars (of the priced ones) and `most_tokens` tokens; they are not
+ * asked again until the user starts that work again.
+ */
+export interface Unsettled {
+	calls: number;
+	most_usd: number;
+	/** of a model whose price is not known: `most_usd` leaves them out, `most_tokens` counts them */
+	unpriced_calls: number;
+	most_tokens: number;
+	/** when the oldest was asked (UTC), or null when there is none */
+	since: string | null;
+	/** the same in a sentence, with its units; null when there is none */
+	said: string | null;
+}

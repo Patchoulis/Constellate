@@ -88,7 +88,7 @@ pub enum Subject {
 impl Subject {
     /// As stored: `paper:<id>`, `run:<name>`, `community:<run>/<tree path>`. A run's name never has a `/`
     /// (`api::routes::one_name`), so these cannot be mistaken for one another.
-    fn stored(&self) -> String {
+    pub(super) fn stored(&self) -> String {
         match self {
             Subject::Paper(id) => format!("paper:{id}"),
             Subject::Run(run) => format!("run:{run}"),
@@ -237,8 +237,9 @@ impl Library {
 
     /// Keep an answer the model was just paid for (`content`, its JSON) and record in the ledger the `calls` that
     /// paid for it, in one transaction: a crash can leave neither a call paid for whose answer is lost (and paid
-    /// for again) nor an answer kept whose cost is missing from the ledger. Nothing is held while the model is
-    /// asked: this is written once the answer is in.
+    /// for again) nor an answer kept whose cost is missing from the ledger. The intent written before the call was
+    /// sent ([`super::asking`]) goes in the same transaction: a crash before it leaves the intent, which says the
+    /// call's outcome is unknown.
     pub fn keep_paid(
         &self,
         slot: &Slot,
@@ -253,6 +254,7 @@ impl Library {
             for call in calls {
                 super::ledger::put_calls(transaction, &at, call, 1)?;
             }
+            super::asking::settle(transaction, slot)?;
             Ok(())
         })
     }
