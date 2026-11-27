@@ -104,6 +104,9 @@ fn up_to_date(library: &Library, name: &str, index: &Index) -> bool {
     fresh
 }
 
+/// Held while a question is listed and its job started ([`start`]).
+static STARTING: Mutex<()> = Mutex::new(());
+
 /// The routes of this module, for [`super::routes::table`].
 pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
     vec![
@@ -443,6 +446,9 @@ async fn start(
             asked_at: String::new(),
         };
         let id = asked.key.clone();
+        // one start at a time from here to the job's start, so that a second click (another tab) on the same
+        // question sees the first one's listing, and a refused start never takes away a question being asked
+        let _one = STARTING.lock().unwrap_or_else(PoisonError::into_inner);
         if library.kept::<Said>(Feature::Answers, &prepared.key)?.is_some() {
             library.keep_question(&asked)?;
             return Ok(Started { id, job: None });
@@ -1133,6 +1139,46 @@ mod tests {
         assert_eq!(ask(&router, "GET", &path, None).await.1["state"], "unanswered");
         assert_eq!(ask(&router, "DELETE", &path, None).await.0, StatusCode::OK);
         assert_eq!(ask(&router, "GET", &path, None).await.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_same_question_started_from_several_tabs_at_once_is_asked_once_and_stays_listed() {
+        use super::super::other_providers::{ACCEPTED, Chosen as Asked, Scripted, accepting, call, choose, finished};
+
+        let data = data();
+        let transport = Scripted::new(|_| {
+            std::thread::sleep(Duration::from_millis(300)); // still being asked while the other clicks arrive
+            json!({"outcome": "answered", "statements": [{"statement": {"sentence": "Merging counts shared directions twice.", "about": "one_paper"},
+                "quotes": [{"paper": "2601.00001", "quote": "merging task vectors counts shared directions twice"}]}]})
+            .to_string()
+        });
+        choose(data.path(), Asked::OpenAi);
+        let router = super::super::other_providers::router(data.path(), Asked::OpenAi, &transport);
+        let estimate = format!("/api/runs/r1/answers/estimate?q={}", query(QUESTION));
+        let (_, told) = call(&router, "GET", &estimate, None).await;
+        let mut request = accepting(&told["cost"], ACCEPTED);
+        request["id"] = told["id"].clone();
+        request["question"] = json!(QUESTION);
+        let clicks: Vec<_> = (0..6)
+            .map(|_| {
+                let (router, request) = (router.clone(), request.clone());
+                tokio::spawn(async move { call(&router, "POST", "/api/runs/r1/answers", Some(request)).await })
+            })
+            .collect();
+        let mut jobs = Vec::new();
+        for click in clicks {
+            let (status, started) = click.await.unwrap();
+            assert!(status == StatusCode::OK || status == StatusCode::CONFLICT, "{status}: {started}");
+            if status == StatusCode::OK && !started["job"].is_null() {
+                jobs.push(started["job"].clone());
+            }
+        }
+        assert_eq!(jobs.len(), 1, "one job asks it");
+        assert_eq!(finished(&router, &jobs[0]).await["state"], "done");
+        assert_eq!(transport.sent().len(), 1, "asked once");
+        let (_, listed) = call(&router, "GET", "/api/runs/r1/answers", None).await;
+        assert_eq!(listed.as_array().unwrap().len(), 1, "the question being asked is still listed: {listed}");
+        assert_eq!(listed[0]["answered"], true, "{listed}");
     }
 
     #[tokio::test]
