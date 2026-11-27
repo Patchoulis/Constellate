@@ -6,8 +6,10 @@ import type { Community, GraphNode, RunResult } from "@rp/contracts";
 import { AcceptanceTag, AiTag } from "@/components/brand";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
+import { ResizeHandle } from "@/components/ui/resize-handle";
 import { communityLabel, type CommunityNode } from "@/lib/community";
 import type { MarksOf } from "@/lib/marks";
+import { useResizable } from "@/lib/use-resizable";
 import { cn, hsl } from "@/lib/utils";
 import { count, percent, similarity, SIMILARITY_NOTE } from "@/lib/units";
 
@@ -330,8 +332,10 @@ export function CommunityPanel({
 			icon: <Star />,
 		},
 	];
+	const { ref, style, handle } = useResizable("communities");
 	return (
-		<aside className="flex w-88 shrink-0 flex-col border-l bg-card">
+		<aside ref={ref} style={style} className="relative flex w-(--panel-size) shrink-0 flex-col border-l bg-card">
+			<ResizeHandle {...handle} />
 			<div className="flex shrink-0 border-b px-3 py-2">
 				<Segmented className="w-full" options={tabs} value={tab} onChange={setTab} />
 			</div>

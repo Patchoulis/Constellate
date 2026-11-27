@@ -7,8 +7,10 @@ import { Logo } from "@/components/brand";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { Input, Label, SwitchRow } from "@/components/ui/field";
 import { Choice, GroupedPicker } from "@/components/ui/picker";
+import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
 import { ready, useAsync } from "@/lib/use-async";
+import { useResizable } from "@/lib/use-resizable";
 import { count, currencyOf, money, tokens } from "@/lib/units";
 import { APP_NAME } from "@/lib/utils";
 
@@ -285,8 +287,10 @@ export function Sidebar({
 	onOpenSettings: () => void;
 }) {
 	const embedded = Object.values(library?.embeddings ?? {}).reduce((sum, count) => sum + count, 0);
+	const { ref, style, handle } = useResizable("sidebar");
 	return (
-		<aside className="flex w-72 shrink-0 flex-col border-r bg-card">
+		<aside ref={ref} style={style} className="relative flex w-(--panel-size) shrink-0 flex-col border-r bg-card">
+			<ResizeHandle {...handle} />
 			<div className="flex h-11 items-center justify-between border-b px-4">
 				<span className="flex items-center gap-2 text-sm font-semibold tracking-tight">
 					<Logo />
