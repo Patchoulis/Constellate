@@ -11,7 +11,9 @@
 //! ```
 //!
 //! The GET asks nothing: the interface shows its estimate, and the user starts the work with a click (the POST),
-//! capped at the budget the user agreed to. The model is the one chosen in the settings, of its provider.
+//! capped at the budget the user agreed to. The model is the one chosen in the settings, of its provider. A start
+//! is refused when it names no model or another than the one chosen, and when the worst case of asking now is
+//! more than the budget (the reviews were read, or the PDF changed, since the estimate was shown).
 
 use std::sync::Arc;
 
@@ -28,7 +30,7 @@ use crate::analysis::claim_tree::{self, ClaimsView, Contested};
 use crate::jobs::{Busy, Finished, Phase};
 use crate::library::{Feature, PaperReading, Subject};
 use crate::model::chosen::{Accepted, Terms, budget};
-use crate::model::language::{Provider, Transport};
+use crate::model::language::{Estimate, Provider, Transport};
 
 /// The most one paper's two calls may be allowed to spend, in US dollars: far above what they take (a few cents
 /// to a dollar), so that a mistyped budget is refused rather than spent.
@@ -39,6 +41,25 @@ pub const MOST_BUDGET_TOKENS: u64 = 5_000_000;
 const KIND: &str = "reading a paper's claims";
 /// A paper id longer than this is no paper's.
 const LONGEST_ID: usize = 200;
+/// A hundredth of a cent, in dollars: the rounding of a figure on its way to the interface and back.
+const SLACK_USD: f64 = 1e-4;
+const NO_MODEL: &str = "name the model whose estimate was shown (provider and model)";
+const GREW: &str = "asking this paper's claims would now cost more than the budget given (its reviews were read, or \
+its PDF changed, since the estimate was shown): look at the new estimate before asking";
+
+/// Does what the user accepted cover the worst case of asking now? Not when the estimate grew after it was shown:
+/// the paper's reviews were read since (the mapping's call is added), its PDF was replaced (more text is sent).
+/// The budget alone would only stop the second call part way, after the first was paid for.
+fn covers(cost: &Estimate, accepted: Accepted) -> bool {
+    if cost.calls == 0 {
+        return true;
+    }
+    match (cost.most_usd, accepted) {
+        (Some(most), Accepted::Dollars(usd)) => most.dollars() <= usd + SLACK_USD,
+        (None, Accepted::Tokens(tokens)) => cost.most_tokens <= tokens,
+        _ => false,
+    }
+}
 
 /// The routes of this module, for [`super::routes::table`].
 pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
@@ -128,9 +149,9 @@ fn begin(
         let library = engine.library()?;
         let chosen = engine.chosen()?;
         let endpoint = chosen.endpoint().map_err(|why| ApiError::Invalid(why.to_string()))?;
-        if let Some(model) = &asked.model {
-            chosen.as_shown(asked.provider, model).map_err(|why| ApiError::Invalid(why.to_string()))?;
-        }
+        // the estimate the budget was accepted on is of one model: a request that does not say which is refused
+        let model = asked.model.as_deref().ok_or_else(|| ApiError::Invalid(NO_MODEL.to_owned()))?;
+        chosen.as_shown(asked.provider, model).map_err(|why| ApiError::Invalid(why.to_string()))?;
         match library.paper_texts(&[id.as_str()])?.pop() {
             Some(PaperReading::Read(_)) => {}
             Some(PaperReading::NotInLibrary) | None => return Err(ApiError::NotFound),
@@ -143,6 +164,9 @@ fn begin(
         let cost = view.estimate().map(|estimate| estimate.cost.clone()).ok_or(ApiError::NotFound)?;
         let terms = Terms::AtMost { usd: MOST_BUDGET_USD, tokens: MOST_BUDGET_TOKENS };
         let budget = budget(&cost, accepted, terms).map_err(|why| ApiError::Invalid(why.to_string()))?;
+        if !covers(&cost, accepted) {
+            return Err(ApiError::Invalid(GREW.to_owned()));
+        }
         let job = engine.job.start_tracked(KIND, move |tracker| {
             let askers = Askers { library: &library, transport: &*transport, endpoint, recorder: &*library };
             let done = ask(&askers, &id, &chosen, &budget, tracker).map_err(|error| error.to_string())?;
@@ -242,6 +266,11 @@ mod tests {
 
     /// The engine with a library of a paper with a PDF and reviews, one without a PDF, and a run of both.
     fn engine(language: bool) -> (Engine, tempfile::TempDir) {
+        engine_with(language, true)
+    }
+
+    /// [`engine`], the reviews kept or not.
+    fn engine_with(language: bool, reviews: bool) -> (Engine, tempfile::TempDir) {
         let data = tempfile::tempdir().unwrap();
         {
             let library = Library::open(&data.path().join("library")).unwrap();
@@ -249,7 +278,9 @@ mod tests {
             with_pdf.url = Some(FORUM.to_owned());
             library.add_papers(&[with_pdf, paper("2601.00002")], None, Known::Keep).unwrap();
             library.keep_pdf(PAPER, &pdf_with(&LINES)).unwrap();
-            keep_reviews(&library);
+            if reviews {
+                keep_reviews(&library);
+            }
         }
         let run = data.path().join("runs").join("r1");
         std::fs::create_dir_all(&run).unwrap();
@@ -379,7 +410,9 @@ mod tests {
         let (keyless, _keyless_data) = engine(false);
         let keyless = router(keyless);
         let path = format!("/api/papers/{PAPER}/claims");
-        let budget = |usd: f64| Some(json!({"budget_usd": usd}).to_string());
+        let budget = |usd: f64| {
+            Some(json!({"budget_usd": usd, "provider": "anthropic", "model": "claude-opus-5-5"}).to_string())
+        };
         assert_eq!(
             ask(&keyless, "POST", &path, budget(0.5)).await.0,
             StatusCode::BAD_REQUEST,
@@ -397,6 +430,32 @@ mod tests {
         assert_eq!(ask(&router, "POST", "/api/papers/nowhere/claims", budget(0.5)).await.0, StatusCode::NOT_FOUND);
         let huge = Some(format!("{{\"budget_usd\": 1, \"pad\": \"{}\"}}", "x".repeat(5 * 1024 * 1024)));
         assert_eq!(ask(&router, "POST", &path, huge).await.0, StatusCode::PAYLOAD_TOO_LARGE);
+        // no model named: the budget was accepted on no one model's estimate
+        let (status, said) = ask(&router, "POST", &path, Some(json!({"budget_usd": 0.5}).to_string())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(said["error"].as_str().unwrap().contains("model"), "{said}");
+        let another = Some(json!({"budget_usd": 0.5, "provider": "anthropic", "model": "claude-haiku-5"}).to_string());
+        assert_eq!(ask(&router, "POST", &path, another).await.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn a_budget_accepted_before_the_reviews_were_read_is_refused_once_the_mapping_adds_to_it() {
+        let (engine, data) = engine_with(true, false);
+        let router = router(engine);
+        let path = format!("/api/papers/{PAPER}/claims");
+        let (_, before) = ask(&router, "GET", &path, None).await;
+        assert_eq!(before["estimate"]["to_ask"], 1, "the tree alone");
+        let shown = before["estimate"]["most_usd"].as_f64().unwrap();
+        // the interface's budget: the worst case shown, up to the cent
+        let accepted = (shown * 100.0).ceil() / 100.0;
+        keep_reviews(&Library::open(&data.path().join("library")).unwrap());
+        let (_, after) = ask(&router, "GET", &path, None).await;
+        assert_eq!(after["estimate"]["to_ask"], 2);
+        assert!(after["estimate"]["most_usd"].as_f64().unwrap() > accepted, "{after}");
+        let start = json!({"budget_usd": accepted, "provider": "anthropic", "model": "claude-opus-5-5"});
+        let (status, said) = ask(&router, "POST", &path, Some(start.to_string())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{said}");
+        assert!(said["error"].as_str().unwrap().contains("new estimate"), "{said}");
     }
 
     #[tokio::test]
@@ -410,14 +469,14 @@ mod tests {
                 wait.recv().map(|()| crate::jobs::Finished::Nothing).map_err(|error| error.to_string())
             })
             .unwrap();
-        let refused = start(State(Arc::clone(&engine)), Path(PAPER.to_owned()), Ok(Json(half()))).await;
+        let refused = start(State(Arc::clone(&engine)), Path(PAPER.to_owned()), Ok(Json(enough()))).await;
         assert!(matches!(refused, Err(ApiError::Busy(_))), "{:?}", refused.err());
         release.send(()).unwrap();
     }
 
-    /// A start that accepts half a dollar, with no model named.
-    fn half() -> Start {
-        Start { budget_usd: Some(0.5), budget_tokens: None, provider: None, model: None }
+    /// A start that accepts two dollars (more than the worst case), for the model the settings choose (of the Claude API).
+    fn enough() -> Start {
+        Start { budget_usd: Some(2.0), budget_tokens: None, provider: None, model: Some("claude-opus-5-5".to_owned()) }
     }
 
     /// Wait for the job to end, and say how it ended.
@@ -438,7 +497,7 @@ mod tests {
         let engine: Shared = Arc::new(engine);
         let answers = vec![reply(&tree_answer()), reply(&mapping_answer())];
         let job =
-            begin(&engine, PAPER.to_owned(), &half(), Accepted::Dollars(0.5), Arc::new(Fake::new(answers))).unwrap();
+            begin(&engine, PAPER.to_owned(), &enough(), Accepted::Dollars(2.0), Arc::new(Fake::new(answers))).unwrap();
         let done = ended(&engine);
         assert_eq!((done.id, done.kind.as_str(), done.state), (job, KIND, Phase::Done), "{:?}", done.log);
         let Json(view) = read(State(Arc::clone(&engine)), Path(PAPER.to_owned())).await.unwrap();
@@ -468,8 +527,8 @@ mod tests {
         let job = begin(
             &engine,
             PAPER.to_owned(),
-            &half(),
-            Accepted::Dollars(0.5),
+            &enough(),
+            Accepted::Dollars(2.0),
             Arc::new(Fake::new(vec![reply(&json!({"not": "a tree"}))])),
         )
         .unwrap();
