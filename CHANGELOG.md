@@ -117,8 +117,19 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   orals of CVPR 2025, ECCV, WACV, AISTATS 2026 and ICML 2026, which their lists name only by the talk. For a
   conference downloaded before, use Settings, "Download again", to get those orals; runs saved before keep the tiers
   they were saved with, under the tier's generic name, until they are run again.
-- The backend is being rewritten in Rust (`apps/engine`), organised by subject; the Python backend stays until the
-  Rust one does everything it does.
+- The app runs on its own engine, written in Rust, in place of the Python it set up before: nothing is installed at
+  the first start any more (no Installation Wizard, no download of Python packages), and the app opens at once. The
+  first run you make downloads the embedding model (about 1.2 GB) once, as one of its steps, with its progress in
+  megabytes. Your library and runs are in the same folder as before and are kept: they open as they were. Making
+  an old run again can give communities that differ a little: sub-communities may come in the other order or under
+  other labels (`c1`, `.0`, `.1`), a nearest-neighbour graph that falls apart into more pieces than the communities
+  asked for may be grouped differently, and papers embedded from now on are embedded by another runtime of the same
+  model, whose numbers differ in the last digits.
+- API keys for the installed app go in one file, `.env` in the app's data folder (README, "Keys"); a key set in the
+  environment still works. Only the engine sees a key: the interface never does, and the engine's token never
+  leaves the app's own servers.
+- Constellate is also packaged for Linux, as an AppImage and a `.deb`, for systems with glibc 2.38 or newer
+  (Ubuntu 24.04 and later); on an older one it says so and closes.
 - Moving around the graph, and pointing at papers, is smooth again with the whole run in view: a frame takes a few
   milliseconds instead of about 30 with 12,500 papers; the app also opens its window a little sooner.
 
@@ -151,8 +162,6 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - A paper listed twice when reading citing sentences is no longer reported as not in the library the second time.
 
-- The installed app's first start no longer stops with "Missing expected target directory for Python minor version
-  link" when Constellate is opened from inside another packaged Windows app (from a terminal in one, say).
 - Marked papers and panel sizes are kept between launches: the interface is served on the same port each time. Ending
   the app from the Task Manager, or a crash, no longer leaves the interface's server running in the background, where
   it held that port, and Ctrl+C in the terminal of `npm run app` stops both servers.
@@ -180,10 +189,9 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
-- The app's own Python is now set up with an exact, checked version of every package (a lock), instead of whatever
-  was newest the day it was first set up and then kept: a computer set up earlier is brought to these versions the
-  next time the app starts. On a computer with an NVIDIA graphics card this replaces the setuptools 78.1.0 that came
-  with PyTorch's CUDA build (CVE-2025-47273, CVE-2026-59890, GHSA-xmj3-9gf7-h52w) with 84.2.1.
+- Every request to the engine must carry a token the engine makes up at each start, which only the app's own
+  interface server holds and adds; no page ever sees it. A web page open in a browser on this computer can no
+  longer reach the engine through the interface's server either (another site's requests are refused).
 - The engine's password check uses ctutils 0.4.4, whose comparisons are constant-time (RUSTSEC-2026-0385), and its
   tests time 0.3.47 (RUSTSEC-2026-0009, CVE-2026-25727). The installer is built with minimatch 11.0.1
   (GHSA-g3hv-75wg-m249).

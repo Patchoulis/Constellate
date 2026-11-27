@@ -17,6 +17,13 @@ The engine reads its configuration from environment variables, and from a `.env`
 there is one (`NAME=value` lines, `#` comments, optional quotes and `export`). A variable set in the environment
 wins over the same one in `.env`. `.env` is ignored by git; never commit it, since it holds the token.
 
+The desktop app (`apps/desktop/engine.cjs`) starts the engine in its data folder, so the installed app's `.env` is
+the one in the data folder: the place the README tells users to put their keys. It sets `CONSTELLATE_DATA` and
+`CONSTELLATE_ORIGIN`, and how the engine listens (this computer, any free port, a token made up), over anything that
+`.env` says; it passes on the language model's keys and addresses from the user's environment, and nothing else of
+it but what a program needs to run. It reads the startup line and sends everything after it to
+`<data>/logs/engine.log`.
+
 | Variable                | Default     | What it is                                                                                                                                                                                                                     |
 | ----------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `CONSTELLATE_BIND`      | `127.0.0.1` | The IP address to listen on. A loopback address is **local mode**, anything else **network mode**.                                                                                                                             |
@@ -214,7 +221,8 @@ the HTTP library itself, before the engine sees it.) Every answer carries `X-Con
 `Referrer-Policy: no-referrer`, a `Content-Security-Policy` that allows nothing (the sign-in page's allows its own
 script and style sheet, and nothing from elsewhere), `Strict-Transport-Security` for
 HTTPS across a network, and no CORS header: the interface reaches the engine through its own origin (the
-web build forwards `/api`), so no other origin may ever read an answer.
+interface's server forwards `/api` and `/auth`, adding the token on that hop itself: `apps/web/proxy.ts`), so no
+other origin may ever read an answer.
 
 ### Routes
 

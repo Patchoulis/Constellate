@@ -32,14 +32,25 @@ SOFTWARE.
 
 Interface icons come from Lucide (https://lucide.dev, ISC licence), installed as the `lucide-react` package.
 
-## uv
+## The engine's runtime libraries
 
-The Windows installer includes `uv` (https://github.com/astral-sh/uv), which sets up the app's Python on first
-start. It is distributed unmodified under its own licence, MIT or Apache-2.0 at your option,
-(c) Astral Software Inc.
+The engine (`resources/engine`) has ONNX Runtime (https://github.com/microsoft/onnxruntime, MIT licence,
+Copyright (c) Microsoft Corporation) compiled in, as built by the `ort` crate's project (pyke.io), and next to it:
 
-## In the Windows installer
+- on Windows, `DirectML.dll`: DirectML (https://github.com/microsoft/DirectML), Copyright (c) Microsoft
+  Corporation, redistributed unmodified under the licence Microsoft publishes for its redistributable package;
+- on Linux, `libwebgpu_dawn.so`: Dawn (https://dawn.googlesource.com/dawn), the WebGPU implementation,
+  BSD 3-Clause licence, Copyright the Dawn and Chromium authors.
+
+## The embedding model
+
+The model the app downloads at its first run, Qwen3-Embedding-0.6B in the ONNX form published by onnx-community on
+Hugging Face, is not part of the packages. It is distributed by its authors under the Apache-2.0 licence.
+
+## In the packages
 
 The installed app also contains the packages its interface runs on (Next.js, React and their dependencies, KaTeX,
-d3, Radix UI, Lucide), Electron and Chromium. Their licence texts are installed with the app, in
-`resources/licenses` and, for Electron and Chromium, next to the program.
+d3, Radix UI, Lucide), the Rust crates compiled into the engine, Electron and Chromium. Their licence texts are
+installed with the app, in `resources/licenses` (the crates in `resources/licenses/rust`, with a table of every
+crate, its version and licence, made from Cargo's own account of the build) and, for Electron and Chromium, next to
+the program.
