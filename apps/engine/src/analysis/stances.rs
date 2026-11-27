@@ -499,8 +499,9 @@ fn words_of(record: &Record<'_>) -> HashSet<String> {
 /// Which papers could be about a question: what the pre-filter found.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Relevance {
-    /// The question's words the papers were looked at for: those not in most of the papers (a word every paper
-    /// uses tells none apart), or all of them when every one is that common.
+    /// The question's words the papers were looked at for: those in some of the papers but not in most (a word
+    /// every paper uses, or none does, tells none apart); when none is, those some paper uses; when none is
+    /// used, all of them.
     pub terms: Vec<String>,
     /// By paper, in the order given: does its title or abstract have one of `terms`? All true when the question
     /// has no word to look for.
@@ -517,8 +518,23 @@ pub fn relevance(question: &str, records: &[Record<'_>]) -> Relevance {
     }
     let words: Vec<HashSet<String>> = records.par_iter().map(words_of).collect();
     let share = |term: &String| words.iter().filter(|paper| paper.contains(term)).count() as f64 / words.len() as f64;
-    let distinctive: Vec<String> = terms.iter().filter(|term| share(term) < 0.5).cloned().collect();
-    let terms = if distinctive.is_empty() { terms } else { distinctive };
+    // a word no paper uses tells none apart either: looked for alone, it would skip every paper
+    let distinctive: Vec<String> = terms
+        .iter()
+        .filter(|term| {
+            let share = share(term);
+            share > 0.0 && share < 0.5
+        })
+        .cloned()
+        .collect();
+    let used: Vec<String> = terms.iter().filter(|term| share(term) > 0.0).cloned().collect();
+    let terms = if !distinctive.is_empty() {
+        distinctive
+    } else if !used.is_empty() {
+        used
+    } else {
+        terms
+    };
     let related = words.par_iter().map(|paper| terms.iter().any(|term| paper.contains(term))).collect();
     Relevance { terms, related }
 }
@@ -886,6 +902,19 @@ mod tests {
         assert!(found.terms.contains(&"synthetic".to_owned()));
         // a question of nothing but common words skips nothing
         assert_eq!(relevance("Does it help or not at all?", &papers).related, [true; 4]);
+    }
+
+    #[test]
+    fn a_question_word_no_paper_uses_does_not_make_the_pre_filter_skip_every_paper() {
+        // a community about synthetic data, asked about robustness, which none of its abstracts names
+        let papers = records(&[
+            ("Synthetic data for pre-training", "Generated text as training data."),
+            ("Cheap synthetic corpora", "Synthetic data at scale."),
+            ("Filtering synthetic data", "Removing bad synthetic samples."),
+        ]);
+        let found = relevance("Does synthetic data improve robustness?", &papers);
+        assert_eq!(found.related, [true, true, true], "{found:?}");
+        assert!(!found.terms.contains(&"robustness".to_owned()), "{found:?}");
     }
 
     #[test]
