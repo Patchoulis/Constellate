@@ -292,6 +292,18 @@ export const api = {
 	/** name them within the most shown, as the one job */
 	describeRun: (name: string, request: import("@rp/contracts").DescribeRequest) =>
 		call<import("@rp/contracts").DescribeStarted>(`${run(name)}/describe`, send("POST", request)),
+
+	/** the AI-text detector's state and what was measured about it */
+	detector: () => call<import("@rp/contracts").DetectorInfo>("/api/detector"),
+	/** what building the detector would cost with the chosen model; nothing is sent */
+	detectorEstimate: () => call<import("@rp/contracts").DetectorEstimate>("/api/detector/estimate"),
+	/** build it, within the budget accepted after seeing the estimate: starts the job */
+	buildDetector: (request: import("@rp/contracts").ShownModel & Partial<import("@rp/contracts").BudgetOf>) =>
+		call<import("@rp/contracts").DetectorStarted>("/api/detector/build", send("POST", request)),
+	/** score a week of arXiv in each year (arXiv only, free): starts the job */
+	checkDetectorYears: () => call<import("@rp/contracts").DetectorStarted>("/api/detector/years", { method: "POST" }),
+	/** a paper's AI-text verdict: null when it was never scored or is too short */
+	paperAi: (id: string) => call<import("@rp/contracts").AiVerdict | null>(`/api/papers/${encodeURIComponent(id)}/ai`),
 };
 
 type StanceScope = import("@rp/contracts").StanceScope;

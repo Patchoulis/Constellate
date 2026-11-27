@@ -23,6 +23,7 @@ pub mod connections;
 #[cfg(test)]
 pub(crate) mod contract;
 pub mod critique;
+pub mod detector;
 pub mod explanation;
 pub mod extraction;
 pub mod login;

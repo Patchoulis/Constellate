@@ -11,6 +11,7 @@
 //! | `proceedings/declarations.json`       | declarations                                   |
 //! | `reviews.json`                        | ratings                                        |
 //! | `ai_detection/scores.json`            | AI-text scores                                 |
+//! | `ai_detection/training.json`, `validation.json` | the AI-text detector's training set ([`super::detector`]) |
 //! | `descriptions.json`, `overviews.json` | descriptions, overviews                        |
 //! | `usage.json`                          | the ledger                                     |
 //! | `rates.json`                          | exchange rates                                 |
@@ -107,6 +108,8 @@ pub struct Imported {
     pub declarations: usize,
     pub ratings: usize,
     pub ai_scores: usize,
+    /// The AI-text detector's training set ([`Library::import_detector`]), moved in its own transaction after the rest.
+    pub ai_training: super::detector::ImportedDetector,
     pub descriptions: usize,
     pub overviews: usize,
     pub ledger_rows: usize,
@@ -127,8 +130,10 @@ impl Library {
         let files = Files::read(folder)?; // everything read before the write lock is taken
         let mut connection = self.connection();
         let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let imported = files.write(&transaction)?;
+        let mut imported = files.write(&transaction)?;
         transaction.commit()?;
+        drop(connection);
+        imported.ai_training = self.import_detector(folder)?;
         Ok(imported)
     }
 }

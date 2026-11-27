@@ -336,6 +336,7 @@ pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
     table.extend(super::answers::table());
     table.extend(super::models::table());
     table.extend(super::writing::table());
+    table.extend(super::detector::table());
     table
 }
 

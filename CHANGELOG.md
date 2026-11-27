@@ -7,6 +7,9 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The AI-text detector can be trained with the language model chosen in Settings, after its cost is shown, within
+  the budget accepted, and resumed without paying twice; it says which models wrote the text it learnt from, and a
+  detector already trained by an earlier version is used as it is.
 - The paper reader has a Text tab showing the paper's text section by section, and citations open it at the exact
   place they quote, with the words highlighted; quotes a model gives as evidence are only shown once they have been
   found in the paper they are attributed to.

@@ -298,6 +298,12 @@ other route sends nothing to any provider.
 | `POST /api/runs/{run}/describe`                                           | Names and describes them, as the job, within the most accepted.                                       |
 | `GET /api/runs/{run}/overview/{path}`                                     | Where a community's overview stands for the model chosen, and its estimate.                           |
 | `POST /api/runs/{run}/overview/{path}`                                    | Writes it, as the job, within the most accepted: each point only with quotes found.                   |
+| **AI-text detector**                                                      |                                                                                                       |
+| `GET /api/detector`                                                       | Its state (off, untrained, building, ready, stale) and why; what was measured on held-out papers.     |
+| `GET /api/detector/estimate`                                              | What building the training set would ask and cost with the chosen model; nothing is sent.             |
+| `POST /api/detector/build`                                                | Builds the training set and fits the classifier, as the job, within the budget given.                 |
+| `POST /api/detector/years`                                                | Scores a week of arXiv in each year (arXiv only, no model), as the job.                               |
+| `GET /api/papers/{id}/ai`                                                 | The paper's score, the threshold and the words that raised it; null when not scored.                  |
 
 Across a network, also (the first six answer anyone; the last two need the session):
 

@@ -361,7 +361,7 @@ export function SettingsDialog({
 									{group.title === AI_GROUP && detector && (
 										<p className={cn("text-xs", detector.state === "ready" ? "text-muted-foreground" : "text-warning")}>{detector.why}</p>
 									)}
-									{group.title === AI_GROUP && validation && detector?.state === "ready" && (
+									{group.title === AI_GROUP && validation && (detector?.state === "ready" || detector?.state === "stale") && (
 										<p className="text-xs text-warning">
 											Measured on {validation.held_out} abstracts it was not trained on: it catches{" "}
 											{Math.round(100 * validation.written_caught)}% of abstracts a model wrote from the title and{" "}
