@@ -1293,7 +1293,8 @@ impl<'a> Client<'a> {
                 let category = message.stop_details.and_then(|details| details.category);
                 return Err(NoAnswer::Refused { category }.into());
             }
-            Some("max_tokens") => return Err(NoAnswer::Cut.into()),
+            // the answer ran into the model's context window rather than `max_tokens`: cut off all the same
+            Some("max_tokens" | "model_context_window_exceeded") => return Err(NoAnswer::Cut.into()),
             _ => {}
         }
         let text: String = message
@@ -1804,6 +1805,22 @@ mod tests {
         );
         assert_eq!(client.ask(&ask(&schema, None), &plenty()), Err(AskError::NoAnswer(NoAnswer::Cut)));
         assert_eq!(calls.into_inner().unwrap().len(), 2, "both were paid for");
+    }
+
+    #[test]
+    fn prose_cut_off_by_the_context_window_is_not_shown_as_a_whole_answer() {
+        let cut = message(
+            "claude-opus-5-5",
+            "The paper shows that merging",
+            "model_context_window_exceeded",
+            usage(30, 9, 0, 0),
+        );
+        let fake = Fake::new(vec![Ok(ok(&cut))]);
+        let calls = Mutex::new(Vec::new());
+        let client = Client::new(&fake, endpoint(), &calls);
+        let schema = schema();
+        let prose = Ask { form: Form::Text, ..ask(&schema, None) };
+        assert_eq!(client.ask(&prose, &plenty()), Err(AskError::NoAnswer(NoAnswer::Cut)));
     }
 
     #[test]
