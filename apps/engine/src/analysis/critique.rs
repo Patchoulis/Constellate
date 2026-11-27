@@ -54,6 +54,7 @@ use crate::library::{Feature, Kept, KeptReviews, Library, LibraryError, ReviewPa
 use crate::model::batch::{self, Asking, BatchEstimate, Item, Outcome};
 use crate::model::chosen::Chosen;
 use crate::model::language::{Ask, Budget, Form};
+use crate::text::data_section;
 use crate::text::discussion::{Discussion, Kind, Score, Span};
 use crate::text::passages::{Address, Kind as PassageKind, Passages, chars_of};
 use crate::text::review_points::{Attachment, Concern, review_points};
@@ -63,7 +64,7 @@ use super::reviews::{Scale, scale, venue_of};
 
 /// The version of the prompt and the answer's shape: raise it when either changes, and kept answers are asked for
 /// again.
-pub const PROMPT: u32 = 1;
+pub const PROMPT: u32 = 2;
 /// The most the answer may take, thinking included: a few dozen short entries with quotes.
 pub const MAX_TOKENS: u32 = 12_000;
 /// What an answer is likely to take, for the estimate.
@@ -147,7 +148,8 @@ impl WeaknessKind {
 // ------------------------------------------------------------------------------------------------ the prompt
 
 /// The instructions: the same for every paper, so cached with it. Written for any capable model, not one vendor's.
-pub const SYSTEM: &str = "You read one research paper. Its text is given paragraph by paragraph, each marked with \
+pub const SYSTEM: &str = concat!(
+    "You read one research paper. Its text is given paragraph by paragraph, each marked with \
 its page and section. You answer with one JSON object in exactly the shape asked for, and nothing else.
 
 Rules for every quote: copy it word for word from the paper's text given (not from the reviewers' points), at \
@@ -168,7 +170,11 @@ few and well founded; leave the list empty if nothing stands out. Each has a \"k
 \"weakness\" (one plain sentence, without exaggeration), \"quote\" (the claim or passage of the paper it is about) \
 and \"absent_terms\": when the weakness says something is missing from the paper (no ablation, no baseline, no \
 variance, a detail not given), the words or short phrases that would appear in the paper if it were there, such as \
-\"ablation\" or \"standard deviation\"; otherwise an empty list.";
+\"ablation\" or \"standard deviation\"; otherwise an empty list.
+
+",
+    crate::text::data_rule!()
+);
 
 /// A reviewer's point as it is asked about: its id in the prompt and what it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -214,12 +220,12 @@ pub fn paper_prompt(passages: &Passages) -> (String, Option<usize>) {
         };
         let added = line.chars().count();
         if length + added > LONGEST_PAPER {
-            return (text, Some(length));
+            return (data_section("PAPER", &text), Some(length));
         }
         length += added;
         text.push_str(&line);
     }
-    (text, None)
+    (data_section("PAPER", &text), None)
 }
 
 /// The question: the reviewers' points, numbered, or that there are none.
@@ -228,12 +234,13 @@ pub fn question(points: &[Asked]) -> String {
         return "No reviews of this paper are available: answer \"points\" with an empty list, and give part 2."
             .to_owned();
     }
-    let mut question = String::from("The reviewers' points, each with its id:\n");
+    let mut listed = String::from("The reviewers' points, each with its id:\n");
     for point in points {
         let words = point.text.split_whitespace().collect::<Vec<_>>().join(" ");
         let cut: String = words.chars().take(POINT_CHARS).collect();
-        question.push_str(&format!("[{}] ({}) {}\n", point.id, point.label, cut));
+        listed.push_str(&format!("[{}] ({}) {}\n", point.id, point.label, cut));
     }
+    let mut question = data_section("POINTS", &listed);
     question.push_str("\nAnswer part 1 for every id above, and give part 2.");
     question
 }
@@ -945,7 +952,7 @@ pub(crate) mod tests {
         let plan =
             Plan::new("neurips-2023-1", &Chosen::claude("claude-sonnet-5-5"), &passages(PAPER), Some(&discussion));
         assert!(
-            plan.shared.starts_with("The paper's text:\n[p. 1 | 1. Introduction] 1. Introduction\n"),
+            plan.shared.starts_with("<<<BEGIN PAPER>>>\nThe paper's text:\n[p. 1 | 1. Introduction] 1. Introduction\n"),
             "{}",
             plan.shared
         );
@@ -953,11 +960,12 @@ pub(crate) mod tests {
         assert_eq!(plan.cut, None);
         assert_eq!(
             plan.question,
-            "The reviewers' points, each with its id:\n\
+            "<<<BEGIN POINTS>>>\nThe reviewers' points, each with its id:\n\
              [p1] (Reviewer aBcD, Weaknesses) The experiments are limited to two small benchmarks. The baselines are weak, and an ablation study is missing.\n\
              [p2] (Reviewer aBcD, Questions) How does the rule behave with sixty-four experts?\n\
              [p3] (Reviewer eFgH, Weaknesses) The experiments are limited and the baselines are weak. The ablation study does not isolate the rule.\n\
              [p4] (Reviewer eFgH, Questions) Why were larger models not tried?\n\
+             <<<END POINTS>>>\n\
              \nAnswer part 1 for every id above, and give part 2."
         );
         let item = plan.item();
@@ -984,8 +992,11 @@ pub(crate) mod tests {
     fn a_long_paper_is_cut_and_says_where() {
         let long: String = (0..12_000).map(|n| format!("Paragraph {n} says something about the rule.\n\n")).collect();
         let (text, cut) = paper_prompt(&passages(&long));
-        assert!(text.chars().count() <= LONGEST_PAPER);
-        assert_eq!(cut, Some(text.chars().count()));
+        let inside = text.strip_prefix("<<<BEGIN PAPER>>>\n").and_then(|rest| rest.strip_suffix("<<<END PAPER>>>\n"));
+        let inside = inside.unwrap();
+        assert!(inside.chars().count() <= LONGEST_PAPER);
+        assert_eq!(cut, Some(inside.chars().count()), "the paper's text, as cut, is all its section holds");
+        assert!(SYSTEM.ends_with(crate::text::data_rule!()), "the system prompt says the sections are data");
     }
 
     #[test]
