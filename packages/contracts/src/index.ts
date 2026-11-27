@@ -268,6 +268,206 @@ export interface Ratings {
 	ratings: Record<string, { values: number[]; mean: number; /** what each score means, e.g. "fair" */ meanings: string[] }>;
 }
 
+/** A stretch of a kept reviews page's text, in characters (Unicode code points, as `Array.from(text)` counts
+ *  them, not UTF-16 units): `start` included, `end` excluded. */
+export interface Span {
+	start: number;
+	end: number;
+}
+
+/** A conference and year: what decides a review's fields and their scales. */
+export interface Venue {
+	/** "NeurIPS", "ICLR", "ICML"; others in capitals */
+	conference: string;
+	year: number;
+}
+
+/** Who signed a note. Reviewers are anonymous; a public commenter's name is not kept. */
+export type Signer =
+	| { role: "reviewer"; id: string }
+	| { role: "authors" | "area_chair" | "senior_area_chair" | "program_chairs" | "ethics_reviewer" | "public" | "not_shown" };
+
+/** What a reply answers; `note` is a review's index among the notes. A guess says it is one, and why. */
+export type ReviewReply =
+	| { answers: "submission" }
+	| { answers: "named"; note: number }
+	| { answers: "guessed"; note: number; basis: "same_reviewer" | "mentions_reviewer" | "follows_review" }
+	| { answers: "not_known" };
+
+/** One field of a note as the venue's form names it ("Strengths And Weaknesses"); "" for text before any field.
+ *  `text` is exactly the kept page's text at `span`. */
+export interface ReviewSection {
+	name: string;
+	text: string;
+	span: Span;
+}
+
+export interface ReviewScore {
+	field: string;
+	value: number;
+	/** what the score means, as the review says ("good"); "" when it says nothing */
+	meaning: string;
+}
+
+/** One note of a paper's discussion on OpenReview, as read from the page the user opened (engine text/discussion.rs). */
+export type ReviewNote = (
+	| { kind: "official_review"; scores: ReviewScore[]; confidence: ReviewScore | null }
+	| { kind: "decision"; decision: string }
+	| {
+			kind:
+				| "meta_review"
+				| "author_response"
+				| "reviewer_comment"
+				| "chair_comment"
+				| "comment"
+				| "public_comment"
+				| "ethics_review"
+				| "withdrawal";
+	  }
+) & {
+	signer: Signer;
+	/** the heading as written */
+	heading: string;
+	span: Span;
+	sections: ReviewSection[];
+	reply: ReviewReply;
+};
+
+/** The lowest and highest score a field can be given at a venue in a year. "assumed": the venue or year is not
+ *  known to the engine, so the field's usual scale is taken: an estimate. */
+export interface Scale {
+	minimum: number;
+	maximum: number;
+	source: "published" | "assumed";
+}
+
+/** One scored field of one paper; every figure is on `scale`, never comparable with another scale's. */
+export interface FieldFigures {
+	field: string;
+	scale: Scale;
+	reviews: number;
+	mean: number;
+	median: number;
+	minimum: number;
+	maximum: number;
+	/** standard deviation of the reviews' scores */
+	spread: number;
+	/** the mean's position within the scale, 0 to 1: normalised, for comparing venues only */
+	normalised_mean: number;
+	/** a mean in which each review counts as its reviewer's confidence, over the reviews that gave one */
+	confidence_weighted: { mean: number; reviews: number } | null;
+	/** scores outside the scale (a venue that changed its form), counted as given */
+	outside_scale: number;
+}
+
+/** How far a paper's reviewers were apart on their overall judgement (two reviews or more). */
+export interface Disagreement {
+	field: string;
+	scale: Scale;
+	spread: number;
+	range: number;
+	/** the spread as a share of the scale's width: normalised, for comparing venues */
+	normalised_spread: number;
+}
+
+export interface PaperFigures {
+	paper_id: string;
+	venue: Venue | null;
+	reviews: number;
+	fields: FieldFigures[];
+	disagreement: Disagreement | null;
+}
+
+/** `GET /api/papers/<id>/reviews`: a paper's kept discussion and what its scores come to (engine api/reviews.rs). */
+export interface PaperReviews {
+	paper_id: string;
+	/** the address of the page the reader showed */
+	address: string;
+	/** when the page was read, UTC */
+	read_at: string;
+	/** the version of the reader that read it */
+	parser: number;
+	/** the venue the page names */
+	venue: Venue | null;
+	notes: ReviewNote[];
+	figures: PaperFigures;
+}
+
+/** `POST /api/papers/<id>/reviews`: what came of a page handed over, and what is kept now. */
+export interface ReviewsRead {
+	outcome: "kept" | "kept_fuller" | "not_its_page" | "no_reviews";
+	/** the scores alone, as the old scores-only route answered them */
+	ratings: Ratings | null;
+	reviews: PaperReviews | null;
+}
+
+export interface RankedPaper {
+	paper_id: string;
+	venue: Venue | null;
+	/** its overall judgement on its own scale */
+	overall: FieldFigures;
+	/** what it was ranked by, normalised to its scale (0 to 1) so that venues compare */
+	normalised: number;
+}
+
+/** The per-paper mean of one field at one venue and year, over a community's or run's papers. */
+export interface VenueRatings {
+	venue: Venue;
+	field: string;
+	scale: Scale;
+	papers: number;
+	mean: number;
+	median: number;
+	lowest: number;
+	highest: number;
+	/** one per unit of the scale: papers whose mean is from `from` up to `to` (the last includes the top) */
+	bins: { from: number; to: number; papers: number }[];
+}
+
+/** A place a theme was said: the sentence of a review's section, in the paper's kept page text. */
+export interface ThemeSource {
+	paper_id: string;
+	/** the review's index among the paper's notes */
+	note: number;
+	signer: Signer;
+	section: string;
+	span: Span;
+	excerpt: string;
+}
+
+/** A term reviewers often use when they praise (or criticise), counted without a language model. */
+export interface ReviewTheme {
+	term: string;
+	/** praising (criticising) sections that use it */
+	sections: number;
+	papers: number;
+	/** its share of those sections, 0 to 1 */
+	share: number;
+	/** how many times more often it is in them than in the reviews' sections overall */
+	distinctiveness: number;
+	sources: ThemeSource[];
+	more_sources: number;
+}
+
+/** `GET /api/runs/<run>/reviews/summary` and `.../communities/<tree path>/reviews/summary`. */
+export interface ReviewSummary {
+	papers: number;
+	/** of them, whose reviews page was read: reviews are known only for pages the user opened */
+	pages_read: number;
+	papers_with_reviews: number;
+	reviews: number;
+	ratings: VenueRatings[];
+	/** papers with reviews whose venue is not known, left out of `ratings` */
+	papers_without_venue: number;
+	most_disagreed: RankedPaper[];
+	most_agreed: RankedPaper[];
+	highest_rated: RankedPaper[];
+	praise: ReviewTheme[];
+	criticism: ReviewTheme[];
+	/** by paper id, the title of every paper it ranks or quotes */
+	titles: Record<string, string>;
+}
+
 /** How a conference paper was accepted, in tiers that hold across conferences; best first. */
 export type Acceptance = "oral" | "spotlight" | "poster";
 

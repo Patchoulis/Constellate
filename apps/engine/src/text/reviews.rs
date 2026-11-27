@@ -88,7 +88,7 @@ impl Field {
     }
 
     /// The field a page names, in whatever case.
-    fn named(written: &str) -> Option<Self> {
+    pub(super) fn named(written: &str) -> Option<Self> {
         let written = written.to_lowercase();
         Self::ALL.into_iter().find(|field| field.name().to_lowercase() == written)
     }
@@ -146,9 +146,9 @@ static SCORE: LazyLock<Regex> = LazyLock::new(|| {
     ))
 });
 /// After the number, what makes it not a whole score: "3.5", "3/5", "3 out of 4", "3 of the proofs", "5 -> 7".
-static NOT_WHOLE: LazyLock<Regex> = LazyLock::new(|| pattern(r"(?i)\A(?:[\d.,/]|\s*(?:/|->|out of|of\b))"));
+pub(super) static NOT_WHOLE: LazyLock<Regex> = LazyLock::new(|| pattern(r"(?i)\A(?:[\d.,/]|\s*(?:/|->|out of|of\b))"));
 /// A field and its score, starting right here: where fields share a line, each is moved onto its own.
-static FIELD_AHEAD: LazyLock<Regex> = LazyLock::new(|| pattern(&format!(r"(?i)\A(?:{})[^\S\n]*:[^\S\n]*\d", fields())));
+static FIELD_AHEAD: LazyLock<Regex> = LazyLock::new(|| pattern(&format!(r"(?i)\A({})[^\S\n]*:[^\S\n]*\d", fields())));
 static SPACES: LazyLock<Regex> = LazyLock::new(|| pattern(r"[^\S\n]+"));
 /// The heading of a note in the thread. A sentence that merely starts with one of those words is prose, so a
 /// heading is the word alone on its line or goes on to say whose note it is.
@@ -159,13 +159,20 @@ static NOTE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static FORUM: LazyLock<Regex> = LazyLock::new(|| pattern(r"openreview\.net/[^?#]*\?(?:[^#]*&)?id=([\w-]+)"));
 
-/// The text with every field that shares a line with something before it moved onto a line of its own.
+/// The text with every field that shares a line with something before it moved onto a line of its own. A
+/// field whose name ends another's ("Recommendation" in "Overall Recommendation") is the longer one, not split.
 fn one_field_a_line(text: &str) -> String {
     let mut lines = String::with_capacity(text.len());
     let mut copied = 0;
     for spaces in SPACES.find_iter(text) {
-        let after_words = text[..spaces.start()].chars().next_back().is_some_and(|before| !before.is_whitespace());
-        if after_words && FIELD_AHEAD.is_match(&text[spaces.end()..]) {
+        let before = &text[..spaces.start()];
+        let after_words = before.chars().next_back().is_some_and(|before| !before.is_whitespace());
+        let ahead = FIELD_AHEAD.captures(&text[spaces.end()..]).and_then(|ahead| ahead.get(1));
+        let longer = |ahead: &regex::Match<'_>| {
+            let word = before.rsplit(char::is_whitespace).next().unwrap_or_default();
+            Field::named(&format!("{word} {}", ahead.as_str())).is_some()
+        };
+        if after_words && ahead.is_some_and(|ahead| !longer(&ahead)) {
             lines.push_str(&text[copied..spaces.start()]);
             lines.push('\n');
             copied = spaces.end();
@@ -177,7 +184,7 @@ fn one_field_a_line(text: &str) -> String {
 
 /// The scores in `text` as (field, score, meaning); with `once`, only the first of each field (one review gives
 /// one).
-fn scores(text: &str, once: bool) -> Vec<(Field, u8, String)> {
+pub(super) fn scores(text: &str, once: bool) -> Vec<(Field, u8, String)> {
     let lines = one_field_a_line(text);
     let mut found = Vec::new();
     let mut seen = HashSet::new();
@@ -486,6 +493,17 @@ Rating: 8: accept, good paper
         }
         let older: Ratings = serde_json::from_value(json!({"reviews": 1, "ratings": {}})).unwrap();
         assert!(!older.exact); // kept before exactness was recorded
+    }
+
+    #[test]
+    fn an_overall_recommendation_is_not_read_as_a_recommendation() {
+        let read = read_ratings(
+            "Official Review of Submission1 by Reviewer A\nOverall Recommendation: 3: Weak accept\n\
+             Official Review of Submission1 by Reviewer B\nSummary: fine. Overall Recommendation: 4: Accept\n",
+        )
+        .unwrap();
+        assert_eq!(read.ratings.keys().copied().collect::<Vec<_>>(), [Field::OverallRecommendation]);
+        assert_eq!(read.ratings[&Field::OverallRecommendation].values, [3, 4]);
     }
 
     #[test]

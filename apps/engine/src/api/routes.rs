@@ -7,6 +7,8 @@
 //! PUT /api/settings         change some of them: a JSON object of the ones to change
 //! ```
 //!
+//! and a paper's reviews, read from the page the user opened ([`super::reviews`]).
+//!
 //! Across a network the owner's sign-in routes are served too (`/auth/...`, [`super::login`]).
 //!
 //! A route is a function of the shared [`Engine`]; adding one is a line in [`table`] (or a `Router<Shared>` of
@@ -14,7 +16,7 @@
 //! applied around the whole router, unknown paths included.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use axum::Router;
@@ -32,6 +34,7 @@ use tower_http::timeout::TimeoutLayer;
 use super::config::Mode;
 use super::security::{self, Guard, LARGEST_BODY};
 use crate::jobs::{Busy, Job, Snapshot};
+use crate::library::{Library, LibraryError};
 use crate::settings::{self, Choices, Settings, SettingsError};
 
 /// How long a request may take from its first byte to its answer: a client that sends its body slowly (to hold
@@ -50,13 +53,30 @@ pub struct Engine {
     pub warnings: Vec<String>,
     /// This computer only, or a network: set by the server from how it listens.
     pub mode: Mode,
+    /// The library, opened when a route first needs it (and tried again after a failure to open).
+    library: Mutex<Option<Arc<Library>>>,
 }
 
 pub type Shared = Arc<Engine>;
 
 impl Engine {
     pub fn new(data: PathBuf, choices: Choices) -> Engine {
-        Engine { job: Job::new(), data, choices, warnings: Vec::new(), mode: Mode::Local }
+        Engine { job: Job::new(), data, choices, warnings: Vec::new(), mode: Mode::Local, library: Mutex::new(None) }
+    }
+
+    /// The library in the data folder, opened once and shared by every request.
+    pub fn library(&self) -> Result<Arc<Library>, ApiError> {
+        let mut opened = self.library.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(library) = opened.as_ref() {
+            return Ok(Arc::clone(library));
+        }
+        let library = Arc::new(Library::open(&self.data.join("library"))?);
+        // pages kept by an older reader of reviews are read again once, here: until then they would not be shown
+        if let Err(error) = library.read_stored_pages_again() {
+            eprintln!("library: reviews pages could not be read again: {error}");
+        }
+        *opened = Some(Arc::clone(&library));
+        Ok(library)
     }
 
     pub fn settings_file(&self) -> PathBuf {
@@ -170,6 +190,18 @@ impl From<crate::library::store::StoreError> for ApiError {
     }
 }
 
+impl From<LibraryError> for ApiError {
+    fn from(error: LibraryError) -> Self {
+        match error {
+            LibraryError::UnknownPaper(_) => ApiError::NotFound,
+            error => {
+                eprintln!("library: {error}");
+                ApiError::Files
+            }
+        }
+    }
+}
+
 impl From<JsonRejection> for ApiError {
     fn from(rejection: JsonRejection) -> Self {
         if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
@@ -213,7 +245,7 @@ pub fn one_name(name: &str) -> Result<&str, ApiError> {
 }
 
 /// Run file work (which may wait for a lock) off the threads that answer requests.
-async fn on_the_side<T: Send + 'static>(
+pub(super) async fn on_the_side<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, ApiError> + Send + 'static,
 ) -> Result<T, ApiError> {
     tokio::task::spawn_blocking(work).await.map_err(|_| ApiError::Internal)?
@@ -222,7 +254,9 @@ async fn on_the_side<T: Send + 'static>(
 /// Every route the engine has, by path. A test walks this list to see that each one is refused to whoever has
 /// not signed in, so a route is added here and nowhere else.
 pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
-    vec![("/api/status", get(status)), ("/api/settings", get(read_settings).put(change_settings))]
+    let mut table = vec![("/api/status", get(status)), ("/api/settings", get(read_settings).put(change_settings))];
+    table.extend(super::reviews::table());
+    table
 }
 
 /// The routes the engine has, without the security layer: [`secured`] adds it.

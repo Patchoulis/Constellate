@@ -16,6 +16,7 @@
 //! | [`papers`]      | papers, their venues, selections, and which download slices are finished  |
 //! | [`embeddings`]  | one vector per model and paper, reused only for the same text             |
 //! | [`readings`]    | what was read from a paper: declarations, ratings, AI-text scores         |
+//! | [`reviews`]     | a paper's reviews page as the reader showed it, and its notes as read     |
 //! | [`writings`]    | community descriptions and overviews, keyed by model and members          |
 //! | [`ledger`]      | one row per call to the Claude API; totals are queries                    |
 //! | [`preferences`] | settings and exchange rates                                               |
@@ -30,11 +31,25 @@
 //! kept about a paper the library does not have; and a busy timeout, so a second process (an old Python backend,
 //! a second window) waits its turn instead of failing.
 //!
-//! A [`Library`] holds one connection behind a `Mutex`. SQLite allows one writer at a time whatever is done, and
-//! every read here is short (the longest, all vectors of a selection, takes tens of milliseconds), so a pool
-//! would add little but code. Writes start `BEGIN IMMEDIATE`: they take the write lock at once, so two
-//! processes cannot both read and then both try to upgrade, which is the one case a busy timeout cannot settle.
-//! Reads run in a deferred transaction, so a read of several tables sees one moment.
+//! # Threads
+//!
+//! A [`Library`] is shared by every thread of the engine (it is `Sync`), and that is safe by construction, not
+//! by care: a rusqlite `Connection` is `Send` but not `Sync`, so the compiler refuses any use of one connection
+//! from two threads at once, and the library never hands a connection out.
+//!
+//! * **One writer.** SQLite allows one writer at a time whatever is done, so the library has one connection that
+//!   writes, behind a `Mutex`. Writes start `BEGIN IMMEDIATE`: they take the write lock at once, so two processes
+//!   cannot both read and then both try to upgrade, which is the one case a busy timeout cannot settle. Whatever
+//!   one write does (a paper's reviews: its page, its reading and its scores) is one transaction.
+//! * **Readers of their own.** Each read takes a connection of its own from a small pool (opening one when none
+//!   is idle), runs in one deferred transaction (so a read of several tables sees one moment), and gives it
+//!   back. In WAL mode readers never wait for the writer nor the writer for them, so reads on many threads (the
+//!   reviews of thousands of papers, while a page is being kept) run side by side. Readers are opened
+//!   `query_only`: one cannot write even by mistake.
+//! * **A thread that panics** poisons nothing. A write it was in the middle of rolls back as its transaction is
+//!   dropped on unwinding, so the writer's lock is taken again as if it had not been poisoned; a reader it was
+//!   using is dropped (closed), never given back half-used. Other threads carry on with the library as it was
+//!   before the failed write.
 //!
 //! # PostgreSQL, should the engine ever be a shared server
 //!
@@ -62,6 +77,7 @@ pub mod papers;
 pub mod place;
 pub mod preferences;
 pub mod readings;
+pub mod reviews;
 pub mod schema;
 pub mod store;
 pub mod writings;
@@ -81,12 +97,15 @@ pub use ledger::{Call, Spending, Totals};
 pub use papers::{Added, Known, Origin, Paper, SliceOutcome, text_hash};
 pub use preferences::Rate;
 pub use readings::{AiScore, Answer, ChecklistItem, Declarations, FieldRatings, Ratings, Reading, Statement};
+pub use reviews::{Keeping, KeptReviews, ReviewPage};
 pub use writings::{CitedPaper, Description, Overview, Point, Section, community_key};
 
 /// The database's file name inside the library folder.
 pub const DATABASE: &str = "library.sqlite3";
 /// How long a write waits for another process's write to finish before giving up.
 const BUSY: Duration = Duration::from_secs(10);
+/// Readers kept open between reads; more are opened when more threads read at once, and closed after.
+const IDLE_READERS: usize = 8;
 
 /// What can go wrong with the library, always saying which database or which paper.
 #[derive(Debug, thiserror::Error)]
@@ -124,11 +143,14 @@ pub enum LibraryError {
     Shape(String),
 }
 
-/// The library: a handle on its database, shared by every thread of the engine.
+/// The library: a handle on its database, shared by every thread of the engine (see the module's "Threads").
 #[derive(Debug)]
 pub struct Library {
     path: PathBuf,
+    /// The one connection that writes.
     connection: Mutex<Connection>,
+    /// Connections that only read, idle; each is used by one read at a time, taken out of here for it.
+    readers: Mutex<Vec<Connection>>,
 }
 
 impl Library {
@@ -138,7 +160,7 @@ impl Library {
         let path = folder.join(DATABASE);
         let connection = connect(&path)?;
         schema::migrate(&connection, schema::MIGRATIONS).map_err(|error| located(error, &path))?;
-        Ok(Self { path, connection: Mutex::new(connection) })
+        Ok(Self { path, connection: Mutex::new(connection), readers: Mutex::new(Vec::new()) })
     }
 
     /// The database file.
@@ -160,11 +182,24 @@ impl Library {
         Ok(result)
     }
 
-    /// Run `work` on one consistent view of the database.
+    /// Run `work` on one consistent view of the database, on a reader of its own.
     fn read<T>(&self, work: impl FnOnce(&Connection) -> Result<T, LibraryError>) -> Result<T, LibraryError> {
-        let mut connection = self.connection();
-        let transaction = connection.transaction()?;
-        work(&transaction) // dropped, not committed: nothing was written
+        let idle = self.readers.lock().unwrap_or_else(PoisonError::into_inner).pop();
+        let mut connection = match idle {
+            Some(connection) => connection,
+            None => connect_reader(&self.path)?,
+        };
+        let result = match connection.transaction() {
+            Ok(transaction) => work(&transaction), // dropped, not committed: nothing was written
+            Err(error) => Err(error.into()),
+        };
+        // not reached when `work` panics: the connection is then dropped with the unwinding, never reused; nor
+        // is one whose transaction could not be rolled back
+        let mut idle = self.readers.lock().unwrap_or_else(PoisonError::into_inner);
+        if idle.len() < IDLE_READERS && connection.is_autocommit() {
+            idle.push(connection);
+        }
+        result
     }
 }
 
@@ -183,6 +218,15 @@ fn connect(path: &Path) -> Result<Connection, LibraryError> {
     }
     connection.pragma_update(None, "foreign_keys", true).map_err(opened)?;
     connection.pragma_update(None, "synchronous", "NORMAL").map_err(opened)?;
+    Ok(connection)
+}
+
+/// A connection that only reads, to a database [`connect`] has set up.
+fn connect_reader(path: &Path) -> Result<Connection, LibraryError> {
+    let opened = |source| located(LibraryError::Open { path: path.to_path_buf(), source }, path);
+    let connection = Connection::open(path).map_err(opened)?;
+    connection.busy_timeout(BUSY).map_err(opened)?;
+    connection.pragma_update(None, "query_only", true).map_err(opened)?;
     Ok(connection)
 }
 
@@ -285,6 +329,41 @@ mod tests {
     fn a_library_is_shared_between_threads() {
         fn shared<T: Send + Sync>() {}
         shared::<Library>();
+    }
+
+    #[test]
+    fn a_reader_cannot_write_and_reads_on_many_threads_run_at_once() {
+        let folder = tempfile::tempdir().unwrap();
+        let library = Library::open(folder.path()).unwrap();
+        let refused = library.read(|connection| Ok(connection.execute("CREATE TABLE notes (id TEXT)", [])?));
+        assert!(refused.is_err());
+        let barrier = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    library
+                        .read(|_| {
+                            barrier.wait(); // every reader inside a read at the same moment: none waits for another
+                            Ok(())
+                        })
+                        .unwrap()
+                });
+            }
+        });
+        assert!(library.readers.lock().unwrap().len() >= 2);
+    }
+
+    #[test]
+    fn a_read_that_panics_leaves_the_readers_usable() {
+        let folder = tempfile::tempdir().unwrap();
+        let library = Library::open(folder.path()).unwrap();
+        library.read(|_| Ok(())).unwrap();
+        let panicked = std::thread::scope(|scope| {
+            scope.spawn(|| library.read::<()>(|_| panic!("a read failed half-way"))).join().is_err()
+        });
+        assert!(panicked);
+        assert!(library.readers.lock().unwrap().is_empty(), "the panicking read's reader is not given back");
+        assert!(library.settings().is_ok());
     }
 
     #[test]

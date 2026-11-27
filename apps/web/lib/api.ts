@@ -6,7 +6,10 @@ import type {
 	Library,
 	OverviewStatus,
 	Paper,
+	PaperReviews,
 	Ratings,
+	ReviewsRead,
+	ReviewSummary,
 	RunRequest,
 	RunResult,
 	RunSummary,
@@ -48,6 +51,10 @@ const send = (method: string, body: unknown): RequestInit => ({
 
 const run = (name: string) => `/api/runs/${encodeURIComponent(name)}`;
 
+/** Hand over the text of a paper's reviews page and its address: the engine keeps the whole discussion. */
+const readReviews = (id: string, text: string, url: string) =>
+	call<ReviewsRead>(`/api/papers/${encodeURIComponent(id)}/reviews`, send("POST", { text, url }));
+
 export const api = {
 	runs: () => call<RunSummary[]>("/api/runs"),
 	run: (name: string) => call<RunResult>(run(name)),
@@ -71,7 +78,21 @@ export const api = {
 	/** the reviewers' scores of every paper whose reviews page has been opened, by paper id */
 	ratings: () => call<Record<string, Ratings>>("/api/reviews"),
 	/** hand over the text of a paper's reviews page and the page's address; answers the scores now kept (null if none) */
-	readRatings: (id: string, text: string, url: string) => call<Ratings | null>(`/api/reviews/${id}`, send("POST", { text, url })),
+	readRatings: (id: string, text: string, url: string) =>
+		readReviews(id, text, url).then(
+			(read) => (read.outcome === "not_its_page" ? null : read.ratings),
+			// the Python backend, which has no such route, until the engine serves /api: its scores-only route
+			(error: Error) => {
+				if (!/not found|answered 404/.test(error.message)) throw error;
+				return call<Ratings | null>(`/api/reviews/${encodeURIComponent(id)}`, send("POST", { text, url }));
+			},
+		),
+	readReviews,
+	/** a paper's kept discussion and what its scores come to; null until its reviews page has been opened */
+	paperReviews: (id: string) => call<PaperReviews | null>(`/api/papers/${encodeURIComponent(id)}/reviews`),
+	/** what the reviews of a run's papers come to, or of one community's (by its tree path) */
+	reviewSummary: (name: string, treePath?: string) =>
+		call<ReviewSummary>(`${run(name)}${treePath ? `/communities/${encodeURIComponent(treePath)}` : ""}/reviews/summary`),
 	/** start the job that does that for every paper of a run */
 	readDeclarations: (name: string) => call<{ ok: true }>(`${run(name)}/declarations`, { method: "POST" }),
 	/** the citation network around a paper, from the reference lists read so far; with `inRun` (a run's name), it
