@@ -5,6 +5,7 @@
  * draws them.
  */
 import type { Evidence, ExtractionCell, ExtractionColumn, ExtractionRow, ExtractionTable, ExtractionValue } from "@rp/contracts";
+import { MOST_GROUPS, spreadHues, type Colouring } from "@/lib/graph-colouring";
 import { count } from "@/lib/units";
 
 /** What a cell says when the paper does not say: an answer, not a gap. */
@@ -159,6 +160,29 @@ export function paperGroups(rows: ExtractionRow[], column: number): Map<string, 
 		for (const name of names) groups.set(name, [...(groups.get(name) ?? []), row.paper]);
 	}
 	return groups;
+}
+
+/**
+ * The graph coloured by a column (lib/graph-colouring.ts): its most common values, each in a hue of its own, the
+ * rest together as "other values", and "not stated" in grey last.
+ */
+export function columnColouring(rows: ExtractionRow[], column: number, label: string): Colouring {
+	const groups = paperGroups(rows, column);
+	const notStated = groups.get(NOT_STATED) ?? [];
+	groups.delete(NOT_STATED);
+	const byCount = [...groups.entries()].sort((one, other) => other[1].length - one[1].length || one[0].localeCompare(other[0]));
+	const room = byCount.length > MOST_GROUPS - 1 ? MOST_GROUPS - 2 : byCount.length; // one place for "other", one for "not stated"
+	const named = byCount.slice(0, room);
+	const others = byCount.slice(room).flatMap(([, papers]) => papers);
+	const hues = spreadHues(named.length + (others.length > 0 ? 1 : 0));
+	return {
+		title: `${label} (extraction table)`,
+		groups: [
+			...named.map(([name, papers], index) => ({ name, hue: hues[index], papers })),
+			...(others.length > 0 ? [{ name: `other values (${byCount.length - room})`, hue: hues[named.length], papers: others }] : []),
+			...(notStated.length > 0 ? [{ name: NOT_STATED, hue: null, papers: notStated }] : []),
+		],
+	};
 }
 
 /** Where a piece of evidence is: "p. 4", or "abstract" when the PDF was not read. */

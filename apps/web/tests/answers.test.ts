@@ -18,6 +18,7 @@ import {
 	type AskState,
 } from "@/lib/answers";
 import { noReadablePdf } from "@/lib/no-pdf";
+import { RequestError } from "@/lib/request";
 
 const coverage: SearchCoverage = { papers: 739, full_text: 212, capped: 0, no_pdf: 520, unreadable: 7, missing: 0 };
 
@@ -168,10 +169,16 @@ test("the Ask box sends nothing to the model until it is started, and waits for 
 });
 
 test("a paper's text is said to be unavailable only when the engine has no PDF it can read", () => {
-	assert.equal(noReadablePdf("not found"), true);
-	assert.equal(noReadablePdf("The backend answered 404"), true);
-	assert.equal(noReadablePdf("The backend is not reachable. Start it with: npm run dev"), false);
-	// a route that failed for another reason: said, not taken for a missing PDF and hidden
-	assert.equal(noReadablePdf("the run demo was not found"), false);
-	assert.equal(noReadablePdf("the quote was not found in the paper"), false);
+	const refused = (status: number, error: string | null) => new RequestError({ kind: "refused", status, error });
+	assert.equal(noReadablePdf(refused(404, "not found")), true);
+	assert.equal(noReadablePdf(refused(404, null)), true, "a 404 with no error of the engine's own");
+	assert.equal(noReadablePdf({ kind: "refused", status: 404, error: "not found" }), true, "the problem a failed useAsync keeps");
+	assert.equal(noReadablePdf(new RequestError({ kind: "unreachable" })), false);
+	assert.equal(noReadablePdf(new RequestError({ kind: "timeout", seconds: 20 })), false);
+	// a route that exists and failed: said, not taken for a missing PDF and hidden
+	assert.equal(noReadablePdf(refused(404, "the run demo was not found")), false);
+	assert.equal(noReadablePdf(refused(404, "the quote was not found in the paper")), false);
+	assert.equal(noReadablePdf(refused(500, "not found")), false, "the words alone, with another status");
+	assert.equal(noReadablePdf(new Error("not found")), false, "words alone, not a request's answer");
+	assert.equal(noReadablePdf("not found"), false);
 });

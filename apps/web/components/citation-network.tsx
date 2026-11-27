@@ -9,6 +9,7 @@ import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { Input } from "@/components/ui/field";
 import { api } from "@/lib/api";
+import { openOutside } from "@/lib/links";
 import {
 	authorLine,
 	citedByLine,
@@ -36,8 +37,7 @@ const TAG = "inline-flex items-center rounded-sm border px-1.5 py-px font-ui tex
 
 /** Open a work: in the reader when it is in the library, otherwise in the browser. */
 function opener(onOpen: (id: string) => void) {
-	return (work: CitationNeighbour) =>
-		work.link.kind === "in_library" ? onOpen(work.link.paper) : window.open(outsideLink(work), "_blank", "noopener");
+	return (work: CitationNeighbour) => (work.link.kind === "in_library" ? onOpen(work.link.paper) : openOutside(outsideLink(work)));
 }
 
 /** What a work was found to be, as a tag that explains itself on hover. */

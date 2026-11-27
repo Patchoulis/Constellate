@@ -39,6 +39,13 @@ test("a feature's finished job, or one that made nothing, opens no run", () => {
 	assert.equal(finishedRun(running, status("done", { outcome: { kind: "run", run: "iclr2026" } })), "iclr2026");
 });
 
+test("the run's log is the whole log the shared poller saw, not lines added twice", () => {
+	const first = reduce(running, { type: "reported", status: status("running", { log: ["reading", "embedding"] }) });
+	const again = reduce(first, { type: "reported", status: status("running", { log: ["reading", "embedding", "clustering"] }) });
+	assert.deepEqual(again.log, ["reading", "embedding", "clustering"]);
+	assert.deepEqual(reduce(again, { type: "started" }).log, [], "a new job starts with an empty log");
+});
+
 test("a feature's failure is not said as the run's, a run's is", () => {
 	const extraction = status("failed", { kind: "the extraction table", error: "the budget was reached" });
 	assert.equal(reduce(idle, { type: "reported", status: extraction }).error, null);

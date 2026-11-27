@@ -46,7 +46,8 @@ jobs:
     # The engine and the shell on a real Linux distribution (Ubuntu), not only on Windows: the engine built, linted
     # and tested; the shell's tests with the two servers started for real (the engine finds the library ONNX Runtime
     # loads beside it, as in the packages: scripts/build.mjs links it to look in its own folder).
-    name: Engine and shell on Linux
+    # the name the rules for main require (.github/rulesets/main.json)
+    name: Engine on Linux
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: -C link-arg=-Wl,-rpath,$ORIGIN

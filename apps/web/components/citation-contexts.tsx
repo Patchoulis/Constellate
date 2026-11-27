@@ -13,6 +13,7 @@ import { EvidenceLink } from "@/components/evidence-link";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton } from "@/components/ui/button";
 import { api } from "@/lib/api";
+import { withSignal } from "@/lib/request";
 import {
 	KIND_HUE,
 	KIND_LABEL,
@@ -44,7 +45,8 @@ export function contextsOf(paper: string, run?: string, treePath?: string, fresh
 	const key = `${paper}\n${run ?? ""}\n${treePath ?? ""}`;
 	let found = asked.get(key);
 	if (!found || fresh) {
-		found = api.citationContexts(paper, run, treePath);
+		// shared by every asker: not called off when the one that started it goes away
+		found = withSignal(null, () => api.citationContexts(paper, run, treePath));
 		found.catch(() => asked.delete(key));
 		asked.set(key, found);
 	}

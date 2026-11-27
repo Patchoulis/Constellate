@@ -36,30 +36,38 @@ import type {
 	PaperCitationContexts,
 } from "@rp/contracts";
 import { changesSomething, csrfOf, signInRedirect, withCsrf } from "@/lib/engine";
+import { answered, currentSignal, POLLING, QUICK, READS_PAPERS, request, STARTS_JOB, type Patience } from "@/lib/request";
 
 /** On a server, the session's token that every change carries, asked for once; null on the user's own computer. */
 let csrf: Promise<string | null> | null = null;
 const sessionToken = () =>
-	(csrf ??= fetch("/auth/session", { cache: "no-store" })
-		.then((response) => (response.ok ? response.json() : null))
-		.then(csrfOf, () => null));
+	(csrf ??= request("/auth/session", undefined, { patience: QUICK }).then(
+		(answer) => (answer.ok && answer.body.kind === "json" ? csrfOf(answer.body.value) : null),
+		() => null,
+	));
 
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
-	let response: Response;
-	try {
-		const token = changesSomething(init?.method) ? await sessionToken() : null;
-		response = await fetch(path, { cache: "no-store", ...withCsrf(init, token) });
-	} catch {
-		throw new Error("The backend is not reachable. Start it with: npm run dev");
-	}
+/**
+ * Ask the engine, within `patience` (lib/request.ts: a deadline, and whether a GET may be asked once more when
+ * nothing answered). Throws a `RequestError` that says what happened and carries the HTTP status. A request made
+ * inside `withSignal` (what `useAsync` does) is called off when that signal aborts.
+ */
+async function call<T>(path: string, init?: RequestInit, patience: Patience = QUICK): Promise<T> {
+	const signal = currentSignal(); // before the first await: the signal of whoever started this request
+	const token = changesSomething(init?.method) ? await sessionToken() : null;
+	const answer = await request(path, withCsrf(init, token), { patience, signal });
 	// a server whose session ended (or was never started): sign in again; a refused token is asked for anew
-	if (response.status === 401 || response.status === 403) csrf = null;
-	const signIn = signInRedirect(response.status, response.headers.get("WWW-Authenticate"), window.location.pathname);
+	if (answer.status === 401 || answer.status === 403) csrf = null;
+	const signIn = signInRedirect(answer.status, answer.headers.get("WWW-Authenticate"), window.location.pathname);
 	if (signIn) window.location.assign(signIn);
-	const body = await response.json().catch(() => ({}));
-	if (!response.ok) throw new Error(body.error ?? `The backend answered ${response.status}`);
-	return body as T;
+	return answered<T>(answer);
 }
+
+/** `call` for a route that may read a paper's PDF the first time (lib/request.ts `READS_PAPERS`). */
+const reading = <T>(path: string, init?: RequestInit) => call<T>(path, init, READS_PAPERS);
+/** `call` for starting a job the model is paid for: the engine checks the estimate shown again first, which may read
+ *  papers, so it is given as long as an estimate (lib/request.ts `STARTS_JOB`); a deadline that passed first would
+ *  say "not asked" of a job the engine then starts. Never sent twice. */
+const starting = <T>(path: string, init?: RequestInit) => call<T>(path, init, STARTS_JOB);
 
 const send = (method: string, body: unknown): RequestInit => ({
 	method,
@@ -86,7 +94,7 @@ export const api = {
 			write === undefined ? { method: "GET" } : write === true ? { method: "POST" } : send("POST", write),
 		),
 	start: (request: RunRequest) => call<{ ok: true }>("/api/runs", send("POST", request)),
-	status: (since: number) => call<Status>(`/api/status?since=${since}`),
+	status: (since: number) => call<Status>(`/api/status?since=${since}`, undefined, POLLING),
 	settings: () => call<Settings>("/api/settings"),
 	saveSettings: (changes: Partial<Settings>) => call<Settings>("/api/settings", send("PUT", changes)),
 	library: () => call<Library>("/api/library"),
@@ -102,13 +110,13 @@ export const api = {
 	pdfUrl: (id: string) => `/api/papers/${encodeURIComponent(id)}/pdf`,
 	/** the paper's text from its PDF, by page, section and paragraph (slow the first time: the PDF is read); fails
 	 *  with "not found" when the engine has no readable PDF of it */
-	passages: (id: string) => call<PaperPassages>(`/api/papers/${encodeURIComponent(id)}/passages`),
+	passages: (id: string) => reading<PaperPassages>(`/api/papers/${encodeURIComponent(id)}/passages`),
 	/** where a quote is in the paper's text, in the paper's own words */
-	locate: (id: string, quote: string) => call<LocateAnswer>(`/api/papers/${encodeURIComponent(id)}/locate`, send("POST", { quote })),
+	locate: (id: string, quote: string) => reading<LocateAnswer>(`/api/papers/${encodeURIComponent(id)}/locate`, send("POST", { quote })),
 	/** ask the running job (by its `Status.id`) to stop: it starts nothing new and finishes what is under way */
 	cancelJob: (id: number) => call<{ ok: true }>("/api/job/cancel", send("POST", { id })),
 	/** read what a paper's authors declare, from its PDF (slow the first time: the PDF is fetched) */
-	declarations: (id: string) => call<Declarations>(`/api/papers/${encodeURIComponent(id)}/declarations`, { method: "POST" }),
+	declarations: (id: string) => reading<Declarations>(`/api/papers/${encodeURIComponent(id)}/declarations`, { method: "POST" }),
 	/** the reviewers' scores of every paper whose reviews page has been opened, by paper id */
 	ratings: () => call<Record<string, Ratings>>("/api/reviews"),
 	/** hand over the text of a paper's reviews page and the page's address; answers the scores now kept (null if none) */
@@ -125,14 +133,14 @@ export const api = {
 	/** the citation network around a paper, from the reference lists read so far; with `inRun` (a run's name), it
 	 *  also counts the citing papers of that run */
 	citations: (id: string, inRun?: string) =>
-		call<CitationNetwork>(`/api/papers/${encodeURIComponent(id)}/citations${inRun ? `?run=${encodeURIComponent(inRun)}` : ""}`),
+		reading<CitationNetwork>(`/api/papers/${encodeURIComponent(id)}/citations${inRun ? `?run=${encodeURIComponent(inRun)}` : ""}`),
 	/** read this paper's reference list from its PDF (slow the first time: the PDF is fetched); answers its network */
 	readReferences: (id: string, inRun?: string) =>
-		call<CitationNetwork>(`/api/papers/${encodeURIComponent(id)}/references${inRun ? `?run=${encodeURIComponent(inRun)}` : ""}`, {
+		reading<CitationNetwork>(`/api/papers/${encodeURIComponent(id)}/references${inRun ? `?run=${encodeURIComponent(inRun)}` : ""}`, {
 			method: "POST",
 		}),
 	/** a paper's weaknesses: the reviewers' points, and the model's reading kept or what asking would cost (nothing is sent) */
-	critique: (id: string) => call<Critique>(`/api/papers/${encodeURIComponent(id)}/critique`),
+	critique: (id: string) => reading<Critique>(`/api/papers/${encodeURIComponent(id)}/critique`),
 	/** ask for the model's reading, as the one job, for the model the estimate was shown for: within the worst case
 	 *  accepted (refused when asking would now cost more) or a budget of one's own; in US dollars, or in tokens for a
 	 *  model with no price */
@@ -140,18 +148,18 @@ export const api = {
 		id: string,
 		shown: import("@rp/contracts").ShownModel,
 		budget: import("@rp/contracts").AcceptedCost | import("@rp/contracts").BudgetOf,
-	) => call<CritiqueStarted>(`/api/papers/${encodeURIComponent(id)}/critique`, send("POST", { ...shown, ...budget })),
+	) => starting<CritiqueStarted>(`/api/papers/${encodeURIComponent(id)}/critique`, send("POST", { ...shown, ...budget })),
 	/** forget the model's reading of the paper, so that it can be asked again */
 	forgetCritique: (id: string) => call<{ forgotten: number }>(`/api/papers/${encodeURIComponent(id)}/critique`, { method: "DELETE" }),
 	/** where a community's papers (or the marked ones) stand on a question (engine api/stances.rs) */
 	stances: {
 		listing: (name: string, scope: StanceScope) =>
 			"community" in scope
-				? call<import("@rp/contracts").StanceListing>(stancesAt(name, scope))
-				: call<import("@rp/contracts").StanceListing>(`${stancesAt(name, scope)}/list`, send("POST", { papers: scope.papers })),
+				? reading<import("@rp/contracts").StanceListing>(stancesAt(name, scope))
+				: reading<import("@rp/contracts").StanceListing>(`${stancesAt(name, scope)}/list`, send("POST", { papers: scope.papers })),
 		/** what asking would cost; nothing is sent to the model */
 		estimate: (name: string, scope: StanceScope, question: string, includeUnrelated: boolean) =>
-			call<import("@rp/contracts").StancePlan>(
+			reading<import("@rp/contracts").StancePlan>(
 				`${stancesAt(name, scope)}/estimate`,
 				send("POST", { question, include_unrelated: includeUnrelated, papers: "papers" in scope ? scope.papers : [] }),
 			),
@@ -165,12 +173,12 @@ export const api = {
 			part: "sample" | "all",
 			approved: StanceApproved,
 		) =>
-			call<import("@rp/contracts").StanceStarted>(
+			starting<import("@rp/contracts").StanceStarted>(
 				`${stancesAt(name, scope)}/ask`,
 				send("POST", { question, include_unrelated: includeUnrelated, part, papers: "papers" in scope ? scope.papers : [], ...approved }),
 			),
 		result: (name: string, scope: StanceScope, id: string) =>
-			call<import("@rp/contracts").StanceResult>(`${stancesAt(name, scope)}/${encodeURIComponent(id)}`),
+			reading<import("@rp/contracts").StanceResult>(`${stancesAt(name, scope)}/${encodeURIComponent(id)}`),
 		/** forget this question's answers for a fresh reading (the next ask pays again) */
 		redo: (name: string, scope: StanceScope, id: string) =>
 			call<import("@rp/contracts").StanceAsked>(`${stancesAt(name, scope)}/${encodeURIComponent(id)}/redo`, { method: "POST" }),
@@ -178,7 +186,7 @@ export const api = {
 		proposalEstimate: (name: string, community: string, fresh: boolean) =>
 			call<import("@rp/contracts").StanceProposalPlan>(`${stancesAt(name, { community })}/proposals/estimate`, send("POST", { fresh })),
 		propose: (name: string, community: string, fresh: boolean, approved: StanceApproved) =>
-			call<import("@rp/contracts").StanceStarted>(`${stancesAt(name, { community })}/proposals`, send("POST", { fresh, ...approved })),
+			starting<import("@rp/contracts").StanceStarted>(`${stancesAt(name, { community })}/proposals`, send("POST", { fresh, ...approved })),
 	},
 	/** the extraction table's columns of a run (kept, or the defaults) */
 	extractionColumns: (name: string) => call<import("@rp/contracts").ExtractionColumns>(`${run(name)}/extraction/columns`),
@@ -186,10 +194,10 @@ export const api = {
 		call<import("@rp/contracts").ExtractionColumns>(`${run(name)}/extraction/columns`, send("PUT", { columns })),
 	/** the table as kept, its quotes checked again; nothing is asked */
 	extractionTable: (name: string, scope: import("@rp/contracts").ExtractionScope) =>
-		call<import("@rp/contracts").ExtractionTable>(`${run(name)}/extraction/table`, send("POST", { scope })),
+		reading<import("@rp/contracts").ExtractionTable>(`${run(name)}/extraction/table`, send("POST", { scope })),
 	/** what asking the sample or the rest would cost; nothing is sent */
 	extractionEstimate: (name: string, scope: import("@rp/contracts").ExtractionScope, part: import("@rp/contracts").ExtractionPart) =>
-		call<import("@rp/contracts").ExtractionEstimate>(`${run(name)}/extraction/estimate`, send("POST", { scope, part })),
+		reading<import("@rp/contracts").ExtractionEstimate>(`${run(name)}/extraction/estimate`, send("POST", { scope, part })),
 	/** start asking, as a job, within `budget` (US dollars, or tokens for a model with no price), of the model the
 	 *  estimate was shown for; answers the job's number */
 	runExtraction: (
@@ -198,13 +206,13 @@ export const api = {
 		part: import("@rp/contracts").ExtractionPart,
 		budget: import("@rp/contracts").BudgetOf,
 		shown: import("@rp/contracts").ShownModel,
-	) => call<{ ok: true; id: number }>(`${run(name)}/extraction/run`, send("POST", { scope, part, ...budget, ...shown })),
+	) => starting<{ ok: true; id: number }>(`${run(name)}/extraction/run`, send("POST", { scope, part, ...budget, ...shown })),
 	/** forget these papers' cells, so that they are asked again at the next run */
 	forgetExtraction: (name: string, papers: string[]) =>
 		call<{ forgotten: number }>(`${run(name)}/extraction/forget`, send("POST", { papers })),
 	/** what explaining the passage at `address` involves, free: its definitions, a kept explanation or the estimate */
 	prepareExplanation: (id: string, address: PassageAddress) =>
-		call<ExplanationPrepared>(`/api/papers/${encodeURIComponent(id)}/explanation/prepare`, send("POST", { address })),
+		reading<ExplanationPrepared>(`/api/papers/${encodeURIComponent(id)}/explanation/prepare`, send("POST", { address })),
 	/** ask the model to explain the passage at `address`, as a job (none is started when one is kept) */
 	/** ask, for the model and the worst case the reader was shown (the engine refuses if either changed) */
 	explain: (
@@ -212,7 +220,7 @@ export const api = {
 		address: PassageAddress,
 		shown: import("@rp/contracts").ShownModel,
 		accepted: import("@rp/contracts").AcceptedCost,
-	) => call<ExplanationStarted>(`/api/papers/${encodeURIComponent(id)}/explanation`, send("POST", { address, ...shown, ...accepted })),
+	) => starting<ExplanationStarted>(`/api/papers/${encodeURIComponent(id)}/explanation`, send("POST", { address, ...shown, ...accepted })),
 	/** forget the kept explanation of a passage, so that it is asked for again; `redone` says whether there was one */
 	redoExplanation: (id: string, address: PassageAddress) =>
 		call<{ redone: boolean }>(`/api/papers/${encodeURIComponent(id)}/explanation`, send("DELETE", { address })),
@@ -220,21 +228,21 @@ export const api = {
 	explainedPassages: (id: string) => call<ExplainedPassages>(`/api/papers/${encodeURIComponent(id)}/explanations`),
 	/** passages of the run's papers near this one that share the passage's words (no model) */
 	relatedPassages: (name: string, id: string, address: PassageAddress) =>
-		call<RelatedPassages>(`${run(name)}/papers/${encodeURIComponent(id)}/related`, send("POST", { address })),
+		reading<RelatedPassages>(`${run(name)}/papers/${encodeURIComponent(id)}/related`, send("POST", { address })),
 	/** a paper's claim tree with its reviews mapped onto it, as kept, and what asking the rest would cost (asks nothing) */
-	claims: (id: string) => call<ClaimsView>(`/api/papers/${encodeURIComponent(id)}/claims`),
+	claims: (id: string) => reading<ClaimsView>(`/api/papers/${encodeURIComponent(id)}/claims`),
 	/** ask the model what is not kept, within `budget_usd`; answers the job's number */
 	startClaims: (id: string, start: ClaimsStart) =>
-		call<{ job: number }>(`/api/papers/${encodeURIComponent(id)}/claims`, send("POST", start)),
+		starting<{ job: number }>(`/api/papers/${encodeURIComponent(id)}/claims`, send("POST", start)),
 	/** forget the paper's tree and mapping: asked again on the next start */
 	forgetClaims: (id: string) => call<{ forgotten: number }>(`/api/papers/${encodeURIComponent(id)}/claims`, { method: "DELETE" }),
 	/** per paper of a community whose reviews were mapped, its contested claims */
 	contestedClaims: (name: string, treePath: string) =>
-		call<ContestedClaims>(`${run(name)}/communities/${encodeURIComponent(treePath)}/claims/contested`),
+		reading<ContestedClaims>(`${run(name)}/communities/${encodeURIComponent(treePath)}/claims/contested`),
 	/** the sentences where this paper cites papers of the library, and where (the run's, or one of its
 	 *  communities') papers cite it */
 	citationContexts: (id: string, inRun?: string, treePath?: string) =>
-		call<PaperCitationContexts>(
+		reading<PaperCitationContexts>(
 			`/api/papers/${encodeURIComponent(id)}/citation-contexts${inRun ? `?run=${encodeURIComponent(inRun)}` : ""}${
 				inRun && treePath ? `&community=${encodeURIComponent(treePath)}` : ""
 			}`,
@@ -243,15 +251,15 @@ export const api = {
 	readCitationContexts: (name: string) => call<{ ok: true; id: number }>(`${run(name)}/citation-contexts`, { method: "POST" }),
 	/** what the kinds of a community's (or the run's) citations come to */
 	citationKinds: (name: string, treePath?: string) =>
-		call<CitationKindsSummary>(`${run(name)}/citation-kinds${treePath ? `?community=${encodeURIComponent(treePath)}` : ""}`),
+		reading<CitationKindsSummary>(`${run(name)}/citation-kinds${treePath ? `?community=${encodeURIComponent(treePath)}` : ""}`),
 	/** what reading those kinds would cost; nothing is sent */
 	citationKindsEstimate: (name: string, scope: CitationKindsScope, treePath?: string) =>
-		call<CitationKindsEstimate>(
+		reading<CitationKindsEstimate>(
 			`${run(name)}/citation-kinds/estimate?scope=${scope}${treePath ? `&community=${encodeURIComponent(treePath)}` : ""}`,
 		),
 	/** start the job that asks the model for those kinds, within the budget */
 	classifyCitations: (name: string, request: ClassifyCitationsRequest) =>
-		call<{ ok: true; id: number }>(`${run(name)}/citation-kinds`, send("POST", request)),
+		starting<{ ok: true; id: number }>(`${run(name)}/citation-kinds`, send("POST", request)),
 	/** forget the kinds read for the papers a community cites, so that they are read again */
 	forgetCitationKinds: (name: string, treePath?: string) =>
 		call<{ ok: true; forgotten: number }>(`${run(name)}/citation-kinds${treePath ? `?community=${encodeURIComponent(treePath)}` : ""}`, {
@@ -260,21 +268,21 @@ export const api = {
 	// ---- cited answers (the types imported where they are used, so that this file's imports stay as they are) ----
 	/** the passages of a run's papers (or one community's) that match `query` best: no model, no cost */
 	passagesFound: (name: string, query: string, community?: string | null) =>
-		call<import("@rp/contracts").PassagesFound>(
+		reading<import("@rp/contracts").PassagesFound>(
 			`${run(name)}/passages/found?${new URLSearchParams({ q: query, ...(community ? { community } : {}) })}`,
 		),
 	/** what asking the model `question` would cost; nothing is sent */
 	answerEstimate: (name: string, question: string, community?: string | null) =>
-		call<import("@rp/contracts").AnswerEstimate>(
+		reading<import("@rp/contracts").AnswerEstimate>(
 			`${run(name)}/answers/estimate?${new URLSearchParams({ q: question, ...(community ? { community } : {}) })}`,
 		),
 	/** ask it, accepting the most it can cost as it was shown: starts a job (none when the answer is kept) */
 	askQuestion: (name: string, request: import("@rp/contracts").AnswerRequest) =>
-		call<import("@rp/contracts").AnswerStarted>(`${run(name)}/answers`, send("POST", request)),
+		starting<import("@rp/contracts").AnswerStarted>(`${run(name)}/answers`, send("POST", request)),
 	/** the questions asked of a run and its communities, the latest first */
 	questions: (name: string) => call<import("@rp/contracts").AnswerSummary[]>(`${run(name)}/answers`),
 	/** one question and its kept answer, its quotes checked again */
-	answer: (name: string, id: string) => call<import("@rp/contracts").AnswerView>(`${run(name)}/answers/${encodeURIComponent(id)}`),
+	answer: (name: string, id: string) => reading<import("@rp/contracts").AnswerView>(`${run(name)}/answers/${encodeURIComponent(id)}`),
 	/** forget a question and its answer */
 	forgetQuestion: (name: string, id: string) => call<{ ok: true }>(`${run(name)}/answers/${encodeURIComponent(id)}`, { method: "DELETE" }),
 	/** forget its answer only, so that it is asked again (at the cost shown again) */
@@ -287,7 +295,7 @@ export const api = {
 		call<import("@rp/contracts").DescribeEstimate>(`${run(name)}/describe/estimate${redo ? "?redo=true" : ""}`),
 	/** name them within the most shown, as the one job */
 	describeRun: (name: string, request: import("@rp/contracts").DescribeRequest) =>
-		call<import("@rp/contracts").DescribeStarted>(`${run(name)}/describe`, send("POST", request)),
+		starting<import("@rp/contracts").DescribeStarted>(`${run(name)}/describe`, send("POST", request)),
 	/** one page of the runs, sorted and searched, without reading every run (the engine only) */
 	runsPage: (query: { offset?: number; limit?: number; sort?: import("@rp/contracts").RunSort; search?: string }) => {
 		const asked = new URLSearchParams();
@@ -302,7 +310,7 @@ export const api = {
 	 * what is built asks nothing and needs neither) */
 	buildDetector: (
 		request: import("@rp/contracts").ShownModel & (import("@rp/contracts").AcceptedCost | import("@rp/contracts").BudgetOf),
-	) => call<import("@rp/contracts").DetectorStarted>("/api/detector/build", send("POST", request)),
+	) => starting<import("@rp/contracts").DetectorStarted>("/api/detector/build", send("POST", request)),
 	/** score a week of arXiv in each year (arXiv only, free): starts the job */
 	checkDetectorYears: () => call<import("@rp/contracts").DetectorStarted>("/api/detector/years", { method: "POST" }),
 	/** a paper's AI-text verdict: null when it was never scored or is too short */

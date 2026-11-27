@@ -8,6 +8,7 @@ import { askingCost } from "./costs";
 import {
 	LONGEST_SELECTION,
 	askFirst,
+	asksUnconfirmed,
 	byPart,
 	costLine,
 	costNote,
@@ -90,6 +91,19 @@ test("the cost is always asked about, unless the reader chose an amount the wors
 	assert.equal(askFirst(estimate, 0.1), false);
 	assert.equal(askFirst(estimate, 0.05), true, "the most it could cost is compared, not the likely cost");
 	assert.equal(askFirst({ ...estimate, most_usd: null, usd: null }, 100), true, "a model with no known price always asks");
+});
+
+test("an explanation is asked for with no click only when every condition holds, and never by default", () => {
+	const on = { askBelow: 0.1, current: estimate, first: true, keySet: true, askedBefore: false, idle: true };
+	assert.equal(asksUnconfirmed(on), true, "turned on, the worst case within the amount, the first estimate");
+	assert.equal(asksUnconfirmed({ ...on, askBelow: null }), false, "off: the default");
+	assert.equal(asksUnconfirmed({ ...on, askBelow: 0.05 }), false, "the most it could cost is above the amount");
+	assert.equal(asksUnconfirmed({ ...on, current: { ...estimate, most_usd: null, usd: null } }), false, "no known price");
+	assert.equal(asksUnconfirmed({ ...on, current: null }), false, "the estimate shown is not the current one");
+	assert.equal(asksUnconfirmed({ ...on, first: false }), false, "a later estimate (another model chosen) waits for a click");
+	assert.equal(asksUnconfirmed({ ...on, keySet: false }), false);
+	assert.equal(asksUnconfirmed({ ...on, askedBefore: true }), false, "asked, redone or stopped before: a click");
+	assert.equal(asksUnconfirmed({ ...on, idle: false }), false, "something is already being asked");
 });
 
 test("the estimate is said with its currency and units and as an estimate", () => {

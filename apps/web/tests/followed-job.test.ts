@@ -168,3 +168,56 @@ test("a probe right after a look answers from it, without asking again", async (
 	await poller.probe();
 	assert.deepEqual(asked, [0]);
 });
+
+test("after a job is started, the last job's end is never told as the new one's, and its log is asked from the start", async () => {
+	// a status without job numbers: only the start tells one job from the next
+	const ended = { ...status("done", { log: ["old 1", "old 2"] }), id: undefined };
+	const fresh = { ...status("running", { log: ["new 1"] }), id: undefined };
+	const { poller, asked } = scripted([ended, fresh]);
+	assert.deepEqual(await poller.probe(), { seen: ended });
+	poller.restart();
+	const look = await poller.probe();
+	assert.deepEqual(look, { seen: fresh }, "asked again, not the kept look of the job before");
+	assert.deepEqual(asked, [0, 0], "from the new job's first line");
+});
+
+test("a look under way when a job is started is asked again before anyone is told", async () => {
+	let answer: (told: Status) => void = () => {};
+	const asked: number[] = [];
+	const answers = [status("done", { id: 7 }), status("running", { id: 8, log: ["a"] })];
+	let first = true;
+	const poller = createPoller(
+		(since) => {
+			asked.push(since);
+			if (first) {
+				first = false;
+				return new Promise<Status>((resolve) => (answer = resolve));
+			}
+			return Promise.resolve(answers[1]);
+		},
+		() => 0,
+		() => () => undefined, // no next look: the test is about this one
+	);
+	const told: unknown[] = [];
+	const looking = poller.probe();
+	poller.watch((look) => told.push(look));
+	poller.restart(); // the job was started while that look was on its way
+	answer(answers[0]);
+	assert.deepEqual(await looking, { seen: answers[1] });
+	assert.deepEqual(told, [{ seen: answers[1] }], "the job before's end was not told");
+	assert.deepEqual(asked, [0, 0]);
+});
+
+test("a job just started is looked at after the usual wait, whatever the engine's silence before", async () => {
+	const down = new Error("The engine is not reachable.");
+	const { poller, tick, waits } = scripted([down, down, down, status("running")]);
+	const stop = poller.watch(() => undefined);
+	await tick();
+	await tick();
+	await tick();
+	assert.equal(waits[0]?.ms, 8 * POLL_MS, "backing off while it did not answer");
+	stop();
+	poller.restart();
+	poller.watch(() => undefined);
+	assert.equal(waits.at(-1)?.ms, POLL_MS);
+});

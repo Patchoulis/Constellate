@@ -63,7 +63,11 @@ function Answer({ view, onCitedPapers }: { view: AnswerView; onCitedPapers?: (pa
 	const { cited, unused } = splitPassages(view.passages);
 	const leftOut = leftOutLine(view.counts);
 	const note = stateNote(view);
-	useEffect(() => onCitedPapers?.(view.cited_papers), [view.cited_papers, onCitedPapers]);
+	// the papers it cites, while it is shown (the graph colours them); none once it is not
+	useEffect(() => {
+		onCitedPapers?.(view.cited_papers);
+		return () => onCitedPapers?.([]);
+	}, [view.cited_papers, onCitedPapers]);
 	return (
 		<div className="flex flex-col gap-3">
 			<p className="font-sans text-base font-semibold text-foreground">{view.question}</p>

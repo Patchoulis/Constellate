@@ -1,8 +1,9 @@
 /** Where papers stand on a question: counted with what they are counts of, broken down, never one verdict. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Evidence, GraphNode, StanceCostEstimate, StanceFilter, StancePlaced, StanceResult, StanceRow } from "@rp/contracts";
-import { breakdown, costLine, countsLine, coverageLine, groupSets, skippedLine, starter, tally } from "@/lib/stances";
+import type { Evidence, StanceCostEstimate, StanceFilter, StancePlaced, StanceResult, StanceRow } from "@rp/contracts";
+import { breakdown, costLine, countsLine, coverageLine, skippedLine, stanceColouring, starter, tally } from "@/lib/stances";
+import { canvasColouring } from "@/lib/graph-colouring";
 import { batchCost } from "./costs";
 
 const evidence: Evidence = {
@@ -88,12 +89,17 @@ test("a cost is shown with its currency and as an estimate, or as nothing to pay
 	assert.equal(costLine({ ...estimate, usd: null, most_usd: null }, usd, "en-US"), "at most 28k tokens (an estimate)");
 });
 
-test("each group's papers are found on the graph by id", () => {
-	const nodes = ["x", "a", "c", "f"].map((id) => ({ id }) as GraphNode);
-	const sets = groupSets(rows, nodes);
-	assert.deepEqual([...(sets.get("supports") ?? [])], [1]);
-	assert.deepEqual([...(sets.get("mixed") ?? [])], [2]);
-	assert.deepEqual([...(sets.get("not_verified") ?? [])], [3]);
-	assert.equal(sets.get("contradicts"), undefined, "a paper not in the run is not drawn");
+test("each group's papers are found on the graph by id, in the group's hue", () => {
+	const nodes = ["x", "a", "c", "f"];
+	const colouring = stanceColouring("Does it help?", rows);
+	const drawn = canvasColouring(colouring, new Map(nodes.map((id, index) => [id, index])), nodes.length);
+	const at = (id: string) => colouring.groups[drawn.of[nodes.indexOf(id)]]?.name;
+	assert.equal(at("a"), "Supports");
+	assert.equal(at("c"), "Mixed or conditional");
+	assert.equal(at("f"), "Not verified");
+	assert.equal(drawn.of[0], -1, "a paper of the run with no stance is in no group");
+	const contradicts = drawn.legend.find((entry) => entry.name === "Contradicts");
+	assert.deepEqual(contradicts && [contradicts.shown, contradicts.hue], [0, 0], "a paper not in the run is not drawn, and counted apart");
+	assert.equal(drawn.legend.find((entry) => entry.name === "Not verified")?.hue, null, "grey: not counted for or against");
 	assert.equal(starter("synthetic data"), "Does synthetic data help?");
 });

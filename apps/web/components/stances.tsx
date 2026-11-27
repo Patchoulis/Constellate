@@ -7,7 +7,7 @@
  * with its own words, the counts with what they are counts of, by acceptance tier and by year. Never one verdict.
  */
 import { useCallback, useEffect, useState } from "react";
-import { RotateCcw, Sparkles, Square } from "lucide-react";
+import { Palette, RotateCcw, Sparkles, Square } from "lucide-react";
 import type {
 	StancePartEstimate,
 	StancePlan,
@@ -38,10 +38,12 @@ import {
 	rowsOf,
 	skippedLine,
 	STANCE_NOTE,
+	stanceColouring,
 	starter,
 	tally,
 } from "@/lib/stances";
 import { accepting, shownModel } from "@/lib/cost";
+import { useColouringBy } from "@/lib/graph-colouring";
 import { ready, useAsync } from "@/lib/use-async";
 import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
 import { elsewhereLine, notAskedLine, useFollowedJob, type FollowedJob } from "@/lib/use-followed-job";
@@ -197,6 +199,7 @@ function ResultView({
 }) {
 	const loaded = useAsync(() => api.stances.result(run, scope, id), [run, JSON.stringify(scope), id, version]);
 	const [confirming, setConfirming] = useState(false);
+	const colouring = useColouringBy(`stances:${run}:${JSON.stringify(scope)}`);
 	if (loaded.status === "failed") return <p className="text-xs text-destructive">{loaded.error}</p>;
 	const result = ready(loaded);
 	if (!result) return <p className="text-xs text-muted-foreground">Loading…</p>;
@@ -226,6 +229,22 @@ function ResultView({
 						))}
 					</ul>
 				</details>
+			)}
+			{colouring && result.rows.length > 0 && (
+				<Button
+					variant="ghost"
+					className="h-7 self-start text-xs"
+					aria-pressed={colouring.shown === result.id}
+					title={
+						colouring.shown === result.id
+							? "Colour the graph by its communities again"
+							: "Colour the graph by where these papers stand, in the groups' colours; every other paper is dimmed"
+					}
+					onClick={() => colouring.toggle(result.id, () => stanceColouring(result.question, result.rows))}
+				>
+					<Palette />
+					{colouring.shown === result.id ? "Shown on the graph" : "Show on the graph"}
+				</Button>
 			)}
 			<Groups result={result} onOpenPaper={onOpenPaper} />
 			{/* nothing new is started while a job runs: it is followed until it ends */}

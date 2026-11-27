@@ -199,7 +199,7 @@ export function PaperText({
 
 	if (read.status === "failed")
 		// no PDF the engine can have or read (it answers 404): nothing went wrong
-		return noReadablePdf(read.error) ? (
+		return noReadablePdf(read.problem) ? (
 			<p className="text-sm text-muted-foreground">
 				The paper&apos;s text is not available here{onOpenPdf ? ": its PDF is in the Paper tab." : "."}
 			</p>

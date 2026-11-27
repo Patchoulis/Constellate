@@ -29,6 +29,25 @@ Never paste an API key, and check logs for one before attaching them.
 Describe what you would like and what you are trying to find out with it, as concretely as you can. If another
 tool does it, say which.
 
+### How a change reaches `main`
+
+Nobody pushes to `main`, the maintainers included: the branch's rules (`.github/rulesets/main.json`, imported
+under Settings > Rules) refuse it. Every change goes this way:
+
+1. **Branch** from `main` (or fork the repository and branch there): `feat/<what>`, `fix/<what>`, `docs/<what>`,
+   `chore/<what>`.
+2. **Commit** as the hooks ask (Conventional Commits; nothing shaped like a secret), and run `npm run pr` before
+   pushing: it is everything CI runs.
+3. **Open a pull request** into `main`. Its title is a Conventional Commit, because it becomes the commit on `main`
+   when the pull request is squashed. Fill in the template; a draft is welcome early.
+4. **The checks must pass**: `Checks (npm run pr)`, `Engine on Linux`, `Conventional title`, `No secrets`,
+   `Advisories` and `Dependency review` are required; `CodeQL` reports what it finds on the pull request. The branch
+   must be up to date with `main`, and every review conversation resolved.
+5. **Merge** by squashing (one change, one commit on `main`). A long-lived branch that gathers many reviewed
+   changes is merged with a merge commit instead, so that its history is kept.
+
+Security reports do not go through issues or pull requests: see `SECURITY.md`.
+
 ### Resolving an issue
 
 Pull requests are how concrete changes are made to the code, documentation and dependencies.

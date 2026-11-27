@@ -118,3 +118,42 @@ test("stopping a glide leaves the camera where it is and nobody is told it arriv
 	assert.equal(arrivals, 0);
 	assert.equal(glide.running, false);
 });
+
+test("a picture resized during a glide ends it at once at the destination worked out for the new size", () => {
+	const { controlled, tick, waiting } = frames();
+	const glide = new Glide(controlled);
+	let camera: View = { x: 0, y: 0, k: 1 };
+	let arrivals = 0;
+	// centre the world point (100, 100) at zoom 4, whatever the size
+	const aim = ({ width, height }: { width: number; height: number }): View => ({ x: width / 2 - 400, y: height / 2 - 400, k: 4 });
+	glide.go(
+		camera,
+		aim,
+		size,
+		(view) => (camera = view),
+		() => arrivals++,
+	);
+	tick(GLIDE_MS / 3);
+	const smaller = { width: 500, height: 400 };
+	glide.resized(smaller);
+	assert.deepEqual(camera, aim(smaller), "the destination for the new size, not the one for the old");
+	assert.equal(arrivals, 1, "told once that it arrived");
+	assert.equal(glide.running, false);
+	assert.equal(waiting.size, 0, "no frame left to run");
+	tick(GLIDE_MS);
+	assert.equal(arrivals, 1);
+	glide.resized(size); // no glide under way: nothing moves
+	assert.deepEqual(camera, aim(smaller));
+	assert.equal(arrivals, 1);
+});
+
+test("a glide to a fixed view arrives there whatever the size became", () => {
+	const { controlled, tick } = frames();
+	const glide = new Glide(controlled);
+	let camera: View = { x: 0, y: 0, k: 1 };
+	const to: View = { x: 10, y: 20, k: 2 };
+	glide.go(camera, to, size, (view) => (camera = view));
+	tick(10);
+	glide.resized({ width: 100, height: 100 });
+	assert.deepEqual(camera, to);
+});

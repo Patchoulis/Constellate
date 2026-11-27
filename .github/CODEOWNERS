@@ -1,0 +1,15 @@
+# Who is asked to review a pull request, by what it touches. The last matching line wins.
+# With the "require review from code owners" rule on main, these paths cannot change without that review.
+
+*                       @Patchoulis
+
+# Where a mistake is a security problem: the engine's guard and sign-in, the embedded reader's confinement,
+# the checks themselves, and what decides when a model may be called and what it may cost.
+/apps/engine/src/api/   @Patchoulis
+/apps/engine/src/model/ @Patchoulis
+/apps/desktop/          @Patchoulis
+/.github/               @Patchoulis
+/.githooks/             @Patchoulis
+/scripts/               @Patchoulis
+/SECURITY.md            @Patchoulis
+/deny.toml              @Patchoulis
