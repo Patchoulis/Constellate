@@ -1,7 +1,18 @@
 /** Marked papers: what can be done to a run's list of marks, and what is read back from storage. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { addMark, isMarked, keepKnown, marksKey, parseMarks, removeMark, serialiseMarks, toggleMark, type Marks } from "@/lib/marks";
+import {
+	addMark,
+	forgetMarks,
+	isMarked,
+	keepKnown,
+	marksKey,
+	parseMarks,
+	removeMark,
+	serialiseMarks,
+	toggleMark,
+	type Marks,
+} from "@/lib/marks";
 
 test("a marked paper is listed newest first, and only once", () => {
 	let marks: Marks = [];
@@ -104,4 +115,32 @@ test("what is stored under one run's key reads back as that run's marks only", (
 	assert.deepEqual(parseMarks(storage.get(marksKey("run one"))), ["a", "b"]);
 	assert.deepEqual(parseMarks(storage.get(marksKey("run two"))), ["z"]);
 	assert.deepEqual(parseMarks(storage.get(marksKey("run three"))), []);
+});
+
+test("deleting a run forgets its marks and no other run's, and storage switched off is no error", () => {
+	const storage = new Map<string, string>([
+		[marksKey("gone"), serialiseMarks(["a"])],
+		[marksKey("kept"), serialiseMarks(["b"])],
+	]);
+	const localStorage = {
+		getItem: (key: string) => storage.get(key) ?? null,
+		setItem: (key: string, value: string) => void storage.set(key, value),
+		removeItem: (key: string) => void storage.delete(key),
+	};
+	const global = globalThis as { window?: unknown };
+	const before = global.window;
+	try {
+		global.window = { localStorage };
+		forgetMarks("gone");
+		assert.equal(storage.get(marksKey("gone")), undefined);
+		assert.equal(storage.get(marksKey("kept")), serialiseMarks(["b"]));
+		global.window = {
+			get localStorage(): never {
+				throw new Error("storage is disabled");
+			},
+		};
+		assert.doesNotThrow(() => forgetMarks("kept"));
+	} finally {
+		global.window = before;
+	}
 });

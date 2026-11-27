@@ -109,6 +109,18 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A setting the backend refuses (a number of communities out of range, say) now says why, in the backend's
+  words, under the list of runs until that setting is saved, instead of quietly going back; a failed rename or
+  delete of a run says why too.
+- "Try again" after reading a paper's declarations or its reference list failed now reads it again.
+- An open overview is asked for again when the language model is changed in Settings, so the previous model's
+  overview is no longer shown under the new one.
+- A community's reviews and other sections no longer show the previous community's figures while their own load,
+  and a reload that fails keeps what was shown beside the error.
+- Without the engine, the reader's Text and Citations tabs say that nothing is available instead of "not found".
+- The graph stays sharp and correctly placed when the window moves to a screen with another pixel density, and a
+  run with no papers says so instead of drawing nothing.
+
 - The model features (Weaknesses, Agree / disagree, the Table, Explain, Claims, citation kinds and Ask) now work with whichever provider is chosen, as they do with Claude: the cost shown before asking is that provider's, the request goes to that provider with its own model, a model with no published price (a typed id, a model on your own computer) runs within the tokens shown instead of being refused, no dollar figure is shown for it, answers kept for one provider are not taken for another's, and a job is refused if the provider or model changed since its cost was shown.
 
 - A finished feature no longer reopens the last run, and the run that finished before the page was opened is no longer opened again at every load.

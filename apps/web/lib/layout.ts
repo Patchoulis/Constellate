@@ -137,7 +137,8 @@ function deal(node: CommunityNode, spots: Point[], layout: Layout) {
 
 export function layoutGraph(graph: GraphData, roots: CommunityNode[]): Layout {
 	const homes = placeCommunities(graph, roots);
-	const edge = (pick: (home: Home) => number, most: (...values: number[]) => number) => most(...homes.map(pick));
+	// no community at all: a box around the origin, not one from Infinity to -Infinity that no camera can fit
+	const edge = (pick: (home: Home) => number, most: (...values: number[]) => number) => (homes.length ? most(...homes.map(pick)) : 0);
 	const layout: Layout = {
 		points: graph.nodes.map(() => ({ x: 0, y: 0 })),
 		discs: new Map(),

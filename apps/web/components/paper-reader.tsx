@@ -19,6 +19,7 @@ import { api } from "@/lib/api";
 import { communityLabel, type CommunityNode } from "@/lib/community";
 import { pdfAt } from "@/lib/evidence";
 import { ready, useAsync, type Async } from "@/lib/use-async";
+import { useFocusReturn } from "@/lib/use-focus-return";
 import { useResizable } from "@/lib/use-resizable";
 import { count, similarity, SIMILARITY_NOTE } from "@/lib/units";
 import { cn } from "@/lib/utils";
@@ -146,7 +147,11 @@ function Declared({
 	flagNames: Record<string, CatalogItem>;
 }) {
 	const [asked, setAsked] = useState(false);
-	const read: Async<Declarations> = useAsync(asked ? () => api.declarations(paper.id) : null, [asked, paper.id]);
+	const read: Async<Declarations> & { reload: () => void } = useAsync(asked ? () => api.declarations(paper.id) : null, [asked, paper.id], {
+		keep: false,
+	});
+	// the first click asks; after a failure, the same button asks again
+	const ask = asked ? read.reload : () => setAsked(true);
 	const declared = paper.declarations ?? ready(read);
 	if (!declared) {
 		if (!paper.readable)
@@ -162,9 +167,9 @@ function Declared({
 		return (
 			<section className="flex flex-col items-start gap-2 font-ui">
 				<Heading>What the authors declare</Heading>
-				<Button variant="outline" disabled={read.status === "loading"} onClick={() => setAsked(true)}>
+				<Button variant="outline" disabled={read.status === "loading"} onClick={ask}>
 					{read.status === "loading" ? <Loader2 className="animate-spin" /> : <FileSearch />}
-					{read.status === "loading" ? "Reading the paper" : "Read the checklist and statements"}
+					{read.status === "loading" ? "Reading the paper" : read.status === "failed" ? "Try again" : "Read the checklist and statements"}
 				</Button>
 				{read.status === "failed" && <p className="text-xs text-destructive">{read.error}</p>}
 			</section>
@@ -390,6 +395,7 @@ export function PaperReader({
 
 	// it lies over the right of the graph, which moves a paper into the rest (graph-view reads its width)
 	const resizable = useResizable<HTMLDivElement>("reader");
+	useFocusReturn(resizable.ref);
 
 	useEffect(() => {
 		const onKey = (event: KeyboardEvent) => event.key === "Escape" && onClose();

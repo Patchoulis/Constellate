@@ -14,7 +14,7 @@ import { api } from "@/lib/api";
 import { communityTree, type CommunityNode } from "@/lib/community";
 import { useMarks } from "@/lib/marks";
 import type { Job } from "@/lib/use-job";
-import { useAsync } from "@/lib/use-async";
+import { ready, useAsync } from "@/lib/use-async";
 import { useResizable } from "@/lib/use-resizable";
 
 /** The run's log, folded to its last line until opened. */
@@ -30,7 +30,13 @@ export function ActivityLog({ job }: { job: Job }) {
 	return (
 		<div className="enter-from-bottom absolute bottom-3 left-3 z-10 w-[min(34rem,calc(100%-4.5rem))] rounded-md border bg-card/95 shadow-lg">
 			{open && <ResizeHandle {...handle} />}
-			<button onClick={() => setOpen((value) => !value)} className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs">
+			<button
+				type="button"
+				aria-expanded={open}
+				title={open ? "Fold the log" : "Show the whole log"}
+				onClick={() => setOpen((value) => !value)}
+				className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs"
+			>
 				<span className={running ? "size-1.5 animate-pulse rounded-full bg-success" : "size-1.5 rounded-full bg-muted-foreground"} />
 				<span className="flex-1 truncate text-muted-foreground">{job.log[job.log.length - 1].trim()}</span>
 				{open ? <ChevronDown className="size-3.5" /> : <ChevronUp className="size-3.5" />}
@@ -54,17 +60,28 @@ export function Notice({ children }: { children: React.ReactNode }) {
 
 /** One run on screen: its graph, its communities, and the paper being read. Mount it with key={name}, so
  *  opening another run starts with nothing selected. `children` are laid over the graph. */
-export function Workspace({ name, catalog, children }: { name: string; catalog: Catalog | undefined; children?: React.ReactNode }) {
-	const run = useAsync(() => Promise.all([api.run(name), api.graph(name)]), [name]);
+export function Workspace({
+	name,
+	catalog,
+	model,
+	children,
+}: {
+	name: string;
+	catalog: Catalog | undefined;
+	/** the language model chosen in Settings, once known */
+	model?: string;
+	children?: React.ReactNode;
+}) {
+	const run = useAsync(() => Promise.all([api.run(name), api.graph(name)]), [name], { keep: false });
 	const [selected, setSelected] = useState<CommunityNode | null>(null);
 	const [paper, setPaper] = useState<string | null>(null);
 	const [overview, setOverview] = useState<CommunityNode | null>(null); // the community whose overview is open
-	const [result, graph] = run.status === "ready" ? run.data : [];
+	const [result, graph] = ready(run) ?? [];
 	const roots = useMemo(() => (result ? communityTree(result.communities) : []), [result]);
 	// reviewers' scores: those read before, and those read from a Reviews tab opened since
-	const kept = useAsync(() => api.ratings(), [name]);
+	const kept = ready(useAsync(() => api.ratings(), [name], { keep: false }));
 	const [fresh, setFresh] = useState<Record<string, Ratings>>({});
-	const ratings = useMemo(() => ({ ...(kept.status === "ready" ? kept.data : {}), ...fresh }), [kept, fresh]);
+	const ratings = useMemo(() => ({ ...kept, ...fresh }), [kept, fresh]);
 	const onRatings = useCallback((id: string, read: Ratings) => setFresh((before) => ({ ...before, [id]: read })), []);
 	// the papers marked in this run; none are shown until the graph says which papers the run has
 	const known = useMemo(() => (graph ? new Set(graph.nodes.map((node) => node.id)) : null), [graph]);
@@ -110,6 +127,15 @@ export function Workspace({ name, catalog, children }: { name: string; catalog: 
 			</main>
 		);
 	}
+	if (graph.nodes.length === 0) {
+		// nothing to draw, lay out or pick from
+		return (
+			<main className="relative min-w-0 flex-1">
+				<Notice>This run has no papers to show. Pick another range or conference, or change the settings, and run it again.</Notice>
+				{children}
+			</main>
+		);
+	}
 	const paperIndex = paper === null ? -1 : graph.nodes.findIndex((node) => node.id === paper);
 	const paperNode = graph.nodes[paperIndex];
 	// The papers the open one is linked to, closest first.
@@ -138,6 +164,7 @@ export function Workspace({ name, catalog, children }: { name: string; catalog: 
 						key={overview.community.tree_path}
 						run={name}
 						node={overview}
+						model={model}
 						onOpenPaper={openPaper}
 						onClose={() => setOverview(null)}
 					/>
