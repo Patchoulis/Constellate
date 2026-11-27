@@ -45,6 +45,10 @@ use url::Url;
 use crate::library::Library;
 use crate::usage::{Call, Tokens, Usd, price_of};
 
+mod anthropic;
+
+use anthropic::{Block, Message, Usage, failure};
+
 /// The version of the API this speaks (`anthropic-version`).
 pub const API_VERSION: &str = "2026-10-21";
 /// Where the key is read from, and nowhere else.
@@ -236,27 +240,6 @@ impl Ask<'_> {
     fn characters(&self) -> (u64, u64) {
         let count = |text: &str| u64::try_from(text.chars().count()).unwrap_or(u64::MAX);
         (count(self.system) + self.shared.map_or(0, count), count(self.question))
-    }
-
-    /// The messages and settings of the request, without what only `messages` takes.
-    fn body(&self) -> Value {
-        let cached = json!({"type": "ephemeral"});
-        let mut content = Vec::new();
-        if let Some(shared) = self.shared {
-            content.push(json!({"type": "text", "text": shared, "cache_control": cached}));
-        }
-        content.push(json!({"type": "text", "text": self.question}));
-        let mut output = json!({"effort": self.effort.as_str()});
-        if let Form::Json(schema) = self.form {
-            output["format"] = json!({"type": "json_schema", "schema": schema});
-        }
-        json!({
-            "model": self.model,
-            "system": [{"type": "text", "text": self.system, "cache_control": cached}],
-            "messages": [{"role": "user", "content": content}],
-            "thinking": {"type": "adaptive"},
-            "output_config": output,
-        })
     }
 }
 
@@ -629,118 +612,15 @@ pub struct Answered<T> {
     pub cost: Option<Usd>,
 }
 
-/// An answer as the API documents it, only what is read of it.
-#[derive(Deserialize)]
-struct Message {
-    model: Option<String>,
-    stop_reason: Option<String>,
-    stop_details: Option<StopDetails>,
-    #[serde(default)]
-    content: Vec<Block>,
-    usage: Option<Usage>,
-}
-
-#[derive(Deserialize)]
-struct StopDetails {
-    category: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type")]
-enum Block {
-    #[serde(rename = "text")]
-    Text { text: String },
-    #[serde(other)]
-    Other,
-}
-
-#[derive(Clone, Deserialize)]
-struct Usage {
-    model: Option<String>,
-    #[serde(default)]
-    input_tokens: u64,
-    #[serde(default)]
-    output_tokens: u64,
-    #[serde(default)]
-    cache_read_input_tokens: Option<u64>,
-    #[serde(default)]
-    cache_creation_input_tokens: Option<u64>,
-    cache_creation: Option<CacheCreation>,
-    /// One per model that worked on the answer, when a fallback did.
-    iterations: Option<Vec<Usage>>,
-}
-
-#[derive(Clone, Deserialize)]
-struct CacheCreation {
-    #[serde(default)]
-    ephemeral_5m_input_tokens: u64,
-    #[serde(default)]
-    ephemeral_1h_input_tokens: u64,
-}
-
-impl Usage {
-    fn tokens(&self) -> Tokens {
-        let (write_5m, write_1h) = match &self.cache_creation {
-            Some(by_lifetime) => (by_lifetime.ephemeral_5m_input_tokens, by_lifetime.ephemeral_1h_input_tokens),
-            // without the breakdown every write is taken as a five-minute one, the lifetime asked for here
-            None => (self.cache_creation_input_tokens.unwrap_or(0), 0),
-        };
-        Tokens {
-            input: self.input_tokens,
-            output: self.output_tokens,
-            cache_read: self.cache_read_input_tokens.unwrap_or(0),
-            cache_write_5m: write_5m,
-            cache_write_1h: write_1h,
-        }
-    }
-}
-
-#[derive(Deserialize)]
-struct ErrorBody {
-    error: Option<ErrorDetail>,
-}
-
-#[derive(Deserialize)]
-struct ErrorDetail {
-    #[serde(rename = "type")]
-    kind: Option<String>,
-    message: Option<String>,
-    details: Option<ErrorCode>,
-}
-
-#[derive(Deserialize)]
-struct ErrorCode {
-    error_code: Option<String>,
-}
-
-/// What a request that failed with `reply.status` means.
-fn failure(reply: &Reply, model: &str) -> AskError {
-    let detail = serde_json::from_slice::<ErrorBody>(&reply.body).ok().and_then(|body| body.error);
-    let message = detail.as_ref().and_then(|detail| detail.message.clone()).unwrap_or_default();
-    let kind = detail.as_ref().and_then(|detail| detail.kind.clone()).unwrap_or_default();
-    let code = detail.and_then(|detail| detail.details).and_then(|details| details.error_code);
-    let retry_after = reply
+/// How long a reply's `retry-after` header says to wait. A header that is negative, not a number, or absurd is no
+/// wait at all (and must not panic); a long one is kept just past [`LONGEST_WAIT`], so that it is not waited for.
+fn retry_after_header(reply: &Reply) -> Option<Duration> {
+    reply
         .retry_after
         .as_deref()
         .and_then(|seconds| seconds.trim().parse::<f64>().ok())
-        // a header that is negative, not a number, or absurd is no wait at all (and must not panic)
         .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
-        .and_then(|seconds| Duration::try_from_secs_f64(seconds.min(LONGEST_WAIT.as_secs_f64() + 1.0)).ok());
-    match reply.status {
-        401 => Unavailable::KeyRefused.into(),
-        402 => Unavailable::Billing.into(),
-        403 => Unavailable::NotAllowed.into(),
-        404 if message.starts_with("model:") => Unavailable::UnknownModel(model.to_owned()).into(),
-        404 => Unavailable::NoSuchEndpoint.into(),
-        413 => NoAnswer::TooLarge.into(),
-        429 if code.as_deref() == Some("enforced_spend_limit_reached") => Unavailable::SpendLimit.into(),
-        429 => NoAnswer::RateLimited { retry_after }.into(),
-        529 => NoAnswer::Overloaded.into(),
-        _ if kind == "overloaded_error" => NoAnswer::Overloaded.into(),
-        status if status >= 500 => NoAnswer::ServerError(status).into(),
-        // what the request got wrong, in the API's words (it never repeats the key), shortened
-        _ => NoAnswer::Rejected(message.chars().take(300).collect()).into(),
-    }
+        .and_then(|seconds| Duration::try_from_secs_f64(seconds.min(LONGEST_WAIT.as_secs_f64() + 1.0)).ok())
 }
 
 /// Is this worth asking again, and after how long?
