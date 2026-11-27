@@ -18,7 +18,7 @@ const POLL_MS = 3000;
 const CITED_AT_FIRST = 4;
 
 /**
- * Where a community's overview stands, mirroring the backend's job states:
+ * Where a community's overview stands, mirroring the engine's job states:
  *
  *     idle --write--> running --> done | failed --write--> running
  *
@@ -47,7 +47,7 @@ export function useOverview(run: string, treePath: string, model: string | undef
 				},
 			);
 		},
-		// the model is not sent: the backend writes with the one in its settings, which is this one
+		// the model is not sent: the engine writes with the one in its settings, which is this one
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 		[run, treePath, model],
 	);

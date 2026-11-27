@@ -7,6 +7,15 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- A run whose communities have no names has a "Name the communities" button over its list: it shows how many are
+  named and what naming them would cost first, then names them, with its progress and a way to stop.
+- Settings can train the AI-text detector: it shows how many abstracts which model would write and what that would
+  cost (an estimate) before anything is asked, then trains with its progress and a way to stop; a trained detector
+  can be checked over a week of arXiv in each year, at no cost.
+- What of the earlier version's data could not be moved in is shown in the sidebar (until dismissed, until the next
+  start) and in Settings, with what to do about it; warnings about how the engine listens are shown in the sidebar.
+- Calls to the language model whose outcome is unknown, and that may have been billed, are said beside what was
+  spent, never added into it.
 - Runs are made by the app's own engine: while one runs, it says which step it is on and how far it has got
   ("embedding 3,120 of 12,487 papers", the embedding model's download in megabytes), it can be stopped and
   started again without fetching or embedding anything twice, and the runs and library made before open as they
@@ -106,6 +115,18 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Before a run is made again in place (a redo, or the same conferences again), a dialog says its title, how many
+  communities it has and how many are named, whether they will or may change, each setting that differs from when it
+  was made ("Clustering method: Fiedler vectors → Spectral"), and that their names, overviews and whatever was asked
+  about them no longer apply; Cancel is the default.
+- Redoing all of a run asks whether to name its communities again, with what that costs, or to keep their names;
+  "Describe all again" names the open run's communities again after showing the cost, without making the run again.
+- Every confirmation (deleting a run, forgetting an answer, a reading or a table) is a dialog of the app's own:
+  Escape cancels it and the keyboard's focus goes back to the button that asked.
+- The run's progress reads "Step 3 of 10: embedding 3,120 of 12,487 papers", and the embedding model's first
+  download "downloading the embedding model: 312 of 1,180 MB".
+- A section (a question, a table, a paper's weaknesses or claims, where papers stand) follows its own job when it was
+  started from another window, instead of saying that something else is being done.
 - Making a run again whose name exists asks first, saying whether its communities will change and how many of
   them have names: a remade run's names, and what was asked about its communities, may no longer apply. Nothing
   remakes a run unless you ask.
@@ -149,6 +170,10 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- What was spent shows no amount at all, only the calls and their tokens, when none of the calls had a known price.
+- Answers that say nothing, claim trees whose claims were all left out, quotes a model gave that were not found,
+  papers not in the library, unreadable PDFs and lookups of cited works that stopped early are each said in words,
+  with their counts, where they occur.
 - An engine that stops answering no longer leaves an estimate or a section waiting for ever: a request gives up
   after 20 seconds (a minute for one that may read a paper's PDF) and says so, an answer that cannot be read says
   that, and what a closed section or a superseded choice had asked for is called off.

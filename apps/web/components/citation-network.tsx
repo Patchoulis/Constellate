@@ -16,6 +16,7 @@ import {
 	confidenceNote,
 	layoutNetwork,
 	linkTag,
+	lookupsStoppedLine,
 	outsideLink,
 	showing,
 	shownWorks,
@@ -356,6 +357,7 @@ export function Citations({ paper, run, onOpen }: { paper: Paper; run?: string; 
 		return <p className="text-sm text-muted-foreground">Loading the citation network…</p>;
 	}
 	const { totals } = network;
+	const stopped = network.seed_state === "not_read" ? null : lookupsStoppedLine(network.lookups_stopped);
 	return (
 		<div className="mx-auto flex max-w-[68rem] flex-col gap-4 font-sans">
 			<p
@@ -385,6 +387,18 @@ export function Citations({ paper, run, onOpen }: { paper: Paper; run?: string; 
 							papers that cite it are shown.
 						</p>
 					)}
+				</div>
+			)}
+			{stopped && (
+				<div className="flex flex-col items-start gap-2 rounded-lg border p-3 font-ui">
+					<p className="text-xs text-warning">{stopped}</p>
+					{paper.readable && (
+						<Button variant="outline" disabled={reading.status === "loading"} onClick={read}>
+							{reading.status === "loading" ? <Loader2 className="animate-spin" /> : <BookOpenText />}
+							{reading.status === "loading" ? "Reading the paper's references" : "Read the references again"}
+						</Button>
+					)}
+					{reading.status === "failed" && <p className="text-xs text-destructive">{reading.error}</p>}
 				</div>
 			)}
 			{totals.references + totals.citations > 0 && <Picture network={network} seed={paper} onOpen={open} kinds={kinds} />}

@@ -48,8 +48,8 @@ test("what the job is about is kept from its start to its end", () => {
 
 test("a look that is not answered keeps the job running, and the next answer clears it", () => {
 	const running = started(7);
-	const unanswered = jobStep(running, { kind: "unanswered", error: "The backend is not reachable." });
-	assert.equal(unanswered.state === "running" && unanswered.unanswered, "The backend is not reachable.");
+	const unanswered = jobStep(running, { kind: "unanswered", error: "Constellate could not be reached." });
+	assert.equal(unanswered.state === "running" && unanswered.unanswered, "Constellate could not be reached.");
 	const again = jobStep(unanswered, { kind: "seen", status: status("running") });
 	assert.equal(again.state === "running" && again.unanswered, null);
 	assert.equal(jobStep(idle, { kind: "unanswered", error: "x" }), idle, "nothing to say it of when nothing runs");
@@ -138,14 +138,14 @@ test("nothing is asked once nobody watches", async () => {
 });
 
 test("an unreachable engine is looked at after longer and longer waits, and at the usual pace once it answers", async () => {
-	const down = new Error("The backend is not reachable.");
+	const down = new Error("Constellate could not be reached.");
 	const { poller, tick } = scripted([down, down, down, status("running")]);
 	const looks: unknown[] = [];
 	poller.watch((look) => looks.push(look));
 	const waited = [await tick(), await tick(), await tick(), await tick(), await tick()];
 	assert.deepEqual(waited.slice(0, 4), [POLL_MS, 2 * POLL_MS, 4 * POLL_MS, 8 * POLL_MS]);
 	assert.equal(waited[4], POLL_MS);
-	assert.deepEqual(looks[0], { unanswered: "The backend is not reachable." });
+	assert.deepEqual(looks[0], { unanswered: "Constellate could not be reached." });
 });
 
 test("another job since the last look is read from its first log line", async () => {

@@ -27,7 +27,7 @@ import { budgetWords, costTitle, costWords, shownModel } from "@/lib/cost";
 import { count, tokens } from "@/lib/units";
 import { ready, useAsync } from "@/lib/use-async";
 import { choiceKey, currentEstimate, useChosenModel } from "@/lib/chosen-model";
-import { elsewhereLine, useFollowedJob, type FollowedJob } from "@/lib/use-followed-job";
+import { elsewhereLine, runSubject, useFollowedJob, type FollowedJob } from "@/lib/use-followed-job";
 
 /** The sentences behind one count: the community's citing sentences of `paper` read as `kinds`. */
 function Behind({ run, treePath, paper, kinds }: { run: string; treePath: string; paper: string; kinds: CitationKind[] }) {
@@ -166,7 +166,10 @@ export function CommunityCitationKinds({
 	};
 	// reading the citing sentences (free) is the run's job; asking for the kinds is this community's
 	const reading = useFollowedJob(reload, `citation-contexts:${run}`);
-	const { job, elsewhere, start } = useFollowedJob(reload, `citation-kinds:${run}:${treePath}`);
+	const { job, elsewhere, start } = useFollowedJob(reload, `citation-kinds:${run}:${treePath}`, {
+		feature: "citation_kinds",
+		subject: runSubject(run, treePath),
+	});
 	const [forgetting, setForgetting] = useState(false);
 	const [forgetError, setForgetError] = useState<string | null>(null);
 	if (loaded.status === "failed")

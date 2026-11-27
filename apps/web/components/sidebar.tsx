@@ -6,12 +6,14 @@ import type { Catalog, Library, RunPage, RunRequest, RunSummary, Settings, Usage
 import { Logo } from "@/components/brand";
 import { ModelChoice, chosenPrice } from "@/components/model-choice";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/confirm";
 import { Input, Label, SwitchRow } from "@/components/ui/field";
 import { GroupedPicker } from "@/components/ui/picker";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
 import { accepting, costWords, shownModel } from "@/lib/cost";
 import { chosenLabel, chosenOf, unavailableBecause, type Choosable } from "@/lib/models";
+import { engineWarnings, IMPORT_ADVICE, keepDismissed, notDismissed, readDismissed } from "@/lib/notices";
 import { withSignal } from "@/lib/request";
 import {
 	FIRST,
@@ -155,7 +157,7 @@ function RunForm({
 			{naming?.api_key_set && (
 				<SwitchRow
 					label="Name the communities"
-					hint={`With ${naming.model}: ${costWords(naming.estimate)} for up to ${naming.communities_at_most} communities (an estimate)`}
+					hint={`With ${naming.model}: ${costWords(naming.estimate)} for up to ${naming.communities_at_most.toLocaleString()} communities (an estimate)`}
 					checked={named}
 					onCheckedChange={setNamed}
 				/>
@@ -187,8 +189,8 @@ function RunRow({
 	onDelete: () => void;
 }) {
 	const [draft, setDraft] = useState<string | null>(null); // the title being typed; null = not renaming
+	const confirm = useConfirm();
 	const details = run.problem ?? run.details ?? "Not read yet";
-	const papers = run.papers === null ? "papers" : count(run.papers, "paper");
 	if (draft !== null) {
 		const finish = (save: boolean) => {
 			if (save && draft.trim() !== run.title) onRename(draft);
@@ -218,7 +220,8 @@ function RunRow({
 				<span className="w-full truncate text-sm text-foreground group-hover:pr-20">{run.title}</span>
 				<span className={run.problem ? "text-xs text-warning" : "text-xs text-muted-foreground tabular-nums"}>{details}</span>
 			</RowButton>
-			<div className="absolute top-1 right-1 hidden gap-0.5 group-hover:flex">
+			{/* shown on hover, and while one of them has the keyboard's focus (the dialog it opens gives it back) */}
+			<div className="absolute top-1 right-1 hidden gap-0.5 group-focus-within:flex group-hover:flex">
 				<Button variant="ghost" size="icon" className="size-6" title="Rename" onClick={() => setDraft(run.title)}>
 					<Pencil />
 				</Button>
@@ -229,14 +232,11 @@ function RunRow({
 					disabled={!onRedoAll}
 					title={
 						onRedoAll
-							? "Redo all of this run: download, embed and describe everything again from scratch"
+							? "Redo all of this run: download, embed and describe everything again from scratch (asks first, with what it replaces and what naming costs)"
 							: "A run is in progress: wait for it to finish"
 					}
-					onClick={() =>
-						window.confirm(
-							`Redo all of "${run.title}"?\n\nIts ${papers} are downloaded, embedded and described again from scratch. This takes a while and, with a language model's API key set, the descriptions cost money again.`,
-						) && onRedoAll?.()
-					}
+					// what it replaces and what naming would cost are asked before anything is done (lib/run-replace.ts)
+					onClick={() => onRedoAll?.()}
 				>
 					<RotateCcw />
 				</Button>
@@ -245,11 +245,20 @@ function RunRow({
 					size="icon"
 					className="size-6"
 					title="Delete this run's results"
-					onClick={() =>
-						window.confirm(
-							`Delete "${run.title}"?\n\nIts communities and graph are removed. The downloaded papers, embeddings and descriptions stay in the library.`,
-						) && onDelete()
-					}
+					onClick={async () => {
+						const yes = await confirm({
+							title: `Delete "${run.title}"?`,
+							body: (
+								<p>
+									Its communities and graph are removed, and what was asked about them. The downloaded papers, their embeddings and what was
+									read of them stay in the library.
+								</p>
+							),
+							confirm: "Delete",
+							destructive: true,
+						});
+						if (yes) onDelete();
+					}}
 				>
 					<Trash2 />
 				</Button>
@@ -373,7 +382,7 @@ function RunsSection({
 	);
 }
 
-/** The dollar itself, until the backend has said what the user's currency is worth. */
+/** The dollar itself, until the engine has said what the user's currency is worth. */
 const DOLLAR = { code: "USD", rate: 1, date: null };
 
 /** The model that writes names and overviews and its provider (a menu to change both, and the effort), what it
@@ -392,8 +401,16 @@ function CostLine({
 	const locale = typeof navigator === "undefined" ? undefined : navigator.language;
 	const wanted = currencyOf(locale); // the currency of the user's region; the bills themselves are in US dollars
 	const usage = useAsync(() => api.usage(wanted), [wanted]);
-	const { reload } = usage;
+	// calls whose outcome is unknown: said on their own, never added into what was spent
+	const unsettledAsked = useAsync(api.unsettled, []);
+	const unsettled = ready(unsettledAsked);
+	const { reload: reloadUsage } = usage;
+	const { reload: reloadUnsettled } = unsettledAsked;
 	useEffect(() => {
+		const reload = () => {
+			reloadUsage();
+			reloadUnsettled();
+		};
 		// Names and overviews are written in the background, so the cost is asked for again now and then; not while
 		// the window is hidden (minimised, behind another), where nobody reads it, but at once when it is shown.
 		const timer = setInterval(() => document.hidden || reload(), 15_000);
@@ -403,7 +420,8 @@ function CostLine({
 			clearInterval(timer);
 			document.removeEventListener("visibilitychange", shown);
 		};
-	}, [reload]);
+	}, [reloadUsage, reloadUnsettled]);
+	const unknownOutcome = unsettled && unsettled.calls > 0 ? unsettled.said : null;
 	const spent = ready(usage);
 	const chosen = chosenOf(choosable.catalog, settings);
 	const why = chosen.provider && unavailableBecause(chosen.provider);
@@ -422,13 +440,20 @@ function CostLine({
 			{why && <span className="shrink-0 text-warning">· {why}</span>}
 		</span>
 	);
+	const unknownLine = unknownOutcome && (
+		<span className="text-warning" title="Not counted in what was spent: whether these calls were billed is not known.">
+			{unknownOutcome}
+		</span>
+	);
 	if (!spent)
 		return (
 			<div className="flex flex-col gap-0.5">
 				{choice}
 				{price && <span className="truncate">{price}</span>}
+				{unknownLine}
 			</div>
 		);
+	const allTokens = Object.values(spent.models).reduce((sum, entry) => sum + entry.input_tokens + entry.output_tokens, 0);
 	const cost = (usd: number) => money(usd, spent.currency, locale);
 	const lines = (table: Record<string, UsageEntry>) =>
 		Object.entries(table).map(([name, entry]) => {
@@ -442,6 +467,7 @@ function CostLine({
 		...(spent.unpriced_calls
 			? [`${count(spent.unpriced_calls, "call")} to a model with no price ${spent.unpriced_calls === 1 ? "is" : "are"} not in this total.`]
 			: []),
+		...(unknownOutcome ? [`${unknownOutcome} Not counted above.`] : []),
 		...(price ? [`${chosenLabel(chosen)}: ${price}.`] : []),
 		"Prices are the published list prices in US dollars per million tokens.",
 		...(spent.currency.code === "USD"
@@ -458,13 +484,68 @@ function CostLine({
 					{price}
 				</span>
 				<span className="shrink-0 text-foreground/80" title={detail}>
-					{spent.usd === null ? count(spent.calls, "call") : `${cost(spent.usd)} spent`}
+					{/* no priced call: no amount at all, only the calls and their tokens */}
+					{spent.usd === null ? `${count(spent.calls, "call")}, ${tokens(allTokens)}` : `${cost(spent.usd)} spent`}
 					{spent.session_calls > 0 && spent.session_usd !== null && (
 						<span className="text-muted-foreground"> · {cost(spent.session_usd)} this session</span>
 					)}
 				</span>
 			</div>
+			{unknownLine}
 		</div>
+	);
+}
+
+/**
+ * What the engine reports that is not about a run: how it listens (not dismissible: it stays true while it runs so),
+ * and what of the earlier version's data could not be moved in, each dismissible until the app is next started
+ * (Settings keeps listing them).
+ */
+function Notices({
+	warnings,
+	importProblems,
+	onOpenSettings,
+}: {
+	warnings: string[];
+	importProblems: string[];
+	onOpenSettings: () => void;
+}) {
+	const [dismissed, setDismissed] = useState<ReadonlySet<string>>(() => (typeof window === "undefined" ? new Set() : readDismissed()));
+	const shown = notDismissed(importProblems, dismissed);
+	const listening = engineWarnings(warnings, importProblems);
+	if (shown.length === 0 && listening.length === 0) return null;
+	const dismiss = (problem: string) => {
+		const next = new Set(dismissed).add(problem);
+		keepDismissed(next);
+		setDismissed(next);
+	};
+	return (
+		<section className="flex flex-col gap-2" aria-label="Notices">
+			{listening.map((warning) => (
+				<p key={warning} role="alert" className="rounded-md border border-warning/40 px-2.5 py-2 text-xs text-warning">
+					{warning}
+				</p>
+			))}
+			{shown.map((problem) => (
+				<div key={problem} role="status" className="flex flex-col gap-1.5 rounded-md border border-warning/40 px-2.5 py-2 text-xs">
+					<p className="text-warning">{problem}</p>
+					<p className="text-muted-foreground">{IMPORT_ADVICE}</p>
+					<div className="flex justify-end gap-1">
+						<Button variant="ghost" className="h-6 px-2" onClick={onOpenSettings}>
+							Settings
+						</Button>
+						<Button
+							variant="ghost"
+							className="h-6 px-2"
+							title="Hide this until Constellate is next started"
+							onClick={() => dismiss(problem)}
+						>
+							Dismiss
+						</Button>
+					</div>
+				</div>
+			))}
+		</section>
 	);
 }
 
@@ -479,6 +560,8 @@ export function Sidebar({
 	onChange,
 	catalog,
 	error,
+	told,
+	warnings,
 	onSelect,
 	onRename,
 	onRedoAll,
@@ -486,6 +569,10 @@ export function Sidebar({
 	onStart,
 	onOpenSettings,
 }: {
+	/** what came of the last start that is not an error ("the names are kept as they are") */
+	told?: string | null;
+	/** what is unsafe about how the engine listens (`Status.warnings`, the import problems left out) */
+	warnings?: string[];
 	runs: RunSummary[];
 	current: string | null;
 	running: boolean;
@@ -521,10 +608,12 @@ export function Sidebar({
 				</Button>
 			</div>
 			<div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-4">
+				<Notices warnings={warnings ?? []} importProblems={library?.import_problems ?? []} onOpenSettings={onOpenSettings} />
 				<section>
 					<Heading className="mb-2">New run</Heading>
 					<RunForm catalog={catalog} running={running} onStart={onStart} />
 					{error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+					{!error && told && <p className="mt-2 text-xs text-muted-foreground">{told}</p>}
 				</section>
 				<RunsSection
 					plain={runs}

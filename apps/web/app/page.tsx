@@ -1,7 +1,8 @@
 "use client";
 
 import { useReducer, useRef, useState } from "react";
-import { REDO_STEPS, type Settings } from "@rp/contracts";
+import { REDO_STEPS, type RunRequest, type Settings } from "@rp/contracts";
+import { useAskNaming, useAskRun } from "@/components/run-dialogs";
 import { SettingsDialog } from "@/components/settings-dialog";
 import { Sidebar } from "@/components/sidebar";
 import { ActivityLog, Notice, Workspace } from "@/components/workspace";
@@ -10,13 +11,17 @@ import { ChosenModelContext, chosenModelOf } from "@/lib/chosen-model";
 import { serverOwned } from "@/lib/engine";
 import { forgetMarks } from "@/lib/marks";
 import { choosableOf } from "@/lib/models";
+import { namingRequest } from "@/lib/naming";
 import { NO_SAVES, saveStep, type SaveEvent, type Saves } from "@/lib/settings-saves";
 import { ready, useAsync } from "@/lib/use-async";
 import { useJob } from "@/lib/use-job";
 
+/** Said when a run is made again without naming its communities again. */
+const NAMES_KEPT = "The communities were not named again: their names are kept as they are.";
+
 /**
- * Settings as the backend holds them; a change is saved there and the latest save's answer becomes the new state.
- * A change the backend refuses is kept with its reason (lib/settings-saves.ts) and shown until that setting is
+ * Settings as the engine holds them; a change is saved there and the latest save's answer becomes the new state.
+ * A change the engine refuses is kept with its reason (lib/settings-saves.ts) and shown until that setting is
  * saved, and the settings are read again: nothing is quietly put back.
  */
 function useSettings() {
@@ -61,25 +66,66 @@ export default function Home() {
 	const [chosen, setChosen] = useState<string | null>(null);
 	// why renaming or deleting a run did not happen, until the next try
 	const [failed, setFailed] = useState<string | null>(null);
+	// what came of the last start that the person should know, until the next one ("the names are kept as they are")
+	const [told, setTold] = useState<string | null>(null);
 	// Counts finished runs. A run done again keeps its name, so the name alone would not show the new result.
 	const [finishedRuns, setFinishedRuns] = useState(0);
-	const { job, start, follow } = useJob((finished) => {
+	const askRun = useAskRun(ready(catalog));
+	const askNaming = useAskNaming();
+	const {
+		job,
+		start: startJob,
+		follow,
+	} = useJob((finished) => {
 		runs.reload();
 		library.reload();
 		setChosen(finished);
 		setFinishedRuns((count) => count + 1);
-	});
+	}, askRun);
+	// a start being asked about or sent: nothing else is started meanwhile (a second click would queue a second
+	// question about the same run, answered on what was true before the first)
+	const [starting, setStarting] = useState(false);
+	const start = (request: RunRequest) => {
+		if (starting) return;
+		setStarting(true);
+		setTold(null);
+		setFailed(null);
+		void startJob(request)
+			.then((started) => {
+				if (started?.kind === "started" && started.namesKept) setTold(NAMES_KEPT);
+			})
+			.finally(() => setStarting(false));
+	};
+	/** Name the open run's communities again, at the cost shown first: the run itself is not made again. */
+	const describeAgain = async (name: string) => {
+		if (starting) return;
+		setStarting(true);
+		setTold(null);
+		setFailed(null);
+		try {
+			const estimate = await api.describeEstimate(name, true);
+			const title = ready(runs)?.find((run) => run.name === name)?.title ?? name;
+			if (!(await askNaming(estimate, true, title))) return;
+			await api.describeRun(name, namingRequest(estimate, true));
+			follow();
+		} catch (error) {
+			setFailed((error as Error).message);
+		} finally {
+			setStarting(false);
+		}
+	};
 
 	const known = ready(runs) ?? [];
 	const current = chosen ?? known[0]?.name ?? null; // until one is picked, the most recent run is shown
 	const running = job.state === "running";
+	const busy = running || starting;
 	const log = <ActivityLog job={job} />;
 	return (
 		<div className="flex h-dvh">
 			<Sidebar
 				runs={known}
 				current={current}
-				running={running}
+				running={running} // a start being asked about is refused in `start`, not disabled: its button gets the focus back
 				library={ready(library)}
 				choosable={choosable}
 				settings={settings}
@@ -110,13 +156,21 @@ export default function Home() {
 					);
 				}}
 				onStart={start}
-				onRedoAll={(name) => void start({ rerun: name, redo: REDO_STEPS })}
+				onRedoAll={(name) => start({ rerun: name, redo: REDO_STEPS })}
+				told={told}
+				warnings={ready(engine)?.warnings}
 				onOpenSettings={() => setSettingsOpen(true)}
 			/>
 			{current ? (
 				// every estimate on screen is for the model chosen now (lib/chosen-model.ts)
 				<ChosenModelContext value={chosenModelOf(settings)}>
-					<Workspace key={`${current}#${finishedRuns}`} name={current} catalog={ready(catalog)} model={settings?.describe_model}>
+					<Workspace
+						key={`${current}#${finishedRuns}`}
+						name={current}
+						title={known.find((run) => run.name === current)?.title ?? current}
+						catalog={ready(catalog)}
+						model={settings?.describe_model}
+					>
 						{log}
 					</Workspace>
 				</ChosenModelContext>
@@ -140,19 +194,26 @@ export default function Home() {
 				onOpenChange={setSettingsOpen}
 				onChange={(changes) => void change(changes).then(library.reload)} // what the library reports depends on some settings
 				refused={refused}
+				importProblems={ready(library)?.import_problems}
+				onDetectorChanged={library.reload}
 				onReadDeclarations={
-					current && !running
+					current && !busy
 						? () => {
 								setSettingsOpen(false);
-								void api.readDeclarations(current).then(follow, follow);
+								void api.readDeclarations(current).then(follow, (error: Error) => {
+									setFailed(error.message);
+									follow(); // refused as busy: what is running is shown
+								});
 							}
 						: undefined
 				}
 				onRedo={
-					current && !running
+					current && !busy
 						? (steps) => {
 								setSettingsOpen(false); // the run's log, behind the dialog, is what to watch now
-								void start({ rerun: current, redo: steps });
+								// naming again alone does not make the run again: its communities stay as they are
+								if (steps.length === 1 && steps[0] === "descriptions") void describeAgain(current);
+								else start({ rerun: current, redo: steps });
 							}
 						: undefined
 				}

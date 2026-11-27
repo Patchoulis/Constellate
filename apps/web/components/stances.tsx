@@ -35,6 +35,8 @@ import {
 	GROUP_HUE,
 	GROUP_LABEL,
 	GROUP_NOTE,
+	notInLibraryLine,
+	quotesNotFoundLine,
 	rowsOf,
 	skippedLine,
 	STANCE_NOTE,
@@ -46,7 +48,7 @@ import { accepting, shownModel } from "@/lib/cost";
 import { useColouringBy } from "@/lib/graph-colouring";
 import { ready, useAsync } from "@/lib/use-async";
 import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
-import { elsewhereLine, notAskedLine, useFollowedJob, type FollowedJob } from "@/lib/use-followed-job";
+import { elsewhereLine, notAskedLine, runSubject, useFollowedJob, type FollowedJob } from "@/lib/use-followed-job";
 import { cn, hsl } from "@/lib/utils";
 import { count, currencyOf, money, type Currency } from "@/lib/units";
 
@@ -110,6 +112,7 @@ function Dot({ hue }: { hue: number | null }) {
 /** One placed paper: its title (opens it), its tier, how it was read, the condition for a mixed one, its quotes. */
 function PlacedPaper({ row, onOpenPaper }: { row: StanceRow; onOpenPaper: (id: string) => void }) {
 	const { placed } = row;
+	const missing = quotesNotFoundLine(placed);
 	return (
 		<li className="flex flex-col gap-0.5">
 			<RowButton className="flex-col gap-0.5 py-1" title="Open it in the reader" onClick={() => onOpenPaper(row.paper)}>
@@ -132,6 +135,7 @@ function PlacedPaper({ row, onOpenPaper }: { row: StanceRow; onOpenPaper: (id: s
 				</p>
 			)}
 			{"evidence" in placed && <EvidenceLinks className="px-2" evidence={placed.evidence} />}
+			{missing && <p className="px-2 text-xs text-muted-foreground">{missing}</p>}
 		</li>
 	);
 }
@@ -210,7 +214,7 @@ function ResultView({
 		<div className="flex flex-col gap-2">
 			<p className="font-sans text-base text-foreground">{result.question}</p>
 			<p className="text-xs text-muted-foreground tabular-nums">
-				{coverageLine(result)} {skipped}
+				{coverageLine(result)} {skipped} {notInLibraryLine(result.filter)}
 			</p>
 			<p className="text-xs text-foreground tabular-nums" title={STANCE_NOTE}>
 				{countsLine(counts)}
@@ -312,6 +316,7 @@ function PlanView({
 		<div className="flex flex-col gap-2 text-xs">
 			<p className="font-sans text-base text-foreground">{plan.question}</p>
 			{skipped && <p className="text-muted-foreground tabular-nums">{skipped}</p>}
+			{notInLibraryLine(plan.filter) && <p className="text-muted-foreground tabular-nums">{notInLibraryLine(plan.filter)}</p>}
 			{plan.filter.unrelated > 0 && (
 				<label className="flex items-center gap-2 text-muted-foreground">
 					<input type="checkbox" checked={includeUnrelated} onChange={(event) => onInclude(event.target.checked)} />
@@ -361,7 +366,11 @@ function Proposals({
 }) {
 	const [step, setStep] = useState<Proposing>({ kind: "idle" });
 	const { currency, locale } = useCurrency();
-	const { job, elsewhere, start } = useFollowedJob(onChanged, `stance-proposals:${run}:${community}`);
+	const { job, elsewhere, start } = useFollowedJob(onChanged, `stance-proposals:${run}:${community}`, {
+		feature: "stances",
+		subject: runSubject(run, community),
+		item: "none",
+	});
 	// with proposals shown, proposing again is a fresh call: its cost is the one shown, and the proposals shown stay
 	// until the user clicks Propose
 	const estimate = () => {
@@ -487,11 +496,15 @@ export function CommunityStances({ run, scope, onOpenPaper }: { run: string; sco
 		[run, scopeKey],
 	);
 	// the job asking a question, followed until it ends, also when the section was closed and opened again
-	const { job, elsewhere, start } = useFollowedJob((ended) => {
-		setVersion((value) => value + 1);
-		reload();
-		if (ended.about) setOpen(ended.about);
-	}, `stances:${run}:${scopeKey}`);
+	const { job, elsewhere, start } = useFollowedJob(
+		(ended) => {
+			setVersion((value) => value + 1);
+			reload();
+			if (ended.about) setOpen(ended.about);
+		},
+		`stances:${run}:${scopeKey}`,
+		{ feature: "stances", subject: runSubject(run, "community" in scope ? scope.community : null), item: "some" },
+	);
 	const running = job.state === "running" || job.state === "starting";
 	// another model chosen while a cost is shown: that one's cost is worked out, the old one goes
 	const chosen = useChosenModel();

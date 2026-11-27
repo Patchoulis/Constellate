@@ -1,5 +1,5 @@
 /**
- * The tree of communities as the UI handles it: the backend's records plus what the UI adds (a hue, links up and
+ * The tree of communities as the UI handles it: the engine's records plus what the UI adds (a hue, links up and
  * down the tree, siblings). Communities of a run are the roots; each may have two sub-communities, and so on.
  */
 import type { Community } from "@rp/contracts";

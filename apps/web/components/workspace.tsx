@@ -67,11 +67,14 @@ export function Notice({ children }: { children: React.ReactNode }) {
  *  opening another run starts with nothing selected. `children` are laid over the graph. */
 export function Workspace({
 	name,
+	title,
 	catalog,
 	model,
 	children,
 }: {
 	name: string;
+	/** the run's title, as the list shows it */
+	title?: string;
 	catalog: Catalog | undefined;
 	/** the language model chosen in Settings, once known */
 	model?: string;
@@ -219,6 +222,8 @@ export function Workspace({
 					marks={marks}
 					markedPapers={markedPapers}
 					onGoToPaper={goToPaper}
+					onNamed={run.reload}
+					title={title ?? name}
 				/>
 			</GraphColouringContext>
 		</EvidenceProvider>

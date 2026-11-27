@@ -11,14 +11,14 @@ interface Settings {
 const start: Saves<Settings> = NO_SAVES;
 const before: Settings = { max_communities: 40, describe: true };
 
-test("a saved change makes the backend's answer the settings shown", () => {
+test("a saved change makes the engine's answer the settings shown", () => {
 	const asked = saveStep(start, { kind: "asked" });
 	const saved = saveStep(asked, { kind: "saved", id: 1, changes: { describe: false }, settings: { ...before, describe: false } });
 	assert.deepEqual(saved.saved, { ...before, describe: false });
 	assert.equal(saved.refused, null);
 });
 
-test("a refused change is kept with the backend's reason, not quietly dropped", () => {
+test("a refused change is kept with the engine's reason, not quietly dropped", () => {
 	const asked = saveStep({ ...start, saved: before }, { kind: "asked" });
 	const error = "max_communities must be a number between 2 and 500";
 	const refused = saveStep(asked, { kind: "refused", id: 1, changes: { max_communities: 1000 }, error });

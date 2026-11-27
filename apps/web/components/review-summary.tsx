@@ -23,7 +23,7 @@ const COVERAGE_NOTE =
 
 function scaleNote(scale: Scale): string {
 	return scale.source === "assumed"
-		? `On ${scaleName(scale)}, assumed: the engine does not know this venue's form for that year, so the scale is an estimate.`
+		? `On ${scaleName(scale)}, assumed: Constellate does not know this venue's form for that year, so the scale is an estimate.`
 		: `On ${scaleName(scale)}, as the venue published it for that year.`;
 }
 

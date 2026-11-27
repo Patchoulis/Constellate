@@ -3,6 +3,7 @@ import { connection } from "next/server";
 import { JetBrains_Mono, Source_Sans_3 } from "next/font/google";
 import "katex/dist/katex.min.css";
 import "./globals.css";
+import { ConfirmProvider } from "@/components/ui/confirm";
 import { APP_NAME } from "@/lib/utils";
 
 // Chrome = JetBrains Mono, reading text (abstracts, descriptions) = Source Sans 3.
@@ -20,7 +21,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 	await connection();
 	return (
 		<html lang="en" className={`dark ${ui.variable} ${prose.variable}`}>
-			<body className="h-dvh overflow-hidden antialiased">{children}</body>
+			<body className="h-dvh overflow-hidden antialiased">
+				<ConfirmProvider>{children}</ConfirmProvider>
+			</body>
 		</html>
 	);
 }

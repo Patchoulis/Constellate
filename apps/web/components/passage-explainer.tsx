@@ -13,6 +13,7 @@ import type { DefinedTerm, Evidence, Explanation, ExplanationStatement, JobProgr
 import { EvidenceLink } from "@/components/evidence-link";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, Segmented } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/confirm";
 import { api } from "@/lib/api";
 import { pages } from "@/lib/evidence";
 import {
@@ -227,6 +228,7 @@ function ExplainView({
 	);
 	const found = ready(prepared);
 	const [failure, setFailure] = useState<string | null>(null);
+	const confirm = useConfirm();
 	// follow the job until it is over (also when the panel was closed and opened again); then what was kept is read
 	const reload = useRef(prepared.reload);
 	reload.current = prepared.reload;
@@ -321,12 +323,13 @@ function ExplainView({
 				<Explained
 					explained={found.explained}
 					onRedo={async () => {
-						if (
-							!window.confirm(
-								"Set this explanation aside and ask again?\n\nThe kept explanation is forgotten, and asking again costs again. The cost is shown before anything is sent.",
-							)
-						)
-							return;
+						const sure = await confirm({
+							title: "Set this explanation aside and ask again?",
+							body: <p>The kept explanation is forgotten, and asking again costs again. The cost is shown before anything is sent.</p>,
+							confirm: "Forget it",
+							destructive: true,
+						});
+						if (!sure) return;
 						try {
 							await api.redoExplanation(paper, passage.address);
 							askedOnce.add(key); // a redo asks again only on a click

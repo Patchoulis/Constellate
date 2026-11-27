@@ -46,15 +46,15 @@ test("a work of a reference list whose address is not https is looked up by its 
 	assert.equal(outsideLink(work), "https://scholar.google.com/scholar?q=Attention%20is%20all%20you%20need");
 });
 
-test("the PDF frame shows the backend's words when it answered an error instead of a PDF", () => {
+test("the PDF frame shows the engine's words when it answered an error instead of a PDF", () => {
 	assert.deepEqual(framedPdf("application/pdf", ""), { kind: "pdf" });
 	assert.deepEqual(framedPdf("application/json", '{"error": "the PDF could not be fetched: 404 from the publisher"}'), {
 		kind: "problem",
 		words: "the PDF could not be fetched: 404 from the publisher",
 	});
-	assert.deepEqual(framedPdf("text/html", ""), { kind: "problem", words: "The backend sent nothing for this PDF." });
-	assert.deepEqual(framedPdf("text/html", "<h1>Bad gateway</h1>"), { kind: "problem", words: "The backend did not send a PDF." });
-	assert.deepEqual(framedPdf("application/json", '{"error": ""}'), { kind: "problem", words: "The backend did not send a PDF." });
+	assert.deepEqual(framedPdf("text/html", ""), { kind: "problem", words: "Constellate sent nothing for this PDF." });
+	assert.deepEqual(framedPdf("text/html", "<h1>Bad gateway</h1>"), { kind: "problem", words: "Constellate did not send a PDF." });
+	assert.deepEqual(framedPdf("application/json", '{"error": ""}'), { kind: "problem", words: "Constellate did not send a PDF." });
 });
 
 test("a page of the embedded view failed only when its main frame did, and not when a navigation called it off", () => {

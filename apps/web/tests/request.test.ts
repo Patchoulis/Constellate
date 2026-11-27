@@ -59,7 +59,7 @@ test("a request that gets no answer within its deadline fails with the time it w
 		const error = await asking.catch((error: unknown) => error);
 		assert.ok(error instanceof RequestError);
 		assert.deepEqual(error.problem, { kind: "timeout", seconds: 20 });
-		assert.equal(error.message, "The engine did not answer within 20 seconds.");
+		assert.equal(error.message, "Constellate did not answer within 20 seconds.");
 		assert.equal(error.status, null, "no answer came, so no status");
 	} finally {
 		mock.timers.reset();
@@ -115,13 +115,15 @@ test("an error answer carries its status and the engine's own words", async () =
 	assert.ok(error instanceof RequestError);
 	assert.equal(error.status, 409);
 	assert.equal(error.message, "a run is already going");
-	assert.deepEqual(error.problem, { kind: "refused", status: 409, error: "a run is already going" });
+	// the body as it came, for a refusal that says more than its words (a 409 that names the run it would replace)
+	const body = { error: "a run is already going" };
+	assert.deepEqual(error.problem, { kind: "refused", status: 409, error: "a run is already going", body });
 });
 
 test("an error answer with no words of the engine's says its status; the engine's own time limit says so", async () => {
 	const { fetcher } = fakeFetch(() => Promise.resolve(new Response("<html>bad gateway</html>", { status: 502 })));
 	const answer = await request("/api/runs", undefined, { patience: QUICK, fetcher });
-	assert.throws(() => answered(answer), { message: "The engine answered 502." });
+	assert.throws(() => answered(answer), { message: "Constellate answered with error 502." });
 	const timedOut = await request("/api/runs", undefined, {
 		patience: QUICK,
 		fetcher: fakeFetch(() => Promise.resolve(new Response("", { status: 408 }))).fetcher,
@@ -142,7 +144,7 @@ test("an answer of success that is not JSON, is empty, or is cut off is an error
 		patience: QUICK,
 		fetcher: fakeFetch(() => Promise.resolve(new Response("", { status: 200 }))).fetcher,
 	});
-	assert.throws(() => answered(empty), { message: "The engine's answer was empty (status 200)." });
+	assert.throws(() => answered(empty), { message: "Constellate's answer was empty (status 200)." });
 	const half = new Response(
 		new ReadableStream({
 			start(controller) {

@@ -23,6 +23,7 @@ import { MathText } from "@/components/math-text";
 import { Button, Heading } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import {
+	abstractOnlyNote,
 	cellText,
 	columnColouring,
 	columnId,
@@ -33,6 +34,7 @@ import {
 	leftOutNote,
 	moved,
 	NOT_STATED,
+	readFromLine,
 	sortRows,
 	toCsv,
 	valueText,
@@ -41,7 +43,7 @@ import { choiceKey, currentEstimate, useChosenModel } from "@/lib/chosen-model";
 import { budgetOf, costWords, shownModel } from "@/lib/cost";
 import { useColouringBy } from "@/lib/graph-colouring";
 import { ready, useAsync } from "@/lib/use-async";
-import { elsewhereLine, notAskedLine, useFollowedJob } from "@/lib/use-followed-job";
+import { elsewhereLine, notAskedLine, runSubject, useFollowedJob } from "@/lib/use-followed-job";
 import { count, money, tokens } from "@/lib/units";
 import { cn } from "@/lib/utils";
 
@@ -326,6 +328,7 @@ function Grid({
 			{columns[active] && (
 				<p className="text-xs text-muted-foreground tabular-nums">{coverage(filter ? shown : table.rows, active, columns[active].label)}</p>
 			)}
+			{readFromLine(table.rows) && <p className="text-xs text-muted-foreground tabular-nums">{readFromLine(table.rows)}</p>}
 			<div className="max-h-[32rem] overflow-auto rounded-md border">
 				<table className="w-max min-w-full border-collapse text-xs">
 					<thead className="sticky top-0 z-10 bg-card">
@@ -420,10 +423,7 @@ function RowView({
 					<AcceptanceTag state={row.acceptance} term={row.acceptance_term} small />
 					{row.sample && <span title="One of the sample's papers: the most central of this set on the graph">sample</span>}
 					{(row.text === "no_pdf" || row.text === "unreadable") && (
-						<span
-							className="text-warning"
-							title="No readable PDF is kept: this paper is asked from its title and abstract only, and its quotes are found there."
-						>
+						<span className="text-warning" title={abstractOnlyNote(row.text)}>
 							abstract only
 						</span>
 					)}
@@ -506,7 +506,10 @@ function Opened({
 		rest.reload();
 	};
 	// a run of this table is followed until it ends, also when the section was closed and opened again meanwhile
-	const { job, elsewhere, start } = useFollowedJob(again, `extraction:${run}:${where}`);
+	const { job, elsewhere, start } = useFollowedJob(again, `extraction:${run}:${where}`, {
+		feature: "extraction",
+		subject: runSubject(run, "community" in scope ? scope.community : null),
+	});
 	const [editing, setEditing] = useState(false);
 
 	const begin = (part: ExtractionPart, estimate: ExtractionEstimate) =>
@@ -559,7 +562,7 @@ function Opened({
 				<>
 					{job.state === "done" && (
 						<p className="text-xs text-foreground tabular-nums">
-							{`${partName(job.about)} is done${spent(usd) ? `: it cost ${spent(usd)} (as billed at the engine's prices)` : ""}.`}{" "}
+							{`${partName(job.about)} is done${spent(usd) ? `: it cost ${spent(usd)} (at the published list prices)` : ""}.`}{" "}
 							{notAskedLine(job, "paper")}
 						</p>
 					)}

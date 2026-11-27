@@ -13,7 +13,7 @@ test("an estimate is for the model chosen when it names the same provider and mo
 	assert.equal(isFor(estimate, { ...chosen, model: "another" }), false);
 	assert.equal(isFor(estimate, { ...chosen, provider: "openai" }), false, "the same id at another provider is another model");
 	assert.equal(isFor(estimate, null), true, "the choice not read yet: the engine's own is all there is");
-	assert.equal(isFor(estimate, { ...chosen, provider: null }), true, "a backend that names no provider");
+	assert.equal(isFor(estimate, { ...chosen, provider: null }), true, "an engine that names no provider");
 });
 
 test("an estimate being asked for again, or that failed, is not offered to accept", () => {

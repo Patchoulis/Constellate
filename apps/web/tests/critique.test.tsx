@@ -4,6 +4,10 @@ import { test } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Critique, CritiqueEstimate, CritiqueReviewer, Evidence } from "@rp/contracts";
 import { WeaknessesOf } from "@/components/critique";
+import { ConfirmProvider } from "@/components/ui/confirm";
+
+/** The section as the app draws it: inside the window's one confirmation dialog. */
+const markup = (section: React.ReactElement) => renderToStaticMarkup(<ConfirmProvider>{section}</ConfirmProvider>);
 import { batchCost } from "./costs";
 import {
 	absenceLine,
@@ -131,22 +135,23 @@ test("the model's reading is apart from the reviewers', hidden until asked for, 
 						absence: { kind: "none_found", searched: ["ablation"] },
 					},
 				],
-				left_out: { not_in_paper: 2, malformed: 0, unknown_point: 0, beyond_limit: 0, verdict: 0 },
+				left_out: { not_in_paper: 2, malformed: 0, unknown_point: 0, beyond_limit: 0, verdict: 0, not_answered: 3 },
 			},
 		},
 	};
 	assert.equal(readingsByPoint(critique.model.state === "answered" ? critique.model.reading : null).get("p1")?.point, "p1");
-	const hidden = renderToStaticMarkup(<WeaknessesOf critique={critique} shown={false} onShow={() => {}} onChanged={() => {}} />);
+	const hidden = markup(<WeaknessesOf critique={critique} shown={false} onShow={() => {}} onChanged={() => {}} />);
 	assert.match(hidden, /What the reviewers raised/);
 	assert.match(hidden, /8 of 10 rating/);
 	assert.match(hidden, /The authors replied to this review \(attached by a guess/);
 	assert.match(hidden, /The model&#x27;s reading, not a review/);
 	assert.doesNotMatch(hidden, /No ablation of the step size/, "the model's reading is not shown by default");
 	assert.doesNotMatch(hidden, /The paper says/);
-	const shown = renderToStaticMarkup(<WeaknessesOf critique={critique} shown onShow={() => {}} onChanged={() => {}} />);
+	const shown = markup(<WeaknessesOf critique={critique} shown onShow={() => {}} onChanged={() => {}} />);
 	assert.match(shown, /No ablation of the step size/);
 	assert.match(shown, /The paper says: “we add experiments on a larger model in the appendix”/);
 	assert.match(shown, /2 statements left out: their quotes were not found in the paper/);
+	assert.match(shown, /3 reviewers&#x27; points the model gave no reading for/);
 	assert.match(shown, /Absence: check yourself/);
 	// the model's weaknesses come after the reviewers' points, under their own heading
 	assert.ok(shown.indexOf("No ablation of the step size") > shown.indexOf("The model&#x27;s reading, not a review"));
@@ -158,7 +163,7 @@ test("the model's reading is apart from the reviewers', hidden until asked for, 
 });
 
 test("a paper with no reviews says how to get them, and one with no PDF says why the model's part is missing", () => {
-	const none = renderToStaticMarkup(
+	const none = markup(
 		<WeaknessesOf
 			critique={{ paper_id: "2601.00001", reviewers: { state: "none_kept" }, model: { state: "no_pdf" } }}
 			shown={false}
@@ -169,7 +174,7 @@ test("a paper with no reviews says how to get them, and one with no PDF says why
 	assert.match(none, /No reviews are kept for this paper/);
 	assert.match(none, /Reviews tab/);
 	assert.match(none, /needs the paper&#x27;s PDF/);
-	const ask = renderToStaticMarkup(
+	const ask = markup(
 		<WeaknessesOf
 			critique={{
 				paper_id: "2601.00001",

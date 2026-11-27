@@ -159,8 +159,8 @@ test("the Ask box sends nothing to the model until it is started, and waits for 
 	assert.equal(reduceAsk(state, { type: "viewed", view: { ...view("answered"), id: "other" } }), state, "another question");
 	state = reduceAsk(state, { type: "viewed", view: view("answered") });
 	assert.equal(state.kind, "answer");
-	const failed = reduceAsk(state, { type: "failed", error: "The backend answered 500" });
-	assert.deepEqual(failed, { kind: "failed", question: "Does merging count shared directions twice?", error: "The backend answered 500" });
+	const failed = reduceAsk(state, { type: "failed", error: "The engine answered 500" });
+	assert.deepEqual(failed, { kind: "failed", question: "Does merging count shared directions twice?", error: "The engine answered 500" });
 	assert.equal(reduceAsk(failed, { type: "reset" }).kind, "idle");
 	const opening = reduceAsk({ kind: "idle" }, { type: "opened", id: "a".repeat(64) });
 	assert.equal(reduceAsk(opening, { type: "viewed", view: view("answered") }).kind, "answer");

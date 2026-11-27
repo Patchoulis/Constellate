@@ -11,6 +11,7 @@ import { Loader2, MessageCircleQuestion, RotateCcw, Search, Square, Trash2, X } 
 import type { AnswerView, PassageFound } from "@rp/contracts";
 import { EvidenceLink, EvidenceLinks } from "@/components/evidence-link";
 import { Button, Heading, RowButton } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/confirm";
 import { Input } from "@/components/ui/field";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
@@ -31,7 +32,7 @@ import {
 } from "@/lib/answers";
 import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
 import { ready, useAsync } from "@/lib/use-async";
-import { elsewhereLine, useFollowedJob } from "@/lib/use-followed-job";
+import { elsewhereLine, runSubject, useFollowedJob } from "@/lib/use-followed-job";
 import { useResizable } from "@/lib/use-resizable";
 import { count } from "@/lib/units";
 
@@ -143,6 +144,7 @@ export function AskBox({
 	const history = useMemo(() => historyOf(ready(asked) ?? [], community), [asked, community]);
 	const chosen = useChosenModel();
 	const choice = choiceKey(chosen);
+	const confirm = useConfirm();
 
 	const find = useCallback(
 		(question: string) => {
@@ -180,6 +182,7 @@ export function AskBox({
 			if (ended.about) open(ended.about);
 		},
 		`answers:${run}:${community ?? ""}`,
+		{ feature: "answers", subject: runSubject(run, community), item: "some" },
 	);
 
 	// while the papers are being indexed, the search is asked again
@@ -352,19 +355,26 @@ export function AskBox({
 									size="icon"
 									disabled={running}
 									title="Ask again: the kept answer is cleared (it asks first), and the cost is shown before anything is sent"
-									onClick={() =>
-										(!question.answered ||
-											window.confirm(
-												`Clear the kept answer to “${question.question}”?\n\nIt cannot be undone, and asking the model again costs again. The cost is shown before anything is sent.`,
-											)) &&
+									onClick={async () => {
+										const sure =
+											!question.answered ||
+											(await confirm({
+												title: `Clear the kept answer to “${question.question}”?`,
+												body: (
+													<p>It cannot be undone, and asking the model again costs again. The cost is shown before anything is sent.</p>
+												),
+												confirm: "Clear it",
+												destructive: true,
+											}));
+										if (!sure) return;
 										api.redoAnswer(run, question.id).then(
 											() => {
 												asked.reload();
 												again(question.question);
 											},
 											(error: Error) => dispatch({ type: "failed", error: error.message }),
-										)
-									}
+										);
+									}}
 								>
 									<RotateCcw />
 								</Button>
@@ -373,18 +383,22 @@ export function AskBox({
 									size="icon"
 									disabled={running}
 									title="Delete this question and its answer (it asks first)"
-									onClick={() =>
-										window.confirm(
-											`Delete the question “${question.question}”${question.answered ? " and its kept answer" : ""}?\n\nIt cannot be undone.`,
-										) &&
+									onClick={async () => {
+										const sure = await confirm({
+											title: `Delete the question “${question.question}”${question.answered ? " and its kept answer" : ""}?`,
+											body: <p>It cannot be undone.</p>,
+											confirm: "Delete",
+											destructive: true,
+										});
+										if (!sure) return;
 										api.forgetQuestion(run, question.id).then(
 											() => {
 												asked.reload();
 												if (state.kind === "answer" && state.view.id === question.id) dispatch({ type: "reset" });
 											},
 											(error: Error) => dispatch({ type: "failed", error: error.message }),
-										)
-									}
+										);
+									}}
 								>
 									<Trash2 />
 								</Button>

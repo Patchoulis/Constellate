@@ -173,6 +173,24 @@ export function leftOutLine(left: ClaimsLeftOut): string | null {
 	return `${count(total, "statement")} left out: ${shown.map(([amount, why]) => (shown.length > 1 ? `${why} (${amount})` : why)).join("; ")}`;
 }
 
+/** A tree was written but every statement of it was left out: how many, and why, so that "nothing" is explained. */
+export function allLeftOutLine(left: ClaimsLeftOut): string {
+	const why = leftOutLine(left);
+	return why
+		? `The model wrote a claim tree, but none of it is shown: ${why}. Ask again with the button below.`
+		: "The model wrote a claim tree, but none of it is shown. Ask again with the button below.";
+}
+
+/** What the model answered about reviewers' points that is not shown, counted: "2 placements past the most read". */
+export function ignoredLine(ignored: PointMapping["ignored"]): string | null {
+	const parts = [
+		ignored.unknown_points > 0 ? `${count(ignored.unknown_points, "placement")} of points that were not sent` : null,
+		ignored.repeated > 0 ? `${count(ignored.repeated, "placement")} of a point placed again` : null,
+		(ignored.past_most ?? 0) > 0 ? `${count(ignored.past_most ?? 0, "placement")} past the most read (two per point)` : null,
+	].filter((part): part is string => part !== null);
+	return parts.length > 0 ? `Not shown of the model's answer: ${parts.join("; ")}.` : null;
+}
+
 /** "about USD 0.0412, at most USD 0.3120, for 2 calls": an estimate, and it says so where it is shown. For a model
  *  with no price, only the tokens it can take: no dollar figure at all. */
 export function estimateLine(estimate: ClaimsEstimate): string {
