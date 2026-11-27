@@ -331,13 +331,51 @@ pub struct AnswerCounts {
     pub malformed: usize,
 }
 
-/// An answer, checked: what the route shows.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Answer {
-    pub outcome: Outcome,
-    /// Only when [`Outcome::Answered`].
-    pub statements: Vec<Cited<Statement>>,
-    pub counts: AnswerCounts,
+/// An answer, checked: what the route shows. Each outcome holds only what it has, so that no statement of an
+/// unverified answer, and no count of one that says the papers do not say, can be shown.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Answer {
+    /// Its statements whose quotes were found: at least one, and at least half of those written
+    /// ([`shown_enough`]).
+    Answered { statements: Vec<Cited<Statement>>, counts: AnswerCounts },
+    /// The model said the passages do not answer the question.
+    NotInPapers,
+    /// Too few of its statements had their quotes found: none is shown, only how many there were.
+    Unverified { counts: AnswerCounts },
+}
+
+impl Answer {
+    pub fn outcome(&self) -> Outcome {
+        match self {
+            Self::Answered { .. } => Outcome::Answered,
+            Self::NotInPapers => Outcome::NotInPapers,
+            Self::Unverified { .. } => Outcome::Unverified,
+        }
+    }
+
+    /// The statements shown: none unless answered.
+    pub fn statements(&self) -> &[Cited<Statement>] {
+        match self {
+            Self::Answered { statements, .. } => statements,
+            Self::NotInPapers | Self::Unverified { .. } => &[],
+        }
+    }
+
+    /// How many statements were written, shown and left out (none written when the papers do not say).
+    pub fn counts(&self) -> AnswerCounts {
+        match self {
+            Self::Answered { counts, .. } | Self::Unverified { counts } => *counts,
+            Self::NotInPapers => AnswerCounts::default(),
+        }
+    }
+
+    /// Its statements, taken: none unless answered.
+    pub fn into_statements(self) -> Vec<Cited<Statement>> {
+        match self {
+            Self::Answered { statements, .. } => statements,
+            Self::NotInPapers | Self::Unverified { .. } => Vec::new(),
+        }
+    }
 }
 
 /// Is `shown` of `written` enough to show? At least one, and at least half.
@@ -349,7 +387,7 @@ pub fn shown_enough(shown: usize, written: usize) -> bool {
 /// module says.
 pub fn checked(said: Said, papers: &Papers) -> Answer {
     if said.outcome == SaidOutcome::NotInPapers {
-        return Answer { outcome: Outcome::NotInPapers, statements: Vec::new(), counts: AnswerCounts::default() };
+        return Answer::NotInPapers;
     }
     let written = said.statements.len();
     let mut one: Vec<Claim<(usize, Statement)>> = Vec::new();
@@ -376,9 +414,9 @@ pub fn checked(said: Said, papers: &Papers) -> Answer {
     let counts =
         AnswerCounts { written, shown: statements.len(), not_found: written - malformed - statements.len(), malformed };
     if shown_enough(counts.shown, written) {
-        Answer { outcome: Outcome::Answered, statements, counts }
+        Answer::Answered { statements, counts }
     } else {
-        Answer { outcome: Outcome::Unverified, statements: Vec::new(), counts }
+        Answer::Unverified { counts }
     }
 }
 
@@ -630,16 +668,16 @@ mod tests {
             ])),
             &papers,
         );
-        assert_eq!(answer.outcome, Outcome::Answered);
-        let sentences: Vec<&str> = answer.statements.iter().map(|cited| cited.statement.sentence.as_str()).collect();
+        assert_eq!(answer.outcome(), Outcome::Answered);
+        let sentences: Vec<&str> = answer.statements().iter().map(|cited| cited.statement.sentence.as_str()).collect();
         assert_eq!(
             sentences,
             ["Merging counts shared directions twice.", "Two papers find the double count.", "The spectrum inflates."]
         );
-        assert_eq!(answer.counts, AnswerCounts { written: 4, shown: 3, not_found: 1, malformed: 0 });
+        assert_eq!(answer.counts(), AnswerCounts { written: 4, shown: 3, not_found: 1, malformed: 0 });
         // a paper with no PDF: its quote is found in its abstract, and says so
-        assert!(matches!(answer.statements[2].evidence[0].established(), Established::Abstract { .. }));
-        assert_eq!(cited_papers(&answer.statements), ["2601.00001", "2601.00002", "icml-2026-3"]);
+        assert!(matches!(answer.statements()[2].evidence[0].established(), Established::Abstract { .. }));
+        assert_eq!(cited_papers(answer.statements()), ["2601.00001", "2601.00002", "icml-2026-3"]);
     }
 
     #[test]
@@ -671,9 +709,9 @@ mod tests {
             ])),
             &papers,
         );
-        assert_eq!(answer.outcome, Outcome::Unverified, "one of four is not enough to show");
-        assert!(answer.statements.is_empty());
-        assert_eq!(answer.counts, AnswerCounts { written: 4, shown: 1, not_found: 3, malformed: 0 });
+        assert_eq!(answer.outcome(), Outcome::Unverified, "one of four is not enough to show");
+        assert!(answer.statements().is_empty());
+        assert_eq!(answer.counts(), AnswerCounts { written: 4, shown: 1, not_found: 3, malformed: 0 });
     }
 
     #[test]
@@ -687,8 +725,8 @@ mod tests {
             ])),
             &papers,
         );
-        assert_eq!(answer.outcome, Outcome::Unverified, "one of three");
-        assert_eq!(answer.counts.malformed, 2);
+        assert_eq!(answer.outcome(), Outcome::Unverified, "one of three");
+        assert_eq!(answer.counts().malformed, 2);
         let answer = checked(
             said(json!([
                 claim("Merging counts shared directions twice.", "one_paper", &[("2601.00001", "merging task vectors counts shared directions twice")]),
@@ -696,14 +734,14 @@ mod tests {
             ])),
             &papers,
         );
-        assert_eq!((answer.outcome, answer.counts.shown, answer.counts.malformed), (Outcome::Answered, 1, 1));
+        assert_eq!((answer.outcome(), answer.counts().shown, answer.counts().malformed), (Outcome::Answered, 1, 1));
     }
 
     #[test]
     fn the_papers_do_not_say_is_an_answer_of_its_own() {
         let said: Said = serde_json::from_value(json!({"outcome": "not_in_papers", "statements": []})).unwrap();
         let answer = checked(said, &texts());
-        assert_eq!((answer.outcome, answer.statements.len()), (Outcome::NotInPapers, 0));
+        assert_eq!((answer.outcome(), answer.statements().len()), (Outcome::NotInPapers, 0));
         assert!(serde_json::from_value::<Said>(json!({"outcome": "maybe", "statements": []})).is_err());
     }
 
@@ -719,7 +757,7 @@ mod tests {
             )])),
             &citable(&texts, &prepared.papers),
         );
-        let found = found(&prepared.given, &texts, &answer.statements);
+        let found = found(&prepared.given, &texts, answer.statements());
         assert_eq!(found.len(), prepared.given.len());
         let cited: Vec<&str> = found.iter().filter(|found| found.cited).map(|found| found.evidence.paper()).collect();
         assert_eq!(cited, ["2601.00001"]);

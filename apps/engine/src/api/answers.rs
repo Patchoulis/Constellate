@@ -524,17 +524,50 @@ async fn history(State(engine): State<Shared>, Path(run): Path<String>) -> Resul
     Ok(Json(listed))
 }
 
-/// Where a question stands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+/// Where a question stands, with what each state has: only a kept answer, checked again, has statements and
+/// counts.
+#[derive(Clone, Debug, PartialEq)]
 enum Standing {
-    Answered,
-    NotInPapers,
-    Unverified,
+    Kept(Answer),
     /// Being asked now.
     Asking,
     /// Not answered: the call failed or was stopped, or the answer was forgotten. Asking again costs again.
     Unanswered,
+}
+
+/// `AnswerState` in the contracts: what the interface switches on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AnswerState {
+    Answered,
+    NotInPapers,
+    Unverified,
+    Asking,
+    Unanswered,
+}
+
+impl Standing {
+    /// Where question `key` stands: its kept answer checked again (`kept`), or, with none, whether the job
+    /// running now (`running`: its kind and the first line of its log) is the one asking it.
+    fn of(kept: Option<Answer>, running: Option<(&str, Option<&str>)>, key: &str) -> Self {
+        match (kept, running) {
+            (Some(answer), _) => Self::Kept(answer),
+            (None, Some((kind, first))) if kind == JOB && first == Some(asking_line(key).as_str()) => Self::Asking,
+            (None, _) => Self::Unanswered,
+        }
+    }
+
+    fn state(&self) -> AnswerState {
+        match self {
+            Self::Kept(answer) => match answer.outcome() {
+                Outcome::Answered => AnswerState::Answered,
+                Outcome::NotInPapers => AnswerState::NotInPapers,
+                Outcome::Unverified => AnswerState::Unverified,
+            },
+            Self::Asking => AnswerState::Asking,
+            Self::Unanswered => AnswerState::Unanswered,
+        }
+    }
 }
 
 /// `AnswerView` in the contracts.
@@ -545,7 +578,7 @@ struct View {
     community: Option<String>,
     model: String,
     asked_at: String,
-    state: Standing,
+    state: AnswerState,
     /// Only when answered: each statement with the evidence found for it.
     statements: Vec<Cited<Statement>>,
     counts: AnswerCounts,
@@ -561,35 +594,24 @@ async fn view(State(engine): State<Shared>, Path((run, id)): Path<(String, Strin
         let library = engine.library()?;
         let asked = library.question(&run, &id)?.ok_or(ApiError::NotFound)?;
         let texts = texts_of(&library, &asked.passages)?;
-        let (state, answer) = match kept_answer(&library, &asked)? {
-            Some(said) => {
-                let answer = answers::checked(said, &answers::citable(&texts, &papers_in(&asked.passages)));
-                let state = match answer.outcome {
-                    Outcome::Answered => Standing::Answered,
-                    Outcome::NotInPapers => Standing::NotInPapers,
-                    Outcome::Unverified => Standing::Unverified,
-                };
-                (state, answer)
+        let kept = kept_answer(&library, &asked)?
+            .map(|said| answers::checked(said, &answers::citable(&texts, &papers_in(&asked.passages))));
+        let job = engine.job.snapshot(0);
+        let running = (job.state == Phase::Running).then(|| (job.kind.as_str(), job.log.first().map(String::as_str)));
+        let standing = Standing::of(kept, running, &asked.key);
+        let state = standing.state();
+        let (statements, counts) = match standing {
+            Standing::Kept(answer) => {
+                let counts = answer.counts();
+                (answer.into_statements(), counts)
             }
-            None => {
-                let job = engine.job.snapshot(0);
-                let ours = job.log.first().is_some_and(|line| *line == asking_line(&asked.key));
-                let state = if job.state == Phase::Running && job.kind == JOB && ours {
-                    Standing::Asking
-                } else {
-                    Standing::Unanswered
-                };
-                (
-                    state,
-                    Answer { outcome: Outcome::Unverified, statements: Vec::new(), counts: AnswerCounts::default() },
-                )
-            }
+            Standing::Asking | Standing::Unanswered => (Vec::new(), AnswerCounts::default()),
         };
         Ok(View {
-            passages: answers::found(&asked.passages, &texts, &answer.statements),
-            cited_papers: answers::cited_papers(&answer.statements),
-            statements: answer.statements,
-            counts: answer.counts,
+            passages: answers::found(&asked.passages, &texts, &statements),
+            cited_papers: answers::cited_papers(&statements),
+            statements,
+            counts,
             state,
             id: asked.key,
             question: asked.question,
@@ -1028,6 +1050,27 @@ mod tests {
             "the answer the listing showed is gone"
         );
         assert_eq!(ask(&router, "POST", &path, None).await.1["forgotten"], json!(false), "nothing left to forget");
+    }
+
+    #[test]
+    fn a_question_with_a_kept_answer_stands_as_its_answer_checked_whatever_job_runs() {
+        let counts = AnswerCounts { written: 2, shown: 0, not_found: 2, malformed: 0 };
+        let unverified = Standing::of(Some(Answer::Unverified { counts }), Some((JOB, Some("x"))), "k");
+        assert_eq!(unverified.state(), AnswerState::Unverified);
+        assert_eq!(Standing::of(Some(Answer::NotInPapers), None, "k").state(), AnswerState::NotInPapers);
+        let line = asking_line("k");
+        let answered = Answer::Answered { statements: Vec::new(), counts };
+        assert_eq!(Standing::of(Some(answered), Some((JOB, Some(&line))), "k").state(), AnswerState::Answered);
+    }
+
+    #[test]
+    fn a_question_without_an_answer_is_being_asked_only_while_its_own_job_runs() {
+        let line = asking_line("k");
+        assert_eq!(Standing::of(None, Some((JOB, Some(&line))), "k"), Standing::Asking);
+        assert_eq!(Standing::of(None, Some((JOB, Some(&asking_line("other")))), "k"), Standing::Unanswered);
+        assert_eq!(Standing::of(None, Some(("a run", Some(&line))), "k"), Standing::Unanswered, "another kind of job");
+        assert_eq!(Standing::of(None, Some((JOB, None)), "k"), Standing::Unanswered);
+        assert_eq!(Standing::of(None, None, "k"), Standing::Unanswered, "no job running: failed, stopped or forgotten");
     }
 
     #[tokio::test]
