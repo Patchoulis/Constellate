@@ -83,8 +83,8 @@ export default function Home() {
 				error={
 					job.error ??
 					failed ??
-					// until that setting is saved; also behind the open settings dialog, which has no place for it yet
-					(refused ? `Not saved: ${refused.error}` : null) ??
+					// until that setting is saved; while the settings dialog is open it says so beside the setting instead
+					(refused && !settingsOpen ? `Not saved: ${refused.error}` : null) ??
 					(runs.status === "failed" ? runs.error : null)
 				}
 				onSelect={setChosen}
@@ -130,6 +130,7 @@ export default function Home() {
 				choosable={choosable}
 				onOpenChange={setSettingsOpen}
 				onChange={(changes) => void change(changes).then(library.reload)} // what the library reports depends on some settings
+				refused={refused}
 				onReadDeclarations={
 					current && !running
 						? () => {

@@ -178,6 +178,19 @@ const GROUPS: { title: string; note?: string; columns?: number; fields: Field[] 
 
 const MODELS_GROUP = "Language model";
 
+/** A change the backend refused, and why. */
+export type Refusal = { changes: Partial<Settings>; error: string };
+
+/** The settings a field edits: the model's field picks the provider and the effort too. */
+function keysOf(field: Field): (keyof Settings)[] {
+	return field.kind === "model" ? ["describe_provider", "describe_model", "describe_effort"] : [field.key];
+}
+
+/** Why the last change to this field was refused, or null when it was not. */
+export function refusalOf(field: Field, refused: Refusal | null | undefined): string | null {
+	return refused && keysOf(field).some((key) => key in refused.changes) ? refused.error : null;
+}
+
 function Editor({
 	field,
 	settings,
@@ -262,6 +275,7 @@ export function SettingsDialog({
 	choosable,
 	onOpenChange,
 	onChange,
+	refused,
 	onRedo,
 	onReadDeclarations,
 }: {
@@ -280,6 +294,8 @@ export function SettingsDialog({
 	choosable: Choosable;
 	onOpenChange: (open: boolean) => void;
 	onChange: (changes: Partial<Settings>) => void;
+	/** the last change the backend refused and its reason, shown beside the settings it was about */
+	refused?: Refusal | null;
 	/** Run the open run again with these steps redone; undefined when there is no run to redo, or one is running. */
 	onRedo?: (steps: RedoStep[]) => void;
 	/** Read the declarations of every paper of the open run; undefined when that cannot be started now. */
@@ -365,17 +381,26 @@ export function SettingsDialog({
 										</p>
 									)}
 									<div className={group.columns ? "grid grid-cols-2 gap-2" : "flex flex-col gap-2"}>
-										{shown.map((field) => (
-											<Editor
-												key={field.key}
-												field={field}
-												settings={settings}
-												catalog={catalog}
-												choosable={choosable}
-												providerOwned={serverOwned.has("describe_provider")}
-												onChange={onChange}
-											/>
-										))}
+										{shown.map((field) => {
+											const why = refusalOf(field, refused);
+											return (
+												<div key={field.key} className="flex flex-col gap-1">
+													<Editor
+														field={field}
+														settings={settings}
+														catalog={catalog}
+														choosable={choosable}
+														providerOwned={serverOwned.has("describe_provider")}
+														onChange={onChange}
+													/>
+													{why && (
+														<p role="alert" className="text-xs text-destructive">
+															Not saved: {why}
+														</p>
+													)}
+												</div>
+											);
+										})}
 									</div>
 								</section>
 							))}
