@@ -955,8 +955,7 @@ export type PointLocation = { kind: "passage"; evidence: Evidence } | { kind: "n
  *  the model's place for the point was not found in the paper; then `paper_says` is there (never both null). */
 export type PointReading =
 	/** `paper_says`: what the paper says that responds to the point: the paper's words only, no judgement */
-	| { point: string; location: PointLocation; paper_says: Evidence | null }
-	| { point: string; location: null; paper_says: Evidence };
+	{ point: string; location: PointLocation; paper_says: Evidence | null } | { point: string; location: null; paper_says: Evidence };
 
 /** Whether a weakness says something is absent, and what the engine's search of the paper's text found. */
 export type Absence =
