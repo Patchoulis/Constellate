@@ -495,7 +495,7 @@ async fn start(
         return Err(ApiError::Invalid(format!("the budget is more than 0 and at most {MOST_BUDGET_USD} US dollars")));
     }
     let id = on_the_side(move || {
-        let endpoint = engine.language.clone().map_err(|why| ApiError::Invalid(why.to_string()))?;
+        let endpoint = engine.endpoint().map_err(|why| ApiError::Invalid(why.to_string()))?;
         let (_, ordered) = papers_of(&engine, &run, &scope)?;
         let papers = part_of(&ordered, part).to_vec();
         let model = model_of(&engine)?;

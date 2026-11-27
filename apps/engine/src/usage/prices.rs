@@ -209,6 +209,9 @@ fn undated(model: &str) -> &str {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Written {
+    /// Who sells the model at this price: a provider id of `model::language::Provider`, with an entry in the
+    /// file's `sources`.
+    pub(super) provider: String,
     input: f64,
     output: f64,
     cache: Option<WrittenCache>,
@@ -224,21 +227,28 @@ struct WrittenLongPrompt {
     cache: Option<WrittenCache>,
 }
 
-/// The prompt cache's prices as written: reading from it, and writing to it for five minutes or for an hour.
+/// The prompt cache's prices as written: reading from it, and writing to it for five minutes or for an hour (for
+/// a provider whose lifetimes differ, its short one and its long one, as its source in the file says). A provider
+/// that caches by itself and publishes no price for writing has only `read`: what it writes is billed as input.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WrittenCache {
     read: f64,
-    write_5m: f64,
-    write_1h: f64,
+    write_5m: Option<f64>,
+    write_1h: Option<f64>,
 }
 
 impl WrittenCache {
-    fn checked(&self, model: &str) -> Result<CacheRates, Invalid> {
+    fn checked(&self, model: &str, input: u64) -> Result<CacheRates, Invalid> {
+        // both lifetimes have a price, or neither has: one without the other is a price left out by mistake
+        if self.write_5m.is_some() != self.write_1h.is_some() {
+            return Err(Invalid::Price(model.to_owned()));
+        }
+        let write = |price: Option<f64>| price.map_or(Ok(input), |price| per_token(price, model));
         Ok(CacheRates {
             read: per_token(self.read, model)?,
-            write_5m: per_token(self.write_5m, model)?,
-            write_1h: per_token(self.write_1h, model)?,
+            write_5m: write(self.write_5m)?,
+            write_1h: write(self.write_1h)?,
         })
     }
 }
@@ -261,23 +271,21 @@ fn per_token(dollars_per_million: f64, model: &str) -> Result<u64, Invalid> {
 
 impl Written {
     pub(super) fn checked(self, model: &str) -> Result<ModelPrice, Invalid> {
-        let cache = |written: &Option<WrittenCache>| written.as_ref().map(|cache| cache.checked(model)).transpose();
-        let rate = PerToken {
-            input: per_token(self.input, model)?,
-            output: per_token(self.output, model)?,
-            cache: cache(&self.cache)?,
+        let cache = |written: &Option<WrittenCache>, input: u64| {
+            written.as_ref().map(|cache| cache.checked(model, input)).transpose()
         };
+        let input = per_token(self.input, model)?;
+        let rate = PerToken { input, output: per_token(self.output, model)?, cache: cache(&self.cache, input)? };
         let long_prompt = match self.long_prompt {
             None => None,
             Some(long) if long.above == 0 => return Err(Invalid::LongPrompt(model.to_owned())),
-            Some(long) => Some(LongPrompt {
-                above: long.above,
-                rate: PerToken {
-                    input: per_token(long.input, model)?,
-                    output: per_token(long.output, model)?,
-                    cache: cache(&long.cache)?,
-                },
-            }),
+            Some(long) => {
+                let input = per_token(long.input, model)?;
+                Some(LongPrompt {
+                    above: long.above,
+                    rate: PerToken { input, output: per_token(long.output, model)?, cache: cache(&long.cache, input)? },
+                })
+            }
         };
         Ok(ModelPrice { rate, long_prompt })
     }
@@ -347,7 +355,8 @@ mod tests {
         assert_eq!(rate("claude-sonnet-5"), (2_000_000, 10_000_000));
         let long = models["claude-haiku-5-5"].long_prompt.unwrap();
         assert_eq!((long.above, long.rate.input, long.rate.output), (100_000, 500_000, 2_500_000));
-        assert_eq!(models.values().filter(|model| model.long_prompt.is_some()).count(), 1);
+        let claude = models.iter().filter(|(id, _)| id.starts_with("claude-"));
+        assert_eq!(claude.filter(|(_, model)| model.long_prompt.is_some()).count(), 1);
     }
 
     #[test]
@@ -386,6 +395,28 @@ mod tests {
         model.rate.cache = None;
         assert_eq!(model.cost(&Tokens { input: 10, cache_read: 10, ..Tokens::default() }), None);
         assert_eq!(model.cost(&Tokens { input: 10, ..Tokens::default() }), Some(micro(40.0)));
+    }
+
+    #[test]
+    fn other_providers_models_are_priced_under_their_provider_with_the_published_prices() {
+        // GPT-6.2 Sol: $2 in, $10 out, $0.10 cached, $2.50 for a 30-minute write; past 272K prompt tokens input and
+        // cache double and output is 1.5 times
+        let sol = model_price("openai:gpt-6.2-sol").unwrap();
+        assert_eq!((sol.rate.input, sol.rate.output), (2_000_000, 10_000_000));
+        assert_eq!(sol.rate.cache.unwrap(), CacheRates { read: 100_000, write_5m: 2_500_000, write_1h: 5_000_000 });
+        let long = sol.long_prompt.unwrap();
+        assert_eq!((long.above, long.rate.input, long.rate.output), (272_000, 4_000_000, 15_000_000));
+        // a provider that publishes no price for writing the cache: writes are billed as input
+        let carbon = model_price("gemini:gemini-4-carbon").unwrap().rate;
+        assert_eq!(carbon.cache.unwrap(), CacheRates { read: 200_000, write_5m: carbon.input, write_1h: carbon.input });
+        // the same model sold by two providers is two prices, and an id alone finds neither
+        assert_ne!(model_price("groq:openai/gpt-oss-120b"), model_price("baseten:openai/gpt-oss-120b"));
+        assert_eq!(model_price("openai/gpt-oss-120b"), None);
+        assert_eq!(model_price("compatible:qwen3:32b"), None, "a model of the user's own server has no price");
+        let bundled = bundled().unwrap();
+        for (id, provider) in &bundled.providers {
+            assert!(bundled.sources.contains_key(provider), "{id}: {provider} has a source");
+        }
     }
 
     #[test]

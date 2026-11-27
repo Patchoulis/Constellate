@@ -307,7 +307,7 @@ async fn estimate(
                     cost: estimate.by_model.into_iter().next().map(Box::new),
                     most_usd: estimate.most_usd,
                     most_tokens: prepared.most_tokens(),
-                    api_key_set: engine.language.is_ok(),
+                    api_key_set: engine.endpoint().is_ok(),
                 }
             }
             Ready::Indexing { done, of } => AnswerEstimate::Indexing { done, of },
@@ -397,7 +397,7 @@ async fn start(
             library.keep_question(&asked)?;
             return Ok(Started { id, job: None });
         }
-        let endpoint = engine.language.clone().map_err(|why| ApiError::Invalid(why.to_string()))?;
+        let endpoint = engine.endpoint().map_err(|why| ApiError::Invalid(why.to_string()))?;
         let budget = budget_of(&prepared, &library, request.accepted_usd)?;
         // listed before the call is started, so that a call paid for is never missing from the history
         let new = library.question(&scope.run, &id)?.is_none();

@@ -10,7 +10,7 @@
 //! | [`evidence`] | "this statement rests on that place in that paper": quotes checked before they are shown |
 //! | [`library`] | what is kept on disk: the SQLite library, and the file store for a run's results |
 //! | [`jobs`]    | the one background job at a time, as an explicit state machine                  |
-//! | [`model`]   | the embedding model on any graphics card or the processor; Claude over its API  |
+//! | [`model`]   | the embedding model on any graphics card or the processor; a language model over its provider's API |
 //! | [`runs`]    | many runs: the list without loading any, a cache by use, warm-up at start      |
 //! | [`usage`]   | what calls to the language model cost, from prices built into the engine       |
 //! | [`selection`] | which papers a run is about: conferences, or a date range                     |

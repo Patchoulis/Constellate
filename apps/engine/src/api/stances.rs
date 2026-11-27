@@ -524,7 +524,7 @@ fn ask_items<T>(
 where
     T: serde::de::DeserializeOwned + Serialize + Send + Clone,
 {
-    let endpoint = engine.language.clone().map_err(|why| why.to_string())?;
+    let endpoint = engine.endpoint().map_err(|why| why.to_string())?;
     let estimate = batch::estimate_batch::<T>(library, items, Counting::ASSUMED).map_err(|error| error.to_string())?;
     let budget = approved.budget(items, &estimate)?;
     let transport = transport();
@@ -574,7 +574,7 @@ fn ask(
     approved: Approved,
 ) -> Result<Started, ApiError> {
     let question = checked(&asked.question)?;
-    engine.language.as_ref().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
+    engine.endpoint().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
     let library = engine.library()?;
     let papers = read_run(engine, &library, run, scope)?;
     let plan = Plan::of(&papers, &question, asked.include_unrelated);
@@ -857,7 +857,7 @@ fn proposal_plan(engine: &Shared, run: &str, community: &str, fresh: bool) -> Re
 }
 
 fn propose(engine: &Shared, run: &str, community: &str, body: ProposeBody) -> Result<Started, ApiError> {
-    engine.language.as_ref().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
+    engine.endpoint().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
     let library = engine.library()?;
     let scope = Scope::Community(community.to_owned());
     let papers = read_run(engine, &library, run, scope)?;

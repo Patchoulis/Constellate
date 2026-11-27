@@ -143,7 +143,7 @@ fn paper(engine: &Shared, id: &str) -> Result<Paper, ApiError> {
 
 async fn view(State(engine): State<Shared>, Path(id): Path<String>) -> Result<Json<Critique>, ApiError> {
     let critique = on_the_side(move || {
-        let api_key_set = engine.language.is_ok();
+        let api_key_set = engine.endpoint().is_ok();
         let Paper { library, id, reviewers, text } = paper(&engine, &id)?;
         let model = match text {
             Err(part) => part,
@@ -218,7 +218,7 @@ async fn start(State(engine): State<Shared>, Path(id): Path<String>, body: Bytes
             return Ok(Started::Kept);
         }
         let endpoint =
-            engine.language.clone().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
+            engine.endpoint().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
         // the estimate the user saw was for this model: one changed in the settings since is not asked unseen
         if asked.model.as_ref().is_some_and(|model| *model != plan.model) {
             return Err(ApiError::Invalid(format!(

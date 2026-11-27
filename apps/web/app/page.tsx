@@ -7,6 +7,7 @@ import { Sidebar } from "@/components/sidebar";
 import { ActivityLog, Notice, Workspace } from "@/components/workspace";
 import { api } from "@/lib/api";
 import { serverOwned } from "@/lib/engine";
+import { choosableOf, engineCatalog } from "@/lib/models";
 import { ready, useAsync } from "@/lib/use-async";
 import { useJob } from "@/lib/use-job";
 
@@ -26,6 +27,10 @@ export default function Home() {
 	// what kind of engine this window talks to: a server decides some settings itself
 	const engine = useAsync(() => api.status(0), []);
 	const { settings, change } = useSettings();
+	// the language models the engine offers; the Python backend has no such route, and offers Claude's alone
+	const models = useAsync(() => engineCatalog(api.models), []);
+	const choosable = choosableOf(ready(models), ready(catalog)?.describe_models ?? [], settings?.describe_model);
+	const owned = serverOwned(ready(engine));
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [chosen, setChosen] = useState<string | null>(null);
 	// Counts finished runs. A run done again keeps its name, so the name alone would not show the new result.
@@ -48,8 +53,10 @@ export default function Home() {
 				current={current}
 				running={running}
 				library={ready(library)}
-				model={settings?.describe_model}
-				onModel={(describe_model) => void change({ describe_model })}
+				choosable={choosable}
+				settings={settings}
+				providerOwned={owned.has("describe_provider")}
+				onChange={(changes) => void change(changes)}
 				catalog={ready(catalog)}
 				error={job.error ?? (runs.status === "failed" ? runs.error : null)}
 				onSelect={setChosen}
@@ -83,7 +90,8 @@ export default function Home() {
 				validation={ready(library)?.ai_validation}
 				detector={ready(library)?.ai_detector}
 				machine={ready(library)?.machine}
-				serverOwned={serverOwned(ready(engine))}
+				serverOwned={owned}
+				choosable={choosable}
 				onOpenChange={setSettingsOpen}
 				onChange={(changes) => void change(changes).then(library.reload)} // what the library reports depends on some settings
 				onReadDeclarations={

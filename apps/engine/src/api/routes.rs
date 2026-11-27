@@ -38,7 +38,7 @@ use super::config::Mode;
 use super::security::{self, Guard, LARGEST_BODY};
 use crate::jobs::{Busy, Job, Snapshot};
 use crate::library::{Library, LibraryError};
-use crate::model::language::{Endpoint, Unavailable};
+use crate::model::language::{Endpoint, Provider, Unavailable};
 use crate::settings::{self, Choices, Settings, SettingsError};
 
 /// How long a request may take from its first byte to its answer: a client that sends its body slowly (to hold
@@ -57,8 +57,10 @@ pub struct Engine {
     pub warnings: Vec<String>,
     /// This computer only, or a network: set by the server from how it listens.
     pub mode: Mode,
-    /// The Claude API's key and address, as read where the engine's other variables are
-    /// ([`super::config::Environment::language_endpoint`]), or why there are none: set by the program at start.
+    /// The language model's providers, as their variables were read at start ([`super::models`]).
+    pub providers: crate::model::language::Providers,
+    /// One endpoint to ask whatever the settings say, when there is one: a test's. The program leaves it unset,
+    /// and the provider chosen in the settings is asked ([`Engine::endpoint`]).
     pub language: Result<Endpoint, Unavailable>,
     /// The library, opened when a route first needs it (and tried again after a failure to open).
     library: Mutex<Option<Arc<Library>>>,
@@ -68,12 +70,14 @@ pub type Shared = Arc<Engine>;
 
 impl Engine {
     pub fn new(data: PathBuf, choices: Choices) -> Engine {
+        let providers = Default::default();
         Engine {
             job: Job::new(),
             data,
             choices,
             warnings: Vec::new(),
             mode: Mode::Local,
+            providers,
             language: Err(Unavailable::NoKey),
             library: Mutex::new(None),
         }
@@ -92,6 +96,20 @@ impl Engine {
         }
         *opened = Some(Arc::clone(&library));
         Ok(library)
+    }
+
+    /// Where the language model is asked: the provider chosen in the settings, with its key and address as
+    /// read at start, or why it cannot be asked (its key is not set). Every feature that asks the model asks
+    /// here, so that the choice in the interface is the one that is used.
+    pub fn endpoint(&self) -> Result<Endpoint, Unavailable> {
+        if let Ok(fixed) = &self.language {
+            return Ok(fixed.clone());
+        }
+        let chosen = settings::load(&self.settings_file(), &self.choices)
+            .ok()
+            .and_then(|settings| Provider::from_id(&settings.describe_provider))
+            .unwrap_or(Provider::Anthropic);
+        self.providers.endpoint(chosen)
     }
 
     pub fn settings_file(&self) -> PathBuf {
@@ -283,6 +301,7 @@ pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
     table.extend(super::claim_tree::table());
     table.extend(super::citation_contexts::table());
     table.extend(super::answers::table());
+    table.extend(super::models::table());
     table
 }
 
@@ -293,11 +312,12 @@ pub fn routes() -> Router<Shared> {
 
 /// The settings that belong to the server when the interface reaches it across a network: the same for every
 /// window that connects, and not changed from one. The embedding model is the library's: changing it would
-/// embed every paper again.
+/// embed every paper again. The language model's provider is the server's: its key, its account and the address
+/// papers' text is sent to are the server owner's (the model and effort within it may be chosen from a window).
 pub fn server_owned(mode: Mode) -> &'static [&'static str] {
     match mode {
         Mode::Local => &[],
-        Mode::Network => &["embedding_model"],
+        Mode::Network => &["embedding_model", "describe_provider"],
     }
 }
 
@@ -345,7 +365,7 @@ async fn status(
         warnings: &engine.warnings,
         mode,
         server_owned: server_owned(engine.mode),
-        api_key_set: engine.language.is_ok(),
+        api_key_set: engine.endpoint().is_ok(),
     };
     Ok(Json(serde_json::to_value(told).map_err(|_| ApiError::Internal)?))
 }

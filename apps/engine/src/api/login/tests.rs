@@ -402,7 +402,8 @@ async fn the_embedding_model_belongs_to_the_server_and_is_refused_from_the_inter
     assert_eq!((status, told["max_links"].clone()), (StatusCode::OK, json!(5)));
     let (_, told, _) =
         answer(&served.router, with_cookie(asked("GET", "/api/status"), &cookie).body(Body::empty()).unwrap()).await;
-    assert_eq!((told["mode"].clone(), told["server_owned"].clone()), (json!("network"), json!(["embedding_model"])));
+    let owned = json!(["embedding_model", "describe_provider"]);
+    assert_eq!((told["mode"].clone(), told["server_owned"].clone()), (json!("network"), owned));
 }
 
 #[tokio::test]

@@ -327,7 +327,7 @@ async fn start(
         if opened.kept()?.is_some() {
             return Ok(Started { started: false, job: None });
         }
-        let endpoint = engine.language.clone().map_err(|why| ApiError::Invalid(why.to_string()))?;
+        let endpoint = engine.endpoint().map_err(|why| ApiError::Invalid(why.to_string()))?;
         let schema = schema();
         let shown = {
             let item = item(opened.slot(), &opened.model, &opened.prompt, &schema);

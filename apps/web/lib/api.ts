@@ -10,6 +10,7 @@ import type {
 	GraphData,
 	Library,
 	LocateAnswer,
+	ModelCatalog,
 	OverviewStatus,
 	Paper,
 	PaperPassages,
@@ -88,6 +89,10 @@ export const api = {
 	/** what was spent, with the worth of a US dollar in `currency` (a three-letter code) */
 	usage: (currency: string) => call<Usage>(`/api/usage?currency=${encodeURIComponent(currency)}`),
 	catalog: () => call<Catalog>("/api/catalog"),
+	/** every language model provider and its models (the engine only: the Python backend answers 404) */
+	models: () => call<ModelCatalog>("/api/models"),
+	/** the models the OpenAI-compatible server says it has */
+	endpointModels: () => call<{ models: string[] }>("/api/models/endpoint"),
 	paper: (id: string) => call<Paper>(`/api/papers/${id}`),
 	pdfUrl: (id: string) => `/api/pdf/${id}`,
 	/** the paper's text from its PDF, by page, section and paragraph (slow the first time: the PDF is read); fails

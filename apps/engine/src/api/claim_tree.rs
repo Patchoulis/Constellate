@@ -103,7 +103,7 @@ pub async fn start(
             "the budget must be more than 0 and at most {MOST_BUDGET_USD} US dollars"
         )));
     }
-    let endpoint = engine.language.clone().map_err(|why| ApiError::Invalid(why.to_string()))?;
+    let endpoint = engine.endpoint().map_err(|why| ApiError::Invalid(why.to_string()))?;
     let job = on_the_side(move || begin(&engine, id, budget_usd, endpoint, Https::default)).await?;
     Ok(Json(Started { job }))
 }

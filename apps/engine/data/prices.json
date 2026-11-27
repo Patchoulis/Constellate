@@ -1,7 +1,78 @@
 {
 	"updated": "2026-11-27",
+	"sources": {
+		"anthropic": {
+			"url": "https://platform.claude.com/docs/en/about-claude/pricing",
+			"fetched": "2026-11-27"
+		},
+		"openai": {
+			"url": "https://developers.openai.com/api/docs/pricing",
+			"fetched": "2026-11-27",
+			"note": "Standard tier. Cache writes: write_5m is the 30-minute lifetime, write_1h the 12-hour one. Above 272K prompt tokens input and cache prices double and output costs 1.5 times."
+		},
+		"gemini": {
+			"url": "https://aistudio.google.com/docs/pricing",
+			"fetched": "2026-11-27",
+			"note": "Paid tier, Standard. The prices announced for 2026-12-01 (gemini-4-carbon, gemini-4-argon) and 2027-01-01 (gemini-3.8-flash) are used already: the higher, so that estimates and budgets err high. Implicit caching has no write price."
+		},
+		"xai": {
+			"url": "https://docs.x.ai/docs/models",
+			"fetched": "2026-11-27",
+			"note": "From 200K prompt tokens every rate doubles for the whole request."
+		},
+		"openrouter": {
+			"url": "https://openrouter.ai/x-ai/grok-4.7",
+			"fetched": "2026-11-27",
+			"note": "OpenRouter passes on the provider's price; buying credits costs a fee on top (https://openrouter.ai/pricing)."
+		},
+		"mistral": {
+			"url": "https://docs.mistral.ai/inference/pricing",
+			"fetched": "2026-11-27"
+		},
+		"deepseek": {
+			"url": "https://api-docs.deepseek.com/quick_start/pricing",
+			"fetched": "2026-11-27",
+			"note": "Peak-hour prices, the higher: off-peak calls cost half."
+		},
+		"groq": {
+			"url": "https://console.groq.com/docs/models",
+			"fetched": "2026-11-27",
+			"note": "Cached input at the 50% discount https://console.groq.com/docs/prompt-caching documents for the GPT-OSS models."
+		},
+		"together": {
+			"url": "https://www.together.ai/pricing",
+			"fetched": "2026-11-27"
+		},
+		"fireworks": {
+			"url": "https://fireworks.ai/pricing",
+			"fetched": "2026-11-27"
+		},
+		"cerebras": {
+			"url": "https://inference-docs.cerebras.ai/models/openai-oss",
+			"fetched": "2026-11-27",
+			"note": "Cached tokens are billed at the input rate (https://inference-docs.cerebras.ai/capabilities/prompt-caching)."
+		},
+		"minimax": {
+			"url": "https://platform.minimax.io/docs/guides/pricing",
+			"fetched": "2026-11-27"
+		},
+		"zai": {
+			"url": "https://docs.z.ai/guides/overview/pricing",
+			"fetched": "2026-11-27"
+		},
+		"baseten": {
+			"url": "https://www.baseten.co/pricing",
+			"fetched": "2026-11-27",
+			"note": "Cached input is discounted at a rate not published: a call that read the cache is not priced."
+		},
+		"meta": {
+			"url": "https://dev.meta.ai/docs/pricing-rate-limits",
+			"fetched": "2026-11-27"
+		}
+	},
 	"models": {
 		"claude-opus-5-5": {
+			"provider": "anthropic",
 			"input": 4,
 			"output": 20,
 			"cache": {
@@ -11,6 +82,7 @@
 			}
 		},
 		"claude-sonnet-5-5": {
+			"provider": "anthropic",
 			"input": 2,
 			"output": 10,
 			"cache": {
@@ -20,6 +92,7 @@
 			}
 		},
 		"claude-haiku-5-5": {
+			"provider": "anthropic",
 			"input": 0.1,
 			"output": 0.5,
 			"cache": {
@@ -39,6 +112,7 @@
 			}
 		},
 		"claude-fable-5-2": {
+			"provider": "anthropic",
 			"input": 8,
 			"output": 40,
 			"cache": {
@@ -48,6 +122,7 @@
 			}
 		},
 		"claude-opus-5": {
+			"provider": "anthropic",
 			"input": 5,
 			"output": 25,
 			"cache": {
@@ -57,6 +132,7 @@
 			}
 		},
 		"claude-opus-4-8": {
+			"provider": "anthropic",
 			"input": 5,
 			"output": 25,
 			"cache": {
@@ -66,12 +142,367 @@
 			}
 		},
 		"claude-sonnet-5": {
+			"provider": "anthropic",
 			"input": 2,
 			"output": 10,
 			"cache": {
 				"read": 0.2,
 				"write_5m": 2.5,
 				"write_1h": 4
+			}
+		},
+		"openai:gpt-6.2-astra": {
+			"provider": "openai",
+			"input": 8,
+			"output": 40,
+			"cache": {
+				"read": 0.4,
+				"write_5m": 10,
+				"write_1h": 20
+			},
+			"long_prompt": {
+				"above": 272000,
+				"input": 16,
+				"output": 60,
+				"cache": {
+					"read": 0.8,
+					"write_5m": 20,
+					"write_1h": 40
+				}
+			}
+		},
+		"openai:gpt-6.2-sol": {
+			"provider": "openai",
+			"input": 2,
+			"output": 10,
+			"cache": {
+				"read": 0.1,
+				"write_5m": 2.5,
+				"write_1h": 5
+			},
+			"long_prompt": {
+				"above": 272000,
+				"input": 4,
+				"output": 15,
+				"cache": {
+					"read": 0.2,
+					"write_5m": 5,
+					"write_1h": 10
+				}
+			}
+		},
+		"openai:gpt-6.1-terra": {
+			"provider": "openai",
+			"input": 1,
+			"output": 5,
+			"cache": {
+				"read": 0.05,
+				"write_5m": 1.25,
+				"write_1h": 2.5
+			},
+			"long_prompt": {
+				"above": 272000,
+				"input": 2,
+				"output": 7.5,
+				"cache": {
+					"read": 0.1,
+					"write_5m": 2.5,
+					"write_1h": 5
+				}
+			}
+		},
+		"openai:gpt-6-luna": {
+			"provider": "openai",
+			"input": 0.1,
+			"output": 0.5,
+			"cache": {
+				"read": 0.01,
+				"write_5m": 0.125,
+				"write_1h": 0.25
+			},
+			"long_prompt": {
+				"above": 272000,
+				"input": 0.2,
+				"output": 0.75,
+				"cache": {
+					"read": 0.02,
+					"write_5m": 0.25,
+					"write_1h": 0.5
+				}
+			}
+		},
+		"gemini:gemini-4-carbon": {
+			"provider": "gemini",
+			"input": 4,
+			"output": 20,
+			"cache": {
+				"read": 0.2
+			}
+		},
+		"gemini:gemini-4-argon": {
+			"provider": "gemini",
+			"input": 4,
+			"output": 20,
+			"cache": {
+				"read": 0.2
+			}
+		},
+		"gemini:gemini-4-neon": {
+			"provider": "gemini",
+			"input": 3,
+			"output": 15,
+			"cache": {
+				"read": 0.15
+			}
+		},
+		"gemini:gemini-4-hydrogen": {
+			"provider": "gemini",
+			"input": 1.5,
+			"output": 7.5,
+			"cache": {
+				"read": 0.075
+			}
+		},
+		"gemini:gemini-3.8-flash": {
+			"provider": "gemini",
+			"input": 1.5,
+			"output": 7.5,
+			"cache": {
+				"read": 0.15
+			}
+		},
+		"gemini:gemini-3.5-flash-lite": {
+			"provider": "gemini",
+			"input": 0.3,
+			"output": 2.5,
+			"cache": {
+				"read": 0.03
+			}
+		},
+		"xai:grok-4.7": {
+			"provider": "xai",
+			"input": 2,
+			"output": 6,
+			"cache": {
+				"read": 0.5
+			},
+			"long_prompt": {
+				"above": 199999,
+				"input": 4,
+				"output": 12,
+				"cache": {
+					"read": 1
+				}
+			}
+		},
+		"xai:grok-4.3": {
+			"provider": "xai",
+			"input": 1.25,
+			"output": 2.5,
+			"cache": {
+				"read": 0.2
+			},
+			"long_prompt": {
+				"above": 199999,
+				"input": 2.5,
+				"output": 5,
+				"cache": {
+					"read": 0.4
+				}
+			}
+		},
+		"openrouter:x-ai/grok-4.7": {
+			"provider": "openrouter",
+			"input": 2,
+			"output": 6
+		},
+		"mistral:mistral-large-4-0": {
+			"provider": "mistral",
+			"input": 0.7,
+			"output": 2.1,
+			"cache": {
+				"read": 0.07
+			}
+		},
+		"deepseek:deepseek-flash": {
+			"provider": "deepseek",
+			"input": 0.3,
+			"output": 1.2,
+			"cache": {
+				"read": 0.006
+			}
+		},
+		"deepseek:deepseek-v4-pro": {
+			"provider": "deepseek",
+			"input": 1.32,
+			"output": 3.96,
+			"cache": {
+				"read": 0.044
+			}
+		},
+		"groq:openai/gpt-oss-120b": {
+			"provider": "groq",
+			"input": 0.15,
+			"output": 0.6,
+			"cache": {
+				"read": 0.075
+			}
+		},
+		"groq:openai/gpt-oss-20b": {
+			"provider": "groq",
+			"input": 0.075,
+			"output": 0.3,
+			"cache": {
+				"read": 0.0375
+			}
+		},
+		"together:deepseek-ai/DeepSeek-V4.1-Flash": {
+			"provider": "together",
+			"input": 0.3,
+			"output": 1.2,
+			"cache": {
+				"read": 0.006
+			}
+		},
+		"together:moonshotai/Kimi-K3.1-Pro": {
+			"provider": "together",
+			"input": 2,
+			"output": 10,
+			"cache": {
+				"read": 0.2
+			}
+		},
+		"together:zai-org/GLM-5.3": {
+			"provider": "together",
+			"input": 1.4,
+			"output": 4.4,
+			"cache": {
+				"read": 0.26
+			}
+		},
+		"together:Qwen/Qwen4-Max": {
+			"provider": "together",
+			"input": 1.5,
+			"output": 4.5,
+			"cache": {
+				"read": 0.075
+			}
+		},
+		"fireworks:accounts/fireworks/models/glm-5p3": {
+			"provider": "fireworks",
+			"input": 1.4,
+			"output": 4.4,
+			"cache": {
+				"read": 0.26
+			}
+		},
+		"fireworks:accounts/fireworks/models/glm-5p3-flash": {
+			"provider": "fireworks",
+			"input": 0.15,
+			"output": 0.5,
+			"cache": {
+				"read": 0.03
+			}
+		},
+		"fireworks:accounts/fireworks/models/kimi-k3": {
+			"provider": "fireworks",
+			"input": 3,
+			"output": 15,
+			"cache": {
+				"read": 0.3
+			}
+		},
+		"fireworks:accounts/fireworks/models/gpt-oss-120b": {
+			"provider": "fireworks",
+			"input": 0.15,
+			"output": 0.6,
+			"cache": {
+				"read": 0.015
+			}
+		},
+		"cerebras:gpt-oss-120b": {
+			"provider": "cerebras",
+			"input": 0.35,
+			"output": 0.75,
+			"cache": {
+				"read": 0.35
+			}
+		},
+		"minimax:MiniMax-M3": {
+			"provider": "minimax",
+			"input": 0.3,
+			"output": 1.2,
+			"cache": {
+				"read": 0.06
+			},
+			"long_prompt": {
+				"above": 512000,
+				"input": 0.6,
+				"output": 2.4,
+				"cache": {
+					"read": 0.12
+				}
+			}
+		},
+		"minimax:MiniMax-M3.1-Flash": {
+			"provider": "minimax",
+			"input": 0.15,
+			"output": 0.6,
+			"cache": {
+				"read": 0.015
+			}
+		},
+		"zai:glm-5.3": {
+			"provider": "zai",
+			"input": 1.4,
+			"output": 4.4,
+			"cache": {
+				"read": 0.26
+			}
+		},
+		"zai:glm-5.3-flash": {
+			"provider": "zai",
+			"input": 0.15,
+			"output": 0.5,
+			"cache": {
+				"read": 0.03
+			}
+		},
+		"baseten:openai/gpt-oss-120b": {
+			"provider": "baseten",
+			"input": 0.1,
+			"output": 0.5
+		},
+		"meta:muse-spark-1.3": {
+			"provider": "meta",
+			"input": 1.25,
+			"output": 4.25,
+			"cache": {
+				"read": 0.15
+			}
+		},
+		"meta:muse-wonder-1.0": {
+			"provider": "meta",
+			"input": 4,
+			"output": 20,
+			"cache": {
+				"read": 0.2
+			}
+		},
+		"meta:muse-ember-1.0": {
+			"provider": "meta",
+			"input": 0.1,
+			"output": 0.5,
+			"cache": {
+				"read": 0.004
+			},
+			"long_prompt": {
+				"above": 200000,
+				"input": 0.3,
+				"output": 1.5,
+				"cache": {
+					"read": 0.012
+				}
 			}
 		}
 	},

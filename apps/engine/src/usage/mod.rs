@@ -1,5 +1,6 @@
-//! What the Claude API has cost: each call priced in US dollars, the calls summed, and the sum shown in the
-//! currency of the user's region.
+//! What the language model has cost: each call priced in US dollars, the calls summed, and the sum shown in the
+//! currency of the user's region. A model whose price is not known (a model of the user's own server, one typed
+//! rather than listed) is unpriced, which is not free: its calls are counted in tokens only.
 //!
 //! Prices and exchange rates are not asked for at run time. Both are in `apps/engine/data/prices.json`, compiled
 //! into the engine and read once: the model prices as the provider publishes them, the exchange rates as the
@@ -47,8 +48,13 @@ pub fn bundled() -> Result<&'static Bundled, &'static Invalid> {
 pub struct Bundled {
     /// The day the file was last changed.
     pub updated: NaiveDate,
-    /// By model id without a date: `claude-opus-5-5`.
+    /// By model id without a date: `claude-opus-5-5`; another provider's as `provider:id` (`openai:gpt-6.2-sol`),
+    /// since two providers may sell one model id at two prices.
     pub models: BTreeMap<String, ModelPrice>,
+    /// Who sells each model at that price, by the same key: a provider id (`anthropic`, `openai`).
+    pub providers: BTreeMap<String, String>,
+    /// Where each provider's prices were read, and on which day, by provider id.
+    pub sources: BTreeMap<String, Source>,
     /// The day the rates are from: the bank's publication, not the day they were fetched.
     pub rates_date: NaiveDate,
     /// Where the rates are from, in words: "European Central Bank via frankfurter.dev".
@@ -76,6 +82,22 @@ pub enum Invalid {
     Code(String),
     #[error("the rate of {0} is not a number above 0")]
     Rate(String),
+    #[error("the provider of {0} has no source in the file: where were its prices read?")]
+    Unsourced(String),
+    #[error("{0} is not written as its provider's models are: provider:id, or a Claude model's own id")]
+    Key(String),
+}
+
+/// Where one provider's prices were read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Source {
+    /// The provider's own pricing page.
+    pub url: String,
+    /// The day they were read there.
+    pub fetched: NaiveDate,
+    /// What a reader of the prices must know (a lifetime of the cache that is not five minutes, a price that
+    /// changes on a known day), if anything.
+    pub note: Option<String>,
 }
 
 /// The file as written. Unknown fields are refused: a field nobody reads is usually a misspelt one.
@@ -83,8 +105,17 @@ pub enum Invalid {
 #[serde(deny_unknown_fields)]
 struct File {
     updated: String,
+    sources: BTreeMap<String, WrittenSource>,
     models: BTreeMap<String, prices::Written>,
     rates: Rates,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WrittenSource {
+    url: String,
+    fetched: String,
+    note: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -105,11 +136,32 @@ impl Bundled {
     /// The same rules as `problemsOf` in `scripts/update-prices.mjs`, which checks the file before it is committed.
     pub fn parse(text: &str) -> Result<Self, Invalid> {
         let file: File = serde_json::from_str(text)?;
-        let models = file
-            .models
-            .into_iter()
-            .map(|(id, written)| written.checked(&id).map(|price| (id, price)))
-            .collect::<Result<_, _>>()?;
+        let mut sources = BTreeMap::new();
+        for (provider, source) in file.sources {
+            if !source.url.starts_with("https://") {
+                return Err(Invalid::Unsourced(provider));
+            }
+            let fetched = day(&source.fetched)?;
+            sources.insert(provider, Source { url: source.url, fetched, note: source.note });
+        }
+        let mut models = BTreeMap::new();
+        let mut providers = BTreeMap::new();
+        for (id, written) in file.models {
+            let provider = written.provider.clone();
+            if !sources.contains_key(&provider) {
+                return Err(Invalid::Unsourced(id));
+            }
+            // a Claude model keeps its own id, as the ledger has always written it; any other is provider:id
+            let keyed = match id.split_once(':') {
+                Some((prefix, rest)) => prefix == provider && provider != "anthropic" && !rest.is_empty(),
+                None => provider == "anthropic",
+            };
+            if !keyed {
+                return Err(Invalid::Key(id));
+            }
+            models.insert(id.clone(), written.checked(&id)?);
+            providers.insert(id, provider);
+        }
         if file.rates.base != "USD" {
             return Err(Invalid::Base(file.rates.base));
         }
@@ -124,6 +176,8 @@ impl Bundled {
         Ok(Self {
             updated: day(&file.updated)?,
             models,
+            providers,
+            sources,
             rates_date: day(&file.rates.date)?,
             rates_source: file.rates.source,
             per_dollar: file.rates.per_dollar,
@@ -173,6 +227,25 @@ mod tests {
         assert!(matches!(changed(|file| file["rates"]["per_dollar"]["eur"] = json!(0.9)), Err(Invalid::Code(_))));
         assert!(matches!(changed(|file| file["rates"]["per_dollar"]["USD"] = json!(1.0)), Err(Invalid::Code(_))));
         assert!(matches!(changed(|file| file["rates"]["per_dollar"]["EUR"] = json!(0.0)), Err(Invalid::Rate(_))));
+    }
+
+    #[test]
+    fn every_price_names_its_provider_with_a_source_and_is_kept_under_its_provider() {
+        let bundled = bundled().unwrap();
+        assert_eq!(bundled.providers["claude-opus-5-5"], "anthropic");
+        assert_eq!(bundled.providers["openai:gpt-6.2-sol"], "openai");
+        assert!(bundled.sources["openai"].url.starts_with("https://developers.openai.com/"));
+        let unsourced = changed(|file| file["models"]["openai:gpt-6.2-sol"]["provider"] = json!("nobody"));
+        assert!(matches!(unsourced, Err(Invalid::Unsourced(_))));
+        let unqualified = changed(|file| {
+            let model = file["models"]["openai:gpt-6.2-sol"].clone();
+            file["models"]["gpt-6.2-sol"] = model;
+        });
+        assert!(matches!(unqualified, Err(Invalid::Key(id)) if id == "gpt-6.2-sol"));
+        let mislabelled = changed(|file| file["models"]["claude-opus-5-5"]["provider"] = json!("openai"));
+        assert!(matches!(mislabelled, Err(Invalid::Key(_))));
+        let undated = changed(|file| file["sources"]["openai"]["fetched"] = json!("last week"));
+        assert!(matches!(undated, Err(Invalid::Day(_))));
     }
 
     #[test]

@@ -554,7 +554,7 @@ async fn estimate(
             to_ask: plan.to_ask(),
             model: plan.model.clone(),
             estimate,
-            can_ask: engine.language.is_ok(),
+            can_ask: engine.endpoint().is_ok(),
         })
     })
     .await?;
@@ -593,8 +593,7 @@ async fn classify_run(
     let Json(request) = body?;
     let budget = budget_of(request.budget_usd)?;
     one_name(&run)?;
-    let endpoint =
-        engine.language.clone().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
+    let endpoint = engine.endpoint().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
     let started = on_the_side(move || {
         let library = engine.library()?;
         let community = tree_path(request.community.as_deref())?.map(str::to_owned);

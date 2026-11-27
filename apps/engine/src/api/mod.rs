@@ -10,6 +10,7 @@
 //! | [`reviews`]  | a paper's reviews read from the page the user opened, and what they come to        |
 //! | [`passages`] | a paper's text from its PDF, and where a quote is in it                            |
 //! | [`stances`]  | where a community's papers agree and disagree on a question                        |
+//! | [`models`]   | the language models' providers and models, for the interface to choose from        |
 //!
 //! [`Server`] puts them together: bound to its address, it says once where it is ([`Server::startup_line`]) and
 //! serves until it is told to stop.
@@ -23,6 +24,7 @@ pub mod critique;
 pub mod explanation;
 pub mod extraction;
 pub mod login;
+pub mod models;
 pub mod passages;
 pub mod reviews;
 pub mod routes;
@@ -482,7 +484,7 @@ mod tests {
         assert!(told["warnings"][0].as_str().unwrap().contains("HTTPS is off"));
         assert_eq!(
             (told["mode"].clone(), told["server_owned"].clone()),
-            (json!("network"), json!(["embedding_model"]))
+            (json!("network"), json!(["embedding_model", "describe_provider"]))
         );
         let bad = Request::get("/api/status?since=many")
             .header(header::HOST, at)

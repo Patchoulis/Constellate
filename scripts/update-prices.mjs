@@ -10,8 +10,9 @@
  * (package.json, package-lock.json, Cargo.toml, Cargo.lock) and adds that version to CHANGELOG.md, so that the
  * change is a release by itself. The weekly workflow .github/workflows/prices.yml runs it and opens a pull request.
  *
- * Model prices are not fetched: the provider publishes no machine-readable list of them. They change by hand,
- * with --set-model. A release made here leaves [Unreleased] in CHANGELOG.md as it is: when it has entries, they
+ * Model prices are not fetched: the providers publish no machine-readable list of them. Each model names its
+ * provider, and each provider has a source in the file (its pricing page and the day it was read there). They
+ * change by hand, with --set-model, or by editing the file and its source's day. A release made here leaves [Unreleased] in CHANGELOG.md as it is: when it has entries, they
  * ship with this version too, and whoever tags it moves them under its heading first.
  *
  *   --check                           write nothing; exit 1 when an update would be made, 0 when not
@@ -38,7 +39,29 @@ const OLDEST_DAYS = 14;
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const CODE = /^[A-Z]{3}$/;
+/** A Claude model's own id, as the ledger has always written it. */
 const MODEL = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+/** A provider's id (apps/engine/src/model/language/provider.rs). */
+const PROVIDER = /^[a-z]+$/;
+/** A model id as other providers write them: letters, digits and . _ - / : */
+const PROVIDER_MODEL = /^[A-Za-z0-9][A-Za-z0-9._/:-]*$/;
+
+/**
+ * Whether `id` is how a model of `provider` is kept in the file: a Claude model by its own id, any other provider's
+ * as `provider:id`, since two providers may sell one model id at two prices.
+ */
+export function isModelKey(id, provider) {
+	if (provider === "anthropic") return MODEL.test(id);
+	const prefix = `${provider}:`;
+	const rest = id.startsWith(prefix) ? id.slice(prefix.length) : "";
+	return PROVIDER.test(provider ?? "") && PROVIDER_MODEL.test(rest) && !rest.includes("..");
+}
+
+/** The provider a model kept under `id` belongs to: the prefix before the first colon, or Anthropic's. */
+export function providerOf(id) {
+	const colon = id.indexOf(":");
+	return colon === -1 ? "anthropic" : id.slice(0, colon);
+}
 
 /** A day written YYYY-MM-DD that is on the calendar (not 2026-02-30). */
 function isDay(text) {
@@ -84,14 +107,37 @@ function unknownFields(object, known, where) {
 
 /**
  * What is wrong with a model's prompt-cache prices, when it has them: reading from the cache, and writing to it
- * for five minutes or for an hour, each in dollars per million tokens.
+ * for five minutes or for an hour (a provider's short and long lifetimes), each in dollars per million tokens. A
+ * provider that publishes no price for writing has only `read` (what it writes is billed as input): both write
+ * prices, or neither.
  */
 function cacheProblems(cache, where) {
 	if (cache === undefined) return [];
-	if (!isObject(cache) || !["read", "write_5m", "write_1h"].every((side) => isPrice(cache[side]))) {
-		return [`${where}: cache is not {"read": price, "write_5m": price, "write_1h": price}`];
+	const writes = isObject(cache) ? ["write_5m", "write_1h"].filter((side) => cache[side] !== undefined) : [];
+	const priced = isObject(cache) && isPrice(cache.read) && writes.every((side) => isPrice(cache[side]));
+	if (!priced || writes.length === 1) {
+		return [`${where}: cache is not {"read": price, "write_5m": price, "write_1h": price} or {"read": price}`];
 	}
 	return unknownFields(cache, ["read", "write_5m", "write_1h"], `${where}: cache`);
+}
+
+/** What is wrong with where each provider's prices were read: its pricing page (https) and the day. */
+function sourceProblems(sources) {
+	if (!isObject(sources) || Object.keys(sources).length === 0) return [`"sources" names no provider`];
+	const problems = [];
+	for (const [provider, source] of Object.entries(sources)) {
+		const where = `source ${JSON.stringify(provider)}`;
+		if (!PROVIDER.test(provider)) problems.push(`${where}: not a provider id (lower case letters)`);
+		if (!isObject(source)) {
+			problems.push(`${where}: not an object`);
+			continue;
+		}
+		if (typeof source.url !== "string" || !source.url.startsWith("https://")) problems.push(`${where}: "url" is not an https address`);
+		if (!isDay(source.fetched)) problems.push(`${where}: "fetched" is not a day (YYYY-MM-DD): ${JSON.stringify(source.fetched)}`);
+		if (source.note !== undefined && typeof source.note !== "string") problems.push(`${where}: "note" is not text`);
+		problems.push(...unknownFields(source, ["url", "fetched", "note"], where));
+	}
+	return problems;
 }
 
 /**
@@ -102,16 +148,23 @@ function cacheProblems(cache, where) {
  */
 export function problemsOf(file, text) {
 	if (!isObject(file)) return ["the file is not a JSON object"];
-	const problems = unknownFields(file, ["updated", "models", "rates"], "the file");
+	const problems = unknownFields(file, ["updated", "sources", "models", "rates"], "the file");
 	if (text !== undefined && /"above"\s*:\s*-?\d*[.eE]/.test(text))
 		problems.push(`"above" is a number of tokens, written without a point or exponent`);
 	if (!isDay(file.updated)) problems.push(`"updated" is not a day (YYYY-MM-DD): ${JSON.stringify(file.updated)}`);
+	problems.push(...sourceProblems(file.sources));
 	if (!isObject(file.models) || Object.keys(file.models).length === 0) problems.push(`"models" lists no model`);
 	for (const [id, model] of Object.entries(isObject(file.models) ? file.models : {})) {
-		if (!MODEL.test(id)) problems.push(`model ${JSON.stringify(id)}: not a model id (lower case, digits, hyphens)`);
 		if (!isObject(model)) {
-			problems.push(`model ${id}: not an object`);
+			problems.push(`model ${JSON.stringify(id)}: not an object`);
 			continue;
+		}
+		if (typeof model.provider !== "string" || !isObject(file.sources) || !(model.provider in file.sources)) {
+			problems.push(`model ${JSON.stringify(id)}: "provider" names no provider with a source: ${JSON.stringify(model.provider)}`);
+		} else if (!isModelKey(id, model.provider)) {
+			problems.push(
+				`model ${JSON.stringify(id)}: not how a ${model.provider} model is kept (a Claude model's own id: lower case, digits, hyphens; any other: provider:id)`,
+			);
 		}
 		for (const side of ["input", "output"]) {
 			if (!isPrice(model[side])) {
@@ -128,7 +181,7 @@ export function problemsOf(file, text) {
 				problems.push(...unknownFields(long, ["above", "input", "output", "cache"], `model ${id}: long_prompt`));
 			}
 		}
-		problems.push(...unknownFields(model, ["input", "output", "cache", "long_prompt"], `model ${id}`));
+		problems.push(...unknownFields(model, ["provider", "input", "output", "cache", "long_prompt"], `model ${id}`));
 	}
 	const rates = file.rates;
 	if (!isObject(rates)) return [...problems, `"rates" is missing`];
@@ -236,14 +289,18 @@ export function withChangelogVersion(text, version, date, lines) {
 
 /** The file with one model's prices set; a long-prompt rate it had is kept (and said so by the caller). */
 export function withModel(file, id, input, output) {
-	if (!MODEL.test(id)) throw new Error(`${JSON.stringify(id)} is not a model id (lower case, digits, hyphens), e.g. claude-opus-5-5`);
+	const provider = file.models[id]?.provider ?? providerOf(String(id));
+	if (!isModelKey(String(id), provider))
+		throw new Error(`${JSON.stringify(id)} is not a model id: a Claude model's own (claude-opus-5-5), or provider:id (openai:gpt-6.2-sol)`);
+	if (!isObject(file.sources) || !(provider in file.sources))
+		throw new Error(`${provider} has no source in the prices file: add where its prices are published first`);
 	const prices = [input, output].map(Number);
 	// written as a decimal: Number() would also take "0x10" or "1e3"
 	if (!prices.every(isPrice) || [input, output].some((text) => !/^\d+(\.\d+)?$/.test(String(text)))) {
 		throw new Error(`the prices must be US dollars per million tokens, 0 or more: ${input} ${output}`);
 	}
 	const { cache, long_prompt: kept } = file.models[id] ?? {};
-	const model = { input: prices[0], output: prices[1], ...(cache ? { cache } : {}), ...(kept ? { long_prompt: kept } : {}) };
+	const model = { provider, input: prices[0], output: prices[1], ...(cache ? { cache } : {}), ...(kept ? { long_prompt: kept } : {}) };
 	return { ...file, models: { ...file.models, [id]: model } };
 }
 

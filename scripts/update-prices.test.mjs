@@ -7,6 +7,7 @@ import {
 	PRICES,
 	changesOf,
 	currenciesOf,
+	isModelKey,
 	nextPatch,
 	problemsOf,
 	ratesFrom,
@@ -197,8 +198,8 @@ test("a model's prices are set by hand, checked, and its cache and long-prompt r
 	const file = bundled();
 	const changed = withModel(file, "claude-haiku-5-5", "0.2", "1");
 	const { cache, long_prompt } = file.models["claude-haiku-5-5"];
-	assert.deepEqual(changed.models["claude-haiku-5-5"], { input: 0.2, output: 1, cache, long_prompt });
-	assert.deepEqual(withModel(file, "claude-new-6", "3", "15").models["claude-new-6"], { input: 3, output: 15 });
+	assert.deepEqual(changed.models["claude-haiku-5-5"], { provider: "anthropic", input: 0.2, output: 1, cache, long_prompt });
+	assert.deepEqual(withModel(file, "claude-new-6", "3", "15").models["claude-new-6"], { provider: "anthropic", input: 3, output: 15 });
 	assert.equal(file.models["claude-haiku-5-5"].input, 0.1); // the file read is not changed
 	assert.throws(() => withModel(file, "Claude New", "3", "15"), /not a model id/);
 	assert.throws(() => withModel(file, "claude-new-6", "-3", "15"), /dollars per million tokens/);
@@ -208,4 +209,53 @@ test("a model's prices are set by hand, checked, and its cache and long-prompt r
 	assert.throws(() => withModel(file, "claude-new-6", "0.0000001", "15"), /dollars per million tokens/);
 	assert.throws(() => withModel(file, "claude-new-6", "3", undefined), /dollars per million tokens/);
 	assert.deepEqual(problemsOf(withModel(file, "claude-new-6", "3", "15")), []);
+});
+
+test("every model names its provider, which has a source, and is kept as provider:id unless it is Claude", () => {
+	assert.ok(isModelKey("claude-opus-5-5", "anthropic"));
+	assert.ok(isModelKey("openai:gpt-6.2-sol", "openai"));
+	assert.ok(isModelKey("together:deepseek-ai/DeepSeek-V4.1-Flash", "together"));
+	for (const [id, provider] of [
+		["gpt-6.2-sol", "openai"],
+		["openai:gpt-6.2-sol", "anthropic"],
+		["groq:openai/gpt-oss-120b", "openai"],
+		["openai:../x", "openai"],
+		["openai:", "openai"],
+	]) {
+		assert.ok(!isModelKey(id, provider), `${id} of ${provider}`);
+	}
+	const problems = (change) => {
+		const file = bundled();
+		change(file);
+		return problemsOf(file).join("\n");
+	};
+	assert.match(
+		problems((file) => delete file.models["openai:gpt-6.2-sol"].provider),
+		/"provider" names no provider with a source/,
+	);
+	assert.match(
+		problems((file) => (file.models["gpt-6.2-sol"] = { ...file.models["openai:gpt-6.2-sol"] })),
+		/"gpt-6.2-sol": not how a openai model is kept/,
+	);
+	assert.match(
+		problems((file) => (file.sources.openai.url = "http://example.org/pricing")),
+		/source "openai": "url" is not an https address/,
+	);
+	assert.match(
+		problems((file) => (file.sources.openai.fetched = "yesterday")),
+		/source "openai": "fetched" is not a day/,
+	);
+	assert.match(
+		problems((file) => delete file.models["claude-opus-5-5"].cache.write_1h),
+		/claude-opus-5-5: cache is not/,
+	);
+	assert.equal(
+		problems((file) => (file.models["gemini:gemini-4-carbon"].cache = { read: 0.2 })),
+		"",
+		"a cache with no write price is one whose writes are billed as input",
+	);
+	const file = bundled();
+	assert.deepEqual(withModel(file, "openai:gpt-7", "3", "15").models["openai:gpt-7"], { provider: "openai", input: 3, output: 15 });
+	assert.throws(() => withModel(file, "nobody:model-1", "3", "15"), /no source/);
+	assert.throws(() => withModel(file, "openai:a b", "3", "15"), /not a model id/);
 });

@@ -121,8 +121,8 @@ fn main() -> ExitCode {
     };
     let served = runtime.block_on(async {
         let mut engine = Engine::new(data, choices());
-        // from the environment over `.env`, like every other variable; only whether it is set is ever told
-        engine.language = environment.language_endpoint();
+        // the language model's keys and addresses, from the environment over `.env`: read once, never told
+        engine.providers = language::Providers::from_lookup(|name| environment.get(name).map(str::to_owned));
         let mut server = Server::bind(listen, engine, routes())?;
         server.announce_setup_code();
         let mut out = io::stdout().lock();

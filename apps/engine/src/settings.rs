@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::library::store::{self, StoreError};
+use crate::model::language::{Effort, ModelIds, Provider};
 
 /// Every setting, with the names and the JSON shape the interface uses (`Settings` in
 /// `packages/contracts/src/index.ts`).
@@ -40,9 +41,15 @@ pub struct Settings {
     pub acceptance_filter: String,
     /// Papers whose authors' declarations raise one of these flags are left out, in [`Choices::flags`] order.
     pub exclude_flags: Vec<String>,
-    /// Ask Claude to describe every community.
+    /// Ask the language model to describe every community.
     pub describe: bool,
+    /// The provider of the language model (a [`Provider`]'s id): `anthropic`, `openai`, `compatible`, ...
+    pub describe_provider: String,
+    /// One of that provider's models: for the Claude API one of [`Choices::describe_models`]; for a provider whose
+    /// ids may be typed, any plain id it accepts.
     pub describe_model: String,
+    /// How hard the model thinks: sent as the nearest effort the model has, or not at all to one without.
+    pub describe_effort: Effort,
 }
 
 impl Default for Settings {
@@ -61,7 +68,9 @@ impl Default for Settings {
             acceptance_filter: "all".to_owned(),
             exclude_flags: Vec::new(),
             describe: true,
+            describe_provider: "anthropic".to_owned(),
             describe_model: "claude-opus-5-5".to_owned(),
+            describe_effort: Effort::Medium,
         }
     }
 }
@@ -101,6 +110,8 @@ pub enum Invalid {
     NotAChoice { key: &'static str, known: Vec<String> },
     #[error("{key} must be a list of: {}", known.join(", "))]
     NotFlags { key: &'static str, known: Vec<String> },
+    #[error("{key} must be a model id {provider} accepts (letters, digits and . _ - / :)")]
+    NotAModel { key: &'static str, provider: &'static str },
 }
 
 /// Why settings could not be changed: a value the person gave, or the file they are kept in.
@@ -139,9 +150,22 @@ impl Settings {
                 }
                 "exclude_flags" => next.exclude_flags = flags("exclude_flags", value, &choices.flags)?,
                 "describe" => next.describe = switch("describe", value)?,
-                "describe_model" => next.describe_model = choice("describe_model", value, &choices.describe_models)?,
+                "describe_provider" => next.describe_provider = provider("describe_provider", value)?,
+                // checked below, against the provider it is chosen with
+                "describe_model" => {
+                    let name = value.as_str().filter(|name| !name.trim().is_empty());
+                    next.describe_model = name.ok_or(Invalid::NotAName { key: "describe_model" })?.to_owned();
+                }
+                "describe_effort" => {
+                    next.describe_effort = serde_json::from_value(value.clone())
+                        .map_err(|_| Invalid::NotAChoice { key: "describe_effort", known: efforts() })?;
+                }
                 _ => {} // a setting this engine does not have: ignored, as an older or newer interface may send it
             }
+        }
+        if changes.contains_key("describe_provider") || changes.contains_key("describe_model") {
+            let switched = next.describe_provider != self.describe_provider;
+            next.describe_model = model(&next.describe_provider, &next.describe_model, switched, changes, choices)?;
         }
         Ok(next)
     }
@@ -151,7 +175,31 @@ impl Settings {
     /// the app not to start.
     pub fn from_stored(stored: &Map<String, Value>, choices: &Choices) -> Settings {
         let mut settings = Settings::default();
-        for (key, value) in stored {
+        // a model is checked against its provider, so the settings that choose it are applied together first
+        let chosen: Map<String, Value> = stored
+            .iter()
+            .filter(|(key, _)| MODEL_KEYS.contains(&key.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        // when they do not go together (a model since removed, an effort a newer engine wrote), as much of them is
+        // kept as can be: the effort alone, the provider with its model, else the provider with its first model;
+        // the provider is never dropped for a bad model, since it decides where papers' text is sent
+        let part = |keys: &[&str]| -> Map<String, Value> {
+            chosen.iter().filter(|(key, _)| keys.contains(&key.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect()
+        };
+        match settings.apply(&chosen, choices) {
+            Ok(next) => settings = next,
+            Err(_) => {
+                if let Ok(next) = settings.apply(&part(&["describe_effort"]), choices) {
+                    settings = next;
+                }
+                let with_model = settings.apply(&part(&["describe_provider", "describe_model"]), choices);
+                if let Ok(next) = with_model.or_else(|_| settings.apply(&part(&["describe_provider"]), choices)) {
+                    settings = next;
+                }
+            }
+        }
+        for (key, value) in stored.iter().filter(|(key, _)| !chosen.contains_key(*key)) {
             let one = Map::from_iter([(key.clone(), value.clone())]);
             if let Ok(next) = settings.apply(&one, choices) {
                 settings = next;
@@ -172,14 +220,60 @@ pub fn save(file: &Path, changes: &Map<String, Value>, choices: &Choices) -> Res
     // Checked before the file is locked, so that a bad value is refused without touching it; each value is
     // checked on its own, so the check does not depend on what another writer changes meanwhile.
     let changed = serde_json::to_value(load(file, choices)?.apply(changes, choices)?).unwrap_or_default();
+    // a provider changed alone changes its model too (to the provider's first): that is kept with it
+    let model = changes.contains_key("describe_provider").then(|| "describe_model".to_owned());
     store::update_json(file, |stored| {
-        for key in changes.keys() {
+        for key in changes.keys().chain(model.as_ref()) {
             if let Some(value) = changed.get(key) {
                 stored.insert(key.clone(), value.clone());
             }
         }
     })?;
     Ok(load(file, choices)?)
+}
+
+/// The settings that choose the language model, checked together.
+const MODEL_KEYS: [&str; 3] = ["describe_provider", "describe_model", "describe_effort"];
+
+fn efforts() -> Vec<String> {
+    ["low", "medium", "high", "xhigh", "max"].map(str::to_owned).to_vec()
+}
+
+fn provider(key: &'static str, value: &Value) -> Result<String, Invalid> {
+    let known = || Invalid::NotAChoice { key, known: Provider::ALL.iter().map(|one| one.id().to_owned()).collect() };
+    let provider = value.as_str().and_then(Provider::from_id).ok_or_else(known)?;
+    Ok(provider.id().to_owned())
+}
+
+/// The model kept for `provider`: `model` when the provider has it; when the provider was `switched` without a
+/// model, that provider's first model rather than another provider's (and for one that lists none, a refusal:
+/// its model must be given).
+fn model(
+    provider: &str,
+    model: &str,
+    switched: bool,
+    changes: &Map<String, Value>,
+    choices: &Choices,
+) -> Result<String, Invalid> {
+    let provider = Provider::from_id(provider).unwrap_or(Provider::Anthropic);
+    let about = provider.about();
+    let model = match (switched && !changes.contains_key("describe_model"), about.models.first()) {
+        (true, Some(first)) => first.id,
+        (true, None) => return Err(Invalid::NotAModel { key: "describe_model", provider: about.label }),
+        (false, _) => model,
+    };
+    if provider == Provider::Anthropic {
+        // the Claude API's models are the engine's own list, as they always were
+        return choice("describe_model", &Value::from(model), &choices.describe_models);
+    }
+    match about.ids {
+        ModelIds::Listed if !about.accepts(model) => Err(Invalid::NotAChoice {
+            key: "describe_model",
+            known: about.models.iter().map(|one| one.id.to_owned()).collect(),
+        }),
+        _ if !about.accepts(model) => Err(Invalid::NotAModel { key: "describe_model", provider: about.label }),
+        _ => Ok(model.to_owned()),
+    }
 }
 
 fn switch(key: &'static str, value: &Value) -> Result<bool, Invalid> {
@@ -270,7 +364,8 @@ mod tests {
                 "embedding_model": "Qwen/Qwen3-Embedding-0.6B", "center_embeddings": true, "clustering": "spectral",
                 "max_communities": 24, "min_community_size": 15, "min_split_modularity": 0.05, "sub_levels": 2,
                 "max_links": 8, "detect_ai": true, "include_ai_papers": true, "acceptance_filter": "all",
-                "exclude_flags": [], "describe": true, "describe_model": "claude-opus-5-5",
+                "exclude_flags": [], "describe": true, "describe_provider": "anthropic",
+                "describe_model": "claude-opus-5-5", "describe_effort": "medium",
             })
         );
     }
@@ -343,6 +438,67 @@ mod tests {
         assert!(matches!(refused, SettingsError::Invalid(Invalid::OutOfRange { key: "max_links", .. })));
         assert_eq!(std::fs::read(&file).unwrap(), before);
         assert_eq!(load(&file, &choices()).unwrap(), saved);
+    }
+
+    #[test]
+    fn the_language_model_is_a_provider_and_one_of_its_models_checked_together() {
+        let before = Settings::default();
+        let openai = before
+            .apply(
+                &changes(
+                    json!({"describe_provider": "openai", "describe_model": "gpt-6.2-sol", "describe_effort": "high"}),
+                ),
+                &choices(),
+            )
+            .unwrap();
+        assert_eq!((openai.describe_provider.as_str(), openai.describe_model.as_str()), ("openai", "gpt-6.2-sol"));
+        assert_eq!(openai.describe_effort, Effort::High);
+        // a provider whose ids may be typed takes an id it does not list; the Claude API only its own
+        let typed = before
+            .apply(&changes(json!({"describe_provider": "compatible", "describe_model": "qwen3:32b"})), &choices());
+        assert_eq!(typed.unwrap().describe_model, "qwen3:32b");
+        let cases = [
+            (json!({"describe_provider": "claude"}), "describe_provider must be one of"),
+            (
+                json!({"describe_provider": "openai", "describe_model": "../etc"}),
+                "describe_model must be a model id OpenAI accepts",
+            ),
+            (
+                json!({"describe_provider": "anthropic", "describe_model": "gpt-6.2-sol"}),
+                "describe_model must be one of claude-opus-5-5",
+            ),
+            (json!({"describe_effort": "extreme"}), "describe_effort must be one of low, medium, high, xhigh, max"),
+        ];
+        for (bad, said) in cases {
+            let refused = before.apply(&changes(bad), &choices()).unwrap_err().to_string();
+            assert!(refused.starts_with(said), "{refused}");
+        }
+        // the provider changed alone: its first model, not the other provider's
+        let switched = before.apply(&changes(json!({"describe_provider": "gemini"})), &choices()).unwrap();
+        assert_eq!(switched.describe_model, "gemini-4-carbon");
+        // the same provider sent again keeps its model; one that lists none must be given its model
+        let astra = before
+            .apply(&changes(json!({"describe_provider": "openai", "describe_model": "gpt-6.2-astra"})), &choices());
+        let again = astra.unwrap().apply(&changes(json!({"describe_provider": "openai"})), &choices()).unwrap();
+        assert_eq!(again.describe_model, "gpt-6.2-astra");
+        assert!(before.apply(&changes(json!({"describe_provider": "compatible"})), &choices()).is_err());
+        // a stored model since removed keeps its provider (where papers go), with that provider's first model
+        let stored =
+            changes(json!({"describe_provider": "openai", "describe_model": "gpt-gone", "describe_effort": "extreme"}));
+        let stored = Settings::from_stored(&stored, &Choices { describe_models: Vec::new(), ..choices() });
+        assert_eq!((stored.describe_provider.as_str(), stored.describe_model.as_str()), ("openai", "gpt-gone"));
+        let removed = changes(
+            json!({"describe_provider": "anthropic", "describe_model": "claude-gone", "describe_effort": "low"}),
+        );
+        let removed = Settings::from_stored(&removed, &choices());
+        assert_eq!((removed.describe_model.as_str(), removed.describe_effort), ("claude-opus-5-5", Effort::Low));
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("settings.json");
+        save(&file, &changes(json!({"describe_provider": "gemini"})), &choices()).unwrap();
+        save(&file, &changes(json!({"describe_effort": "low"})), &choices()).unwrap();
+        let loaded = load(&file, &choices()).unwrap();
+        assert_eq!((loaded.describe_provider.as_str(), loaded.describe_model.as_str()), ("gemini", "gemini-4-carbon"));
+        assert_eq!(loaded.describe_effort, Effort::Low);
     }
 
     #[test]

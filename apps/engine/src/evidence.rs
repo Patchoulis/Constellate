@@ -542,4 +542,64 @@ mod tests {
         assert_eq!(told["evidence"][0]["established"]["matched"]["kind"], "exact");
         assert_eq!(told["evidence"][0]["established"]["address"]["page"], 1);
     }
+
+    /// The rule does not depend on which model answered: a quote is evidence only once found in its paper, from a
+    /// small model on this computer as from the Claude API.
+    #[test]
+    fn a_fabricated_quote_from_any_provider_s_model_is_dropped_and_a_found_one_kept() {
+        use serde_json::json;
+
+        use crate::model::language::fake::{Fake, completion, endpoint, generated, message, ok, response};
+        use crate::model::language::{Ask, Budget, Client, Effort, Form, Limit, Provider};
+
+        #[derive(Deserialize)]
+        struct Said {
+            claims: Vec<Claim<String>>,
+        }
+        let schema = json!({"type": "object", "properties": {"claims": {"type": "array", "items": {
+            "type": "object", "additionalProperties": false, "required": ["statement", "quotes"],
+            "properties": {"statement": {"type": "string"}, "quotes": {"type": "array", "items": {
+                "type": "object", "additionalProperties": false, "required": ["paper", "quote"],
+                "properties": {"paper": {"type": "string"}, "quote": {"type": "string"}}
+            }}}
+        }}}, "required": ["claims"], "additionalProperties": false});
+        let said = json!({"claims": [
+            {"statement": "Merging always helps.",
+             "quotes": [{"paper": "2501.00001", "quote": "merging always improves every task by ten points"}]},
+            {"statement": "The cure is rescaling.",
+             "quotes": [{"paper": "2501.00001", "quote": "rescale the inflated singular values"}]}
+        ]})
+        .to_string();
+        for provider in Provider::ALL {
+            let model = provider.about().models.first().map_or("qwen3:32b", |model| model.id);
+            let answer = match provider {
+                Provider::Anthropic => {
+                    message(model, &said, "end_turn", json!({"input_tokens": 9, "output_tokens": 9}))
+                }
+                Provider::OpenAi | Provider::Xai => {
+                    response(model, &said, json!({"input_tokens": 9, "output_tokens": 9}))
+                }
+                Provider::Gemini => generated(model, &said, json!({"promptTokenCount": 9, "candidatesTokenCount": 9})),
+                _ => completion(model, &said, json!({"prompt_tokens": 9, "completion_tokens": 9})),
+            };
+            let fake = Fake::new(vec![Ok(ok(&answer))]);
+            let calls = std::sync::Mutex::new(Vec::new());
+            let client = Client::new(&fake, endpoint(provider), &calls);
+            let ask = Ask {
+                purpose: "questions about a paper",
+                model,
+                system: "Quote the paper.",
+                shared: None,
+                question: "What does it claim?",
+                form: Form::Json(&schema),
+                effort: Effort::Medium,
+                max_tokens: 2_000,
+            };
+            let answered = client.ask_json::<Said>(&ask, &Budget::new(Limit::Tokens(1_000_000))).unwrap();
+            let checked = check(answered.answer.claims, &papers(), Rules::ONE_PAPER);
+            assert_eq!(checked.cited.len(), 1, "{provider:?}");
+            assert_eq!(checked.cited[0].statement, "The cure is rescaling.", "{provider:?}");
+            assert_eq!(checked.dropped[0].rejected[0].why, Rejection::NotInPaper, "{provider:?}");
+        }
+    }
 }
