@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { JobState, RunRequest, RunStep, Status } from "@rp/contracts";
 import { api } from "@/lib/api";
+import { startRun, type StartDeps, type Started } from "@/lib/run-replace";
 import { poller, type Look } from "@/lib/use-followed-job";
 
 /**
@@ -41,27 +42,13 @@ export function finishedRun(before: Job, status: Status): string | null {
 }
 
 /**
- * The kinds of job a feature starts (apps/engine/src/api: each feature's `start_tracked` kind). A feature shows its
- * own job's progress and failure beside the button that started it (lib/use-followed-job.ts); the run's log keeps
- * its lines, but its failure is not the run's ("New run" would say the extraction table's budget ran out). A
- * failed job has no `outcome`, so its kind is what tells.
+ * Is this a feature's job rather than a run (or the declarations of one)? A feature shows its own job's progress
+ * and failure beside the button that started it (lib/use-followed-job.ts); the run's log keeps its lines, but its
+ * failure is not the run's ("New run" would say the extraction table's budget ran out). The engine says which
+ * feature a job is for from its start (`feature`), also once it failed, and a finished one's `outcome` says it too.
  */
-const FEATURE_KINDS = new Set([
-	"answering a question",
-	"asking about papers",
-	"reading citing sentences",
-	"reading citation kinds",
-	"reading a paper's claims",
-	"a paper's weaknesses",
-	"explaining a passage",
-	"the extraction table",
-	"asking where papers stand on a question",
-	"proposing questions for a community",
-]);
-
-/** Is this a feature's job rather than a run (or the declarations of one)? */
-export function isFeatureJob(status: Pick<Status, "kind" | "outcome">): boolean {
-	return status.outcome?.kind === "feature" || (status.kind !== undefined && FEATURE_KINDS.has(status.kind));
+export function isFeatureJob(status: Pick<Status, "feature" | "outcome">): boolean {
+	return status.feature != null || status.outcome?.kind === "feature";
 }
 
 export function reduce(job: Job, event: Event): Job {
@@ -87,7 +74,7 @@ export function reduce(job: Job, event: Event): Job {
  * which the features' sections share: the engine is asked once however many of them look, and an engine that does
  * not answer is asked less and less often (the poller's backoff).
  */
-export function useJob(onDone: (run: string) => void) {
+export function useJob(onDone: (run: string) => void, ask: StartDeps["ask"]) {
 	const [job, dispatch] = useReducer(reduce, { state: "idle", log: [], error: null });
 	// the job as this page last saw it, for telling a finish it watched from one it only heard of
 	const last = useRef<Job>(job);
@@ -115,15 +102,27 @@ export function useJob(onDone: (run: string) => void) {
 	const running = job.state === "running";
 	useEffect(() => (running ? poller.watch(listen) : undefined), [running, listen]);
 
+	const asking = useRef(ask);
+	asking.current = ask;
+	/** Start a run: one that would replace a run, or pay for names, only once the person agreed
+	 *  (lib/run-replace.ts). Answers how it went, or null when the engine refused (said as the job's error). */
 	const start = useCallback(
-		async (request: RunRequest) => {
+		async (request: RunRequest): Promise<Started | null> => {
 			try {
-				await api.start(request);
-				poller.restart(); // a look asked before would tell the last job's end as this one's
-				dispatch({ type: "started" });
+				const started = await startRun(request, {
+					send: api.start,
+					beforeRun: api.describeBeforeRun,
+					ask: (question) => asking.current(question),
+				});
+				if (started.kind === "started") {
+					poller.restart(); // a look asked before would tell the last job's end as this one's
+					dispatch({ type: "started" });
+				}
+				return started;
 			} catch (error) {
 				dispatch({ type: "unanswered", error: (error as Error).message });
-				void poller.probe().then(listen); // "already running" is a refusal too: show what the backend is really doing
+				void poller.probe().then(listen); // "already running" is a refusal too: show what the engine is really doing
+				return null;
 			}
 		},
 		[listen],

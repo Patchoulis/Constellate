@@ -100,6 +100,8 @@ export const api = {
 	library: () => call<Library>("/api/library"),
 	/** what was spent, with the worth of a US dollar in `currency` (a three-letter code) */
 	usage: (currency: string) => call<Usage>(`/api/usage?currency=${encodeURIComponent(currency)}`),
+	/** calls to the language model whose outcome is unknown and that may have been billed: never in `usage`'s totals */
+	unsettled: () => call<import("@rp/contracts").Unsettled>("/api/usage/unsettled"),
 	catalog: () => call<Catalog>("/api/catalog"),
 	/** every language model provider and its models: whether each key is set (never the key), prices, efforts */
 	models: () => call<ModelCatalog>("/api/models"),

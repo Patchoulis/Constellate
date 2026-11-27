@@ -3,7 +3,9 @@
 import { Dialog } from "radix-ui";
 import { FileSearch, RotateCcw, X } from "lucide-react";
 import { REDO_STEPS, type Catalog, type Library, type ModelProvider, type RedoStep, type Settings } from "@rp/contracts";
+import { DetectorTraining } from "@/components/detector-training";
 import { ModelChoice } from "@/components/model-choice";
+import { IMPORT_ADVICE } from "@/lib/notices";
 import { groupsOf, type Choosable } from "@/lib/models";
 import { Button, Heading } from "@/components/ui/button";
 import { Input, Label, SwitchRow } from "@/components/ui/field";
@@ -15,9 +17,9 @@ import { cn } from "@/lib/utils";
 type Field = { key: keyof Settings; label: string; hint?: string } & (
 	| { kind: "switch" }
 	| { kind: "number"; step?: number }
-	// one of a list the backend offers (Catalog), in a dropdown
+	// one of a list the engine offers (Catalog), in a dropdown
 	| { kind: "choice"; from: "embedding_models" | "clustering" | "acceptance" }
-	// any number of a list the backend offers
+	// any number of a list the engine offers
 	| { kind: "several"; from: "flags"; placeholder: string }
 	// the language model: a provider and one of its models, and the effort (model-choice.tsx)
 	| { kind: "model" }
@@ -50,8 +52,8 @@ function LanguageModels({ choosable }: { choosable: Choosable }) {
 		return (
 			<p className={choosable.why ? "text-xs text-warning" : "text-xs text-muted-foreground"}>
 				{choosable.why
-					? `The engine did not say which language models it offers: ${choosable.why}`
-					: "Asking the engine which language models it offers…"}
+					? `Constellate could not say which language models it offers: ${choosable.why}`
+					: "Asking which language models can be used…"}
 			</p>
 		);
 	}
@@ -93,9 +95,13 @@ const REDO: { steps: RedoStep[]; label: string; hint: string }[] = [
 	{
 		steps: ["descriptions"],
 		label: "Describe all again",
-		hint: "Ask the language model for new names and descriptions of every community",
+		hint: "Ask the language model for new names and descriptions of every community; what it costs is shown first",
 	},
-	{ steps: REDO_STEPS, label: "Redo all of it", hint: "All three: download, embed and describe everything in the run from scratch" },
+	{
+		steps: REDO_STEPS,
+		label: "Redo all of it",
+		hint: "All three: download, embed and describe everything in the run from scratch; what it replaces and costs is shown first",
+	},
 ];
 
 const AI_GROUP = "AI-written papers";
@@ -180,9 +186,14 @@ const GROUPS: { title: string; note?: string; columns?: number; fields: Field[] 
 	},
 ];
 
+/** Each setting by the name this dialog gives it: what other screens call it (a run made again says which differ). */
+export const SETTING_LABELS: Partial<Record<keyof Settings, string>> = Object.fromEntries(
+	GROUPS.flatMap((group) => group.fields.map((field) => [field.key, field.label])),
+);
+
 const MODELS_GROUP = "Language model";
 
-/** A change the backend refused, and why. */
+/** A change the engine refused, and why. */
 export type Refusal = { changes: Partial<Settings>; error: string };
 
 /** The settings a field edits: the model's field picks the provider and the effort too. */
@@ -253,7 +264,7 @@ function Editor({
 			</Label>
 		);
 	}
-	// Saved when the field is left, so a half-typed value never reaches the backend.
+	// Saved when the field is left, so a half-typed value never reaches the engine.
 	return (
 		<Label>
 			{field.label}
@@ -282,7 +293,13 @@ export function SettingsDialog({
 	refused,
 	onRedo,
 	onReadDeclarations,
+	importProblems,
+	onDetectorChanged,
 }: {
+	/** what of the earlier version's data folder could not be moved in, in words (`Library.import_problems`) */
+	importProblems?: string[];
+	/** the detector was trained or checked: what the library says of it is read again */
+	onDetectorChanged?: () => void;
 	open: boolean;
 	settings: Settings | undefined;
 	catalog: Catalog | undefined;
@@ -298,7 +315,7 @@ export function SettingsDialog({
 	choosable: Choosable;
 	onOpenChange: (open: boolean) => void;
 	onChange: (changes: Partial<Settings>) => void;
-	/** the last change the backend refused and its reason, shown beside the settings it was about */
+	/** the last change the engine refused and its reason, shown beside the settings it was about */
 	refused?: Refusal | null;
 	/** Run the open run again with these steps redone; undefined when there is no run to redo, or one is running. */
 	onRedo?: (steps: RedoStep[]) => void;
@@ -365,6 +382,9 @@ export function SettingsDialog({
 									{group.title === AI_GROUP && detector && (
 										<p className={cn("text-xs", detector.state === "ready" ? "text-muted-foreground" : "text-warning")}>{detector.why}</p>
 									)}
+									{group.title === AI_GROUP && detector && detector.state !== "off" && (
+										<DetectorTraining state={detector.state} onChanged={() => onDetectorChanged?.()} />
+									)}
 									{group.title === AI_GROUP &&
 										validation &&
 										validation.written_caught !== null &&
@@ -412,6 +432,17 @@ export function SettingsDialog({
 									</div>
 								</section>
 							))}
+							{importProblems && importProblems.length > 0 && (
+								<section className="flex flex-col gap-2">
+									<Heading>The earlier version&apos;s data</Heading>
+									{importProblems.map((problem) => (
+										<p key={problem} className="text-xs text-warning">
+											{problem}
+										</p>
+									))}
+									<p className="text-xs text-muted-foreground">{IMPORT_ADVICE}</p>
+								</section>
+							)}
 							<section className="flex flex-col gap-2">
 								<Heading>{MODELS_GROUP}</Heading>
 								{serverOwned.has("describe_provider") && (

@@ -22,7 +22,8 @@ export type RequestProblem =
 	| { kind: "unreachable" }
 	| { kind: "timeout"; seconds: number }
 	| { kind: "aborted" }
-	| { kind: "refused"; status: number; error: string | null }
+	/** `body`: the refusal's JSON as it came, for a refusal that says more than its `error` (a 409's `replaces`) */
+	| { kind: "refused"; status: number; error: string | null; body?: unknown }
 	| { kind: "unreadable"; status: number; why: "not_json" | "empty" | "cut_off" };
 
 /** What `call()` throws: the problem for code, its plain words for people, and the HTTP status when one came. */
@@ -47,24 +48,24 @@ export function problemOf(error: unknown): RequestProblem | null {
 export function problemMessage(problem: RequestProblem): string {
 	switch (problem.kind) {
 		case "unreachable":
-			return "The engine is not reachable. Start it with: npm run dev";
+			return "Constellate could not be reached: it may have stopped. Close it and open it again.";
 		case "timeout":
-			return `The engine did not answer within ${problem.seconds} seconds.`;
+			return `Constellate did not answer within ${problem.seconds} seconds.`;
 		case "aborted":
 			return "The request was called off.";
 		case "refused":
 			if (problem.error) return problem.error;
 			// the engine's own limit on a request's time (apps/engine api/routes.rs PATIENCE) answers 408 with no body
-			if (problem.status === 408) return "The engine stopped working on this request: it took too long.";
-			return `The engine answered ${problem.status}.`;
+			if (problem.status === 408) return "Constellate stopped working on this request: it took too long.";
+			return `Constellate answered with error ${problem.status}.`;
 		case "unreadable":
 			switch (problem.why) {
 				case "not_json":
-					return `The engine's answer could not be read: it is not JSON (status ${problem.status}).`;
+					return `Constellate's answer could not be read: it is not JSON (status ${problem.status}).`;
 				case "empty":
-					return `The engine's answer was empty (status ${problem.status}).`;
+					return `Constellate's answer was empty (status ${problem.status}).`;
 				case "cut_off":
-					return `The engine's answer was cut off before its end (status ${problem.status}).`;
+					return `Constellate's answer was cut off before its end (status ${problem.status}).`;
 			}
 	}
 }
@@ -111,7 +112,7 @@ export function answered<T>(answer: Answer): T {
 	if (!answer.ok) {
 		const told = answer.body.kind === "json" ? (answer.body.value as { error?: unknown } | null) : null;
 		const error = typeof told?.error === "string" && told.error.trim() !== "" ? told.error : null;
-		throw new RequestError({ kind: "refused", status: answer.status, error });
+		throw new RequestError({ kind: "refused", status: answer.status, error, ...(told ? { body: told } : {}) });
 	}
 	if (answer.body.kind === "json") return answer.body.value as T;
 	throw new RequestError({ kind: "unreadable", status: answer.status, why: answer.body.kind });

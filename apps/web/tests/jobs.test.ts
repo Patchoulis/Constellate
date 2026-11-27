@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Status } from "@rp/contracts";
 import { type Job, finishedRun, isFeatureJob, reduce } from "@/lib/use-job";
-import { started, step } from "@/lib/use-followed-job";
+import { claims, runSubject, started, step } from "@/lib/use-followed-job";
 
 const status = (state: Status["state"], more: Partial<Status> = {}): Status => ({
 	id: 7,
@@ -47,12 +47,31 @@ test("the run's log is the whole log the shared poller saw, not lines added twic
 });
 
 test("a feature's failure is not said as the run's, a run's is", () => {
-	const extraction = status("failed", { kind: "the extraction table", error: "the budget was reached" });
+	const extraction = status("failed", {
+		kind: "the extraction table",
+		error: "the budget was reached",
+		feature: "extraction",
+		subject: { run: "r" },
+	});
 	assert.equal(reduce(idle, { type: "reported", status: extraction }).error, null);
 	assert.equal(reduce(running, { type: "reported", status: extraction }).error, null);
 	assert.equal(reduce(running, { type: "reported", status: status("failed", { error: "only 3 papers" }) }).error, "only 3 papers");
-	assert.ok(isFeatureJob({ kind: "a run", outcome: { kind: "feature", feature: "critique", subject: { paper: "p" } } }));
-	assert.ok(!isFeatureJob({ kind: "a run", outcome: null }));
+	assert.ok(isFeatureJob({ outcome: { kind: "feature", feature: "critique", subject: { paper: "p" } } }));
+	assert.ok(isFeatureJob({ feature: "stances", outcome: null }), "a feature's job is told by its feature from its start");
+	assert.ok(!isFeatureJob({ feature: null, outcome: null }));
+});
+
+test("a section follows its own job whichever window started it, and only its own", () => {
+	const asking = status("running", { feature: "answers", subject: { community: { run: "r", community: "c1" } }, item: "q1" });
+	assert.ok(claims({ feature: "answers", subject: runSubject("r", "c1"), item: "some" }, asking));
+	assert.ok(!claims({ feature: "answers", subject: runSubject("r", "c2"), item: "some" }, asking), "another community's");
+	assert.ok(!claims({ feature: "answers", subject: runSubject("r"), item: "some" }, asking), "the run's own questions");
+	assert.ok(!claims({ feature: "stances", subject: runSubject("r", "c1") }, asking), "another feature's");
+	const proposing = status("running", { feature: "stances", subject: { community: { run: "r", community: "c1" } }, item: null });
+	assert.ok(claims({ feature: "stances", subject: runSubject("r", "c1"), item: "none" }, proposing));
+	assert.ok(!claims({ feature: "stances", subject: runSubject("r", "c1"), item: "some" }, proposing), "proposing is not asking");
+	assert.ok(claims({ feature: "critique", subject: { paper: "p" } }, status("running", { feature: "critique", subject: { paper: "p" } })));
+	assert.ok(!claims({ feature: "critique", subject: { paper: "p" } }, status("running")), "a run claims no section");
 });
 
 test("a followed job keeps the job's log and how far it got, and ends with what it made or why it failed", () => {

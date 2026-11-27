@@ -219,6 +219,7 @@ export function Workspace({
 					marks={marks}
 					markedPapers={markedPapers}
 					onGoToPaper={goToPaper}
+					onNamed={run.reload}
 				/>
 			</GraphColouringContext>
 		</EvidenceProvider>

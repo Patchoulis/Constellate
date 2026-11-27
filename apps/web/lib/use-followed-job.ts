@@ -22,11 +22,13 @@
  *
  * A job keeps being followed when its section is closed and opened again (another reader tab, a collapsed
  * section, another community and back): the job this window started for a subject is remembered, and a section
- * mounted for that subject follows it at once. A job running that is not this subject's (another section's,
- * another window's) is told as `elsewhere`, so that nothing is offered that the engine would refuse as busy.
+ * mounted for that subject follows it at once. The engine also says what a feature's running job is about
+ * (`Status.feature`, `subject`, `item`), so a section that `claims` it follows it whichever window started it. A
+ * job running that is not this section's is told as `elsewhere`, so that nothing is offered that the engine would
+ * refuse as busy.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { JobOutcome, JobPapers, JobProgress, Status } from "@rp/contracts";
+import type { FeatureName, FeatureSubject, JobOutcome, JobPapers, JobProgress, Status } from "@rp/contracts";
 import { api } from "@/lib/api";
 import { withSignal } from "@/lib/request";
 import { count } from "@/lib/units";
@@ -220,6 +222,39 @@ export function createPoller(
  *  look through it. Shared by all of them: never called off by one. */
 export const poller = createPoller((since) => withSignal(null, () => api.status(since)));
 
+/**
+ * What a section's jobs are about, as the engine says it of a running job from its start (`Status.feature`,
+ * `subject`, `item`): so that a section follows its own job whichever window started it. `item`: "some" for a
+ * section whose jobs each ask about one item (a question), "none" for one whose jobs do not (proposing questions),
+ * absent for either.
+ */
+export interface JobClaim {
+	feature: FeatureName;
+	subject: FeatureSubject;
+	item?: "some" | "none";
+}
+
+/** A run's subject, or one of its communities' (by tree path). */
+export function runSubject(run: string, community?: string | null): FeatureSubject {
+	return community ? { community: { run, community } } : { run };
+}
+
+const sameSubject = (a: FeatureSubject, b: FeatureSubject): boolean =>
+	"paper" in a
+		? "paper" in b && a.paper === b.paper
+		: "run" in a
+			? "run" in b && a.run === b.run
+			: "community" in b && a.community.run === b.community.run && a.community.community === b.community.community;
+
+/** Is the job `status` tells of one of the section that claims this? */
+export function claims(claim: JobClaim, status: Pick<Status, "feature" | "subject" | "item">): boolean {
+	if (status.feature == null || status.subject == null || status.feature !== claim.feature) return false;
+	if (!sameSubject(claim.subject, status.subject)) return false;
+	if (claim.item === "some") return status.item != null;
+	if (claim.item === "none") return status.item == null;
+	return true;
+}
+
 /** The jobs this window started, by what they are about (a paper's weaknesses, a community's table…). */
 const startedFor = new Map<string, { id: number; about: string | null }>();
 /** What starting a job answers: its number (and what it is about), or null when nothing needed starting. */
@@ -229,9 +264,12 @@ export type Begun = number | { id: number; about: string | null } | null;
  * Follow the job of `subject` (a key of what it is about: "critique:<paper>"): `start(begin)` on the user's click
  * starts it once (a second click while it starts or runs does nothing) and follows the number it answers;
  * `follow(id)` follows one started otherwise. `onEnd` is called once when it has finished or failed.
- * `elsewhere` is a job running that is not this one: nothing should be started until it ends.
+ * `elsewhere` is a job running that is not this one: nothing should be started until it ends. With `claim`, a
+ * running job the engine says is about what the section shows is followed as its own, whichever window started it.
  */
-export function useFollowedJob(onEnd?: (job: Ended) => void, subject?: string) {
+export function useFollowedJob(onEnd?: (job: Ended) => void, subject?: string, claim?: JobClaim) {
+	const claimed = useRef(claim);
+	claimed.current = claim;
 	const [job, setJob] = useState<FollowedJob>(() => {
 		const kept = subject === undefined ? undefined : startedFor.get(subject);
 		return kept ? started(kept.id, kept.about) : { state: "idle" };
@@ -259,13 +297,23 @@ export function useFollowedJob(onEnd?: (job: Ended) => void, subject?: string) {
 	);
 
 	/** What a look says of a job running that is not ours. */
-	const notice = useCallback((look: Look) => {
-		if (!("seen" in look)) return;
-		const status = look.seen;
-		const ours = current.current.state === "running" && current.current.id === status.id;
-		const other = status.state === "running" && status.id !== undefined && !ours;
-		setElsewhere((before) => (other ? (before?.id === status.id ? before : { id: status.id!, kind: status.kind ?? "another job" }) : null));
-	}, []);
+	const notice = useCallback(
+		(look: Look) => {
+			if (!("seen" in look)) return;
+			const status = look.seen;
+			const ours = current.current.state === "running" && current.current.id === status.id;
+			let other = status.state === "running" && status.id !== undefined && !ours;
+			// this section's own job, started by another window (or before this one was shown): followed
+			if (other && current.current.state !== "starting" && claimed.current && claims(claimed.current, status)) {
+				transition({ kind: "follow", id: status.id!, about: status.item ?? null });
+				other = false;
+			}
+			setElsewhere((before) =>
+				other ? (before?.id === status.id ? before : { id: status.id!, kind: status.kind ?? "another job" }) : null,
+			);
+		},
+		[transition],
+	);
 
 	const listen = useCallback(
 		(look: Look) => {

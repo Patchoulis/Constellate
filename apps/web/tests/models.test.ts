@@ -140,9 +140,9 @@ test("until the engine has told its models, the settings' model alone is shown, 
 	assert.equal(named.catalog.chosen.provider, "openai");
 	assert.equal(named.catalog.chosen.model, "gpt-6.2-sol");
 	// asking failed: said, as why the model cannot be used now
-	const failed = choosableOf(undefined, models, undefined, "The backend answered 500");
-	assert.equal(failed.source === "waiting" && failed.why, "The backend answered 500");
-	assert.deepEqual(failed.catalog.providers[0].available, { state: "unavailable", why: "The backend answered 500" });
+	const failed = choosableOf(undefined, models, undefined, "Constellate answered with error 500");
+	assert.equal(failed.source === "waiting" && failed.why, "Constellate answered with error 500");
+	assert.deepEqual(failed.catalog.providers[0].available, { state: "unavailable", why: "Constellate answered with error 500" });
 	assert.equal(choosableOf(catalog, [], undefined).source, "engine");
 });
 

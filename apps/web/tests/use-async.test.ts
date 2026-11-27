@@ -28,8 +28,8 @@ test("asking again keeps the last answer in view until the new one comes", () =>
 });
 
 test("a failed reload keeps what was shown beside the error", () => {
-	const failed = asyncStep(reloading, { kind: "refuse", error: "The backend is not reachable" });
-	assert.deepEqual(failed, { status: "failed", error: "The backend is not reachable", data: "paper A" });
+	const failed = asyncStep(reloading, { kind: "refuse", error: "Constellate could not be reached" });
+	assert.deepEqual(failed, { status: "failed", error: "Constellate could not be reached", data: "paper A" });
 	assert.equal(ready(failed), "paper A");
 	// asking once more after that: still shown while it is asked
 	assert.deepEqual(asyncStep(failed, { kind: "reask" }), reloading);

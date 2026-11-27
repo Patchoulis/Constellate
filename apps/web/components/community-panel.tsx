@@ -1,9 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronLeft, Star, Telescope, Trash2, X } from "lucide-react";
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronLeft, Loader2, Square, Star, Tags, Telescope, Trash2, X } from "lucide-react";
 import type { Community, GraphNode, RunResult } from "@rp/contracts";
 import { CommunityAsk } from "@/components/ask";
+import { useAskNaming } from "@/components/run-dialogs";
+import { api } from "@/lib/api";
+import { namingRequest, unnamedOf } from "@/lib/naming";
+import { elsewhereLine, useFollowedJob } from "@/lib/use-followed-job";
 import { AcceptanceTag, AiTag } from "@/components/brand";
 import { MathText } from "@/components/math-text";
 import { CommunityReviews } from "@/components/review-summary";
@@ -223,8 +227,9 @@ function Detail({
 				<p className="font-sans text-base text-foreground">{community.description}</p>
 			) : (
 				<p className="text-xs text-muted-foreground">
-					No written description yet: the backend has no key for the chosen language model (Settings, Language model, says which variable to
-					set). Set it and run again; the download and the embeddings are reused.
+					No written description yet. &ldquo;Name the communities&rdquo;, over the list of all communities, names and describes them with
+					the chosen language model, and shows what that costs first. It needs that model&apos;s key (Settings, Language model, says which
+					variable to set).
 				</p>
 			)}
 			<div className="flex flex-wrap gap-1">
@@ -344,7 +349,10 @@ export function CommunityPanel({
 	marks,
 	markedPapers,
 	onGoToPaper,
+	onNamed,
 }: {
+	/** the run's communities were named: read them again */
+	onNamed: () => void;
 	result: RunResult;
 	roots: CommunityNode[];
 	selected: CommunityNode | null;
@@ -410,9 +418,82 @@ export function CommunityPanel({
 					onSelect={onSelect}
 					onOverview={onOverview}
 					onOpenPaper={onOpenPaper}
+					onNamed={onNamed}
 				/>
 			)}
 		</aside>
+	);
+}
+
+/**
+ * "Name the communities", over the list of a run that has unnamed ones (one made without names, or without a key):
+ * what naming would cost is shown first (lib/naming.ts), the click starts the job, which is followed with its
+ * progress and can be stopped, and the run's communities are read again when it ends.
+ */
+function NameCommunities({ run, communities, onNamed }: { run: string; communities: Community[]; onNamed: () => void }) {
+	const askNaming = useAskNaming();
+	const [asking, setAsking] = useState(false);
+	const [refused, setRefused] = useState<string | null>(null);
+	const { job, elsewhere, start } = useFollowedJob(() => onNamed(), `describing:${run}`);
+	const { communities: all, unnamed } = unnamedOf(communities);
+	const running = job.state === "running" ? job : null;
+	if (unnamed === 0 && !running && job.state !== "failed") return null;
+	const name = async () => {
+		setRefused(null);
+		setAsking(true);
+		try {
+			const estimate = await api.describeEstimate(run);
+			if (!(await askNaming(estimate, false))) return;
+			await start(async () => (await api.describeRun(run, namingRequest(estimate, false))).id);
+		} catch (error) {
+			setRefused((error as Error).message);
+		} finally {
+			setAsking(false);
+		}
+	};
+	return (
+		<div className="flex flex-col gap-1.5 border-b px-3 py-2 text-xs">
+			{running ? (
+				<div className="flex items-center gap-2 text-muted-foreground" role="status">
+					<Loader2 className="size-3.5 shrink-0 animate-spin" />
+					<span className="flex-1">
+						Naming the communities
+						{running.progress
+							? `: ${running.progress.done.toLocaleString()} of ${count(running.progress.of, "community", "communities")}`
+							: "…"}
+					</span>
+					<Button
+						variant="ghost"
+						size="icon"
+						title="Stop: what is under way is finished, nothing new is asked"
+						onClick={() => void api.cancelJob(running.id).catch(() => undefined)}
+					>
+						<Square />
+					</Button>
+				</div>
+			) : (
+				<div className="flex items-center justify-between gap-2">
+					<span className="text-muted-foreground">
+						{unnamed === all
+							? `None of the ${count(all, "community", "communities")} has a name.`
+							: `${unnamed.toLocaleString()} of ${count(all, "community", "communities")} have no name.`}
+					</span>
+					<Button
+						variant="outline"
+						className="h-7"
+						disabled={asking || job.state === "starting" || elsewhere !== null}
+						title="Shows what naming them with the chosen language model would cost, before anything is asked"
+						onClick={() => void name()}
+					>
+						{asking || job.state === "starting" ? <Loader2 className="animate-spin" /> : <Tags />}
+						Name the communities
+					</Button>
+				</div>
+			)}
+			{job.state === "failed" && <p className="text-destructive">They were not all named: {job.error}</p>}
+			{refused && <p className="text-destructive">{refused}</p>}
+			{elsewhere && !running && <p className="text-muted-foreground">{elsewhereLine(elsewhere)}</p>}
+		</div>
 	);
 }
 
@@ -427,10 +508,12 @@ function Communities({
 	onSelect,
 	onOverview,
 	onOpenPaper,
+	onNamed,
 }: {
 	result: RunResult;
 	roots: CommunityNode[];
 	selected: CommunityNode | null;
+	onNamed: () => void;
 	/** kept by the panel, so it survives a look at the Marked tab */
 	sort: Sort;
 	marks: MarksOf;
@@ -499,6 +582,7 @@ function Communities({
 							{sort.descending ? <ArrowDownWideNarrow /> : <ArrowUpNarrowWide />}
 						</Button>
 					</div>
+					<NameCommunities run={result.name} communities={result.communities} onNamed={onNamed} />
 					<div className="min-h-0 flex-1 overflow-y-auto p-2">
 						<List nodes={roots} sort={sort} onSelect={onSelect} />
 					</div>
