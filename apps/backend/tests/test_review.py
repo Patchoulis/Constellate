@@ -128,6 +128,12 @@ def test_other_sites_and_other_hosts_are_refused():
     assert client.put("/api/settings", json={}, headers={"Origin": "https://evil.example"}).status_code == 403
     assert client.post("/api/runs/x/overview/c0", headers={"Origin": "https://evil.example"}).status_code == 403
     assert client.get("/api/settings", headers={"Host": "evil.example"}).status_code == 403  # DNS rebinding
+    # the same through the interface's server, which forwards /api with Host made the backend's own and the name
+    # the page used in X-Forwarded-Host
+    rebound = {"Host": "127.0.0.1:8765", "X-Forwarded-Host": "evil.example:3210"}
+    assert client.get("/api/settings", headers=rebound).status_code == 403
+    forwarded = {"Host": "127.0.0.1:8765", "X-Forwarded-Host": "127.0.0.1:3210"}
+    assert client.get("/api/settings", headers=forwarded).status_code == 200
 
 
 # ------------------------------------------------------------------ comparison

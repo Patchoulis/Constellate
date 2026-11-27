@@ -57,7 +57,10 @@ def only_from_this_machine():
     and, for anything that changes state, only ones that come from the app itself: a web page open in a browser
     here must not be able to post to it (cross-site request forgery), nor reach it under another name (DNS
     rebinding)."""
-    if _host(request.host) not in LOCAL:
+    # The interface's server forwards /api here with Host made this server's own, and the name the page used in
+    # X-Forwarded-Host: both must be this machine, or a page rebound to the interface's port reads everything.
+    forwarded = request.headers.get("X-Forwarded-Host")
+    if _host(request.host) not in LOCAL or (forwarded is not None and _host(forwarded) not in LOCAL):
         return jsonify(error="this API only answers on this machine"), 403
     origin = request.headers.get("Origin")
     if request.method != "GET" and origin and not _ours(origin):
