@@ -261,6 +261,21 @@ pub const MIGRATIONS: &[&str] = &[
     -- markers left are rows of nothing.
     DELETE FROM kept_answers WHERE feature = 'explanation' AND content = '{"redone":true}';
     "#,
+    // 10 (runs): what the list of runs shows of each without reading it, and how each has been opened
+    r"
+    -- A run's summary (runs/index.rs Facts, JSON) and the time of the results it describes, in seconds since 1970:
+    -- older than the run's results means it is to be read again.
+    CREATE TABLE run_summaries (
+        name    TEXT PRIMARY KEY,
+        of_time BIGINT NOT NULL,
+        facts   TEXT NOT NULL
+    );
+    -- How a run has been opened (runs/usage.rs Usage, JSON), for the order of the list and the cache.
+    CREATE TABLE run_usage (
+        name  TEXT PRIMARY KEY,
+        usage TEXT NOT NULL
+    );
+    ",
 ];
 
 /// Bring `connection` to the last of `migrations`. Refuses a database newer than the list.

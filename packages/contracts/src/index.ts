@@ -225,6 +225,8 @@ export interface Status {
 	papers?: JobPapers | null;
 	/** whether a key for the chosen provider is set (never the key itself); absent from the Python backend */
 	api_key_set?: boolean;
+	/** the step of the run being made and how far it has got; null when no run is being made (engine only) */
+	step?: RunStep | null;
 }
 
 /** n of m done, and what it has spent so far on the language model's API, in US dollars (of calls with a price). */
@@ -1854,4 +1856,59 @@ export type DescribeRequest = ShownModel & AcceptedCost & { redo?: boolean };
 export interface DescribeStarted {
 	ok: true;
 	id: number;
+}
+
+// ---- Runs: making one, and the paged list (engine pipeline/, runs/index.rs) ----
+
+/** The steps of a run, in order (engine pipeline/steps.rs `Step`). */
+export type RunStepName =
+	"gather" | "model" | "embed" | "detect" | "filter" | "similarity" | "communities" | "summarise" | "describe" | "write";
+
+/** So many of so many things done: papers, slices (days or conferences), bytes of the model, communities. */
+export interface StepCount {
+	done: number;
+	of: number;
+	unit: "papers" | "slices" | "bytes" | "communities";
+}
+
+/** The step of the run being made: "embed, 3 of 10: 3,120 of 12,487 papers, on the graphics card". */
+export interface RunStep {
+	step: RunStepName;
+	/** what the log calls it */
+	title: string;
+	/** its place, from 1, of how many steps there are */
+	number: number;
+	of: number;
+	count: StepCount | null;
+	/** what it is doing, in words ("embedding on the processor ...") */
+	detail: string | null;
+}
+
+/** A run of a page of the list (engine runs/index.rs `RunSummary`). Times are seconds since 1970. */
+export interface RunListed {
+	kind: "run";
+	name: string;
+	title: string;
+	papers: number;
+	communities: number;
+	modularity: number;
+	created: number;
+	last_opened: number | null;
+	times_opened: number;
+	/** about how much memory it takes once open, in bytes */
+	bytes: number;
+}
+
+/** A row of a page of the list: a run, a run whose files cannot be read (so that it can be deleted), or one not
+ *  read yet. */
+export type RunRow = RunListed | { kind: "unreadable"; name: string; reason: string } | { kind: "unread"; name: string };
+
+/** How a page of the list is sorted: most recently opened first, by title, newest first, largest first. */
+export type RunSort = "opened" | "name" | "created" | "size";
+
+/** `GET /api/runs?offset=&limit=&sort=&search=`: one page of the runs, and how many match in all. */
+export interface RunPage {
+	total: number;
+	offset: number;
+	rows: RunRow[];
 }

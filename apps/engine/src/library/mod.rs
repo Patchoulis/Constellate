@@ -85,6 +85,7 @@ pub mod preferences;
 pub mod questions;
 pub mod readings;
 pub mod reviews;
+pub mod run_records;
 pub mod schema;
 pub mod store;
 pub mod writings;

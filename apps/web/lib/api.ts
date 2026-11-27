@@ -292,6 +292,12 @@ export const api = {
 	/** name them within the most shown, as the one job */
 	describeRun: (name: string, request: import("@rp/contracts").DescribeRequest) =>
 		call<import("@rp/contracts").DescribeStarted>(`${run(name)}/describe`, send("POST", request)),
+	/** one page of the runs, sorted and searched, without reading every run (the engine only) */
+	runsPage: (query: { offset?: number; limit?: number; sort?: import("@rp/contracts").RunSort; search?: string }) => {
+		const asked = new URLSearchParams();
+		for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== "") asked.set(key, String(value));
+		return call<import("@rp/contracts").RunPage>(`/api/runs?${asked.toString() || "offset=0"}`);
+	},
 };
 
 type StanceScope = import("@rp/contracts").StanceScope;
