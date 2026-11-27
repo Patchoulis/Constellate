@@ -160,7 +160,7 @@ export function GraphView({
 		rendererRef.current?.setSelected(index < 0 ? null : index);
 	}, [graph, layout, selectedPaper]);
 
-	// The marked papers: ringed and linked by the renderer, in focus or not.
+	// The marked papers: ringed and linked by the renderer. With a community in focus, only its own marked papers.
 	useEffect(() => {
 		rendererRef.current?.setMarked(marked.flatMap((id) => indexOf.get(id) ?? []));
 	}, [layout, indexOf, marked]);
@@ -229,7 +229,7 @@ export function GraphView({
 				</div>
 				{/* How to mark: plain to see until something is marked, quieter after. */}
 				<div
-					title="Right-click a paper's dot to mark it, and again to unmark it. A marked paper gets a yellow ring, its links stay shown, and it is listed under Marked on the right. Marks are kept for this run, in this browser."
+					title="Right-click a paper's dot to mark it, and again to unmark it. A marked paper gets a yellow ring, its links stay shown, and it is listed under Marked on the right. While one community is in focus, only the marked papers inside it are shown. Marks are kept for this run, in this browser."
 					className={cn(
 						"flex items-center gap-1.5 rounded-md border px-2.5 py-1 tabular-nums",
 						marked.length === 0 ? "border-mark/50 bg-card/90 text-foreground" : "bg-card/70 text-muted-foreground",

@@ -18,7 +18,9 @@
  *
  * Links show what one paper is closest to, and only on request: hovering a paper draws lines to its few most
  * similar papers (the backend cuts each paper's list at the natural gap in its similarities) and marks them.
- * A paper the user marked (right-click) has a ring and shows its links all the time, whatever is focused.
+ * A paper the user marked (right-click) has a ring and shows its links all the time. When one community is in
+ * focus (or kinds of paper are dimmed), that goes only for the marked papers in view: a focused view is about
+ * what it focuses on, and marks elsewhere would draw lines across it.
  * Nothing else is ever linked on screen, so the picture stays dots and glows.
  *
  * Levels of detail: the data carries several groupings of the same papers, coarse to fine (communities, their
@@ -95,7 +97,6 @@ const LABEL_MIN_CHARS = 24; // a label line may always be this long, however sma
 const LABEL_MIN_LINES = 3; // ... and a label may always have this many lines
 /** Zoom, relative to the whole graph fitting the view, at which each finer level takes over. */
 const LEVEL_ZOOM = [2.2, 4.6, 9, 16];
-const NONE: ReadonlySet<number> = new Set();
 
 /** A label as whole words on at most `most` lines of about `chars` characters; only what still does not fit
  *  is cut, with an ellipsis. */
@@ -149,9 +150,8 @@ export class GraphCanvasRenderer {
 	private focus: Set<number> | null = null;
 	private selected: number | null = null;
 	private hovered: number | null = null;
-	/** the marked papers, newest first, and the same as a set: they can be pointed at even out of focus */
+	/** the marked papers, newest first */
 	private marked: number[] = [];
-	private markedSet: ReadonlySet<number> = NONE;
 	private observer: ResizeObserver;
 
 	constructor(
@@ -192,7 +192,6 @@ export class GraphCanvasRenderer {
 		this.data = data;
 		this.hovered = null;
 		this.marked = [];
-		this.markedSet = NONE;
 		this.sprites.clear();
 		this.linked = (data?.points ?? []).map(() => []);
 		// closest first, so that where only some of a paper's linked papers can be named, those are the closest
@@ -208,7 +207,6 @@ export class GraphCanvasRenderer {
 	/** The marked papers, newest first. */
 	setMarked(indexes: number[]) {
 		this.marked = indexes.filter((index) => this.data?.points[index]);
-		this.markedSet = new Set(this.marked);
 		this.tellMarked();
 		this.markDirty();
 	}
@@ -227,6 +225,7 @@ export class GraphCanvasRenderer {
 
 	setFocus(focus: Set<number> | null) {
 		this.focus = focus;
+		this.tellMarked(); // which marked papers are shown depends on the focus
 		this.markDirty();
 	}
 
@@ -300,8 +299,8 @@ export class GraphCanvasRenderer {
 		this.markDirty();
 	}
 
-	/** The paper under the pointer, or null. Papers out of focus are not picked, unless they are in `also`. */
-	private pick(event: MouseEvent, also: ReadonlySet<number> = NONE): number | null {
+	/** The paper under the pointer, or null. Papers out of focus are not picked. */
+	private pick(event: MouseEvent): number | null {
 		if (!this.data) return null;
 		const rect = this.canvas.getBoundingClientRect();
 		const [wx, wy] = this.transform.invert([event.clientX - rect.left, event.clientY - rect.top]);
@@ -314,7 +313,7 @@ export class GraphCanvasRenderer {
 		const { sizes } = this.data;
 		this.data.points.forEach((point, i) => {
 			const distance = (point.x - wx) ** 2 + (point.y - wy) ** 2;
-			if (distance < best && distance < (dotRadius(k) * sizes[i] + PICK_MARGIN_PX / k) ** 2 && (this.lit(i) || also.has(i))) {
+			if (distance < best && distance < (dotRadius(k) * sizes[i] + PICK_MARGIN_PX / k) ** 2 && this.lit(i)) {
 				best = distance;
 				index = i;
 			}
@@ -340,7 +339,12 @@ export class GraphCanvasRenderer {
 		this.callbacks.onHover(this.hovered, x, y, linked);
 	}
 
-	/** Report where the marked papers and their linked papers are on screen. All of them, in focus or not, in view
+	/** The marked papers that are shown: all of them, or with a focus only those in it. */
+	private shownMarked(): number[] {
+		return this.focus === null ? this.marked : this.marked.filter((index) => this.lit(index));
+	}
+
+	/** Report where the shown marked papers and the papers they link to (those in focus) are on screen, in view
 	 *  or not: the graph view picks which to name. */
 	private tellMarked() {
 		const points = this.data?.points;
@@ -349,7 +353,12 @@ export class GraphCanvasRenderer {
 			const [x, y] = this.transform.apply([points[index].x, points[index].y]);
 			return { index, x, y };
 		};
-		this.callbacks.onMarked(this.marked.map((index) => ({ ...place(index), linked: this.linked[index].map(place) })));
+		this.callbacks.onMarked(
+			this.shownMarked().map((index) => ({
+				...place(index),
+				linked: this.linked[index].filter((other) => this.lit(other)).map(place),
+			})),
+		);
 	}
 
 	private hover(index: number | null) {
@@ -360,8 +369,7 @@ export class GraphCanvasRenderer {
 		this.markDirty();
 	}
 
-	// A marked paper out of focus still shows its ring, so it can still be hovered (and unmarked, below).
-	private onMove = (event: MouseEvent) => this.hover(this.pick(event, this.markedSet));
+	private onMove = (event: MouseEvent) => this.hover(this.pick(event));
 
 	private onLeave = () => this.hover(null);
 
@@ -371,7 +379,7 @@ export class GraphCanvasRenderer {
 	// Right-click marks a paper. The browser's own menu has nothing to offer on the graph, so it never opens here.
 	private onContextMenu = (event: MouseEvent) => {
 		event.preventDefault();
-		const index = this.pick(event, this.markedSet);
+		const index = this.pick(event);
 		if (index !== null) this.callbacks.onMark(index);
 	};
 
@@ -414,15 +422,17 @@ export class GraphCanvasRenderer {
 			ctx.fill(path);
 		});
 
-		// 3. Marked papers: links to all their linked papers, in focus or not, then a yellow ring on a dark rim. The
+		// 3. Marked papers (those in focus): links to their linked papers in focus, then a yellow ring on a dark rim. The
 		// ring sits outside where the selected paper's ring goes, so a paper that is both shows both.
-		if (this.marked.length > 0) {
+		const marked = this.shownMarked();
+		if (marked.length > 0) {
 			const links = new Path2D();
 			const ends = new Path2D();
 			const rings = new Path2D();
-			for (const index of this.marked) {
+			for (const index of marked) {
 				const point = data.points[index];
 				for (const other of this.linked[index]) {
+					if (!this.lit(other)) continue;
 					const end = data.points[other];
 					links.moveTo(point.x, point.y);
 					links.lineTo(end.x, end.y);
