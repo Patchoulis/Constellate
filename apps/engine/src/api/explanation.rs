@@ -319,9 +319,17 @@ async fn start(
             estimate(&opened.library, &item, &opened.chosen)?
         };
         // never more than the worst case the reader was shown before the click
-        let accepted = Accepted::of(seen.accepted_usd, seen.accepted_tokens)
-            .and_then(|accepted| budget(&shown.cost, accepted, Terms::AsShown))
-            .map_err(|why| ApiError::Invalid(why.to_string()))?;
+        let accepted =
+            Accepted::of(seen.accepted_usd, seen.accepted_tokens).map_err(|why| ApiError::Invalid(why.to_string()))?;
+        // naming nothing is not accepting: for a model with no price (a price shown is refused unless sent back) it
+        // would run on a worst case never agreed to
+        if accepted == Accepted::Shown && shown.cost.calls > 0 && shown.cost.most_usd.is_none() {
+            return Err(ApiError::Invalid(
+                "say what was accepted of the estimate shown (accepted_usd or accepted_tokens)".to_owned(),
+            ));
+        }
+        let accepted =
+            budget(&shown.cost, accepted, Terms::AsShown).map_err(|why| ApiError::Invalid(why.to_string()))?;
         let transport = engine.transport.clone();
         let job = engine.job.start_tracked(PURPOSE, move |tracker| {
             let item = item(opened.slot(), &opened.chosen, &opened.prompt, &schema);
@@ -692,6 +700,12 @@ mod tests {
 
             let mut asked = accepting(&cost, ACCEPTED);
             asked["address"] = address.clone();
+            // naming nothing accepted is refused, also for a model with no price
+            let mut bare = asked.clone();
+            bare.as_object_mut().unwrap().retain(|field, _| !field.starts_with("accepted"));
+            let (status, refused) = call(&router, "POST", "/api/papers/2601.00001/explanation", Some(bare)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{chosen:?}: {refused}");
+            assert_eq!(transport.sent().len(), sent, "{chosen:?}: nothing accepted, nothing sent");
             let (status, started) =
                 call(&router, "POST", "/api/papers/2601.00001/explanation", Some(asked.clone())).await;
             assert_eq!((status, started["started"].clone()), (StatusCode::OK, json!(true)), "{started}");

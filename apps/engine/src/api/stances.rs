@@ -331,16 +331,18 @@ struct AskBody {
 /// What the user was shown and clicked: the model (of its provider) and the most it could cost, in dollars, or in
 /// tokens for a model with no price. A job that would now cost more, or ask another model, is refused rather than
 /// run on terms the user did not see.
+const NOTHING_ACCEPTED: &str = "say what was accepted of the estimate shown (accepted_usd or accepted_tokens)";
+
 #[derive(Clone, Debug, Deserialize)]
 struct Approved {
     #[serde(default)]
     provider: Option<Provider>,
     model: String,
     /// The estimate's "at most", in US dollars; null when the model's price is not known.
-    #[serde(alias = "approved_usd")]
+    #[serde(alias = "approved_usd", alias = "budget_usd")]
     accepted_usd: Option<f64>,
     /// For a model with no price: the estimate's "at most", in tokens.
-    #[serde(default)]
+    #[serde(default, alias = "budget_tokens")]
     accepted_tokens: Option<u64>,
 }
 
@@ -352,6 +354,11 @@ impl Approved {
     /// The budget of a batch whose estimate is `estimate`, if it is within what was approved: the worst case shown.
     fn budget(&self, estimate: &BatchEstimate) -> Result<Budget, String> {
         let accepted = Accepted::of(self.accepted_usd, self.accepted_tokens).map_err(|why| why.to_string())?;
+        // naming nothing is not accepting: for a model with no price (a price shown is refused unless sent back) it
+        // would run on a worst case never agreed to
+        if accepted == Accepted::Shown && estimate.cost.calls > 0 && estimate.cost.most_usd.is_none() {
+            return Err(NOTHING_ACCEPTED.to_owned());
+        }
         budget(&estimate.cost, accepted, Terms::AsShown).map_err(|why| why.to_string())
     }
 }
@@ -1177,6 +1184,15 @@ pub(super) mod tests {
             let mut asked = accepting(&cost, ACCEPTED);
             asked["question"] = json!(QUESTION);
             asked["part"] = json!("sample");
+            // naming nothing accepted is refused, also for a model with no price
+            let mut bare = asked.clone();
+            bare.as_object_mut().unwrap().retain(|field, _| !field.starts_with("accepted"));
+            let (status, refused) = send(&router, "POST", &format!("{C0}/ask"), Some(bare)).await;
+            if status == StatusCode::OK {
+                let done = finished(&router, &refused["job"]).await;
+                assert_eq!(done["state"], "failed", "{chosen:?}: {done}");
+            }
+            assert_eq!(transport.sent().len(), sent, "{chosen:?}: nothing accepted, nothing sent");
             let (status, started) = send(&router, "POST", &format!("{C0}/ask"), Some(asked.clone())).await;
             assert_eq!(status, StatusCode::OK, "{started}");
             let done = finished(&router, &started["job"]).await;

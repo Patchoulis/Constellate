@@ -391,9 +391,16 @@ struct Started {
 /// for a model with no price).
 fn budget_of(prepared: &Prepared, library: &Library, request: &Request) -> Result<Budget, ApiError> {
     let estimate = prepared.estimate(library)?;
-    Accepted::of(request.accepted_usd, request.accepted_tokens)
-        .and_then(|accepted| budget(&estimate.cost, accepted, Terms::AsShown))
-        .map_err(|why| ApiError::Invalid(why.to_string()))
+    let accepted = Accepted::of(request.accepted_usd, request.accepted_tokens)
+        .map_err(|why| ApiError::Invalid(why.to_string()))?;
+    // naming nothing is not accepting: for a model with no price (a price shown is refused unless sent back) it
+    // would run on a worst case never agreed to
+    if accepted == Accepted::Shown && estimate.cost.calls > 0 && estimate.cost.most_usd.is_none() {
+        return Err(ApiError::Invalid(
+            "say what was accepted of the estimate shown (accepted_usd or accepted_tokens)".to_owned(),
+        ));
+    }
+    budget(&estimate.cost, accepted, Terms::AsShown).map_err(|why| ApiError::Invalid(why.to_string()))
 }
 
 /// What the question's job does: ask it, and say in its log what came of it.
@@ -893,6 +900,23 @@ mod tests {
         // each is listed, and its own answer found, whichever provider is chosen now
         let (_, listed) = call(&router, "GET", "/api/runs/r1/answers", None).await;
         assert!(listed.as_array().unwrap().iter().all(|asked| asked["answered"] == true), "{listed}");
+    }
+
+    #[tokio::test]
+    async fn asking_a_model_with_no_price_without_naming_what_was_accepted_is_refused_and_sends_nothing() {
+        use super::super::other_providers::{Chosen as Asked, MODEL, Scripted, call, choose, router};
+
+        let data = data();
+        let transport = Scripted::new(|_| json!({"outcome": "not_in_papers", "statements": []}).to_string());
+        let router = router(data.path(), Asked::ThisComputer, &transport);
+        choose(data.path(), Asked::ThisComputer);
+        let estimate = format!("/api/runs/r1/answers/estimate?q={}&community=c0", query(QUESTION));
+        let (_, told) = call(&router, "GET", &estimate, None).await;
+        assert_eq!((told["state"].clone(), told["cost"]["most_usd"].clone()), (json!("ready"), Value::Null), "{told}");
+        let asked = json!({"id": told["id"], "question": QUESTION, "community": "c0", "provider": "compatible", "model": MODEL});
+        let (status, said) = call(&router, "POST", "/api/runs/r1/answers", Some(asked)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{said}");
+        assert!(transport.sent().is_empty());
     }
 
     #[tokio::test]
