@@ -1,5 +1,5 @@
-# What the tests need: everything in requirements.txt except the model libraries (torch, transformers), which no
-# test loads.  CI installs this.
+# What the checks need (`npm run pr`, CI): everything in requirements.txt except the model libraries (torch,
+# transformers), which no test loads, plus the linter and the tool the desktop app's setup test drives.
 numpy
 scipy
 scikit-learn
@@ -8,3 +8,5 @@ flask
 anthropic
 pypdf
 pytest
+ruff
+uv

@@ -1,0 +1,21 @@
+# Style for the Python backend: `ruff format` lays the code out, `ruff check` lints it. `npm run pr` runs both.
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+# E, W: pycodestyle   F: pyflakes   I: import order   B: likely bugs   UP: outdated syntax
+select = ["E", "W", "F", "I", "B", "UP"]
+ignore = [
+    "E731",   # a short lambda with a name is fine
+    "B905",   # zip() without strict=: lengths are checked where they matter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]   # fixtures are text as it appears in papers and pages: long lines
+
+[tool.ruff.lint.isort]
+known-first-party = ["rp", "conftest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

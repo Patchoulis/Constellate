@@ -1,0 +1,8 @@
+node_modules
+.next
+.turbo
+dist
+data
+package-lock.json
+next-env.d.ts
+CHANGELOG.md
