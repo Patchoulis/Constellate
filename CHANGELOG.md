@@ -170,6 +170,11 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   pointing a name of its own at your computer (DNS rebinding): the interface answers only under this computer's
   names (or those listed in `CONSTELLATE_WEB_HOSTS` on a server). Its pages now carry a strict Content Security
   Policy: only the app's own scripts run, and the page talks to nothing but the app.
+- A paper's title or abstract can no longer draw a box over the window with oversized math.
+- A conference site can no longer make the app reach your own computer or local network through a name that
+  points there, nor give papers links that are not web addresses (`javascript:` and the like).
+- On Linux and macOS, a new data folder is readable by your account alone, and the engine warns when its `.env`
+  (which holds your keys) can be read by other accounts.
 
 ## [0.1.0] - 2026-11-26
 
