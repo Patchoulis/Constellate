@@ -6,7 +6,7 @@
  * set's most central papers), its estimate shown before, its cost after; then on the rest, with a second click.
  * Nothing is shown when the engine has no such route (the Python backend).
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Download, Palette, Plus, RotateCcw, Square, X } from "lucide-react";
 import type {
 	ExtractionCell,
@@ -255,6 +255,17 @@ function Grid({
 	onForgotten: () => void;
 }) {
 	const colouring = useColouringBy(colouredAs);
+	// the table read again (a run ended, a row forgotten): the column shown on the graph is worked out again
+	const shownColumn = colouring?.shown ?? null;
+	const refreshColouring = useRef(colouring?.refresh);
+	refreshColouring.current = colouring?.refresh;
+	useEffect(() => {
+		const index = table.columns.findIndex((column) => column.id === shownColumn);
+		if (index >= 0)
+			refreshColouring.current?.(table.columns[index].id, () => columnColouring(table.rows, index, table.columns[index].label));
+		// only a new table: the colouring it sets changes `shownColumn` to the same value
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [table]);
 	const [sort, setSort] = useState<{ column: number; descending: boolean } | null>(null);
 	const [filter, setFilter] = useState<{ column: number; key: string } | null>(null);
 	const columns = table.columns;
