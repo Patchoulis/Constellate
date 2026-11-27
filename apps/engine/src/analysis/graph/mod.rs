@@ -12,6 +12,12 @@
 //! thread from inputs nobody writes, and is written by that thread alone (rayon hands out disjoint rows), so
 //! there is nothing to share. Sums of many rows are added up afterwards in the order of the rows, never in the
 //! order threads finished, so every number is the same bit for bit on one thread or on 32.
+//!
+//! # This folder
+//!
+//! The graph and what is cut from it: each paper's closest papers ([`links`]), eigenvectors ([`eigen`]) and what
+//! they say of the graph ([`spectral`]), k-means ([`kmeans`]), the clustering methods and the tree of
+//! sub-communities ([`cluster`]), and the seeded random generator they share ([`random`]).
 
 pub mod cluster;
 pub mod eigen;

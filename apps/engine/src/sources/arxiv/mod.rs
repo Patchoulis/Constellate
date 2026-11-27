@@ -5,6 +5,10 @@
 //! first. The API sometimes answers with an error or with an empty page that is not the end, so a page is asked
 //! for again, each time after a longer pause (or as long as a refusal's `Retry-After` asks, when that is longer),
 //! before the query is given up on.
+//!
+//! # This folder
+//!
+//! arXiv: this search API, and cited works that are not in the library looked up there ([`citations`]).
 
 pub mod citations;
 

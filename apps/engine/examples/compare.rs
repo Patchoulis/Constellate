@@ -8,7 +8,7 @@
 //!
 //! The data folder is `CONSTELLATE_DATA` (or the engine's default). Every method clusters the same papers into the
 //! same number of communities and is scored on what a reader of the result cares about. No single score is trusted
-//! on its own; each covers another's blind spot (the scores are in `pipeline/agreement.rs`):
+//! on its own; each covers another's blind spot (the scores are in `pipeline/results/agreement.rs`):
 //!
 //! ```text
 //!   agreement with the authors   Each conference paper carries the topic its authors filed it under ("Deep

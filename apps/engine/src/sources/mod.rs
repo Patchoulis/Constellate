@@ -6,12 +6,9 @@
 //!
 //! | module          | what lives there                                                                   |
 //! |-----------------|------------------------------------------------------------------------------------|
-//! | [`citations`]   | cited works that are not in the library, looked up on arXiv                         |
 //! | [`catalog`]     | the conferences and arXiv categories a run can be about, grouped by field           |
-//! | [`arxiv`]       | arXiv's search API: the query, its pages, and its Atom answer read into papers      |
-//! | [`conferences`] | a conference's official list of accepted papers, or arXiv comments where it has none |
-//! | [`acceptance`]  | how a conference accepted a paper, the same whatever the conference calls it        |
-//! | [`proceedings`] | where each conference publishes its PDFs, and downloading one safely                |
+//! | [`conferences`] | a conference's official list of accepted papers, its acceptance tiers, its proceedings' PDFs |
+//! | [`arxiv`]       | arXiv's search API, and cited works that are not in the library looked up there     |
 //! | [`download`]    | a selection cut into the slices that are fetched, and fetching one                  |
 //! | [`polite`]      | many addresses fetched at once, within each host's limits and pauses                |
 //!

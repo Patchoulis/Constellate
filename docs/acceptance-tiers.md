@@ -4,7 +4,7 @@ Constellate counts every conference paper in one of three tiers that hold across
 tier, a talk), **spotlight** (singled out below that) and **poster** (an ordinary acceptance). Conferences do not
 name their tiers the same way, and one conference's names change from year to year, so the tier is not read from
 the words in a decision: it is looked up in a table, per conference and year, of every decision its list was seen
-to use. The table is `TERMS` in `apps/engine/src/sources/acceptance.rs` and in `apps/backend/rp/tiers.py`; the two
+to use. The table is `TERMS` in `apps/engine/src/sources/conferences/acceptance.rs` and in `apps/backend/rp/tiers.py`; the two
 are the same rows, and this page says where they come from.
 
 Checked on 2026-11-26.

@@ -3,7 +3,7 @@
 //! place in the page's text, and the authors' replies attached to each review with how they were attached.
 //!
 //! Nothing here asks a language model or fetches anything: it is a reading of the page the user opened. It is the
-//! unit both the list of a paper's weaknesses (`analysis::critique`) and a mapping of reviews onto a paper's claims
+//! unit both the list of a paper's weaknesses (`features::critique`) and a mapping of reviews onto a paper's claims
 //! start from, so it is kept apart from either.
 //!
 //! # Which sections

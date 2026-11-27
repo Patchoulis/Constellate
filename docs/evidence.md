@@ -7,7 +7,7 @@ provider the model is from.
 
 | piece                                                       | what it does                                                                                      |
 | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `apps/engine/src/text/passages.rs`                          | a paper's PDF as addressable text; where a quote is in it; the sentences citing a reference       |
+| `apps/engine/src/text/pdf/passages.rs`                      | a paper's PDF as addressable text; where a quote is in it; the sentences citing a reference       |
 | `apps/engine/src/evidence.rs`                               | `Evidence`, `Claim`, `Cited`, and `check`, which keeps only statements whose quotes were found    |
 | `apps/engine/src/model/language/`                           | the language model, of any provider: JSON answers, prompt caching, budgets, estimates, the ledger |
 | `apps/web/components/evidence-link.tsx` (`lib/evidence.ts`) | `EvidenceLink`: a citation that opens the reader at the place, with the words marked              |
@@ -117,7 +117,7 @@ never contain the key or the endpoint.
 | `POST /api/papers/<id>/locate`  | `{ "quote": "..." }` | `LocateAnswer`: `{found: true, address, wording, matched}` or `{found: false}` |
 
 Both read the paper's PDF through the library (kept by id) and its `Passages` (kept by id, `READER` and the PDF's
-hash): `apps/engine/src/api/passages.rs`. `LocateAnswer::from(passages.locate(quote))` is the second route's answer;
+hash): `apps/engine/src/api/papers/passages.rs`. `LocateAnswer::from(passages.locate(quote))` is the second route's answer;
 a quote of more than `LONGEST_QUOTE` (5,000) characters, or an empty one, is refused.
 
 ## The reader
@@ -272,12 +272,14 @@ What to know about each piece:
 
 The conventions that keep seven features' branches from colliding:
 
-- **Engine**: the feature's code in its own module file (`apps/engine/src/<area>/<feature>.rs`, declared with one
-  `pub mod` line), its routes in its own file `apps/engine/src/api/<feature>.rs` with a `table()`, added to
-  `routes::table()` with one `table.extend(super::<feature>::table());` line (and one `pub mod` line in `api/mod.rs`).
-- **Its `Feature` variant** is already in `library/answers.rs`; use it, and do not rename it (it is stored).
+- **Engine**: the feature whole in its own folder `apps/engine/src/features/<feature>/` (declared with one
+  `pub mod` line in `features/mod.rs`): its logic in `mod.rs` (and files named for what they do), its routes in
+  `routes.rs` with a `table()`, added to `api::routes::table()` with one
+  `table.extend(crate::features::<feature>::routes::table());` line, and what it keeps beyond the model's answers in
+  `store.rs`.
+- **Its `Feature` variant** is already in `library/money/answers.rs`; use it, and do not rename it (it is stored).
 - **A table of its own** only if `kept_answers` cannot hold what it keeps: then one migration appended at the end of
-  `library/schema.rs` with a comment naming the feature. Branches will collide on the number; the integrator
+  `library/core/schema.rs` with a comment naming the feature. Branches will collide on the number; the integrator
   renumbers on merge (a migration is never edited once released).
 - **Contracts**: its types appended at the end of `packages/contracts/src/index.ts`, under a banner comment
   `// ---- <feature name> ----`; nothing existing is changed in place. Its calls added at the end of `api` in

@@ -39,6 +39,10 @@
 //!
 //! The search runs over the paper's passages on every core (rayon); what it finds is put back in the passages'
 //! order, so the answer is the same on one thread or many.
+//!
+//! # This folder
+//!
+//! Its routes are in [`routes`]; what the model answers is kept as every feature's is.
 
 pub mod routes;
 

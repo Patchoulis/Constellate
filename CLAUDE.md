@@ -87,8 +87,8 @@ descriptions, the changelog and code comments. The `commit-msg` hook rejects suc
 - Explicit states, each set written down in one place (`apps/engine/src/jobs.rs`, `useJob`, `useAsync`,
   `apps/desktop/lifecycle.cjs`), small modules, no repeated code.
 - Work that was done is not done again: everything fetched or computed is kept by id in the library.
-- The library is written through `apps/engine/src/library` (the database; `store` for files, replaced whole),
-  never directly.
+- The library is written through `apps/engine/src/library` (the database; `store` for files, replaced whole) and
+  the `store.rs` of each feature in `apps/engine/src/features`, never directly.
 - Anything shown as a fact about a paper that is really an estimate or a program's reading (AI detected,
   declaration flags, ratings) says so where it is shown.
 

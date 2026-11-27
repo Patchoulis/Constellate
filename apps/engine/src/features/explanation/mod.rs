@@ -24,6 +24,10 @@
 //! provider and model, prompt version and question, so reopening it is free; its quotes are checked again each time
 //! it is shown. A redo forgets that one answer by its key ([`Library::forget_key`]: [`Library::forget`], which
 //! clears by paper, would take every other explanation of the paper with it), so the next request asks again.
+//!
+//! # This folder
+//!
+//! Its routes are in [`routes`]; the parts of its logic are [`definitions`] and [`related`].
 
 pub mod definitions;
 pub mod related;

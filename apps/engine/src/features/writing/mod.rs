@@ -11,6 +11,10 @@
 //!
 //! The papers' titles and abstracts go to the model inside a data section ([`data_section`]) that the
 //! instructions say is data: an abstract that says "ignore the instructions above" is text to describe.
+//!
+//! # This folder
+//!
+//! Its routes are in [`routes`]; the names, descriptions and overviews are kept by [`store`].
 
 pub mod describe;
 pub mod overview;

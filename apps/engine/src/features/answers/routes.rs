@@ -1,5 +1,5 @@
-//! Questions asked of a run or of one of its communities, answered with cited statements (`model::answers`), and
-//! the passages that talk about something, found without a model (`text::retrieval`).
+//! Questions asked of a run or of one of its communities, answered with cited statements (`features::answers`), and
+//! the passages that talk about something, found without a model (`features::answers::retrieval`).
 //!
 //! ```text
 //! GET    /api/runs/{run}/passages/found?q=..&community=..   the passages that match best (`PassagesFound`)

@@ -19,6 +19,10 @@
 //!   evidence no reviewer's point was placed on. No score, no verdict.
 //!
 //! Reviews are only what the library kept from pages the user opened in the reader; nothing here fetches.
+//!
+//! # This folder
+//!
+//! Its routes are in [`routes`]; the parts of its logic are [`asking`], [`mapping`], [`points`] and [`tree`].
 
 pub mod asking;
 pub mod mapping;

@@ -41,6 +41,11 @@
 //!
 //! Until the program says where it is ([`read_in_children`]), a PDF is read in this process, as before: that is
 //! for tests and examples, which have no such program. The engine's `main` always says it.
+//!
+//! # This folder
+//!
+//! What is read from a paper's PDF: this text, page by page, its passages ([`passages`]) and its reference list
+//! ([`references`]).
 
 pub mod passages;
 pub mod references;

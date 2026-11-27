@@ -8,6 +8,12 @@
 //! The step under way, and how many of its things it has done, is kept on a [`Board`] that the status route reads
 //! without taking the job's lock: "embedding 3,120 of 12,487 papers", "downloading the embedding model, 412 of
 //! 1,200 MB".
+//!
+//! # This folder
+//!
+//! The steps a run is made in: this list and its board, the selection gathered ([`gather`]), the embedding
+//! model's files ([`model_files`]), the papers embedded ([`embedding`]), what the settings leave out ([`filter`]),
+//! and the detector's and the describer's steps ([`seams`]).
 
 pub mod embedding;
 pub mod filter;

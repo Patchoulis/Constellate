@@ -1,7 +1,7 @@
 //! Finding where the papers of a run or a community talk about something: a lexical index over their passages,
 //! asked with a few words, answering the passages that match best with their addresses. It calls no model and
 //! costs nothing; "find where papers talk about X" is useful by itself, and it is also what picks the passages a
-//! question to the model is answered from (`model::answers`).
+//! question to the model is answered from (`features::answers`).
 //!
 //! # What is indexed
 //!
@@ -203,7 +203,7 @@ impl Index {
     /// The order is total and the same whatever order the papers were handed over in (and whatever the number of
     /// threads): terms are summed in the order of their words, not of their ids (which follow the order the papers
     /// came in), and ties are broken by paper id and then by the unit's place in it. Callers key on it: a cited
-    /// answer is kept under the hits it was given, in order (`model::answers::key_of`), so another order of equal
+    /// answer is kept under the hits it was given, in order (`features::answers::key_of`), so another order of equal
     /// hits would be another key, and the question would be paid for again.
     pub fn search(&self, query: &str, ranking: Ranking<'_>) -> Vec<Hit> {
         let mut wanted: Vec<(String, u32)> =

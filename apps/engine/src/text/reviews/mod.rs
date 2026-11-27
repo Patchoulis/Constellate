@@ -19,6 +19,11 @@
 //! from 1 to 4, a rating from 1 to 10), so the scores are kept as given, by field, and never mixed into one number.
 //! A page with scores but no review headings (another site's layout) is read as a whole, and says so
 //! (`exact: false`).
+//!
+//! # This folder
+//!
+//! What is read from a reviews page: these scores, the whole thread ([`discussion`]) and each reviewer's points
+//! ([`review_points`]).
 
 pub mod discussion;
 pub mod review_points;

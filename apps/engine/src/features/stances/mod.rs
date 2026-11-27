@@ -24,6 +24,10 @@
 //! words its titles and abstracts keep using, and the rest of the run does not), or by the model over the abstracts
 //! ([`proposal_items`], [`proposals`]), each proposal kept only when quotes from at least two papers' abstracts
 //! were found.
+//!
+//! # This folder
+//!
+//! Its routes are in [`routes`]; what the model answers is kept as every feature's is.
 
 pub mod routes;
 

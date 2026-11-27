@@ -16,6 +16,11 @@
 //! site answers 404, and only then); or it could not be had now (a 503, a 429, no connection, an answer that is
 //! not the list). Only the second may fall back to arXiv comments and be remembered as done. Treating the third
 //! like the second would store a partial sample as if it were the official list, and never fetch the list again.
+//!
+//! # This folder
+//!
+//! A conference's own papers: these lists, how each paper was accepted ([`acceptance`]) and where its
+//! proceedings publish the PDFs ([`proceedings`]).
 
 pub mod acceptance;
 pub mod proceedings;

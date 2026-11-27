@@ -8,6 +8,12 @@
 //! The Python recorded every slice it got through as finished, so a conference whose site was down for a moment
 //! was filed as downloaded from its official list when it had fallen back to arXiv comments, and was never asked
 //! again. Here the outcome is kept as what it was, and anything short of complete is fetched again next time.
+//!
+//! # This folder
+//!
+//! What is kept about papers: these records, their embeddings ([`embeddings`]), their text as passages
+//! ([`passages`]), what was read from them ([`readings`]), their reviews pages ([`reviews`]), their reference
+//! lists ([`references`]) and where their proceedings keep their PDFs ([`proceedings`]).
 
 pub mod embeddings;
 pub mod passages;

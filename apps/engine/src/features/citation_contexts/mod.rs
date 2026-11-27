@@ -17,6 +17,11 @@
 //! [`PaperContexts`] is what is kept by paper (reading a PDF's reference list again takes a second): every entry of
 //! the reference list that the text cites, with its contexts, so that it can be linked again when the library
 //! grows ([`PaperContexts::relink`]).
+//!
+//! # This folder
+//!
+//! What kind of citation each sentence makes, as the model reads it, is [`kinds`]; the routes of both are in
+//! [`routes`], the citing sentences kept by paper in [`store`].
 
 pub mod kinds;
 pub mod routes;

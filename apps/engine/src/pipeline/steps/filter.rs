@@ -72,7 +72,7 @@ pub fn keep(
     for ((conference, decision), count) in unknown {
         tracker.log(&format!(
             "  NOTE: {count} {conference} papers have a decision Constellate's table of tiers does not know, \
-             {decision:?}: its tier was read from its wording (add it to sources/acceptance.rs)"
+             {decision:?}: its tier was read from its wording (add it to sources/conferences/acceptance.rs)"
         ));
     }
     leave_out(

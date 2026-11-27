@@ -30,6 +30,10 @@
 //! A table is first run on a sample, as Elicit recommends: the [`SAMPLE`] papers most central to the set on the
 //! graph ([`central_first`](crate::analysis::graph::links::central_first): the sum of the similarities of their links to
 //! the set's other papers), so that the user sees what it gives and what it cost before paying for the rest.
+//!
+//! # This folder
+//!
+//! Its routes are in [`routes`], the columns it keeps in [`store`].
 
 pub mod routes;
 pub mod store;

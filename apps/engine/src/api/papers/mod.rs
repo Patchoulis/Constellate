@@ -14,6 +14,12 @@
 //! `POST /api/papers/{id}/reviews` ([`crate::api::papers::reviews`]). A paper id comes percent-encoded in one path segment
 //! (an old arXiv id has a `/`: `hep-th%2F9901001`) and is decoded once, by the router. It never becomes a path
 //! here: the PDF's file is the library's own naming of it ([`crate::library::Library::pdf_file`]).
+//!
+//! # This folder
+//!
+//! The routes about one paper that are not a feature's: these, a paper's text and where a quote is in it
+//! ([`passages`]), its reviews and what a run's reviews come to ([`reviews`]), and the citation network around it
+//! ([`citations`]).
 
 pub mod citations;
 pub mod passages;

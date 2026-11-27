@@ -10,22 +10,11 @@
 //! left read-change-write races between processes. A database removes all three: several rows change in one
 //! transaction or not at all, and SQLite itself arbitrates between threads and processes.
 //!
-//! | file            | what lives there                                                          |
+//! | folder          | what lives there                                                          |
 //! |-----------------|---------------------------------------------------------------------------|
-//! | [`schema`]      | the numbered migrations, applied at open                                  |
-//! | [`papers`]      | papers, their venues, selections, and which download slices are finished  |
-//! | [`embeddings`]  | one vector per model and paper, reused only for the same text             |
-//! | [`readings`]    | what was read from a paper: declarations, ratings, AI-text scores         |
-//! | [`reviews`]     | a paper's reviews page as the reader showed it, and its notes as read     |
-//! | [`passages`]    | a paper's PDF, and its passages as read once per version of the reader    |
-//! | [`answers`]     | what the language model answered for a feature, so none is paid twice    |
-//! | [`detector`]    | the AI-text detector's training set and the classifier fitted on it      |
-//! | [`asking`]      | what is about to be asked, so that a call paid for is never lost unseen   |
-//! | [`writings`]    | community descriptions and overviews, keyed by model and members          |
-//! | [`ledger`]      | one row per call to the Claude API; totals are queries                    |
-//! | [`preferences`] | settings and exchange rates                                               |
-//! | [`import`]      | the one-off move from the files-based library                             |
-//! | [`store`]       | the few plain files that remain (a run's exported results)                |
+//! | [`core`]        | the library itself: schema, place, file store, import, preferences, run records |
+//! | [`papers`]      | what is kept about papers: records, embeddings, passages, readings, reviews, references, proceedings |
+//! | [`money`]       | what asking the model costs: kept answers, calls about to be asked, the ledger |
 //!
 //! # The database
 //!
@@ -57,7 +46,9 @@
 //!
 //! # PostgreSQL, should the engine ever be a shared server
 //!
-//! All SQL is in this module and is written in the portable subset: `INSERT ... ON CONFLICT (...) DO UPDATE /
+//! All SQL is in this module and in the `store.rs` of each feature ([`crate::features`]), whose `impl Library`
+//! blocks go through the same `Library::read` and `Library::write`; it is written in the portable subset:
+//! `INSERT ... ON CONFLICT (...) DO UPDATE /
 //! DO NOTHING`, `BIGINT`, `DOUBLE PRECISION`, `TEXT`, `CHECK` constraints, no `INSERT OR REPLACE`, no
 //! `WITHOUT ROWID`, no JSON functions in queries, no rowid. A port would change:
 //!

@@ -1,5 +1,5 @@
 {
-	"about": "What apps/backend/rp/detect.py computed on the synthetic corpus the Rust test generates (splitmix64 seed 20190601; see detector/parity.rs). scikit-learn 1.9.1, numpy 2.5.5.",
+	"about": "What apps/backend/rp/detect.py computed on the synthetic corpus the Rust test generates (splitmix64 seed 20190601; see features/detector/parity.rs). scikit-learn 1.9.1, numpy 2.5.5.",
 	"documents": 450,
 	"vocabulary": 4928,
 	"first_terms": ["able", "able able", "able and", "able are", "able as"],

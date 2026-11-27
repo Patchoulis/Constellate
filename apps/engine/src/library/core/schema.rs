@@ -202,7 +202,7 @@ pub const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX kept_answers_by_subject ON kept_answers (feature, subject);
     ",
-    // 6: the extraction table's columns of each run (feature: extraction table, library/extraction.rs)
+    // 6: the extraction table's columns of each run (feature: extraction table, features/extraction/store.rs)
     r"
     -- The columns a user chose or wrote for a run's extraction table, as JSON in their order.
     CREATE TABLE extraction_columns (
@@ -236,7 +236,7 @@ pub const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX citation_links_by_cited ON citation_links (cited);
     ",
-    // 8 (cited answers, library/questions.rs): the questions asked of a run or one of its communities
+    // 8 (cited answers, features/answers/store.rs): the questions asked of a run or one of its communities
     r"
     -- One question asked of a run (community NULL) or of one of its communities (its tree path): what the
     -- interface lists as the run's questions. The model's answer is in kept_answers under answer_key; `passages`
@@ -276,7 +276,7 @@ pub const MIGRATIONS: &[&str] = &[
         usage TEXT NOT NULL
     );
     ",
-    // 11 (the AI-text detector, library/detector.rs): its training set and the classifier fitted on it
+    // 11 (the AI-text detector, features/detector/store.rs): its training set and the classifier fitted on it
     r"
     -- Human abstracts from arXiv kept to learn from: the 2019 pool ('pool') and the samples of the year check (the
     -- year, '2021'). These are not papers of the library, so nothing refers to `papers`.
@@ -338,7 +338,7 @@ pub const MIGRATIONS: &[&str] = &[
     -- which read the same publisher's PDF and did not keep it.
     ALTER TABLE declarations ADD COLUMN pdf_hash TEXT;
     ",
-    // 13 (the citation network around a paper, library/references.rs): each paper's whole reference list
+    // 13 (the citation network around a paper, library/papers/references.rs): each paper's whole reference list
     r"
     -- A paper's reference list (library/references.rs KeptReferences, as JSON: every entry as read, and what
     -- looking it up on arXiv found), read by version `reader` of the reader from the PDF whose SHA-256 is
@@ -351,7 +351,7 @@ pub const MIGRATIONS: &[&str] = &[
         read_at  TEXT NOT NULL
     );
     ",
-    // 14: a call about to be sent, so that one paid for and lost in a crash is told (library/asking.rs)
+    // 14: a call about to be sent, so that one paid for and lost in a crash is told (library/money/asking.rs)
     r"
     -- Written before a call to a provider is sent, removed in the transaction that keeps its answer and records
     -- its cost (or once it is known not to have been billed). A row left behind is a call whose outcome is unknown:

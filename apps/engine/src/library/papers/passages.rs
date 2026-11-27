@@ -8,7 +8,7 @@
 //! (`rp/proceedings.py`, `fetch_pdf` into `LIBRARY / "pdfs"`), so those are found as they are. The file itself is
 //! the record that a paper's PDF is stored: [`Library::keep_pdf`] puts one there, replaced whole
 //! ([`crate::library::core::store::replace`]), so a reader never sees half a PDF. Nothing here downloads: fetching a PDF is the
-//! sources' work (`sources::proceedings::download_pdf`), and a paper without one is read from its record.
+//! sources' work (`sources::conferences::proceedings::download_pdf`), and a paper without one is read from its record.
 //!
 //! # Read once
 //!

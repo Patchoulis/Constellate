@@ -52,6 +52,10 @@
 //! | [`logistic`]    | the logistic regression, solved by L-BFGS                                    |
 //! | [`classifier`]  | the classifier, the held-out split, what is measured, the report             |
 //! | [`training`]    | building the training set: the pool from arXiv, the mirrors, mining, the year check |
+//!
+//! # This folder
+//!
+//! Its routes are in [`routes`], its training set and classifier kept by [`store`].
 
 pub mod classifier;
 pub mod features;

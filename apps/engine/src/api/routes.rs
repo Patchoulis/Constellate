@@ -117,7 +117,7 @@ impl Engine {
         if let Err(error) = library.read_stored_pages_again() {
             eprintln!("library: reviews pages could not be read again: {error}");
         }
-        // the Python backend's data folder, moved in once, part by part (library/import.rs); what could not be is
+        // the Python backend's data folder, moved in once, part by part (library/core/import.rs); what could not be is
         // told in /api/library and as a warning in /api/status, and tried again at the next start
         let moved = library.import_old(&self.data.join("library"));
         if moved != crate::library::core::import::Moved::default() {
@@ -355,6 +355,9 @@ pub(crate) async fn on_the_side<T: Send + 'static>(
 
 /// Every route the engine has, by path. A test walks this list to see that each one is refused to whoever has
 /// not signed in, so a route is added here and nowhere else.
+///
+/// The api's own routes and each feature's (`crate::features::<feature>::routes::table()`) are added one line
+/// each, in the fixed order below, the order they were added in; a new one goes at the end.
 pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
     let mut table = vec![
         ("/api/status", get(status)),
@@ -496,7 +499,7 @@ async fn status(
 }
 
 /// `Unsettled` in the contracts: calls asked of the language model whose outcome is unknown (an intent left by a
-/// crash, a connection lost after sending: `library::asking`), told in the ledger's terms. They may have been
+/// crash, a connection lost after sending: `library::money::asking`), told in the ledger's terms. They may have been
 /// billed, at most this much; they are not asked again until the user starts that work again.
 #[derive(Serialize)]
 struct UnsettledView {

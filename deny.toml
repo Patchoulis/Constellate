@@ -16,7 +16,7 @@ unmaintained = "workspace"
 # the crate that brings them in has a new major version.
 ignore = [
 	# rsa 0.9 (Marvin attack: timing of private-key decryption and signing). It comes with jsonwebtoken, which here only
-	# verifies the signature of a sign-in's ID token with the provider's public key (apps/engine/src/api/login/oidc.rs);
+	# verifies the signature of a sign-in's ID token with the provider's public key (apps/engine/src/api/guard/login/oidc.rs);
 	# the engine holds no RSA private key (the tests make throwaway ones). Fixed in rsa 0.10, which jsonwebtoken 12 uses.
 	{ id = "RUSTSEC-2023-0071", reason = "only RSA public-key verification is used; fixed by jsonwebtoken 12 (rsa 0.10)" },
 	# crypto-bigint 0.5 (operations meant to be constant-time that branch on secret integers). It comes with p256/p384

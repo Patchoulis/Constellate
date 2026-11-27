@@ -31,17 +31,9 @@
 //!
 //! | module          | what lives there                                                       |
 //! |-----------------|------------------------------------------------------------------------|
-//! | [`steps`]       | the steps, their outcomes, the board of the step under way             |
-//! | [`gather`]      | the selection fetched into the library, and its papers                 |
-//! | [`model_files`] | the embedding model's files, downloaded once, checked, resumable       |
-//! | [`embedding`]   | the papers the library has no vector for, embedded                     |
-//! | [`filter`]      | what the settings leave out                                            |
-//! | [`vocabulary`]  | the words of the papers, and the terms that set a group apart          |
-//! | [`report`]      | the community records (`communities.json`) and the readable report     |
-//! | [`drawing`]     | the papers and links of the graph view (`graph.json`)                  |
-//! | [`files`]       | a run's folder and files, as the Python laid them out                  |
+//! | [`steps`]       | the steps of a run, in order: gather, the model's files, embedding, filter, the seams |
+//! | [`results`]     | what a run makes: vocabulary, community records and report, drawing, files, agreement |
 //! | [`served`]      | the runs: listed, opened, renamed, deleted                             |
-//! | [`seams`]       | the detector's and the describer's steps, connected by the integrator  |
 
 pub mod results;
 pub mod served;

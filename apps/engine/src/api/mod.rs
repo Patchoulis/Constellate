@@ -2,16 +2,10 @@
 //!
 //! | module       | what lives there                                                                   |
 //! |--------------|------------------------------------------------------------------------------------|
-//! | [`config`]   | how the engine listens, from the environment: this computer only, or a network     |
-//! | [`connections`] | how many connections there may be, and how long one may stay silent             |
-//! | [`security`] | the checks every request passes (address, origin, token or session) and its headers |
-//! | [`login`]    | across a network: the owner's sign-in, with Google or a password, and sessions     |
-//! | [`routes`]   | the routes, the state they share and how errors are told                           |
-//! | [`reviews`]  | a paper's reviews read from the page the user opened, and what they come to        |
-//! | [`passages`] | a paper's text from its PDF, and where a quote is in it                            |
-//! | [`citations`] | the citation network around a paper, from the reference lists read            |
-//! | [`papers`]   | a paper's record, its PDF (fetched when not kept), what its authors declare        |
-//! | [`stances`]  | where a community's papers agree and disagree on a question                        |
+//! | [`routes`]   | the route table, the state the routes share and how errors are told                |
+//! | [`guard`]    | what every request passes first: how the engine listens, connections, checks, sign-in |
+//! | [`papers`]   | one paper: its record, PDF, declarations, passages, reviews and citations          |
+//! | [`runs`]     | the runs: making one, listing, serving, renaming, deleting; the catalogue           |
 //! | [`models`]   | the language models' providers and models, for the interface to choose from        |
 //! | [`usage`]    | what the language model has cost: in all, by model and purpose, and this session   |
 //!

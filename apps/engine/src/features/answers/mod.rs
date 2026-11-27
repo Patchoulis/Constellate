@@ -2,7 +2,7 @@
 //! is backed by quotes found in the papers (docs/evidence.md).
 //!
 //! ```text
-//! question ──retrieval (text/retrieval.rs, no model)──> the best passages, with their addresses
+//! question ──retrieval (features/answers/retrieval.rs, no model)──> the best passages, with their addresses
 //!          ──prepare──> one Ask: the passages labelled by paper and place (at most PROMPT_TOKENS), the question
 //!          ──estimate_batch──> what it costs, shown before anything is sent
 //!          ──ask_all (one item, budgeted, kept)──> Said: statements with quotes, or "the papers do not say"
@@ -36,6 +36,11 @@
 //! assumed 3 characters a token), the question, and an answer of at most [`MAX_TOKENS`] (likely
 //! [`LIKELY_TOKENS`]). With the default model that is about USD 0.15 likely and USD 0.25 at most, whatever the
 //! number of papers in scope, since the passages are capped (an estimate, shown as one).
+//!
+//! # This folder
+//!
+//! The passages are found by [`retrieval`]; the routes are in [`routes`], the questions asked of a run kept in
+//! [`store`].
 
 pub mod retrieval;
 pub mod routes;
