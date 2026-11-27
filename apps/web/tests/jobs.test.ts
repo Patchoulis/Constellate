@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Status } from "@rp/contracts";
-import { type Job, finishedRun, reduce } from "@/lib/use-job";
+import { type Job, finishedRun, isFeatureJob, reduce } from "@/lib/use-job";
 import { started, step } from "@/lib/use-followed-job";
 
 const status = (state: Status["state"], more: Partial<Status> = {}): Status => ({
@@ -38,6 +38,17 @@ test("a feature's finished job, or one that made nothing, opens no run", () => {
 	assert.equal(finishedRun(running, status("failed", { error: "no" })), null);
 	// the Python backend says nothing of an outcome: its finished jobs are runs
 	assert.equal(finishedRun(running, status("done", { result: "iclr2026" })), "iclr2026");
+});
+
+test("a feature's failure is not said as the run's, a run's is", () => {
+	const extraction = status("failed", { kind: "the extraction table", error: "the budget was reached" });
+	assert.equal(reduce(idle, { type: "reported", status: extraction }).error, null);
+	assert.equal(reduce(running, { type: "reported", status: extraction }).error, null);
+	assert.equal(reduce(running, { type: "reported", status: status("failed", { error: "only 3 papers" }) }).error, "only 3 papers");
+	// the Python backend names no kind: its jobs are runs
+	assert.equal(reduce(running, { type: "reported", status: status("failed", { kind: undefined, error: "no" }) }).error, "no");
+	assert.ok(isFeatureJob({ kind: "a run", outcome: { kind: "feature", feature: "critique", subject: { paper: "p" } } }));
+	assert.ok(!isFeatureJob({ kind: "a run", outcome: null }));
 });
 
 test("a followed job keeps the job's log and how far it got, and ends with what it made or why it failed", () => {

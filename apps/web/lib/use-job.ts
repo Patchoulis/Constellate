@@ -38,12 +38,39 @@ export function finishedRun(before: Job, status: Status): string | null {
 	return status.outcome?.kind === "run" ? status.outcome.run : null;
 }
 
+/**
+ * The kinds of job a feature starts (apps/engine/src/api: each feature's `start_tracked` kind). A feature shows its
+ * own job's progress and failure beside the button that started it (lib/use-followed-job.ts); the run's log keeps
+ * its lines, but its failure is not the run's ("New run" would say the extraction table's budget ran out).
+ */
+const FEATURE_KINDS = new Set([
+	"answering a question",
+	"asking about papers",
+	"reading citing sentences",
+	"reading citation kinds",
+	"reading a paper's claims",
+	"a paper's weaknesses",
+	"explaining a passage",
+	"the extraction table",
+	"asking where papers stand on a question",
+	"proposing questions for a community",
+]);
+
+/** Is this a feature's job rather than a run (or the declarations of one)? */
+export function isFeatureJob(status: Pick<Status, "kind" | "outcome">): boolean {
+	return status.outcome?.kind === "feature" || (status.kind !== undefined && FEATURE_KINDS.has(status.kind));
+}
+
 export function reduce(job: Job, event: Event): Job {
 	switch (event.type) {
 		case "started":
 			return { state: "running", log: [], error: null };
-		case "reported":
-			return { state: event.status.state, log: [...job.log, ...event.status.log], error: event.status.error };
+		case "reported": {
+			const status = event.status;
+			// a feature's failure is said by its own section, not under "New run" as if a run had failed
+			const said = isFeatureJob(status) ? null : status.error;
+			return { state: status.state, log: [...job.log, ...status.log], error: said };
+		}
 		case "unanswered":
 			return { ...job, error: event.error }; // a new object: while running, the next poll is still scheduled
 	}
