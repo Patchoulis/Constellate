@@ -24,7 +24,7 @@ const http = require("node:http");
 const path = require("node:path");
 const { Lifecycle, withParent } = require("./lifecycle.cjs");
 const { interfacePort } = require("./port.cjs");
-const { readerGuard, question } = require("./reader-guard.cjs");
+const { holdAppWindow, quietNetwork, readerGuard, question } = require("./reader-guard.cjs");
 const setup = require("./setup.cjs");
 
 const BACKEND_PORT = 8765; // the web build forwards /api here (apps/web/next.config.ts)
@@ -74,6 +74,13 @@ const NAME = "Constellate";
 const APP_ID = "app.constellate.desktop";
 app.setName(NAME);
 if (process.platform === "win32") app.setAppUserModelId(APP_ID);
+// Nothing of Chromium's listens beyond this computer (reader-guard.cjs): set before the app is ready, for all of it.
+quietNetwork(app);
+// No page is ever handed a certificate of the user's: Electron's default would give the first one there is.
+app.on("select-client-certificate", (event, _contents, _url, _certificates, callback) => {
+	event.preventDefault();
+	callback();
+});
 
 const ICON_FILE = path.join(__dirname, "icon.png");
 /** The app's icon for a window or a dialog; nothing when it has not been drawn yet (npm run build draws it). */
@@ -266,15 +273,8 @@ function openWindow(url) {
 	});
 	// An embedded view shows somebody else's web page: it gets no access to this app at all (reader-guard.cjs).
 	reader.guardWindow(window);
-	// The app's own window shows the app and nothing else: whatever it is told, it does not go anywhere.
-	window.webContents.on("will-navigate", (event, target) => {
-		if (!sameOrigin(target, url)) event.preventDefault();
-	});
-	// Nothing opens a second app window: a link that leaves the app goes to the user's browser.
-	window.webContents.setWindowOpenHandler(({ url: target }) => {
-		if (/^https:\/\//.test(target)) void shell.openExternal(target);
-		return { action: "deny" };
-	});
+	// The app's own window shows the app and nothing else, its frames included (reader-guard.cjs).
+	holdAppWindow(window, url, (address) => void shell.openExternal(address));
 	void window.loadURL(url);
 }
 
@@ -298,15 +298,6 @@ const reader = readerGuard({
 		return asked.answers[response] ?? "no";
 	},
 });
-
-/** Do two addresses have the same scheme, host and port? */
-function sameOrigin(one, other) {
-	try {
-		return new URL(one).origin === new URL(other).origin;
-	} catch {
-		return false;
-	}
-}
 
 /**
  * Nothing in this app needs the camera, the microphone, the location...: every permission request is refused,

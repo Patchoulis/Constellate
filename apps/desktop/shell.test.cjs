@@ -99,3 +99,11 @@ test("every dialog and window the shell shows carries the app's own name and ico
 	const appId = /^appId: (.+)$/m.exec(fs.readFileSync(path.join(__dirname, "electron-builder.yml"), "utf8"))[1];
 	assert.ok(main.includes(`const APP_ID = "${appId}"`), "the identity given to Windows is the installed app's");
 });
+
+test("the installed program file names the product, so that Windows names Constellate wherever it shows the app", () => {
+	const builder = fs.readFileSync(path.join(__dirname, "electron-builder.yml"), "utf8");
+	assert.match(builder, /^productName: Constellate$/m, "ProductName and FileDescription of the program file");
+	assert.match(builder, /^copyright: .*Constellate$/m, "its copyright");
+	assert.match(builder, /^win:\n(?: {2}.*\n)*? {2}executableName: Constellate$/m, "Constellate.exe, never electron.exe");
+	assert.match(builder, /^ {2}icon: icon\.png$/m, "its icon");
+});

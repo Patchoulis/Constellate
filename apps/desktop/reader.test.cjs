@@ -208,6 +208,62 @@ test("the question about an unknown site says it is not a paper site, that it ma
 	assert.equal(asked.buttons[0], "Cancel");
 });
 
+test("an embedded view gets no Node, preload, pop-up or dialog, whatever the page embedding it asks for", () => {
+	const { VIEW } = require("./reader-guard.cjs");
+	const attached = [];
+	const guard = readerGuard({ ask: async () => "no", openOutside: () => {} });
+	const window = { webContents: { on: (name, listener) => name === "will-attach-webview" && attached.push(listener) } };
+	guard.guardWindow(window);
+	const preferences = {
+		preload: "file:///evil.js",
+		nodeIntegration: true,
+		enableBlinkFeatures: "Serial",
+		disablePopups: false,
+		disableDialogs: false,
+		webSecurity: false,
+		partition: "persist:main",
+		zoomFactor: 1.25,
+	};
+	let refused = false;
+	attached[0]({ preventDefault: () => (refused = true) }, preferences, { src: "https://arxiv.org/abs/1", partition: "reader" });
+	assert.equal(refused, false);
+	assert.deepEqual(preferences, { ...VIEW, zoomFactor: 1.25 });
+	assert.equal(VIEW.disableDialogs, true);
+	assert.equal(VIEW.disablePopups, true);
+	assert.equal(VIEW.sandbox, true);
+	assert.equal(VIEW.nodeIntegration, false);
+});
+
+test("the app keeps Chromium's WebRTC from UDP and from answering for names on the local network", () => {
+	const { quietNetwork } = require("./reader-guard.cjs");
+	const switches = [];
+	quietNetwork({ commandLine: { appendSwitch: (name, value) => switches.push(`${name}=${value}`) } });
+	assert.ok(switches.includes("force-webrtc-ip-handling-policy=disable_non_proxied_udp"));
+	assert.ok(switches.includes("disable-features=WebRtcHideLocalIpsWithMdns"));
+});
+
+test("a host the user is asked about is written in plain letters: a look-alike shows as what it is", () => {
+	// a Cyrillic "а" in place of the Latin one: the question names xn--rxiv-..., not something that reads "arxiv"
+	assert.match(askable("https://аrxiv.org/abs/1"), /^xn--/);
+	assert.equal(readable("https://аrxiv.org/abs/1"), false);
+});
+
+test("the reader's connections go directly only to the sites on the lists; everything else, this computer too, nowhere", () => {
+	const { proxyRules, NOWHERE } = require("./reader.cjs");
+	const rules = proxyRules(new Set(["journal.example.org"]));
+	assert.equal(rules.mode, "fixed_servers");
+	assert.equal(rules.proxyRules, NOWHERE);
+	assert.match(NOWHERE, /^127\.0\.0\.1:1$/);
+	const direct = rules.proxyBypassRules.split(";");
+	// Chromium's own exception for this computer is taken away, so that it too goes to the proxy that is not there
+	assert.equal(direct[0], "<-loopback>");
+	for (const host of ["arxiv.org", "*.arxiv.org", "cdn.jsdelivr.net", "journal.example.org"]) assert.ok(direct.includes(host), host);
+	for (const host of direct.slice(1)) {
+		assert.doesNotMatch(host, /localhost|^\*$|^[\d.]+$|\[|^\*\.[^.]+$/, host);
+	}
+	assert.equal(proxyRules().proxyBypassRules.includes("journal.example.org"), false);
+});
+
 test("a guard starts with nothing approved and nothing declined", () => {
 	const guard = readerGuard({ ask: async () => "no", openOutside: () => {} });
 	assert.equal(guard.approved.size, 0);

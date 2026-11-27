@@ -4,8 +4,8 @@
  *   format   cargo fmt (Rust), prettier (TypeScript, JSON, Markdown, YAML) and ruff format (Python)
  *   lint     clippy with warnings denied (Rust), ruff check (Python), and the naming rule below
  *   types    tsc
- *   tests    cargo test, pytest, the interface's tests, every test of the desktop shell, and the scripts' and
- *            git hooks' tests
+ *   tests    cargo test, pytest, the interface's tests, every test of the desktop shell (the embedded reader's
+ *            confinement too, in a real Electron), and the scripts' and git hooks' tests
  *   advisories   known vulnerabilities in the dependencies, from each ecosystem's own database (needs the network):
  *            npm audit (what ships: moderate and above; everything, build tools included: high and above),
  *            cargo deny (deny.toml: RustSec advisories, licences, sources), pip-audit (the backend's lock)
@@ -88,6 +88,8 @@ const steps = [
 	["tests (interface)", () => run("npx", ["turbo", "run", "test", "--filter=@rp/web"], root)],
 	// every test file there is, so that a new one cannot be left out of the list by mistake
 	["tests (desktop)", () => run("node", ["--test", ...testsIn(desktop, ".test.cjs")], desktop)],
+	// a hostile page in the embedded reader, inside a real Electron (a hidden window; about two minutes)
+	["tests (desktop, the reader in Electron)", () => run("npx", ["electron", "reader.electron.cjs"], desktop)],
 	[
 		"tests (scripts and hooks)",
 		() => run("node", ["--test", ...testsIn(join(root, "scripts"), ".test.mjs").map((file) => `scripts/${file}`)], root),

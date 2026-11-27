@@ -1,5 +1,7 @@
 appId: app.constellate.desktop
 productName: Constellate
+# what Windows reads from the program file when it names the app (a firewall prompt, Task Manager): never "Electron"
+copyright: Copyright © 2026 Constellate
 directories:
   output: ../../dist
 # Only the shell goes into the app itself; it needs nothing but Electron and Node built-ins.
@@ -28,6 +30,7 @@ extraResources:
     to: uv
 win:
   target: nsis
+  executableName: Constellate
   icon: icon.png
   artifactName: Constellate-Setup-${version}.${ext}
 nsis:
