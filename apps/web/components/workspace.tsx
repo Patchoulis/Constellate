@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
-import type { Catalog, Ratings } from "@rp/contracts";
+import type { Catalog, Ratings, ReaderTarget } from "@rp/contracts";
 import { CommunityPanel } from "@/components/community-panel";
+import { EvidenceProvider, type EvidenceActions } from "@/components/evidence-link";
 import { GraphView } from "@/components/graph-view";
 import { OverviewPanel } from "@/components/overview";
 import { PaperReader } from "@/components/paper-reader";
@@ -68,10 +69,30 @@ export function Workspace({ name, catalog, children }: { name: string; catalog: 
 	const known = useMemo(() => (graph ? new Set(graph.nodes.map((node) => node.id)) : null), [graph]);
 	const marks = useMarks(name, known);
 	const [goTo, setGoTo] = useState<{ id: string } | null>(null);
-	const goToPaper = useCallback((id: string) => {
+	// where in the open paper a citation asked the reader to land; any other way of opening a paper clears it
+	const [place, setPlace] = useState<ReaderTarget | null>(null);
+	const openPaper = useCallback((id: string | null) => {
+		setPlace(null);
 		setPaper(id);
-		setGoTo({ id });
 	}, []);
+	const goToPaper = useCallback(
+		(id: string) => {
+			openPaper(id);
+			setGoTo({ id });
+		},
+		[openPaper],
+	);
+	const evidence = useMemo<EvidenceActions>(
+		() => ({
+			open: (target) => {
+				setPlace(target);
+				setPaper(target.paper);
+			},
+			inRun: (id) => known?.has(id) ?? false,
+			locate: goToPaper,
+		}),
+		[known, goToPaper],
+	);
 	const markedPapers = useMemo(() => {
 		const byId = new Map(graph?.nodes.map((node) => [node.id, node]));
 		return marks.marked.flatMap((id) => {
@@ -96,7 +117,7 @@ export function Workspace({ name, catalog, children }: { name: string; catalog: 
 		.map(([a, b, similarity]) => ({ ...graph.nodes[a === paperIndex ? b : a], similarity }))
 		.sort((a, b) => b.similarity - a.similarity);
 	return (
-		<>
+		<EvidenceProvider value={evidence}>
 			<main className="relative min-w-0 flex-1">
 				<GraphView
 					graph={graph}
@@ -106,7 +127,7 @@ export function Workspace({ name, catalog, children }: { name: string; catalog: 
 					ratings={ratings}
 					marked={marks.marked}
 					goTo={goTo}
-					onPickPaper={setPaper}
+					onPickPaper={openPaper}
 					onMarkPaper={marks.toggle}
 				/>
 				{children}
@@ -115,7 +136,7 @@ export function Workspace({ name, catalog, children }: { name: string; catalog: 
 						key={overview.community.tree_path}
 						run={name}
 						node={overview}
-						onOpenPaper={setPaper}
+						onOpenPaper={openPaper}
 						onClose={() => setOverview(null)}
 					/>
 				)}
@@ -129,9 +150,10 @@ export function Workspace({ name, catalog, children }: { name: string; catalog: 
 						marked={marks.has(paper)}
 						onToggleMark={() => marks.toggle(paper)}
 						run={name}
+						at={place}
 						onRatings={onRatings}
-						onOpen={setPaper}
-						onClose={() => setPaper(null)}
+						onOpen={openPaper}
+						onClose={() => openPaper(null)}
 					/>
 				)}
 			</main>
@@ -141,11 +163,11 @@ export function Workspace({ name, catalog, children }: { name: string; catalog: 
 				selected={selected}
 				onSelect={setSelected}
 				onOverview={setOverview}
-				onOpenPaper={setPaper}
+				onOpenPaper={openPaper}
 				marks={marks}
 				markedPapers={markedPapers}
 				onGoToPaper={goToPaper}
 			/>
-		</>
+		</EvidenceProvider>
 	);
 }

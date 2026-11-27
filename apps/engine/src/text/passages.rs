@@ -167,6 +167,21 @@ pub struct Located {
     pub matched: Match,
 }
 
+/// What `POST /api/papers/<id>/locate` answers: `{"found": true, "address": ..., "wording": ..., "matched": ...}`
+/// or `{"found": false}` (`LocateAnswer` in the contracts).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct LocateAnswer {
+    found: bool,
+    #[serde(flatten)]
+    located: Option<Located>,
+}
+
+impl From<Option<Located>> for LocateAnswer {
+    fn from(located: Option<Located>) -> Self {
+        Self { found: located.is_some(), located }
+    }
+}
+
 /// How a sentence points at an entry of the reference list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -600,6 +615,12 @@ pub fn sentence_spans(text: &str) -> Vec<(usize, usize)> {
         spans.push((from, chars.len()));
     }
     spans
+}
+
+/// A paper's passages, from its PDF: what `GET /api/papers/<id>/passages` answers (kept by paper id and
+/// [`READER`], since reading a PDF takes a moment and its addresses must not change under stored evidence).
+pub fn passages_of_pdf(bytes: &[u8]) -> Result<Passages, super::pdf::Unreadable> {
+    super::pdf::pdf_pages(bytes).map(|pages| read_passages(&pages))
 }
 
 /// Read a paper's passages from the text of its pages, as [`super::pdf::pdf_pages`] gives it.
@@ -1207,6 +1228,21 @@ We prove that the bound holds for every task.\n\n3\n",
         assert_eq!(read.locate("..."), None);
         // in the reference list only: not a passage, so not evidence
         assert_eq!(read.locate("Editing models with task arithmetic"), None);
+    }
+
+    #[test]
+    fn the_answer_to_a_locate_request_says_whether_it_was_found() {
+        let read = read_passages(&icml());
+        let found =
+            serde_json::to_value(LocateAnswer::from(read.locate("We rescale the inflated singular values"))).unwrap();
+        assert_eq!(found["found"], true);
+        assert_eq!(found["address"]["page"], 2);
+        assert_eq!(found["matched"]["kind"], "exact");
+        assert_eq!(found["wording"], "We rescale the inflated singular values");
+        let missing =
+            serde_json::to_value(LocateAnswer::from(read.locate("Nothing of the sort is in this paper at all")))
+                .unwrap();
+        assert_eq!(missing, serde_json::json!({"found": false}));
     }
 
     #[test]
