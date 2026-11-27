@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use super::{DATA_RULE, Stored, cut, data_section, one_block};
-use crate::analysis::cluster;
+use crate::analysis::graph::cluster;
 use crate::analysis::graph::{cosine, mean_of};
 use crate::jobs::{Progress, Tracker};
 use crate::library::store::{self, StoreError};

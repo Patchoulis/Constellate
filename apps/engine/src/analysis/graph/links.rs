@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn links_and_the_nearest_neighbour_graph_are_the_same_on_one_thread_and_on_many() {
-        let mut random = crate::analysis::random::Random::new(5);
+        let mut random = crate::analysis::graph::random::Random::new(5);
         let points = Array2::from_shape_simple_fn((400, 12), || random.normal() as f32);
         let adjacency = crate::analysis::graph::adjacency_matrix(points.view(), true).unwrap();
         let work = || {

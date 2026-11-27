@@ -9,7 +9,7 @@
 //! engine starts threads that compute, so nothing multiplies that count:
 //!
 //! * the matrix library (`matrixmultiply`) is built without threads of its own; the large products are cut into
-//!   rows on the pool instead ([`crate::analysis::graph`], [`crate::analysis::eigen`]);
+//!   rows on the pool instead ([`crate::analysis::graph`], [`crate::analysis::graph::eigen`]);
 //! * ONNX Runtime's own threads (intra-op) on the processor are as many as the pool has
 //!   ([`crate::model::embed`]), and the model runs on one thread outside the pool, one batch at a time: the
 //!   model and the pool take turns, they do not run on top of each other;

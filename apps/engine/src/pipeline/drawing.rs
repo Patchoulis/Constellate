@@ -15,9 +15,9 @@ use rayon::prelude::*;
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
 
-use crate::analysis::eigen::{self, EigenError};
-use crate::analysis::links::natural_neighbours;
-use crate::analysis::random::Random;
+use crate::analysis::graph::eigen::{self, EigenError};
+use crate::analysis::graph::links::natural_neighbours;
+use crate::analysis::graph::random::Random;
 use crate::library::Paper;
 use crate::sources::acceptance::{Acceptance, Accepted, Term};
 

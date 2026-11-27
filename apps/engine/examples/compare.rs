@@ -38,9 +38,9 @@ use std::process::ExitCode;
 use ndarray::{Array2, Axis};
 use serde_json::Value;
 
-use constellate::analysis::cluster::{self, Limits, Method, Papers};
+use constellate::analysis::graph::cluster::{self, Limits, Method, Papers};
+use constellate::analysis::graph::random::Random;
 use constellate::analysis::graph::{adjacency_matrix, make_unit, modularity};
-use constellate::analysis::random::Random;
 use constellate::jobs::{Cancel, Progress, Tracker};
 use constellate::library::{Library, Paper, place, store};
 use constellate::pipeline::agreement::{

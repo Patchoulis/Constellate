@@ -660,12 +660,12 @@ pub fn recurring_terms(community: &[Record<'_>], run: &[Record<'_>], most: usize
 }
 
 /// `members` (indices of a graph's nodes, `ids` its ids) most central first, as
-/// [`crate::analysis::links::central_first`] orders the papers of a set, each once.
+/// [`crate::analysis::graph::links::central_first`] orders the papers of a set, each once.
 pub fn central_first(members: &[usize], edges: &[(usize, usize, f64)], ids: &[String]) -> Vec<usize> {
     let index_of: HashMap<&str, usize> =
         members.iter().filter_map(|&member| ids.get(member).map(|id| (id.as_str(), member))).collect();
     let papers: Vec<String> = index_of.keys().map(|id| (*id).to_owned()).collect();
-    crate::analysis::links::central_first(&papers, ids, edges)
+    crate::analysis::graph::links::central_first(&papers, ids, edges)
         .iter()
         .filter_map(|id| index_of.get(id.as_str()).copied())
         .collect()

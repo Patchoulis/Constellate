@@ -16,10 +16,10 @@ use ndarray::{Array2, ArrayView2, Axis, CowArray, Ix2};
 use rayon::prelude::*;
 
 use super::eigen::EigenError;
-use super::graph::{make_unit, modularity};
 use super::kmeans::kmeans;
 use super::links::{KNN, knn_graph};
 use super::spectral::{Graph, fiedler_side, leading_eigenvectors};
+use crate::analysis::graph::{make_unit, modularity};
 
 /// The seed every random choice of a clustering starts from, so that a run can be repeated exactly.
 const SEED: u64 = 0;
@@ -524,7 +524,7 @@ fn by_bisection(
 mod tests {
     use super::*;
     use crate::analysis::graph::adjacency_matrix;
-    use crate::analysis::kmeans::tests::{blobs, same_grouping};
+    use crate::analysis::graph::kmeans::tests::{blobs, same_grouping};
 
     /// The planted groups' graph and their mean-centred unit vectors.
     fn blob_papers() -> (Array2<f32>, Array2<f32>, Vec<usize>) {
@@ -601,7 +601,7 @@ mod tests {
     /// The Python's `test_no_two_communities_share_a_path`: "c1" + "0" was once the name of community "c10".
     #[test]
     fn no_two_communities_of_any_method_share_a_path_even_with_ten_roots_and_more() {
-        let mut random = crate::analysis::random::Random::new(3);
+        let mut random = crate::analysis::graph::random::Random::new(3);
         let centres = Array2::from_shape_simple_fn((12, 24), || 5.0 * random.normal());
         let points = Array2::from_shape_fn((360, 24), |(point, axis)| centres[[point / 30, axis]] + random.normal())
             .mapv(|value| value as f32);
@@ -751,7 +751,7 @@ mod tests {
     #[test]
     fn every_method_cuts_the_same_communities_and_sub_communities_on_one_thread_and_on_many() {
         // twelve loose groups of 25: enough communities to be cut side by side, each large enough to be cut again
-        let mut random = crate::analysis::random::Random::new(21);
+        let mut random = crate::analysis::graph::random::Random::new(21);
         let centres = Array2::from_shape_simple_fn((12, 20), || 3.0 * random.normal());
         let points = Array2::from_shape_fn((300, 20), |(point, axis)| {
             (centres[[point % 12, axis]] + 1.5 * random.normal()) as f32
@@ -771,7 +771,7 @@ mod tests {
     /// Two groups of 120 papers, each of two sub-groups of 60: the sub-groups' centres closer to their group's
     /// than the groups are to each other, as topics within a field are.
     fn nested_papers() -> (Array2<f32>, Array2<f32>) {
-        let mut random = crate::analysis::random::Random::new(17);
+        let mut random = crate::analysis::graph::random::Random::new(17);
         let groups = Array2::from_shape_simple_fn((2, 64), || 1.0 * random.normal());
         let subs = Array2::from_shape_simple_fn((4, 64), || 0.6 * random.normal());
         let points = Array2::from_shape_fn((240, 64), |(point, axis)| {
@@ -819,7 +819,7 @@ mod tests {
     #[test]
     #[ignore = "a measurement, not a check: 12,487 papers of 1,024 numbers each"]
     fn a_conference_sized_run_is_clustered_in_seconds() {
-        use crate::analysis::links::natural_neighbours;
+        use crate::analysis::graph::links::natural_neighbours;
         use std::time::Instant;
         let (count, width) = (12_487, 1_024);
         let mut seed = 0x2545_F491_4F6C_DD1D_u64;

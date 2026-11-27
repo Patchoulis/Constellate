@@ -28,7 +28,7 @@ use axum::routing::{MethodRouter, get};
 use serde_json::{Value, json};
 
 use super::routes::{ApiError, Shared, on_the_side, one_name};
-use crate::analysis::cluster::Method;
+use crate::analysis::graph::cluster::Method;
 use crate::features::writing::describe;
 use crate::jobs::Finished;
 use crate::model::chosen::Accepted;

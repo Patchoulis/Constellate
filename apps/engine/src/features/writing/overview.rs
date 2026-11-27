@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{DATA_RULE, Stored, StoredTree, cut, data_section, one_block};
-use crate::analysis::links::central_first;
+use crate::analysis::graph::links::central_first;
 use crate::evidence::{self, Claim, Evidence, PaperText, Papers, Quote, Rules};
 use crate::jobs::{Finished, Phase, Snapshot, Tracker};
 use crate::library::{AnswerKey, Feature, Kept, Library, LibraryError, Paper, Slot, Subject};

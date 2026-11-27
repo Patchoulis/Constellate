@@ -448,7 +448,7 @@ fn a_spectral_run_on_nearest_neighbours_cuts_along_the_pieces_of_the_graph_as_th
     let rows: Vec<Vec<f32>> = serde_json::from_value(input["embeddings"].clone()).unwrap();
     let embeddings = Array2::from_shape_vec((rows.len(), rows[0].len()), rows.concat()).unwrap();
     let adjacency = crate::analysis::graph::adjacency_matrix(embeddings.view(), true).unwrap();
-    let neighbours = crate::analysis::links::knn_graph(adjacency.view(), crate::analysis::links::KNN);
+    let neighbours = crate::analysis::graph::links::knn_graph(adjacency.view(), crate::analysis::graph::links::KNN);
     // the pieces, by labelling each paper with the smallest paper it is joined to
     let mut piece: Vec<usize> = (0..rows.len()).collect();
     loop {
@@ -1024,7 +1024,7 @@ fn twelve_thousand_made_up_papers_are_made_into_a_run() {
     let (papers, width, topics) = (12_000, 1_024, 40);
     let data = tempfile::tempdir().unwrap();
     let library = Library::open(&data.path().join("library")).unwrap();
-    let mut random = crate::analysis::random::Random::new(3);
+    let mut random = crate::analysis::graph::random::Random::new(3);
     let centres = Array2::from_shape_simple_fn((topics, width), || random.normal() as f32);
     let words: Vec<String> = (0..4_000).map(|word| format!("word{word:04}x")).collect();
     let mut made = Vec::with_capacity(papers);

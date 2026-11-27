@@ -15,7 +15,7 @@ use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::vocabulary::Vocabulary;
-use crate::analysis::cluster::Community;
+use crate::analysis::graph::cluster::Community;
 use crate::library::Paper;
 use crate::selection::Selection;
 use crate::sources::acceptance::Acceptance;

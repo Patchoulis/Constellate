@@ -68,8 +68,8 @@ use std::time::Instant;
 use ndarray::{Array2, Axis};
 use serde_json::json;
 
-use crate::analysis::cluster::{self, ClusterError, Limits, Method, Papers};
-use crate::analysis::eigen::EigenError;
+use crate::analysis::graph::cluster::{self, ClusterError, Limits, Method, Papers};
+use crate::analysis::graph::eigen::EigenError;
 use crate::analysis::graph::{self, GraphError, make_unit};
 use crate::jobs::Tracker;
 use crate::library::store::StoreError;

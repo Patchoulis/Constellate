@@ -30,7 +30,7 @@ use axum::routing::{MethodRouter, get, post};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-use crate::analysis::links::central_first;
+use crate::analysis::graph::links::central_first;
 use crate::api::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::evidence::PaperText;
 use crate::features::extraction::{

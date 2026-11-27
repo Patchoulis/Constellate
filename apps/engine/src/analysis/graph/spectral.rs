@@ -9,8 +9,8 @@ use ndarray::{Array1, Array2, ArrayView2, Axis};
 use rayon::prelude::*;
 
 use super::eigen::{EigenError, leading};
-use super::graph::degrees;
 use super::links::SparseGraph;
+use crate::analysis::graph::degrees;
 
 /// A similarity graph, held in one of the two ways the clustering methods make one.
 #[derive(Clone, Copy, Debug)]
@@ -241,7 +241,7 @@ pub fn fiedler_side(sub: ArrayView2<f32>) -> Result<Option<Vec<bool>>, EigenErro
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::analysis::links::knn_graph;
+    use crate::analysis::graph::links::knn_graph;
 
     /// `cliques` groups of `size` papers, every pair within a group linked with weight 1, and `between` between
     /// papers of different groups.
@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn the_streamed_product_agrees_with_the_matrix_library() {
-        let mut random = crate::analysis::random::Random::new(3);
+        let mut random = crate::analysis::graph::random::Random::new(3);
         // 23 rows: not a whole number of the rows taken together
         let matrix = Array2::from_shape_simple_fn((23, 23), || random.uniform() as f32);
         for width in [1, 3, 8, 9, 16, 20, 40] {

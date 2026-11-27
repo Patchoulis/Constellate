@@ -20,11 +20,5 @@
 //! | [`reviews`]  | reviewers' ratings and words taken together: per paper, community and run     |
 
 pub mod citations;
-pub mod cluster;
-pub mod eigen;
 pub mod graph;
-pub mod kmeans;
-pub mod links;
-pub mod random;
 pub mod reviews;
-pub mod spectral;

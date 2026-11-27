@@ -13,10 +13,10 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use constellate::analysis::citations::{LibraryPaper, Linker, Members, ReadPaper, community_citations, network};
-use constellate::analysis::cluster::{Limits, Method, Papers, communities};
+use constellate::analysis::graph::cluster::{Limits, Method, Papers, communities};
+use constellate::analysis::graph::kmeans::kmeans;
+use constellate::analysis::graph::links::{knn_graph, natural_neighbours};
 use constellate::analysis::graph::{adjacency_matrix, degrees, make_unit, modularity};
-use constellate::analysis::kmeans::kmeans;
-use constellate::analysis::links::{knn_graph, natural_neighbours};
 use constellate::text::references::{Confidence, Reference};
 use constellate::threads::{self, Progress};
 use ndarray::{Array2, Axis};

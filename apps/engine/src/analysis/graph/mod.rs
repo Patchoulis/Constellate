@@ -13,6 +13,13 @@
 //! there is nothing to share. Sums of many rows are added up afterwards in the order of the rows, never in the
 //! order threads finished, so every number is the same bit for bit on one thread or on 32.
 
+pub mod cluster;
+pub mod eigen;
+pub mod kmeans;
+pub mod links;
+pub mod random;
+pub mod spectral;
+
 use ndarray::linalg::general_mat_mul;
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2, Axis, Zip, s};
 use rayon::prelude::*;
@@ -261,7 +268,7 @@ mod tests {
 
     /// Embeddings with no structure to them, of a size that spans several blocks of rows (and a short last one).
     fn noise(papers: usize, width: usize) -> Array2<f32> {
-        let mut random = crate::analysis::random::Random::new(7);
+        let mut random = crate::analysis::graph::random::Random::new(7);
         Array2::from_shape_simple_fn((papers, width), || random.normal() as f32)
     }
 
