@@ -7,46 +7,75 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- The paper reader has a Weaknesses section: the reviewers' own weaknesses, questions and limitations point by point, with each reviewer's rating and confidence and any reply of the authors, each point opening on the reviewer's words; and, on request with its cost estimated first, the model's reading of the paper (where each point applies, what the paper says about it, and weaknesses the reviewers did not raise), every statement linked to the paper's own words, kept apart and never a score or verdict.
-
-- Each community has an Agree / disagree section: ask a yes/no question of its papers (or start from a term its papers keep using, or a question the model proposes from their abstracts), see the cost before anything is sent, ask the ten most central papers first and the rest on a second click, and see the papers grouped as supporting, mixed (with the condition), contradicting or not addressing it, each with the paper's own words, counted by acceptance tier and by year; placements whose quotes are not found in the paper are shown apart and never counted, and questions are kept so they can be reopened without paying again.
-
-- A Table section for each community and for the marked papers: one row per paper, one column per question (task, method, datasets, headline result, baselines, compute, code and data, limitations, or your own), every value shown beside the paper's own words and "not stated in the paper" when it does not say. It is run first on the ten most central papers, with the estimated cost shown before and the real cost after, then on the rest with a second click; it can be sorted, filtered and saved as CSV with every quote and page.
-
-- In the reader's Text tab, select words (or use a passage's button) to have a paragraph, an equation or a table's caption explained by the model: the cost is shown before anything is sent, every statement about the paper links to the paper's own words, general background is marked as not from the paper, the sentences where the paper defines the symbols and terms used are shown for free, explanations are kept so reopening one costs nothing, and "Find related" lists passages of nearby papers in the run that share its words, at no cost.
-
-- The paper reader has a Claims tab: the paper's central claims as a tree, with the findings and evidence (experiments, tables, figures, theorems) the paper offers for each, every one linked to the paper's own words; the points of its OpenReview reviews placed on the claims they are about, each with the reviewer's words beside the paper's, how many reviewers challenged or supported each claim with their ratings on the venue's own scale, a filter for contested claims, points that could not be placed listed apart, and the model's own reading of possible gaps shown last. The cost is estimated before anything is asked.
-
-- The reader's Citations tab shows, for each paper of your library a paper cites and each paper citing it, the sentences where it happens (with the sentence before and after, the section and whether it is cited alone), each linking to the place in the citing paper; this needs no API key. On request, after an estimate and within a cap, the model reads what kind of citation each is (uses, data or benchmark, baseline, extends, supports, contrasts, mention), always shown beside the sentence and only counted when the words that show it are found there; communities list the papers they most use as a baseline, contrast, or take data from.
-
-- Ask a community (in its panel) or the whole run (the "Ask the run" button over the graph) a question: the passages of its papers that talk about it are found first, for free, each linked to the place in the paper; then, after you see what it would cost and click, the model answers in statements each followed by the quotes it rests on. Statements whose quotes are not found in the papers are left out and counted, "the papers do not say" is shown as an answer, and past questions are listed per run, reopened at no cost, asked again or deleted.
-
-- Names, descriptions and overviews can be written by other providers' models than Claude: OpenAI, Google Gemini, OpenRouter, xAI, Mistral, DeepSeek, Groq and a dozen more, or a model on your own computer through Ollama, LM Studio or any OpenAI-compatible server. The model menu at the bottom of the sidebar groups them by provider, says which ones need a key and which variable to set, takes a model id typed in where the provider allows it, and offers the effort where the model has one; the cost line names the provider and model and says "cost not known" rather than 0 when a price is not published, and "no API cost" for a model on your own computer. Settings list every provider, whether its key is set, where it is reached and what it cannot do.
-
-- Opening a paper's Reviews tab now keeps the whole discussion (each review by section, rebuttals, the meta-review and the decision), shows the paper's mean, range and confidence-weighted mean on its venue's own scale, and adds a Reviews section to each community: how many of its papers have reviews read, ratings per conference and year, the papers reviewers disagreed on most, and what reviewers most often praise and criticise, each linked to the reviewer's words.
-
-- The paper reader has a Text tab showing the paper's text section by section, and citations open it at the exact place they quote, with the words highlighted; quotes a model gives as evidence are only shown once they have been found in the paper they are attributed to.
-
-- The runs sidebar, the communities panel, the paper reader, the overview and the activity log can be resized by dragging their edge (or with the arrow keys once the edge is focused); double-click an edge to put it back, and the sizes are remembered.
-
-- `npm run setup` (or `make setup`) gets a fresh clone ready to work on in one command.
-
+- The paper reader has a Text tab showing the paper's text section by section, and citations open it at the exact
+  place they quote, with the words highlighted; quotes a model gives as evidence are only shown once they have been
+  found in the paper they are attributed to.
+- In the Text tab, select words (or use a passage's button) to have a paragraph, an equation or a table's caption
+  explained by the model: the cost is shown before anything is sent, every statement about the paper links to the
+  paper's own words, general background is marked as not from the paper, the sentences where the paper defines the
+  symbols and terms used are shown for free, explanations are kept so reopening one costs nothing, and "Find
+  related" lists passages of nearby papers in the run that share its words, at no cost.
+- The paper reader has a Claims tab: the paper's central claims as a tree, with the findings and evidence
+  (experiments, tables, figures, theorems) the paper offers for each, every one linked to the paper's own words; the
+  points of its OpenReview reviews placed on the claims they are about, each with the reviewer's words beside the
+  paper's, how many reviewers challenged or supported each claim with their ratings on the venue's own scale, a
+  filter for contested claims, points that could not be placed listed apart, and the model's own reading of possible
+  gaps shown last. The cost is estimated before anything is asked.
+- The paper reader has a Weaknesses section: the reviewers' own weaknesses, questions and limitations point by
+  point, with each reviewer's rating and confidence and any reply of the authors, each point opening on the
+  reviewer's words; and, on request with its cost estimated first, the model's reading of the paper (where each
+  point applies, what the paper says about it, and weaknesses the reviewers did not raise), every statement linked
+  to the paper's own words, kept apart and never a score or verdict.
 - A Citations tab in the reader shows a paper's citation network: the works it cites and the papers that cite it,
   laid out by year with the links between them, and as lists you can filter and sort. It is built from the
-  reference lists of the papers Constellate has read, so "cited by" counts only those papers. Communities can be
-  sorted by how often they are cited and by how many works they cite.
-
-- The engine uses any maker's graphics card: through DirectML on Windows and through Vulkan (WebGPU) on Linux, with
-  the processor as the fallback. It is built and tested on Linux as well as Windows.
-
-- A Recenter button on the graph brings back what you were looking at: the open paper, else the focused community,
-  else the whole graph. The graph glides there instead of jumping, as it does when a community is focused or a
-  paper opened; panels slide in and labels fade in. None of it moves for someone who asked their system for less
-  motion.
+  reference lists of the papers Constellate has read, so "cited by" counts only those papers. For each paper of
+  your library a paper cites and each paper citing it, it shows the sentences where it happens (with the sentence
+  before and after, the section and whether it is cited alone), each linking to the place in the citing paper; this
+  needs no API key. On request, after an estimate and within a cap, the model reads what kind of citation each is
+  (uses, data or benchmark, baseline, extends, supports, contrasts, mention), always shown beside the sentence and
+  only counted when the words that show it are found there. Communities can be sorted by how often they are cited
+  and by how many works they cite, and list the papers they most use as a baseline, contrast, or take data from.
+- Opening a paper's Reviews tab now keeps the whole discussion (each review by section, rebuttals, the meta-review
+  and the decision), shows the paper's mean, range and confidence-weighted mean on its venue's own scale, and adds a
+  Reviews section to each community: how many of its papers have reviews read, ratings per conference and year, the
+  papers reviewers disagreed on most, and what reviewers most often praise and criticise, each linked to the
+  reviewer's words.
+- Ask a community (in its panel) or the whole run (the "Ask the run" button over the graph) a question: the passages
+  of its papers that talk about it are found first, for free, each linked to the place in the paper; then, after you
+  see what it would cost and click, the model answers in statements each followed by the quotes it rests on.
+  Statements whose quotes are not found in the papers are left out and counted, "the papers do not say" is shown as
+  an answer, and past questions are listed per run, reopened at no cost, asked again or deleted.
+- Each community has an Agree / disagree section: ask a yes/no question of its papers (or start from a term its
+  papers keep using, or a question the model proposes from their abstracts), see the cost before anything is sent,
+  ask the ten most central papers first and the rest on a second click, and see the papers grouped as supporting,
+  mixed (with the condition), contradicting or not addressing it, each with the paper's own words, counted by
+  acceptance tier and by year; placements whose quotes are not found in the paper are shown apart and never counted,
+  and questions are kept so they can be reopened without paying again.
+- A Table section for each community and for the marked papers: one row per paper, one column per question (task,
+  method, datasets, headline result, baselines, compute, code and data, limitations, or your own), every value shown
+  beside the paper's own words and "not stated in the paper" when it does not say. It is run first on the ten most
+  central papers, with the estimated cost shown before and the real cost after, then on the rest with a second
+  click; it can be sorted, filtered and saved as CSV with every quote and page.
+- Names, descriptions and overviews can be written by other providers' models than Claude: OpenAI, Google Gemini,
+  OpenRouter, xAI, Mistral, DeepSeek, Groq and a dozen more, or a model on your own computer through Ollama, LM
+  Studio or any OpenAI-compatible server. The model menu at the bottom of the sidebar groups them by provider, says
+  which ones need a key and which variable to set, takes a model id typed in where the provider allows it, and
+  offers the effort where the model has one; the cost line names the provider and model and says "cost not known"
+  rather than 0 when a price is not published, and "no API cost" for a model on your own computer. Settings list
+  every provider, whether its key is set, where it is reached and what it cannot do.
 - Mark papers to keep them in view: right-click a paper on the graph (or use the star in the reader and in a
   community's list) and it gets a yellow ring with its closest papers always linked and named; the Marked tab lists
   a run's marked papers, and marks are remembered for each run. While one community is in focus, only the marked
   papers inside it are shown.
+- A Recenter button on the graph brings back what you were looking at: the open paper, else the focused community,
+  else the whole graph. The graph glides there instead of jumping, as it does when a community is focused or a
+  paper opened; panels slide in and labels fade in. None of it moves for someone who asked their system for less
+  motion.
+- The runs sidebar, the communities panel, the paper reader, the overview and the activity log can be resized by
+  dragging their edge (or with the arrow keys once the edge is focused); double-click an edge to put it back, and
+  the sizes are remembered.
+- The engine uses any maker's graphics card: through DirectML on Windows and through Vulkan (WebGPU) on Linux, with
+  the processor as the fallback. It is built and tested on Linux as well as Windows.
 - The engine has the model prices and the exchange rates built in, with the day each rate is from: once it
   replaces the backend, the app no longer asks the internet for a rate. A weekly check compares the rates with the
   European Central Bank's and, when one has moved by more than 1%, prepares a new version with the new rates.
@@ -54,12 +83,13 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   interrupted write can no longer leave it half-saved, and an existing library is moved in without losing anything.
   A conference whose site did not answer is now fetched again later instead of being counted as downloaded, and
   papers whose PDF could not be had or read are remembered as such.
+- `npm run setup` (or `make setup`) gets a fresh clone ready to work on in one command.
 
 ### Changed
 
 - The engine computes on every core: the similarity graph, the communities, nearest neighbours and citation figures
-  are worked out several times faster with the same results, PDFs are read side by side, and downloads run a few at a
-  time within each site's limits (arXiv still one request every three seconds). `CONSTELLATE_THREADS` caps the
+  are worked out several times faster with the same results, PDFs are read side by side, and downloads run a few at
+  a time within each site's limits (arXiv still one request every three seconds). `CONSTELLATE_THREADS` caps the
   threads it uses.
 - The redo buttons say what they cover ("Embed all again"), a fourth redoes all of it, and every run in the sidebar
   has its own button to redo all of that run.
@@ -79,7 +109,13 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- Marked papers and panel sizes are kept between launches: the interface is served on the same port each time.
+- The installed app's first start no longer stops with "Missing expected target directory for Python minor version
+  link" when Constellate is opened from inside another packaged Windows app (from a terminal in one, say).
+- Marked papers and panel sizes are kept between launches: the interface is served on the same port each time. Ending
+  the app from the Task Manager, or a crash, no longer leaves the interface's server running in the background, where
+  it held that port, and Ctrl+C in the terminal of `npm run app` stops both servers.
+- After the model is changed in the settings, a community's overview no longer shows the one the previous model
+  wrote as if it were current: it can be written by the model now chosen.
 - The new engine now serves the reader's Text tab and finds the words a citation quotes; each paper's PDF is read
   once and kept, and is read again only when the PDF or the way papers are read changes.
 - A Claude API key (and address) set in a `.env` file beside the new engine is now used, like its other settings;
@@ -87,6 +123,9 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- Pages shown in the reader can no longer send anything to the app's own interface, its API or the engine on this
+  computer, nor to the local network, nor open files: every request such a page makes is checked, not only the
+  frames it opens.
 - The new engine answers only the app itself: every request must carry a secret token and be addressed to the
   engine, and pages of other sites are refused. Run on another machine than the app, it requires HTTPS, and warns
   loudly if HTTPS is turned off.
