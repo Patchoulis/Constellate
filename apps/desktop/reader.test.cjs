@@ -261,7 +261,10 @@ test("the reader's connections go directly only to the sites on the lists; every
 	for (const host of direct.slice(1)) {
 		assert.doesNotMatch(host, /localhost|^\*$|^[\d.]+$|\[|^\*\.[^.]+$/, host);
 	}
-	assert.equal(proxyRules().proxyBypassRules.includes("journal.example.org"), false);
+	const named = proxyRules()
+		.proxyBypassRules.split(";")
+		.map((rule) => rule.replace(/^\*?\./, ""));
+	assert.equal(new Set(named).has("journal.example.org"), false);
 });
 
 test("a guard starts with nothing approved and nothing declined", () => {

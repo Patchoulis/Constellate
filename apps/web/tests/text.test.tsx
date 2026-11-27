@@ -61,7 +61,7 @@ test("a \\href shows its text and links to its address; an address written out i
 test("a plain http address in a record is shown, not made a link (lib/net/links.ts: https only)", () => {
 	const plain = shown("data at http://example.org/data and \\href{http://example.org/x}{there}");
 	assert.ok(!plain.includes("<a "), plain);
-	assert.ok(plain.includes("http://example.org/data"));
+	assert.ok(new Set(plain.split(" ")).has("http://example.org/data"), plain);
 	assert.ok(plain.includes("there"));
 });
 
