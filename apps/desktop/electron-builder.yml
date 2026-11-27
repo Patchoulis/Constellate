@@ -10,6 +10,7 @@ files:
   - lifecycle.cjs
   - port.cjs
   - reader.cjs
+  - reader-guard.cjs
   - icon.png
   - package.json
 # The backend rides along as a plain folder; the interface's server is added by after-pack.cjs.

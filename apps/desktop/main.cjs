@@ -24,7 +24,7 @@ const http = require("node:http");
 const path = require("node:path");
 const { Lifecycle, withParent } = require("./lifecycle.cjs");
 const { interfacePort } = require("./port.cjs");
-const { READER, readable, refused } = require("./reader.cjs");
+const { readerGuard, question } = require("./reader-guard.cjs");
 const setup = require("./setup.cjs");
 
 const BACKEND_PORT = 8765; // the web build forwards /api here (apps/web/next.config.ts)
@@ -230,37 +230,15 @@ function openWindow(url) {
 		autoHideMenuBar: true,
 		title: app.getName(),
 		icon: path.join(__dirname, "icon.png"),
-		// the reader shows a paper's own page (and its reviews) inside the window, in an embedded view
-		webPreferences: { webviewTag: true },
+		// the reader shows a paper's own page (and its reviews) inside the window, in an embedded view; the
+		// app's own page needs nothing of this computer either: no Node, a sandboxed process
+		webPreferences: { webviewTag: true, sandbox: true, contextIsolation: true, nodeIntegration: false },
 	});
-	// An embedded view shows somebody else's web page: it gets no access to this app at all, its own storage
-	// (the "reader" partition, set by the interface), no permissions, and only the sites papers live on.
-	window.webContents.on("will-attach-webview", (event, preferences, params) => {
-		delete preferences.preload;
-		delete preferences.preloadURL;
-		preferences.nodeIntegration = false;
-		preferences.nodeIntegrationInSubFrames = false;
-		preferences.contextIsolation = true;
-		preferences.sandbox = true;
-		preferences.webSecurity = true;
-		if (!readable(params.src) || params.partition !== READER) event.preventDefault();
-	});
-	window.webContents.on("did-attach-webview", (_event, guest) => {
-		// The view itself only goes to the sites papers live on. A page cannot send the user's browser anywhere
-		// by navigating: only a link the user opens in a new window (below) leaves the app.
-		const stay = (event, target) => {
-			if (event.isMainFrame !== false && !readable(target)) event.preventDefault();
-		};
-		guest.on("will-navigate", stay);
-		guest.on("will-redirect", stay);
-		// A frame inside a shown page must not load this app's own interface or API (nor a file, nor plain http).
-		guest.on("will-frame-navigate", (event) => {
-			if (!event.isMainFrame && refused(event.url)) event.preventDefault();
-		});
-		guest.setWindowOpenHandler(({ url: target }) => {
-			if (/^https:\/\//.test(target)) void shell.openExternal(target);
-			return { action: "deny" };
-		});
+	// An embedded view shows somebody else's web page: it gets no access to this app at all (reader-guard.cjs).
+	reader.guardWindow(window);
+	// The app's own window shows the app and nothing else: whatever it is told, it does not go anywhere.
+	window.webContents.on("will-navigate", (event, target) => {
+		if (!sameOrigin(target, url)) event.preventDefault();
 	});
 	// Nothing opens a second app window: a link that leaves the app goes to the user's browser.
 	window.webContents.setWindowOpenHandler(({ url: target }) => {
@@ -270,16 +248,47 @@ function openWindow(url) {
 	void window.loadURL(url);
 }
 
-/** Nothing in this app needs the camera, the microphone, the location...: every permission request is refused. */
-function refusePermissions() {
-	for (const each of [session.defaultSession, session.fromPartition(READER)]) {
-		each.setPermissionRequestHandler((_contents, _permission, answer) => answer(false));
-		each.setPermissionCheckHandler(() => false);
+/**
+ * The embedded reader's guard (reader-guard.cjs). A site on no list is opened only when the user, asked in a
+ * dialog of the app's own that no page can reach, chooses to; the safe answer is the default.
+ */
+const reader = readerGuard({
+	openOutside: (address) => void shell.openExternal(address),
+	ask: async (host) => {
+		const asked = question(host);
+		const [window] = BrowserWindow.getAllWindows();
+		const options = {
+			type: "warning",
+			title: "Not a paper site",
+			message: asked.message,
+			detail: asked.detail,
+			buttons: asked.buttons,
+			defaultId: 0,
+			cancelId: 0,
+			noLink: true,
+		};
+		const { response } = window ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options);
+		return asked.answers[response] ?? "no";
+	},
+});
+
+/** Do two addresses have the same scheme, host and port? */
+function sameOrigin(one, other) {
+	try {
+		return new URL(one).origin === new URL(other).origin;
+	} catch {
+		return false;
 	}
-	// Navigation rules stop frames, not a script's fetch(), an image or a form a page sends: every request a page in
-	// the reader makes is checked here, so that none reaches this app's interface, its API or the engine on this
-	// computer, nor a file (reader.cjs).
-	session.fromPartition(READER).webRequest.onBeforeRequest((details, answer) => answer({ cancel: refused(details.url) }));
+}
+
+/**
+ * Nothing in this app needs the camera, the microphone, the location...: every permission request is refused,
+ * in the app's own window and in the reader, whose pages are also kept to the paper sites (reader-guard.cjs).
+ */
+function refusePermissions() {
+	session.defaultSession.setPermissionRequestHandler((_contents, _permission, answer) => answer(false));
+	session.defaultSession.setPermissionCheckHandler(() => false);
+	reader.confineSession(session);
 }
 
 /** Stop everything this shell started. Whatever state it was in, nothing new starts after this. */

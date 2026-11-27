@@ -9,7 +9,8 @@
 	"scripts": {
 		"start": "electron .",
 		"dist": "electron-builder --win --x64",
-		"test": "node --test setup.test.cjs lifecycle.test.cjs port.test.cjs reader.test.cjs shell.test.cjs"
+		"test": "node --test setup.test.cjs lifecycle.test.cjs port.test.cjs reader.test.cjs shell.test.cjs",
+		"test:reader": "electron reader.electron.cjs"
 	},
 	"devDependencies": {
 		"electron": "44.11.6",

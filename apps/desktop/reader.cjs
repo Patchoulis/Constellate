@@ -1,21 +1,35 @@
 /**
  * What the embedded reader may show and reach. The reader is a view inside the window that shows somebody else's
- * web page (a paper's page, its reviews), so everything here is about keeping that page away from this app.
+ * web page (a paper's page, its reviews), so everything here is about keeping that page away from this app, this
+ * computer and everything else.
  *
- *   readable(address)   may the reader open this page? Only https, only on the sites papers live on (READER_SITES),
- *                       a site's own sub-domains included; "evil-openreview.net" is not "openreview.net".
- *   refused(address)    must a request made by a page in the reader (a frame, a script's fetch, an image, a form)
- *                       be stopped? Every one that is not https or wss, and every one to this computer or to the
- *                       local network: that is where this app's interface, its API and the engine listen, and a
- *                       page must not be able to send them anything (they would take it for the app).
+ * The rule is a list of what is allowed, not of what is forbidden: a page in the reader reaches the sites papers
+ * live on, the few hosts those sites load their scripts, styles and fonts from, and nothing else at all. Nothing
+ * on this computer or on the local network is on that list, however its address is written, and a name that an
+ * attacker controls is not on it either, so pointing such a name at this computer (DNS rebinding) leads nowhere.
  *
- * Nothing in this file needs Electron.
+ *   readable(address)        may the reader open this page? Only https, on the usual port, on the sites papers
+ *                            live on (READER_SITES), a site's own sub-domains included; "evil-openreview.net" is
+ *                            not "openreview.net".
+ *   reachable(address, as)   may a page in the reader make this request? `as` is what the request is for
+ *                            (Electron's resourceType). The page itself ("mainFrame") must be readable; anything
+ *                            a page loads must be on a paper site or on READER_ASSETS, by https or wss.
+ *   askable(address)         a page on no list: may the user be asked whether to open it in the reader all the
+ *                            same? Only a plain https address by name, never this computer or the local network.
+ *                            A site the user said yes to is `approved` for as long as the app runs: the reader
+ *                            opens its pages and lets them reach that one host and the lists, nothing more, so
+ *                            parts of such a page may be missing. It runs in the same sandbox as every other.
+ *   local(address)           does this address lead to this computer or the local network? Not what the rule
+ *                            rests on (the list is), but refused first and tested on its own, so that no later
+ *                            addition to the lists can open the way to this computer.
+ *
+ * Nothing in this file needs Electron: reader-guard.cjs applies it.
  */
 
 /** The embedded reader's storage partition (set by the interface: apps/web/components/paper-reader.tsx). */
 const READER = "reader";
 
-/** The sites the reader opens pages of: where papers and their reviews live. */
+/** The sites the reader opens pages of: where papers and their reviews live. Their sub-domains count. */
 const READER_SITES = [
 	"openreview.net",
 	"arxiv.org",
@@ -23,6 +37,26 @@ const READER_SITES = [
 	"proceedings.mlr.press",
 	"openaccess.thecvf.com",
 	"aclanthology.org",
+];
+
+/**
+ * The hosts those sites load their own scripts, styles, fonts and images from, as seen in their pages (exactly
+ * these names, no sub-domains), and the one that draws OpenReview's "verify you are human" box, which the user
+ * answers themself. The reader never opens a page of any of them. A host a site uses only to count its visitors
+ * is left out on purpose.
+ */
+const READER_ASSETS = [
+	"cdn.jsdelivr.net",
+	"cdnjs.cloudflare.com",
+	"code.jquery.com",
+	"ajax.googleapis.com",
+	"fonts.googleapis.com",
+	"fonts.gstatic.com",
+	"use.fontawesome.com",
+	"stackpath.bootstrapcdn.com",
+	"maxcdn.bootstrapcdn.com",
+	"i.creativecommons.org",
+	"challenges.cloudflare.com",
 ];
 
 function parsed(address) {
@@ -33,11 +67,36 @@ function parsed(address) {
 	}
 }
 
-function readable(address) {
-	const url = parsed(address);
-	if (!url || url.protocol !== "https:") return false;
-	const host = url.hostname.replace(/\.$/, "").toLowerCase();
+/** The host of an address, as compared here: lower case, without the dot a full name may end with. */
+function hostOf(url) {
+	return url.hostname.replace(/\.$/, "").toLowerCase();
+}
+
+/** Is this an address a page may be fetched from at all: the given schemes, the usual port, no name and password? */
+function plain(url, schemes) {
+	return schemes.includes(url.protocol) && url.port === "" && url.username === "" && url.password === "";
+}
+
+function onPaperSite(host) {
 	return READER_SITES.some((site) => host === site || host.endsWith(`.${site}`));
+}
+
+/** No site the user approved: the lists alone. */
+const NONE = new Set();
+
+function readable(address, approved = NONE) {
+	const url = parsed(address);
+	if (url === null || !plain(url, ["https:"]) || local(address)) return false;
+	const host = hostOf(url);
+	return !numeric(host) && (onPaperSite(host) || approved.has(host));
+}
+
+/** The host to ask the user about, when `address` is one they may be asked about; null when it is never opened. */
+function askable(address) {
+	const url = parsed(address);
+	if (url === null || !plain(url, ["https:"]) || local(address)) return null;
+	const host = hostOf(url);
+	return numeric(host) || !host.includes(".") ? null : host;
 }
 
 /** An IPv4 address in dotted form (the URL parser writes every other form of one, 0x7f.1 or 2130706433, so). */
@@ -77,16 +136,29 @@ function localIpv6(host) {
 function local(address) {
 	const url = parsed(address);
 	if (!url) return false;
-	const host = url.hostname.replace(/\.$/, "").toLowerCase();
+	const host = hostOf(url);
 	if (host === "localhost" || host.endsWith(".localhost")) return true; // the browser sends every *.localhost here
 	if (host.startsWith("[")) return localIpv6(host.slice(1, -1));
 	const four = ipv4(host);
 	return four !== null && localIpv4(four);
 }
 
-function refused(address) {
-	const url = parsed(address);
-	return !url || !["https:", "wss:"].includes(url.protocol) || local(address);
+/** Is `host` an address written as numbers rather than a name? No list here has one, and none is ever reached. */
+function numeric(host) {
+	return host.startsWith("[") || ipv4(host) !== null;
 }
 
-module.exports = { READER, READER_SITES, readable, local, refused };
+/**
+ * May a page in the reader make this request? `as` is what it is for, in Electron's words ("mainFrame",
+ * "subFrame", "script", "image", "xhr", "webSocket"...). Whatever is not plainly allowed is refused.
+ */
+function reachable(address, as, approved = NONE) {
+	if (as === "mainFrame") return readable(address, approved);
+	const url = parsed(address);
+	if (!url || !plain(url, ["https:", "wss:"]) || local(address)) return false;
+	const host = hostOf(url);
+	if (numeric(host)) return false;
+	return onPaperSite(host) || READER_ASSETS.includes(host) || approved.has(host);
+}
+
+module.exports = { READER, READER_SITES, READER_ASSETS, readable, reachable, askable, local };
