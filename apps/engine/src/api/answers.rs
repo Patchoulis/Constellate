@@ -4,8 +4,8 @@
 //! ```text
 //! GET    /api/runs/{run}/passages/found?q=..&community=..   the passages that match best (`PassagesFound`)
 //! GET    /api/runs/{run}/answers/estimate?q=..&community=.. what asking would cost, nothing sent (`AnswerEstimate`)
-//! POST   /api/runs/{run}/answers   {question, community?, provider, model, accepted_usd | accepted_tokens}:
-//!                                   start asking (`AnswerStarted`)
+//! POST   /api/runs/{run}/answers   {id, question, community?, provider, model, accepted_usd | accepted_tokens}:
+//!                                   start asking (`AnswerStarted`); `id` is the estimate's
 //! GET    /api/runs/{run}/answers                            the questions asked of the run (`AnswerHistory`)
 //! GET    /api/runs/{run}/answers/{id}                       one, its kept answer checked again (`AnswerView`)
 //! DELETE /api/runs/{run}/answers/{id}                       forget it and its answer
@@ -19,8 +19,9 @@
 //!
 //! Money is spent only by the POST, which the interface sends when the user clicks the button showing the
 //! estimate. It carries the most the user was shown (`accepted_usd`, or `accepted_tokens` for a model with no
-//! price): if what the question would cost at most is now more (the passages or the model changed), nothing is
-//! asked and the estimate must be asked for again.
+//! price), and the estimate's `id`: if the passages that would be sent are not those estimated (the question was
+//! edited, papers were added, a PDF was read since: the id is made from them), or what the question would cost at
+//! most is now more, nothing is asked and the estimate must be asked for again.
 //! That worst case is the call's budget: no call is started that could pass it as the budget reckons it (prompt
 //! tokens from characters, at 3 a token, which errs high for English prose; text that tokenizes more densely, such
 //! as mathematics, can cost somewhat more, which is why the interface says it is an estimate). A request naming
@@ -89,6 +90,10 @@ struct Search {
 /// `AnswerRequest` in the contracts.
 #[derive(Deserialize)]
 struct Request {
+    /// The id of the estimate the user was shown (`AnswerEstimate.id`). It is the key of the answer, made from the
+    /// question, the scope, the model and the passages that would be sent: when any of those changed since (the
+    /// question was edited, papers were added, a PDF was read), what would be asked is not what was accepted.
+    id: String,
     question: String,
     community: Option<String>,
     /// The model the estimate was for, and its provider: a request for another one is refused.
@@ -373,6 +378,13 @@ async fn start(
             }
         };
         prepared.chosen.as_shown(request.provider, &request.model).map_err(|why| ApiError::Invalid(why.to_string()))?;
+        if prepared.key.as_str() != request.id {
+            return Err(ApiError::Invalid(
+                "the passages this question would be answered from changed since the estimate: ask for the estimate \
+                 again"
+                    .to_owned(),
+            ));
+        }
         if prepared.given.is_empty() {
             return Err(ApiError::Invalid("no passage of these papers matches the question".to_owned()));
         }
@@ -763,6 +775,7 @@ mod tests {
             assert_eq!(transport.sent().len(), sent, "an estimate sends nothing");
 
             let mut asked = accepting(&told["cost"], ACCEPTED);
+            asked["id"] = told["id"].clone();
             asked["question"] = json!(QUESTION);
             asked["community"] = json!("c0");
             let (status, started) = call(&router, "POST", "/api/runs/r1/answers", Some(asked.clone())).await;
@@ -810,11 +823,20 @@ mod tests {
         assert!(library.questions("r1").unwrap().is_empty(), "an estimate asks nothing and keeps nothing");
     }
 
+    /// The id of the estimate of `question` over the whole run, as the interface reads it before the user clicks.
+    async fn estimated(router: &axum::Router, question: &str) -> Value {
+        let (status, told) =
+            ask(router, "GET", &format!("/api/runs/r1/answers/estimate?q={}", query(question)), None).await;
+        assert_eq!((status, told["state"].clone()), (StatusCode::OK, json!("ready")), "{told}");
+        told["id"].clone()
+    }
+
     #[tokio::test]
     async fn asking_needs_a_key_a_free_job_and_the_cost_the_user_accepted() {
         let data = data();
+        let id = estimated(&router(engine(&data)), QUESTION).await;
         let request = |accepted: Value| {
-            json!({"question": QUESTION, "model": "claude-opus-5-5", "accepted_usd": accepted}).to_string()
+            json!({"id": id, "question": QUESTION, "model": "claude-opus-5-5", "accepted_usd": accepted}).to_string()
         };
         let (status, told) =
             ask(&router(engine(&data)), "POST", "/api/runs/r1/answers", Some(request(json!(5.0)))).await;
@@ -828,10 +850,14 @@ mod tests {
             ask(&router, "POST", "/api/runs/r1/answers", Some(request(Value::Null))).await.0,
             StatusCode::BAD_REQUEST
         );
-        let none =
-            json!({"question": "quantum chromodynamics", "model": "claude-opus-5-5", "accepted_usd": 5.0}).to_string();
-        assert_eq!(ask(&router, "POST", "/api/runs/r1/answers", Some(none)).await.0, StatusCode::BAD_REQUEST);
-        let other = json!({"question": QUESTION, "model": "claude-haiku-5-5", "accepted_usd": 5.0}).to_string();
+        let nothing = "quantum chromodynamics";
+        let none = json!({"id": estimated(&router, nothing).await, "question": nothing, "model": "claude-opus-5-5", "accepted_usd": 5.0})
+            .to_string();
+        let (status, told) = ask(&router, "POST", "/api/runs/r1/answers", Some(none)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(told["error"].as_str().unwrap().contains("no passage"), "{told}");
+        let other =
+            json!({"id": id, "question": QUESTION, "model": "claude-haiku-5-5", "accepted_usd": 5.0}).to_string();
         let (status, told) = ask(&router, "POST", "/api/runs/r1/answers", Some(other)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "the cost shown was for another model: {told}");
         let library = Library::open(&data.path().join("library")).unwrap();
@@ -863,6 +889,47 @@ mod tests {
         assert_eq!(listed[0]["id"], started["id"]);
         assert_eq!((listed[0]["question"].clone(), listed[0]["answered"].clone()), (json!(QUESTION), json!(false)));
         assert_eq!(listed[0]["community"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn asking_is_refused_when_the_question_or_the_passages_changed_since_the_estimate() {
+        let data = data();
+        let router = router(with_key(engine(&data)));
+        let id = estimated(&router, QUESTION).await;
+        let request = |id: &Value, question: &str| {
+            Some(json!({"id": id, "question": question, "model": "claude-opus-5-5", "accepted_usd": 5.0}).to_string())
+        };
+        let refused = |told: &Value| told["error"].as_str().unwrap().contains("changed since the estimate");
+
+        // the question was edited after the estimate was shown
+        let (status, told) = ask(&router, "POST", "/api/runs/r1/answers", request(&id, "Why does merging help?")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+        assert!(refused(&told), "{told}");
+
+        // a PDF was read since: the paper is now answered from its full text, not its abstract
+        let library = Library::open(&data.path().join("library")).unwrap();
+        let read = ["Results", "Merging fine-tuned models counts shared directions twice in every layer we measured."];
+        library.keep_pdf("icml-2026-3", &pdf_with(&read)).unwrap();
+        let (status, told) = ask(&router, "POST", "/api/runs/r1/answers", request(&id, QUESTION)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+        assert!(refused(&told), "{told}");
+        let id = estimated(&router, QUESTION).await;
+
+        // a paper was added to the run since
+        let mut added = paper("2601.00004");
+        added.r#abstract = "Merging counts shared directions twice, which we correct.".to_owned();
+        library.add_papers(&[added], None, Known::Keep).unwrap();
+        let nodes = json!({"nodes": [{"id": "2601.00001"}, {"id": "2601.00002"}, {"id": "icml-2026-3"}, {"id": "2601.00004"}], "edges": []});
+        std::fs::write(data.path().join("runs").join("r1").join("graph.json"), nodes.to_string()).unwrap();
+        let (status, told) = ask(&router, "POST", "/api/runs/r1/answers", request(&id, QUESTION)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+        assert!(refused(&told), "{told}");
+        assert!(library.questions("r1").unwrap().is_empty(), "nothing refused is listed");
+
+        // asked for again, the estimate is what is accepted
+        let id = estimated(&router, QUESTION).await;
+        let (status, started) = ask(&router, "POST", "/api/runs/r1/answers", request(&id, QUESTION)).await;
+        assert_eq!((status, started["id"].clone()), (StatusCode::OK, id), "{started}");
     }
 
     #[tokio::test]

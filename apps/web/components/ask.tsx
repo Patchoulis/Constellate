@@ -200,7 +200,7 @@ export function AskBox({
 		const estimate = state.estimate;
 		setPosting(true); // one click, one request
 		api
-			.askQuestion(run, { question: state.question, community, ...shownModel(estimate), ...accepting(estimate) })
+			.askQuestion(run, { id: estimate.id, question: state.question, community, ...shownModel(estimate), ...accepting(estimate) })
 			.then(
 				(started) => {
 					setVersion((value) => value + 1);

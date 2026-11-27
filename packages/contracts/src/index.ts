@@ -1698,6 +1698,8 @@ export type AnswerEstimate =
  *  to cost (in tokens for a model with no price), for the model it was shown for. */
 export type AnswerRequest = ShownModel &
 	AcceptedCost & {
+		/** the id of the estimate shown (`AnswerEstimate.id`): refused when the passages that would be sent changed since */
+		id: string;
 		question: string;
 		/** a community's tree path; absent or null for the whole run */
 		community?: string | null;
