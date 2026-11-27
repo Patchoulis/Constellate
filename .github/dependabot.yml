@@ -50,6 +50,11 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    # torch stays below what PyTorch's CUDA index (apps/desktop/setup.cjs) has: a newer one fails the first start of
+    # every computer with an NVIDIA card, and no check here would see it. Raised by hand together with that index.
+    ignore:
+      - dependency-name: torch
+        versions: [">=2.15"]
     groups:
       security:
         applies-to: security-updates
