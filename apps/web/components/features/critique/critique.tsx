@@ -11,8 +11,8 @@ import { Loader2, RotateCcw, Sparkles, Square } from "lucide-react";
 import type { Critique, CritiqueModelPart, CritiqueReviewer, CritiqueReviewers, ModelWeakness, PointReading } from "@rp/contracts";
 import { EvidenceLink, EvidenceLinks } from "@/components/reader/evidence-link";
 import { Button, Heading } from "@/components/ui/button";
-import { useConfirm } from "@/components/ui/confirm";
-import { api } from "@/lib/api";
+import { useConfirm } from "@/components/shell/confirm";
+import { api } from "@/lib/net/api";
 import {
 	CONCERN_NAME,
 	KIND_NAME,
@@ -32,7 +32,7 @@ import {
 import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
 import { accepting, shownModel } from "@/lib/cost";
 import { ready, useAsync } from "@/lib/use-async";
-import { elsewhereLine, useFollowedJob } from "@/lib/use-followed-job";
+import { elsewhereLine, useFollowedJob } from "@/lib/shell/use-followed-job";
 import { count, knownMoney } from "@/lib/units";
 import { cn } from "@/lib/utils";
 

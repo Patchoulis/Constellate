@@ -8,11 +8,11 @@ import { EvidenceLink } from "@/components/reader/evidence-link";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton } from "@/components/ui/button";
 import { ResizeHandle } from "@/components/ui/resize-handle";
-import { api } from "@/lib/api";
+import { api } from "@/lib/net/api";
 import { communityLabel, type CommunityNode } from "@/lib/community/community";
 import { accepting, costTitle, costWords, shownModel } from "@/lib/cost";
-import { useFocusReturn } from "@/lib/use-focus-return";
-import { useResizable } from "@/lib/use-resizable";
+import { useFocusReturn } from "@/lib/ui/use-focus-return";
+import { useResizable } from "@/lib/ui/use-resizable";
 
 const POLL_MS = 3000;
 const CITED_AT_FIRST = 4;

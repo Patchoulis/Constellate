@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Critique, CritiqueEstimate, CritiqueReviewer, Evidence } from "@rp/contracts";
 import { WeaknessesOf } from "@/components/features/critique/critique";
-import { ConfirmProvider } from "@/components/ui/confirm";
+import { ConfirmProvider } from "@/components/shell/confirm";
 
 /** The section as the app draws it: inside the window's one confirmation dialog. */
 const markup = (section: React.ReactElement) => renderToStaticMarkup(<ConfirmProvider>{section}</ConfirmProvider>);

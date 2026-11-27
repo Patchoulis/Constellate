@@ -22,8 +22,8 @@ import type {
 import { EvidenceLink, EvidenceLinks } from "@/components/reader/evidence-link";
 import { REVIEWS_NOTE } from "@/components/community/review-summary";
 import { Button, Heading, Segmented } from "@/components/ui/button";
-import { useConfirm } from "@/components/ui/confirm";
-import { api } from "@/lib/api";
+import { useConfirm } from "@/components/shell/confirm";
+import { api } from "@/lib/net/api";
 import {
 	ESTIMATE_NOTE,
 	MAPPING_NOTE,
@@ -50,7 +50,7 @@ import {
 import { budgetWords, shownModel } from "@/lib/cost";
 import { ready, useAsync } from "@/lib/use-async";
 import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
-import { elsewhereLine, notAskedLine, useFollowedJob } from "@/lib/use-followed-job";
+import { elsewhereLine, notAskedLine, useFollowedJob } from "@/lib/shell/use-followed-job";
 import { count, knownMoney, onScale, scaleName, spreadPoints } from "@/lib/units";
 import { cn } from "@/lib/utils";
 

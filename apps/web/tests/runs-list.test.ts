@@ -1,4 +1,4 @@
-/** The sidebar's runs, a page at a time and searched (lib/runs-list.ts): each change of the list, and those refused. */
+/** The sidebar's runs, a page at a time and searched (lib/shell/runs-list.ts): each change of the list, and those refused. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { RunPage, RunSummary } from "@rp/contracts";
@@ -13,7 +13,7 @@ import {
 	withOpenRun,
 	type ListedRun,
 	type RunsList,
-} from "@/lib/runs-list";
+} from "@/lib/shell/runs-list";
 
 const summary = (index: number, title = `Run ${index}`): RunSummary => ({
 	name: `run-${index}`,

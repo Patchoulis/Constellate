@@ -12,8 +12,8 @@ import type { CitationContextsOf, CitationKind, CitingSentenceShown, PaperCitati
 import { EvidenceLink } from "@/components/reader/evidence-link";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton } from "@/components/ui/button";
-import { api } from "@/lib/api";
-import { withSignal } from "@/lib/request";
+import { api } from "@/lib/net/api";
+import { withSignal } from "@/lib/net/request";
 import {
 	KIND_HUE,
 	KIND_LABEL,
@@ -31,7 +31,7 @@ import {
 } from "@/lib/features/citation_contexts/citation-kinds";
 import { count, money } from "@/lib/units";
 import { ready, useAsync } from "@/lib/use-async";
-import { type FollowedJob, elsewhereLine, notAskedLine, useFollowedJob } from "@/lib/use-followed-job";
+import { type FollowedJob, elsewhereLine, notAskedLine, useFollowedJob } from "@/lib/shell/use-followed-job";
 import { cn, hsl } from "@/lib/utils";
 
 const TAG = "inline-flex items-center rounded-sm border px-1.5 py-px font-ui text-xs";

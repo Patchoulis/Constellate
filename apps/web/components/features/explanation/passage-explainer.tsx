@@ -13,8 +13,8 @@ import type { DefinedTerm, Evidence, Explanation, ExplanationStatement, JobProgr
 import { EvidenceLink } from "@/components/reader/evidence-link";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, Segmented } from "@/components/ui/button";
-import { useConfirm } from "@/components/ui/confirm";
-import { api } from "@/lib/api";
+import { useConfirm } from "@/components/shell/confirm";
+import { api } from "@/lib/net/api";
 import { pages } from "@/lib/reader/evidence";
 import {
 	ASK_BELOW_KEY,
@@ -36,7 +36,7 @@ import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
 import { accepting, shownModel } from "@/lib/cost";
 import { money } from "@/lib/units";
 import { ready, useAsync } from "@/lib/use-async";
-import { elsewhereLine, useFollowedJob } from "@/lib/use-followed-job";
+import { elsewhereLine, useFollowedJob } from "@/lib/shell/use-followed-job";
 import { cn } from "@/lib/utils";
 
 export type ExplainMode = "explain" | "related";

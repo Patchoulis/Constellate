@@ -14,7 +14,7 @@ import {
 	priceLabel,
 	priceOf,
 	endpointIds,
-} from "@/lib/models";
+} from "@/lib/shell/models";
 
 const USD = { code: "USD", rate: 1, date: null };
 

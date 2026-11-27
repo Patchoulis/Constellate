@@ -15,7 +15,7 @@ import {
 	parsePanelSizes,
 	serialisePanelSizes,
 	type Sizes,
-} from "@/lib/panel-sizes";
+} from "@/lib/ui/panel-sizes";
 
 const WIDE = { width: 2560, height: 1440 };
 const graphWidth = (sizes: Sizes, width: number) => width - sizes.sidebar - sizes.communities;

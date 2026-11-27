@@ -8,7 +8,7 @@
  * so making the window larger again brings the chosen size back.
  *
  * Sizes are kept in this browser's localStorage under one key, as `{"version":1,"sizes":{"sidebar":288,...}}`.
- * This module is pure; `useResizable` (lib/use-resizable.ts) holds the sizes and the window's size in React.
+ * This module is pure; `useResizable` (lib/ui/use-resizable.ts) holds the sizes and the window's size in React.
  */
 
 /** The panels a user can resize. */

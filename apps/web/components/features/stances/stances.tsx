@@ -22,7 +22,7 @@ import { EvidenceLinks } from "@/components/reader/evidence-link";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton } from "@/components/ui/button";
 import { Input } from "@/components/ui/field";
-import { api } from "@/lib/api";
+import { api } from "@/lib/net/api";
 import {
 	abstractOnlyLine,
 	APART,
@@ -48,13 +48,13 @@ import { accepting, shownModel } from "@/lib/cost";
 import { useColouringBy } from "@/lib/graph/graph-colouring";
 import { ready, useAsync } from "@/lib/use-async";
 import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
-import { elsewhereLine, notAskedLine, runSubject, useFollowedJob, type FollowedJob } from "@/lib/use-followed-job";
+import { elsewhereLine, notAskedLine, runSubject, useFollowedJob, type FollowedJob } from "@/lib/shell/use-followed-job";
 import { cn, hsl } from "@/lib/utils";
 import { count, currencyOf, money, type Currency } from "@/lib/units";
 
 const DOLLAR: Currency = { code: "USD", rate: 1, date: null };
 
-/** Where choosing a question stands, before its job (lib/use-followed-job.ts has the job): one at a time. */
+/** Where choosing a question stands, before its job (lib/shell/use-followed-job.ts has the job): one at a time. */
 type Step =
 	| { kind: "choosing" }
 	| { kind: "estimating"; question: string; includeUnrelated: boolean }

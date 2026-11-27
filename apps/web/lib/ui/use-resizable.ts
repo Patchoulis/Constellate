@@ -13,7 +13,7 @@ import {
 	type Frame,
 	type PanelId,
 	type Sizes,
-} from "@/lib/panel-sizes";
+} from "@/lib/ui/panel-sizes";
 
 /** The sizes the user chose, the window they are shown in, and what that makes of them. */
 interface Layout {

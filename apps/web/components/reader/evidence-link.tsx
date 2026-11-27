@@ -3,8 +3,8 @@
 import { createContext, useContext } from "react";
 import { Crosshair } from "lucide-react";
 import type { Evidence, ReaderTarget } from "@rp/contracts";
-import { api } from "@/lib/api";
-import { withSignal } from "@/lib/request";
+import { api } from "@/lib/net/api";
+import { withSignal } from "@/lib/net/request";
 import { evidenceTitle, readerTarget, shortLabel } from "@/lib/reader/evidence";
 import { ready, useAsync } from "@/lib/use-async";
 import { cn } from "@/lib/utils";
@@ -20,7 +20,7 @@ export interface EvidenceActions {
 
 const Actions = createContext<EvidenceActions | null>(null);
 
-/** Wraps whatever shows evidence; the workspace provides it (components/workspace.tsx). */
+/** Wraps whatever shows evidence; the workspace provides it (components/shell/workspace.tsx). */
 export const EvidenceProvider = Actions.Provider;
 
 /** Labels of papers already asked for, by id: a list of citations asks for each paper once. */

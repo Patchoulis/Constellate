@@ -7,7 +7,7 @@
  * Constellate has read cite it; within a year, the most cited sit nearest the middle line.
  */
 import type { CitationLink, CitationNeighbour, CitationNetwork, Community, ReferenceConfidence } from "@rp/contracts";
-import { safeLink } from "@/lib/links";
+import { safeLink } from "@/lib/net/links";
 import { count } from "@/lib/units";
 
 export type Side = "seed" | "prior" | "derivative";

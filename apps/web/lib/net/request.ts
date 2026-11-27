@@ -1,6 +1,6 @@
 /**
  * One request to the engine, with a deadline, a way for the asker to call it off, and an error that says what
- * happened. `lib/api.ts` `call()` adds what is the window's (the session's token, signing in again) on top.
+ * happened. `lib/net/api.ts` `call()` adds what is the window's (the session's token, signing in again) on top.
  *
  * A request ends in exactly one of these: an answer (`Answer`: the status and the body read whole), or a
  * `RequestError` whose `problem` says which of the ways it went wrong:
@@ -13,7 +13,7 @@
  *
  * Retries: a request that could cost money or change something is never sent twice by this file. A GET is
  * asked once more when nothing answered at all (a dropped connection), never after a deadline passed or an
- * answer came; the poller of `/api/status` asks with `retry: "never"`, its own backoff (lib/use-followed-job.ts
+ * answer came; the poller of `/api/status` asks with `retry: "never"`, its own backoff (lib/shell/use-followed-job.ts
  * `pollDelay`) being the retry.
  */
 

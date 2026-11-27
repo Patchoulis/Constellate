@@ -2,8 +2,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DescribeBeforeRun, RunReplaced, RunRequest, Settings } from "@rp/contracts";
-import { answered, RequestError } from "@/lib/request";
-import { acceptedWords, type Asking, needsNaming, replacedOf, replaceWords, startRun, valueWords } from "@/lib/run-replace";
+import { answered, RequestError } from "@/lib/net/request";
+import { acceptedWords, type Asking, needsNaming, replacedOf, replaceWords, startRun, valueWords } from "@/lib/shell/run-replace";
 
 const replaced: RunReplaced = {
 	run: "NeurIPS-2025",

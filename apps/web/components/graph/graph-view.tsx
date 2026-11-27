@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { communityLabel, groupsAt, treeDepth, type CommunityNode } from "@/lib/community/community";
 import { pickMarkedLabels, placeLabels, type MarkedPlace, type PaperPlace } from "@/lib/graph/labels";
 import type { Marks } from "@/lib/community/marks";
-import { panelSize } from "@/lib/use-resizable";
+import { panelSize } from "@/lib/ui/use-resizable";
 import { count } from "@/lib/units";
 import { countKinds, kindNotes, PAPER_KINDS, shownPapers, type PaperKind } from "@/lib/graph/paper-filter";
 import { canvasColouring, legendNote, useGraphColouring } from "@/lib/graph/graph-colouring";

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { DropdownMenu } from "radix-ui";
 import { Check } from "lucide-react";
 import type { Effort, ProviderId, Settings } from "@rp/contracts";
-import { api } from "@/lib/api";
+import { api } from "@/lib/net/api";
 import {
 	EFFORT_LABEL,
 	changeFor,
@@ -19,7 +19,7 @@ import {
 	priceOf,
 	type Choosable,
 	type ModelGroup,
-} from "@/lib/models";
+} from "@/lib/shell/models";
 import { count, type Currency } from "@/lib/units";
 import { MENU, ROW, Trigger } from "@/components/ui/picker";
 import { cn } from "@/lib/utils";

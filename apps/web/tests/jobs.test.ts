@@ -1,10 +1,10 @@
-/** Following the engine's jobs: which finished job opens a run (lib/use-job.ts), and a feature's job followed to
- *  its end (lib/use-followed-job.ts). */
+/** Following the engine's jobs: which finished job opens a run (lib/shell/use-job.ts), and a feature's job followed to
+ *  its end (lib/shell/use-followed-job.ts). */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Status } from "@rp/contracts";
-import { type Job, finishedRun, isFeatureJob, reduce } from "@/lib/use-job";
-import { claims, runSubject, started, step } from "@/lib/use-followed-job";
+import { type Job, finishedRun, isFeatureJob, reduce } from "@/lib/shell/use-job";
+import { claims, runSubject, started, step } from "@/lib/shell/use-followed-job";
 
 const status = (state: Status["state"], more: Partial<Status> = {}): Status => ({
 	id: 7,

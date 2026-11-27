@@ -1,7 +1,7 @@
-/** Where a refused setting is said in the settings dialog (components/settings-dialog.tsx). */
+/** Where a refused setting is said in the settings dialog (components/shell/settings-dialog.tsx). */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { refusalOf } from "@/components/settings-dialog";
+import { refusalOf } from "@/components/shell/settings-dialog";
 
 const refused = (changes: object) => ({ changes, error: "max_communities must be a number between 2 and 500" });
 

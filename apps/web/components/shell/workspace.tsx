@@ -10,14 +10,14 @@ import { GraphView } from "@/components/graph/graph-view";
 import { OverviewPanel } from "@/components/community/overview";
 import { PaperReader } from "@/components/reader/paper-reader";
 import { ResizeHandle } from "@/components/ui/resize-handle";
-import { api } from "@/lib/api";
+import { api } from "@/lib/net/api";
 import { communityTree, type CommunityNode } from "@/lib/community/community";
 import { ANSWER_OWNER, GraphColouringContext, colouringStep, type GraphColouring, type PaperColouring } from "@/lib/graph/graph-colouring";
 import { useMarks } from "@/lib/community/marks";
-import type { Job } from "@/lib/use-job";
+import type { Job } from "@/lib/shell/use-job";
 import { ready, useAsync } from "@/lib/use-async";
-import { useResizable } from "@/lib/use-resizable";
-import { stepLine } from "@/lib/run-step";
+import { useResizable } from "@/lib/ui/use-resizable";
+import { stepLine } from "@/lib/shell/run-step";
 
 /** The run's log, folded to its last line until opened. */
 export function ActivityLog({ job }: { job: Job }) {

@@ -10,7 +10,7 @@ import { useState } from "react";
 import type { FieldFigures, RankedPaper, ReviewTheme, Scale, Signer, VenueRatings } from "@rp/contracts";
 import { MathText } from "@/components/math-text";
 import { Heading, RowButton } from "@/components/ui/button";
-import { api } from "@/lib/api";
+import { api } from "@/lib/net/api";
 import { ready, useAsync } from "@/lib/use-async";
 import { count, normalised, onScale, percent, scaleName, spreadPoints } from "@/lib/units";
 

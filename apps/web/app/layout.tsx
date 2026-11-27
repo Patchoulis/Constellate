@@ -3,7 +3,7 @@ import { connection } from "next/server";
 import { JetBrains_Mono, Source_Sans_3 } from "next/font/google";
 import "katex/dist/katex.min.css";
 import "./globals.css";
-import { ConfirmProvider } from "@/components/ui/confirm";
+import { ConfirmProvider } from "@/components/shell/confirm";
 import { APP_NAME } from "@/lib/utils";
 
 // Chrome = JetBrains Mono, reading text (abstracts, descriptions) = Source Sans 3.

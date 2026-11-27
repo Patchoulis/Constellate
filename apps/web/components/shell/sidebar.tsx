@@ -4,17 +4,17 @@ import { useEffect, useReducer, useRef, useState } from "react";
 import { Loader2, Pencil, Play, RotateCcw, Settings as SettingsIcon, Trash2 } from "lucide-react";
 import type { Catalog, Library, RunPage, RunRequest, RunSummary, Settings, UsageEntry } from "@rp/contracts";
 import { Logo } from "@/components/brand";
-import { ModelChoice, chosenPrice } from "@/components/model-choice";
+import { ModelChoice, chosenPrice } from "@/components/shell/model-choice";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
-import { useConfirm } from "@/components/ui/confirm";
+import { useConfirm } from "@/components/shell/confirm";
 import { Input, Label, SwitchRow } from "@/components/ui/field";
 import { GroupedPicker } from "@/components/ui/picker";
 import { ResizeHandle } from "@/components/ui/resize-handle";
-import { api } from "@/lib/api";
+import { api } from "@/lib/net/api";
 import { accepting, costWords, shownModel } from "@/lib/cost";
-import { chosenLabel, chosenOf, unavailableBecause, type Choosable } from "@/lib/models";
-import { engineWarnings, IMPORT_ADVICE, keepDismissed, notDismissed, readDismissed } from "@/lib/notices";
-import { withSignal } from "@/lib/request";
+import { chosenLabel, chosenOf, unavailableBecause, type Choosable } from "@/lib/shell/models";
+import { engineWarnings, IMPORT_ADVICE, keepDismissed, notDismissed, readDismissed } from "@/lib/shell/notices";
+import { withSignal } from "@/lib/net/request";
 import {
 	FIRST,
 	RUNS_PAGE,
@@ -27,9 +27,9 @@ import {
 	shownLine,
 	withOpenRun,
 	type ListedRun,
-} from "@/lib/runs-list";
+} from "@/lib/shell/runs-list";
 import { ready, useAsync } from "@/lib/use-async";
-import { useResizable } from "@/lib/use-resizable";
+import { useResizable } from "@/lib/ui/use-resizable";
 import { count, currencyOf, money, tokens } from "@/lib/units";
 import { APP_NAME } from "@/lib/utils";
 
@@ -235,7 +235,7 @@ function RunRow({
 							? "Redo all of this run: download, embed and describe everything again from scratch (asks first, with what it replaces and what naming costs)"
 							: "A run is in progress: wait for it to finish"
 					}
-					// what it replaces and what naming would cost are asked before anything is done (lib/run-replace.ts)
+					// what it replaces and what naming would cost are asked before anything is done (lib/shell/run-replace.ts)
 					onClick={() => onRedoAll?.()}
 				>
 					<RotateCcw />
@@ -268,7 +268,7 @@ function RunRow({
 }
 
 /**
- * The runs, a page at a time and searched as the user types (lib/runs-list.ts): the engine's paged list. The open run stays in sight, first, when it is not among
+ * The runs, a page at a time and searched as the user types (lib/shell/runs-list.ts): the engine's paged list. The open run stays in sight, first, when it is not among
  * the rows shown. `plain` is the whole list the page holds: it says when the list changed (a run made, renamed or
  * deleted) and what is known of the open run.
  */

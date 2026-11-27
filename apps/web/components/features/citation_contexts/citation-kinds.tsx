@@ -12,7 +12,7 @@ import type { BudgetOf, CitationKind, CitationKindsEstimate, CitationKindsScope,
 import { JobStrip, SentenceRow, contextsOf, forgetAsked } from "@/components/features/citation_contexts/citation-contexts";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton } from "@/components/ui/button";
-import { api } from "@/lib/api";
+import { api } from "@/lib/net/api";
 import {
 	KINDS_NOTE,
 	KIND_LABEL,
@@ -27,7 +27,7 @@ import { budgetWords, costTitle, costWords, shownModel } from "@/lib/cost";
 import { count, tokens } from "@/lib/units";
 import { ready, useAsync } from "@/lib/use-async";
 import { choiceKey, currentEstimate, useChosenModel } from "@/lib/chosen-model";
-import { elsewhereLine, runSubject, useFollowedJob, type FollowedJob } from "@/lib/use-followed-job";
+import { elsewhereLine, runSubject, useFollowedJob, type FollowedJob } from "@/lib/shell/use-followed-job";
 
 /** The sentences behind one count: the community's citing sentences of `paper` read as `kinds`. */
 function Behind({ run, treePath, paper, kinds }: { run: string; treePath: string; paper: string; kinds: CitationKind[] }) {

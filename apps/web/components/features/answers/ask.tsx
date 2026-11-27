@@ -11,10 +11,10 @@ import { Loader2, MessageCircleQuestion, RotateCcw, Search, Square, Trash2, X } 
 import type { AnswerView, PassageFound } from "@rp/contracts";
 import { EvidenceLink, EvidenceLinks } from "@/components/reader/evidence-link";
 import { Button, Heading, RowButton } from "@/components/ui/button";
-import { useConfirm } from "@/components/ui/confirm";
+import { useConfirm } from "@/components/shell/confirm";
 import { Input } from "@/components/ui/field";
 import { ResizeHandle } from "@/components/ui/resize-handle";
-import { api } from "@/lib/api";
+import { api } from "@/lib/net/api";
 import { accepting, shownModel } from "@/lib/cost";
 import {
 	cannotAsk,
@@ -32,8 +32,8 @@ import {
 } from "@/lib/features/answers/answers";
 import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
 import { ready, useAsync } from "@/lib/use-async";
-import { elsewhereLine, runSubject, useFollowedJob } from "@/lib/use-followed-job";
-import { useResizable } from "@/lib/use-resizable";
+import { elsewhereLine, runSubject, useFollowedJob } from "@/lib/shell/use-followed-job";
+import { useResizable } from "@/lib/ui/use-resizable";
 import { count } from "@/lib/units";
 
 /** How often the search is asked again while the papers are indexed (no model, no cost). */

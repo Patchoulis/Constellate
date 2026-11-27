@@ -305,7 +305,7 @@ function answers(url) {
 	});
 }
 
-/** The cookie the window carries its key in (apps/web/lib/page-policy.ts WINDOW_COOKIE, which a test holds to it). */
+/** The cookie the window carries its key in (apps/web/lib/net/page-policy.ts WINDOW_COOKIE, which a test holds to it). */
 const WINDOW_COOKIE = "constellate-window";
 
 module.exports = {

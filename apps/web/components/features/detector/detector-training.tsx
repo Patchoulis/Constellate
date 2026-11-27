@@ -4,10 +4,10 @@ import { useState } from "react";
 import { CalendarSearch, GraduationCap, Loader2, Square } from "lucide-react";
 import type { DetectorEstimate, DetectorState } from "@rp/contracts";
 import { Button } from "@/components/ui/button";
-import { api } from "@/lib/api";
+import { api } from "@/lib/net/api";
 import { accepting, costTitle, DOLLAR, shownModel } from "@/lib/cost";
 import { detectorEstimateLines, trainingLine } from "@/lib/features/detector/detector";
-import { elsewhereLine, useFollowedJob } from "@/lib/use-followed-job";
+import { elsewhereLine, useFollowedJob } from "@/lib/shell/use-followed-job";
 
 /** Where the estimate stands: not asked, being asked, shown (to be accepted with the click), or refused. */
 type Estimating = { kind: "idle" } | { kind: "asking" } | { kind: "shown"; estimate: DetectorEstimate } | { kind: "failed"; error: string };

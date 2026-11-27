@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type DependencyList } from "react";
-import { problemOf, withSignal, type RequestProblem } from "@/lib/request";
+import { problemOf, withSignal, type RequestProblem } from "@/lib/net/request";
 
 /**
  * Something fetched, in exactly one of these at a time:

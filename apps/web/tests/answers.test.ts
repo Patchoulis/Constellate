@@ -18,7 +18,7 @@ import {
 	type AskState,
 } from "@/lib/features/answers/answers";
 import { noReadablePdf } from "@/lib/reader/no-pdf";
-import { RequestError } from "@/lib/request";
+import { RequestError } from "@/lib/net/request";
 
 const coverage: SearchCoverage = { papers: 739, full_text: 212, capped: 0, no_pdf: 520, unreadable: 7, missing: 0 };
 

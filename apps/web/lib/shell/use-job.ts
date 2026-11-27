@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { JobState, RunRequest, RunStep, Status } from "@rp/contracts";
-import { api } from "@/lib/api";
-import { startRun, type StartDeps, type Started } from "@/lib/run-replace";
-import { poller, type Look } from "@/lib/use-followed-job";
+import { api } from "@/lib/net/api";
+import { startRun, type StartDeps, type Started } from "@/lib/shell/run-replace";
+import { poller, type Look } from "@/lib/shell/use-followed-job";
 
 /**
  * The pipeline job as the browser sees it. It mirrors the engine's job (apps/engine/src/jobs.rs):
@@ -16,7 +16,7 @@ import { poller, type Look } from "@/lib/use-followed-job";
  * A finished job opens a run only when it made one (its `outcome`), and only when this page saw it go from
  * running to finished: a job that had finished before
  * the page asked opens nothing, so that the last run is not opened again at every load. A feature's job is its
- * component's to follow (lib/use-followed-job.ts).
+ * component's to follow (lib/shell/use-followed-job.ts).
  */
 export interface Job {
 	state: JobState;
@@ -43,7 +43,7 @@ export function finishedRun(before: Job, status: Status): string | null {
 
 /**
  * Is this a feature's job rather than a run (or the declarations of one)? A feature shows its own job's progress
- * and failure beside the button that started it (lib/use-followed-job.ts); the run's log keeps its lines, but its
+ * and failure beside the button that started it (lib/shell/use-followed-job.ts); the run's log keeps its lines, but its
  * failure is not the run's ("New run" would say the extraction table's budget ran out). The engine says which
  * feature a job is for from its start (`feature`), also once it failed, and a finished one's `outcome` says it too.
  */
@@ -59,9 +59,9 @@ export function reduce(job: Job, event: Event): Job {
 			const status = event.status;
 			// a feature's failure is said by its own section, not under "New run" as if a run had failed
 			const said = isFeatureJob(status) ? null : status.error;
-			// the step of the run being made, while it is made (shown by the folded log, components/workspace.tsx)
+			// the step of the run being made, while it is made (shown by the folded log, components/shell/workspace.tsx)
 			const step = status.state === "running" ? (status.step ?? null) : null;
-			// the poller's look carries the job's whole log (lib/use-followed-job.ts `createPoller`)
+			// the poller's look carries the job's whole log (lib/shell/use-followed-job.ts `createPoller`)
 			return { state: status.state, log: status.log, error: said, step };
 		}
 		case "unanswered":
@@ -70,7 +70,7 @@ export function reduce(job: Job, event: Event): Job {
 }
 
 /**
- * The run's job, looked at through the window's one poller of `/api/status` (lib/use-followed-job.ts `poller`),
+ * The run's job, looked at through the window's one poller of `/api/status` (lib/shell/use-followed-job.ts `poller`),
  * which the features' sections share: the engine is asked once however many of them look, and an engine that does
  * not answer is asked less and less often (the poller's backoff).
  */
@@ -105,7 +105,7 @@ export function useJob(onDone: (run: string) => void, ask: StartDeps["ask"]) {
 	const asking = useRef(ask);
 	asking.current = ask;
 	/** Start a run: one that would replace a run, or pay for names, only once the person agreed
-	 *  (lib/run-replace.ts). Answers how it went, or null when the engine refused (said as the job's error). */
+	 *  (lib/shell/run-replace.ts). Answers how it went, or null when the engine refused (said as the job's error). */
 	const start = useCallback(
 		async (request: RunRequest): Promise<Started | null> => {
 			try {

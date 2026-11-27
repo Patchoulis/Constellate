@@ -4,13 +4,13 @@ import { Dialog } from "radix-ui";
 import { FileSearch, RotateCcw, X } from "lucide-react";
 import { REDO_STEPS, type Catalog, type Library, type ModelProvider, type RedoStep, type Settings } from "@rp/contracts";
 import { DetectorTraining } from "@/components/features/detector/detector-training";
-import { ModelChoice } from "@/components/model-choice";
-import { IMPORT_ADVICE } from "@/lib/notices";
-import { groupsOf, type Choosable } from "@/lib/models";
+import { ModelChoice } from "@/components/shell/model-choice";
+import { IMPORT_ADVICE } from "@/lib/shell/notices";
+import { groupsOf, type Choosable } from "@/lib/shell/models";
 import { Button, Heading } from "@/components/ui/button";
 import { Input, Label, SwitchRow } from "@/components/ui/field";
 import { Choice, GroupedPicker } from "@/components/ui/picker";
-import { splitByOwner } from "@/lib/engine";
+import { splitByOwner } from "@/lib/net/engine";
 import { cn } from "@/lib/utils";
 
 /** The whole dialog as data: every setting appears once here, with how it is edited. */

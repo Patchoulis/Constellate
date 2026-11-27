@@ -283,7 +283,7 @@ The conventions that keep seven features' branches from colliding:
   renumbers on merge (a migration is never edited once released).
 - **Contracts**: its types appended at the end of `packages/contracts/src/index.ts`, under a banner comment
   `// ---- <feature name> ----`; nothing existing is changed in place. Its calls added at the end of `api` in
-  `apps/web/lib/api.ts`.
+  `apps/web/lib/net/api.ts`.
 - **Interface**: its own component files under `apps/web/components/`, mounted with one or two lines where it shows
   (the reader's tabs, a community's sections); its tests in `apps/web/tests/<feature>.test.tsx`.
 - **The changelog**: one line under `## [Unreleased]`, `### Added`.

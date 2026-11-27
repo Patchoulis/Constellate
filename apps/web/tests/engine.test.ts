@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Settings } from "@rp/contracts";
-import { CSRF_HEADER, changesSomething, csrfOf, serverOwned, signInRedirect, splitByOwner, withCsrf } from "@/lib/engine";
+import { CSRF_HEADER, changesSomething, csrfOf, serverOwned, signInRedirect, splitByOwner, withCsrf } from "@/lib/net/engine";
 
 test("only a server owns settings, and only those it names", () => {
 	assert.deepEqual([...serverOwned({ mode: "network", server_owned: ["embedding_model"] })], ["embedding_model"]);

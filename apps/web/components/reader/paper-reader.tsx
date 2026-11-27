@@ -15,14 +15,14 @@ import { ExplainFromText } from "@/components/features/explanation/passage-expla
 import { PaperReviewFigures } from "@/components/community/review-summary";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { ResizeHandle } from "@/components/ui/resize-handle";
-import { api } from "@/lib/api";
+import { api } from "@/lib/net/api";
 import { communityLabel, type CommunityNode } from "@/lib/community/community";
 import { pdfAt } from "@/lib/reader/evidence";
-import { isOpenReviewPage, openOutside, safeLink } from "@/lib/links";
+import { isOpenReviewPage, openOutside, safeLink } from "@/lib/net/links";
 import { framedPdf, pageFailed, type FailedLoad, type FramedPdf } from "@/lib/reader/pdf-frame";
 import { ready, useAsync, type Async } from "@/lib/use-async";
-import { useFocusReturn } from "@/lib/use-focus-return";
-import { useResizable } from "@/lib/use-resizable";
+import { useFocusReturn } from "@/lib/ui/use-focus-return";
+import { useResizable } from "@/lib/ui/use-resizable";
 import { count, similarity, SIMILARITY_NOTE } from "@/lib/units";
 import { cn } from "@/lib/utils";
 
@@ -59,7 +59,7 @@ const EMBEDS = typeof navigator !== "undefined" && /Electron/.test(navigator.use
  * Constellate has read (components/reader/citation-network.tsx).
  */
 function sources(paper: Paper): { paper?: { url: string; embedded: boolean }; reviews?: { url: string; embedded: boolean } } {
-	// the record's addresses are shown only when they are https (lib/links.ts)
+	// the record's addresses are shown only when they are https (lib/net/links.ts)
 	const remote = safeLink(paper.pdf_url)?.href;
 	return {
 		paper: paper.readable ? { url: api.pdfUrl(paper.id), embedded: false } : remote ? { url: remote, embedded: true } : undefined,

@@ -8,8 +8,8 @@ import { KIND_HUE, edgeKinds, lineKind } from "@/lib/features/citation_contexts/
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { Input } from "@/components/ui/field";
-import { api } from "@/lib/api";
-import { openOutside } from "@/lib/links";
+import { api } from "@/lib/net/api";
+import { openOutside } from "@/lib/net/links";
 import {
 	authorLine,
 	citedByLine,

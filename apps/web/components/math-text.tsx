@@ -1,5 +1,5 @@
 import katex from "katex";
-import { safeLink } from "@/lib/links";
+import { safeLink } from "@/lib/net/links";
 
 /**
  * Paper titles and abstracts as their authors wrote them: plain text with LaTeX in it.
@@ -97,7 +97,7 @@ function Text({ text }: { text: string }) {
 	let from = 0;
 	for (const found of text.matchAll(LINK)) {
 		const address = found[1] ?? found[2] ?? found[4];
-		// a link only to an https address (lib/links.ts): the record's words decide nothing else
+		// a link only to an https address (lib/net/links.ts): the record's words decide nothing else
 		const link = safeLink(address);
 		parts.push(emphasised(text.slice(from, found.index), from));
 		parts.push(

@@ -2,26 +2,26 @@
 
 import { useReducer, useRef, useState } from "react";
 import { REDO_STEPS, type RunRequest, type Settings } from "@rp/contracts";
-import { useAskNaming, useAskRun } from "@/components/run-dialogs";
-import { SettingsDialog } from "@/components/settings-dialog";
-import { Sidebar } from "@/components/sidebar";
-import { ActivityLog, Notice, Workspace } from "@/components/workspace";
-import { api } from "@/lib/api";
+import { useAskNaming, useAskRun } from "@/components/shell/run-dialogs";
+import { SettingsDialog } from "@/components/shell/settings-dialog";
+import { Sidebar } from "@/components/shell/sidebar";
+import { ActivityLog, Notice, Workspace } from "@/components/shell/workspace";
+import { api } from "@/lib/net/api";
 import { ChosenModelContext, chosenModelOf } from "@/lib/chosen-model";
-import { serverOwned } from "@/lib/engine";
+import { serverOwned } from "@/lib/net/engine";
 import { forgetMarks } from "@/lib/community/marks";
-import { choosableOf } from "@/lib/models";
+import { choosableOf } from "@/lib/shell/models";
 import { namingRequest } from "@/lib/features/writing/naming";
-import { NO_SAVES, saveStep, type SaveEvent, type Saves } from "@/lib/settings-saves";
+import { NO_SAVES, saveStep, type SaveEvent, type Saves } from "@/lib/shell/settings-saves";
 import { ready, useAsync } from "@/lib/use-async";
-import { useJob } from "@/lib/use-job";
+import { useJob } from "@/lib/shell/use-job";
 
 /** Said when a run is made again without naming its communities again. */
 const NAMES_KEPT = "The communities were not named again: their names are kept as they are.";
 
 /**
  * Settings as the engine holds them; a change is saved there and the latest save's answer becomes the new state.
- * A change the engine refuses is kept with its reason (lib/settings-saves.ts) and shown until that setting is
+ * A change the engine refuses is kept with its reason (lib/shell/settings-saves.ts) and shown until that setting is
  * saved, and the settings are read again: nothing is quietly put back.
  */
 function useSettings() {

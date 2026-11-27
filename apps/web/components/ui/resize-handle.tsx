@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { draggedSize, keyedSize, type Edge } from "@/lib/panel-sizes";
+import { draggedSize, keyedSize, type Edge } from "@/lib/ui/panel-sizes";
 import { cn } from "@/lib/utils";
 
 export interface ResizeHandleProps {

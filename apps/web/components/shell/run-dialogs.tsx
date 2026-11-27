@@ -2,12 +2,12 @@
 
 import { useCallback } from "react";
 import type { Catalog, CatalogItem, DescribeEstimate, Settings } from "@rp/contracts";
-import { SETTING_LABELS } from "@/components/settings-dialog";
-import { useChoose } from "@/components/ui/confirm";
+import { SETTING_LABELS } from "@/components/shell/settings-dialog";
+import { useChoose } from "@/components/shell/confirm";
 import { costTitle, costWords } from "@/lib/cost";
 import { namingWords } from "@/lib/features/writing/naming";
-import type { Answer, Asking, NamingOffer } from "@/lib/run-replace";
-import { acceptedWords, replaceWords } from "@/lib/run-replace";
+import type { Answer, Asking, NamingOffer } from "@/lib/shell/run-replace";
+import { acceptedWords, replaceWords } from "@/lib/shell/run-replace";
 
 /** A setting by the name the settings dialog gives it. */
 const settingLabel = (setting: keyof Settings) => SETTING_LABELS[setting] ?? setting.replaceAll("_", " ");
@@ -44,7 +44,7 @@ function NamingPart({ naming }: { naming: NamingOffer }) {
 }
 
 /**
- * Ask before a run request that would replace a run or pay for names (lib/run-replace.ts `startRun`): what would be
+ * Ask before a run request that would replace a run or pay for names (lib/shell/run-replace.ts `startRun`): what would be
  * replaced, in the settings dialog's words, and what naming would cost. Cancel is the default.
  */
 export function useAskRun(catalog: Catalog | undefined): (asking: Asking) => Promise<Answer> {

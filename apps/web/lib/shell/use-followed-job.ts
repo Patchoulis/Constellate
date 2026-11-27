@@ -29,8 +29,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FeatureName, FeatureSubject, JobOutcome, JobPapers, JobProgress, Status } from "@rp/contracts";
-import { api } from "@/lib/api";
-import { withSignal } from "@/lib/request";
+import { api } from "@/lib/net/api";
+import { withSignal } from "@/lib/net/request";
 import { count } from "@/lib/units";
 
 export type FollowedJob =
@@ -218,7 +218,7 @@ export function createPoller(
 	};
 }
 
-/** The one poller of `/api/status` of this window: every feature's section and the run's job (lib/use-job.ts)
+/** The one poller of `/api/status` of this window: every feature's section and the run's job (lib/shell/use-job.ts)
  *  look through it. Shared by all of them: never called off by one. */
 export const poller = createPoller((since) => withSignal(null, () => api.status(since)));
 

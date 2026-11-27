@@ -1,7 +1,7 @@
-/** Saving settings (lib/settings-saves.ts): the latest answer wins, and a refusal is kept with its reason. */
+/** Saving settings (lib/shell/settings-saves.ts): the latest answer wins, and a refusal is kept with its reason. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { NO_SAVES, saveStep, type Saves } from "@/lib/settings-saves";
+import { NO_SAVES, saveStep, type Saves } from "@/lib/shell/settings-saves";
 
 interface Settings {
 	max_communities: number;

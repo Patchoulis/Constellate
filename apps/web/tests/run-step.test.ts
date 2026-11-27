@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { RunStep, RunStepName, StepCount } from "@rp/contracts";
-import { countWords, stepLine } from "@/lib/run-step";
+import { countWords, stepLine } from "@/lib/shell/run-step";
 
 const step = (more: Partial<RunStep>): RunStep => ({
 	step: "embed",

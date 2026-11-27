@@ -35,8 +35,8 @@ import type {
 	ClassifyCitationsRequest,
 	PaperCitationContexts,
 } from "@rp/contracts";
-import { changesSomething, csrfOf, signInRedirect, withCsrf } from "@/lib/engine";
-import { answered, currentSignal, POLLING, QUICK, READS_PAPERS, request, STARTS_JOB, type Patience } from "@/lib/request";
+import { changesSomething, csrfOf, signInRedirect, withCsrf } from "@/lib/net/engine";
+import { answered, currentSignal, POLLING, QUICK, READS_PAPERS, request, STARTS_JOB, type Patience } from "@/lib/net/request";
 
 /** On a server, the session's token that every change carries, asked for once; null on the user's own computer. */
 let csrf: Promise<string | null> | null = null;
@@ -47,7 +47,7 @@ const sessionToken = () =>
 	));
 
 /**
- * Ask the engine, within `patience` (lib/request.ts: a deadline, and whether a GET may be asked once more when
+ * Ask the engine, within `patience` (lib/net/request.ts: a deadline, and whether a GET may be asked once more when
  * nothing answered). Throws a `RequestError` that says what happened and carries the HTTP status. A request made
  * inside `withSignal` (what `useAsync` does) is called off when that signal aborts.
  */
@@ -62,10 +62,10 @@ async function call<T>(path: string, init?: RequestInit, patience: Patience = QU
 	return answered<T>(answer);
 }
 
-/** `call` for a route that may read a paper's PDF the first time (lib/request.ts `READS_PAPERS`). */
+/** `call` for a route that may read a paper's PDF the first time (lib/net/request.ts `READS_PAPERS`). */
 const reading = <T>(path: string, init?: RequestInit) => call<T>(path, init, READS_PAPERS);
 /** `call` for starting a job the model is paid for: the engine checks the estimate shown again first, which may read
- *  papers, so it is given as long as an estimate (lib/request.ts `STARTS_JOB`); a deadline that passed first would
+ *  papers, so it is given as long as an estimate (lib/net/request.ts `STARTS_JOB`); a deadline that passed first would
  *  say "not asked" of a job the engine then starts. Never sent twice. */
 const starting = <T>(path: string, init?: RequestInit) => call<T>(path, init, STARTS_JOB);
 

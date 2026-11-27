@@ -1,8 +1,8 @@
-/** Addresses from records before they are opened (lib/links.ts), and what the reader shows when a page fails
+/** Addresses from records before they are opened (lib/net/links.ts), and what the reader shows when a page fails
  *  (lib/reader/pdf-frame.ts). */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isOpenReviewPage, safeLink } from "@/lib/links";
+import { isOpenReviewPage, safeLink } from "@/lib/net/links";
 import { framedPdf, pageFailed } from "@/lib/reader/pdf-frame";
 import { outsideLink } from "@/lib/reader/citations";
 

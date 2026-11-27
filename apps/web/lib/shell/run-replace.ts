@@ -4,7 +4,7 @@
  * (engine api/runs.rs): a run that exists is made again only with `replace: true` (else `409` with what would be
  * replaced, `RunReplaced`), and descriptions are asked again only with `describe`, what was accepted of the
  * estimate shown (else `400`). This file decides what is asked and what is sent; the dialog that asks is
- * components/ui/confirm.tsx, the words it says are below.
+ * components/shell/confirm.tsx, the words it says are below.
  *
  *     send(request) --started------------------------------------------> started
  *     send(request) --409 replaces--> ask(replaced, naming) --cancel----> cancelled (nothing sent again)
@@ -13,7 +13,7 @@
  */
 import type { DescribeAccepted, DescribeBeforeRun, RedoStep, RunReplaced, RunRequest, Settings } from "@rp/contracts";
 import { accepting, DOLLAR, shownModel } from "@/lib/cost";
-import { RequestError } from "@/lib/request";
+import { RequestError } from "@/lib/net/request";
 import { count, money, tokens } from "@/lib/units";
 
 /** What a 409 of `POST /api/runs` says would be replaced, or null for any other refusal (a job running, ...). */

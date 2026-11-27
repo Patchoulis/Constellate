@@ -21,7 +21,7 @@ import { AcceptanceTag } from "@/components/brand";
 import { EvidenceLinks } from "@/components/reader/evidence-link";
 import { MathText } from "@/components/math-text";
 import { Button, Heading } from "@/components/ui/button";
-import { api } from "@/lib/api";
+import { api } from "@/lib/net/api";
 import {
 	abstractOnlyNote,
 	cellText,
@@ -43,7 +43,7 @@ import { choiceKey, currentEstimate, useChosenModel } from "@/lib/chosen-model";
 import { budgetOf, costWords, shownModel } from "@/lib/cost";
 import { useColouringBy } from "@/lib/graph/graph-colouring";
 import { ready, useAsync } from "@/lib/use-async";
-import { elsewhereLine, notAskedLine, runSubject, useFollowedJob } from "@/lib/use-followed-job";
+import { elsewhereLine, notAskedLine, runSubject, useFollowedJob } from "@/lib/shell/use-followed-job";
 import { count, money, tokens } from "@/lib/units";
 import { cn } from "@/lib/utils";
 

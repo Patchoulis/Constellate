@@ -1,8 +1,17 @@
-/** A feature's job as the page follows it (lib/use-followed-job.ts): its transitions, and the one poller. */
+/** A feature's job as the page follows it (lib/shell/use-followed-job.ts): its transitions, and the one poller. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Status } from "@rp/contracts";
-import { MOST_POLL_MS, POLL_MS, createPoller, jobStep, notAskedLine, pollDelay, started, type FollowedJob } from "@/lib/use-followed-job";
+import {
+	MOST_POLL_MS,
+	POLL_MS,
+	createPoller,
+	jobStep,
+	notAskedLine,
+	pollDelay,
+	started,
+	type FollowedJob,
+} from "@/lib/shell/use-followed-job";
 
 const status = (state: Status["state"], more: Partial<Status> = {}): Status => ({
 	id: 7,

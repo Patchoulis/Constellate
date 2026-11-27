@@ -16,7 +16,7 @@ import {
 	isBackendPath,
 	WINDOW_COOKIE,
 	windowAdmitted,
-} from "@/lib/page-policy";
+} from "@/lib/net/page-policy";
 
 const shown = (text: string) => renderToStaticMarkup(<MathText>{text}</MathText>);
 

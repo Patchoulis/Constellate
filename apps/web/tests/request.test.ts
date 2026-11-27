@@ -1,4 +1,4 @@
-/** A request to the engine (lib/request.ts): its deadline, being called off, its errors, and what is sent again. */
+/** A request to the engine (lib/net/request.ts): its deadline, being called off, its errors, and what is sent again. */
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import {
@@ -13,7 +13,7 @@ import {
 	withSignal,
 	currentSignal,
 	type RequestProblem,
-} from "@/lib/request";
+} from "@/lib/net/request";
 import { startLoad, type AsyncEvent } from "@/lib/use-async";
 
 /** A fetch that answers when the test says, heeds the abort, and counts what it was sent. */
