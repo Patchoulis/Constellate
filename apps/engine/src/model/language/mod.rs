@@ -1570,9 +1570,14 @@ impl<'a> Client<'a> {
                 let category = message.stop_details.and_then(|details| details.category);
                 return Err(NoAnswer::Refused { category }.into());
             }
-            // the answer ran into the model's context window rather than `max_tokens`: cut off all the same
-            Some("max_tokens" | "model_context_window_exceeded") => return Err(NoAnswer::Cut.into()),
-            _ => {}
+            // the answer ran into the model's context window rather than `max_tokens` (a stop reason the API's
+            // reference documents for models from 4.5 on), or stopped at a stop sequence (none is sent): cut off
+            Some("max_tokens" | "model_context_window_exceeded" | "stop_sequence") => return Err(NoAnswer::Cut.into()),
+            // finished: what it wrote is the answer (a gateway that leaves the reason out is taken at its word)
+            Some("end_turn") | None => {}
+            // a turn paused for a server tool, a tool call, a compaction, or a reason not documented when this was
+            // written: none is a finished answer to these requests, which use no tools
+            Some(_) => return Err(NoAnswer::Unexpected.into()),
         }
         let text: String = message
             .content
@@ -2130,6 +2135,25 @@ mod tests {
         let schema = schema();
         let prose = Ask { form: Form::Text, ..ask(&schema, None) };
         assert_eq!(client.ask(&prose, &plenty()), Err(AskError::NoAnswer(NoAnswer::Cut)));
+    }
+
+    #[test]
+    fn every_documented_stop_reason_is_told_before_the_content_is_read() {
+        let schema = schema();
+        let prose = Ask { form: Form::Text, ..ask(&schema, None) };
+        let asked = |reason: &str| {
+            let fake = Fake::new(vec![Ok(ok(&message("claude-opus-5-5", "Some words", reason, usage(3, 3, 0, 0))))]);
+            let calls = Mutex::new(Vec::new());
+            Client::new(&fake, endpoint(), &calls).ask(&prose, &plenty()).map(|answered| answered.answer)
+        };
+        assert_eq!(asked("end_turn"), Ok("Some words".to_owned()));
+        for cut in ["max_tokens", "model_context_window_exceeded", "stop_sequence"] {
+            assert_eq!(asked(cut), Err(NoAnswer::Cut.into()), "{cut}");
+        }
+        for unfinished in ["pause_turn", "tool_use", "compaction", "a_reason_not_yet_documented"] {
+            assert_eq!(asked(unfinished), Err(NoAnswer::Unexpected.into()), "{unfinished}: not an answer");
+        }
+        assert!(matches!(asked("refusal"), Err(AskError::NoAnswer(NoAnswer::Refused { .. }))));
     }
 
     #[test]
