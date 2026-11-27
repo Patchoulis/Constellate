@@ -85,6 +85,8 @@ export const QUICK: Patience = { ms: 20_000, retry: "once_if_unanswered" };
  * its own answer comes first. Anything longer than this is a job (a run, the declarations of a run).
  */
 export const READS_PAPERS: Patience = { ms: 60_000, retry: "once_if_unanswered" };
+/** Starting a paid job: past the engine's own 30 seconds, so that its answer (or its 408) always comes first. */
+export const STARTS_JOB: Patience = { ms: 60_000, retry: "never" };
 /** `/api/status`: the poller's backoff is its retry. */
 export const POLLING: Patience = { ms: 20_000, retry: "never" };
 
@@ -173,7 +175,12 @@ export async function request(path: string, init: RequestInit | undefined, optio
 				if (ended !== null) throw new RequestError(ended);
 				if (error instanceof RequestError) throw error;
 				if (attempt >= retries) throw new RequestError({ kind: "unreachable" });
-				await within(new Promise((resolve) => setTimeout(resolve, RETRY_PAUSE_MS)));
+				let pause: ReturnType<typeof setTimeout> | undefined;
+				try {
+					await within(new Promise((resolve) => (pause = setTimeout(resolve, RETRY_PAUSE_MS))));
+				} finally {
+					clearTimeout(pause);
+				}
 				continue;
 			}
 			const body = await within(bodyOf(response));

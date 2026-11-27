@@ -9,6 +9,7 @@ import {
 	RequestError,
 	request,
 	RETRY_PAUSE_MS,
+	STARTS_JOB,
 	withSignal,
 	currentSignal,
 	type RequestProblem,
@@ -70,6 +71,8 @@ test("a route that reads papers is given longer than a read, and the poller's re
 	assert.ok(READS_PAPERS.ms > 30_000, "past the engine's own 30 seconds, so that its answer comes first");
 	assert.ok(READS_PAPERS.ms <= 60_000, "nothing waits for minutes: that is a job");
 	assert.equal(POLLING.retry, "never");
+	assert.ok(STARTS_JOB.ms > 30_000, "a paid job's start: the engine's answer, or its own 408, comes before ours");
+	assert.equal(STARTS_JOB.retry, "never");
 });
 
 test("a body that never comes is not waited for past the deadline either", async () => {

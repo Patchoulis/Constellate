@@ -36,7 +36,7 @@ import type {
 	PaperCitationContexts,
 } from "@rp/contracts";
 import { changesSomething, csrfOf, signInRedirect, withCsrf } from "@/lib/engine";
-import { answered, currentSignal, POLLING, QUICK, READS_PAPERS, request, type Patience } from "@/lib/request";
+import { answered, currentSignal, POLLING, QUICK, READS_PAPERS, request, STARTS_JOB, type Patience } from "@/lib/request";
 
 /** On a server, the session's token that every change carries, asked for once; null on the user's own computer. */
 let csrf: Promise<string | null> | null = null;
@@ -64,6 +64,10 @@ async function call<T>(path: string, init?: RequestInit, patience: Patience = QU
 
 /** `call` for a route that may read a paper's PDF the first time (lib/request.ts `READS_PAPERS`). */
 const reading = <T>(path: string, init?: RequestInit) => call<T>(path, init, READS_PAPERS);
+/** `call` for starting a job the model is paid for: the engine checks the estimate shown again first, which may read
+ *  papers, so it is given as long as an estimate (lib/request.ts `STARTS_JOB`); a deadline that passed first would
+ *  say "not asked" of a job the engine then starts. Never sent twice. */
+const starting = <T>(path: string, init?: RequestInit) => call<T>(path, init, STARTS_JOB);
 
 const send = (method: string, body: unknown): RequestInit => ({
 	method,
@@ -144,7 +148,7 @@ export const api = {
 		id: string,
 		shown: import("@rp/contracts").ShownModel,
 		budget: import("@rp/contracts").AcceptedCost | import("@rp/contracts").BudgetOf,
-	) => call<CritiqueStarted>(`/api/papers/${encodeURIComponent(id)}/critique`, send("POST", { ...shown, ...budget })),
+	) => starting<CritiqueStarted>(`/api/papers/${encodeURIComponent(id)}/critique`, send("POST", { ...shown, ...budget })),
 	/** forget the model's reading of the paper, so that it can be asked again */
 	forgetCritique: (id: string) => call<{ forgotten: number }>(`/api/papers/${encodeURIComponent(id)}/critique`, { method: "DELETE" }),
 	/** where a community's papers (or the marked ones) stand on a question (engine api/stances.rs) */
@@ -169,7 +173,7 @@ export const api = {
 			part: "sample" | "all",
 			approved: StanceApproved,
 		) =>
-			call<import("@rp/contracts").StanceStarted>(
+			starting<import("@rp/contracts").StanceStarted>(
 				`${stancesAt(name, scope)}/ask`,
 				send("POST", { question, include_unrelated: includeUnrelated, part, papers: "papers" in scope ? scope.papers : [], ...approved }),
 			),
@@ -182,7 +186,7 @@ export const api = {
 		proposalEstimate: (name: string, community: string, fresh: boolean) =>
 			call<import("@rp/contracts").StanceProposalPlan>(`${stancesAt(name, { community })}/proposals/estimate`, send("POST", { fresh })),
 		propose: (name: string, community: string, fresh: boolean, approved: StanceApproved) =>
-			call<import("@rp/contracts").StanceStarted>(`${stancesAt(name, { community })}/proposals`, send("POST", { fresh, ...approved })),
+			starting<import("@rp/contracts").StanceStarted>(`${stancesAt(name, { community })}/proposals`, send("POST", { fresh, ...approved })),
 	},
 	/** the extraction table's columns of a run (kept, or the defaults) */
 	extractionColumns: (name: string) => call<import("@rp/contracts").ExtractionColumns>(`${run(name)}/extraction/columns`),
@@ -202,7 +206,7 @@ export const api = {
 		part: import("@rp/contracts").ExtractionPart,
 		budget: import("@rp/contracts").BudgetOf,
 		shown: import("@rp/contracts").ShownModel,
-	) => call<{ ok: true; id: number }>(`${run(name)}/extraction/run`, send("POST", { scope, part, ...budget, ...shown })),
+	) => starting<{ ok: true; id: number }>(`${run(name)}/extraction/run`, send("POST", { scope, part, ...budget, ...shown })),
 	/** forget these papers' cells, so that they are asked again at the next run */
 	forgetExtraction: (name: string, papers: string[]) =>
 		call<{ forgotten: number }>(`${run(name)}/extraction/forget`, send("POST", { papers })),
@@ -216,7 +220,7 @@ export const api = {
 		address: PassageAddress,
 		shown: import("@rp/contracts").ShownModel,
 		accepted: import("@rp/contracts").AcceptedCost,
-	) => call<ExplanationStarted>(`/api/papers/${encodeURIComponent(id)}/explanation`, send("POST", { address, ...shown, ...accepted })),
+	) => starting<ExplanationStarted>(`/api/papers/${encodeURIComponent(id)}/explanation`, send("POST", { address, ...shown, ...accepted })),
 	/** forget the kept explanation of a passage, so that it is asked for again; `redone` says whether there was one */
 	redoExplanation: (id: string, address: PassageAddress) =>
 		call<{ redone: boolean }>(`/api/papers/${encodeURIComponent(id)}/explanation`, send("DELETE", { address })),
@@ -229,7 +233,7 @@ export const api = {
 	claims: (id: string) => reading<ClaimsView>(`/api/papers/${encodeURIComponent(id)}/claims`),
 	/** ask the model what is not kept, within `budget_usd`; answers the job's number */
 	startClaims: (id: string, start: ClaimsStart) =>
-		call<{ job: number }>(`/api/papers/${encodeURIComponent(id)}/claims`, send("POST", start)),
+		starting<{ job: number }>(`/api/papers/${encodeURIComponent(id)}/claims`, send("POST", start)),
 	/** forget the paper's tree and mapping: asked again on the next start */
 	forgetClaims: (id: string) => call<{ forgotten: number }>(`/api/papers/${encodeURIComponent(id)}/claims`, { method: "DELETE" }),
 	/** per paper of a community whose reviews were mapped, its contested claims */
@@ -255,7 +259,7 @@ export const api = {
 		),
 	/** start the job that asks the model for those kinds, within the budget */
 	classifyCitations: (name: string, request: ClassifyCitationsRequest) =>
-		call<{ ok: true; id: number }>(`${run(name)}/citation-kinds`, send("POST", request)),
+		starting<{ ok: true; id: number }>(`${run(name)}/citation-kinds`, send("POST", request)),
 	/** forget the kinds read for the papers a community cites, so that they are read again */
 	forgetCitationKinds: (name: string, treePath?: string) =>
 		call<{ ok: true; forgotten: number }>(`${run(name)}/citation-kinds${treePath ? `?community=${encodeURIComponent(treePath)}` : ""}`, {
@@ -274,7 +278,7 @@ export const api = {
 		),
 	/** ask it, accepting the most it can cost as it was shown: starts a job (none when the answer is kept) */
 	askQuestion: (name: string, request: import("@rp/contracts").AnswerRequest) =>
-		call<import("@rp/contracts").AnswerStarted>(`${run(name)}/answers`, send("POST", request)),
+		starting<import("@rp/contracts").AnswerStarted>(`${run(name)}/answers`, send("POST", request)),
 	/** the questions asked of a run and its communities, the latest first */
 	questions: (name: string) => call<import("@rp/contracts").AnswerSummary[]>(`${run(name)}/answers`),
 	/** one question and its kept answer, its quotes checked again */
@@ -291,7 +295,7 @@ export const api = {
 		call<import("@rp/contracts").DescribeEstimate>(`${run(name)}/describe/estimate${redo ? "?redo=true" : ""}`),
 	/** name them within the most shown, as the one job */
 	describeRun: (name: string, request: import("@rp/contracts").DescribeRequest) =>
-		call<import("@rp/contracts").DescribeStarted>(`${run(name)}/describe`, send("POST", request)),
+		starting<import("@rp/contracts").DescribeStarted>(`${run(name)}/describe`, send("POST", request)),
 	/** one page of the runs, sorted and searched, without reading every run (the engine only) */
 	runsPage: (query: { offset?: number; limit?: number; sort?: import("@rp/contracts").RunSort; search?: string }) => {
 		const asked = new URLSearchParams();
@@ -306,7 +310,7 @@ export const api = {
 	 * what is built asks nothing and needs neither) */
 	buildDetector: (
 		request: import("@rp/contracts").ShownModel & (import("@rp/contracts").AcceptedCost | import("@rp/contracts").BudgetOf),
-	) => call<import("@rp/contracts").DetectorStarted>("/api/detector/build", send("POST", request)),
+	) => starting<import("@rp/contracts").DetectorStarted>("/api/detector/build", send("POST", request)),
 	/** score a week of arXiv in each year (arXiv only, free): starts the job */
 	checkDetectorYears: () => call<import("@rp/contracts").DetectorStarted>("/api/detector/years", { method: "POST" }),
 	/** a paper's AI-text verdict: null when it was never scored or is too short */
