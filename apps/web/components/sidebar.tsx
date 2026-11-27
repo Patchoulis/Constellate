@@ -299,7 +299,7 @@ function CostLine({
 		spent.since ? `Counted since ${spent.since}; calls made before that were not recorded.` : "Nothing spent yet.",
 		...(spent.calls ? ["By purpose:", ...lines(spent.purposes), "By model:", ...lines(spent.models)] : []),
 		...(spent.unpriced_calls
-			? [`${count(spent.unpriced_calls, "call")} went to a model whose price is not known here and are not in the total.`]
+			? [`${count(spent.unpriced_calls, "call")} to a model with no price ${spent.unpriced_calls === 1 ? "is" : "are"} not in this total.`]
 			: []),
 		...(price ? [`${chosenLabel(chosen)}: ${price}.`] : []),
 		"Prices are the published list prices in US dollars per million tokens.",

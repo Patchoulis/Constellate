@@ -109,6 +109,18 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The model features (Weaknesses, Agree / disagree, the Table, Explain, Claims, citation kinds and Ask) now work with whichever provider is chosen, as they do with Claude: the cost shown before asking is that provider's, the request goes to that provider with its own model, a model with no published price (a typed id, a model on your own computer) runs within the tokens shown instead of being refused, no dollar figure is shown for it, answers kept for one provider are not taken for another's, and a job is refused if the provider or model changed since its cost was shown.
+
+- A finished feature no longer reopens the last run, and the run that finished before the page was opened is no longer opened again at every load.
+
+- A damaged settings file no longer makes the engine fall back to the Claude API without a word: it says the settings cannot be read. Two windows changing the provider and the model at once can no longer store a model of the wrong provider.
+
+- Redoing a cited answer asked with an older version of the app now forgets it; redoing an explanation says whether there was one to forget.
+
+- A model's answer and what it cost are written together, so that a crash can no longer leave a call paid for whose answer is lost.
+
+- A paper listed twice when reading citing sentences is no longer reported as not in the library the second time.
+
 - The installed app's first start no longer stops with "Missing expected target directory for Python minor version
   link" when Constellate is opened from inside another packaged Windows app (from a terminal in one, say).
 - Marked papers and panel sizes are kept between launches: the interface is served on the same port each time. Ending

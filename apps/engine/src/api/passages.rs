@@ -213,7 +213,7 @@ mod tests {
                 while !tracker.cancelled() {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
-                Ok("stopped".to_owned())
+                Ok(crate::jobs::Finished::Nothing)
             })
             .unwrap();
         let (router, _) = served(&listen, AT, engine);
@@ -225,7 +225,7 @@ mod tests {
         loop {
             let (_, status) = ask(&router, "GET", "/api/status", None).await;
             if status["state"] == "done" {
-                assert_eq!((status["result"].clone(), status["id"].clone()), (json!("stopped"), json!(id)));
+                assert_eq!((status["outcome"].clone(), status["id"].clone()), (json!({"kind": "nothing"}), json!(id)));
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "the job never stopped");

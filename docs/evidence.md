@@ -69,7 +69,8 @@ end_page, end }`. The reference list is in the pages' text but is not a passage.
 
 ## Costs: estimated before, capped during, recorded after
 
-- **Before.** `language::estimate(model, &planned, counting)` says what a batch is likely to cost and at most, in
+- **Before.** `Chosen::estimate(&planned, counting)` (the provider, model and effort the settings choose, from
+  `Engine::chosen()`) says what a batch is likely to cost and at most, at that provider's prices and as it caches, in
   dollars from the prices in `apps/engine/data/prices.json` ("about USD 12 for these 739 papers"). Prompt tokens are
   reckoned from characters: at `CHARS_PER_TOKEN` (3, assumed, so it errs high), or at the ratio
   `Client::calibrate(ask)` measured on one real prompt with the API's token-counting endpoint
@@ -221,16 +222,18 @@ let texts: Vec<String> = readings.iter().map(|reading| reading.passages().map(as
 let items: Vec<Item> = papers.iter().zip(&texts).map(|(paper, text)| Item {
     slot: Slot {
         feature: Feature::Extraction,
-        key: AnswerKey::new(Feature::Extraction, DEFAULT_MODEL, PROMPT, &[paper], &columns_json),
+        key: chosen.key(Feature::Extraction, PROMPT, &[paper], &columns_json), // chosen = engine.chosen()?
         subject: Subject::Paper((*paper).to_owned()),
     },
     prompt: PROMPT,
-    ask: Ask { purpose: "extraction table", model: DEFAULT_MODEL, system: SYSTEM, shared: Some(text),
+    ask: Ask { purpose: "extraction table", model: chosen.model(), system: SYSTEM, shared: Some(text),
                question: &columns_json, form: Form::Json(&schema), effort: Effort::Low, max_tokens: 2_000 },
     likely_tokens: 600,
 }).collect();
 // GET .../extraction/estimate: shown before the user starts ("about USD 4 for these 739 papers"); nothing is sent
-let estimate = batch::estimate_batch::<Said>(&library, &items, Counting::ASSUMED)?;
+let estimate = batch::estimate_batch::<Said>(&library, &items, &chosen)?;
+// the budget: what the user accepted of it, in dollars, or in tokens for a model with no price
+let budget = chosen::budget(&estimate.cost, accepted, Terms::AsShown)?;
 // POST .../extraction: one job; its progress and the stop button come with it
 engine.job.start_tracked("extraction table", move |tracker| {
     let transport = Https::default();
@@ -245,7 +248,7 @@ for ((paper, reading), outcome) in papers.iter().zip(readings).zip(outcomes) {
     let cite = Papers::from([((*paper).to_owned(), reading.into_text().ok_or(ApiError::NotFound)?)]);
     rows.push(evidence::check(said.cells, &cite, Rules::ONE_PAPER).cited);
 }
-// the redo button: library.forget(Feature::Extraction, &[Subject::Paper(id), ...])
+// the redo button: library.forget(Feature::Extraction, &[Subject::Paper(id), ...]); one answer: library.forget_key
 ```
 
 What to know about each piece:
@@ -253,7 +256,8 @@ What to know about each piece:
 - `paper_texts` takes ids in any order and answers in that order. A paper's PDF is `pdfs/<id>.pdf` in the library's
   folder (`Library::pdf_file`; `keep_pdf` puts one there): nothing here downloads. Several hundred ids at a time;
   passages are held in memory.
-- `AnswerKey::new(feature, model, prompt, papers, question)`: `question` is everything else the answer depends on
+- `AnswerKey::new(feature, provider, model, prompt, papers, question)` (or `chosen.key(..)`): `question` is everything
+  else the answer depends on
   (the question, the columns as JSON, the passage's address). The papers are a set; the reader version is added.
   Items of one batch with the same slot are asked once and share the outcome.
 - `ask_all` answers one `Outcome` per item in the items' order: `Kept`, `Answered`, `Failed(Failure)` (this one

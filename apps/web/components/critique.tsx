@@ -6,9 +6,17 @@
  * reading of the paper, every statement of it with the paper's words it rests on. There is no score and no verdict
  * anywhere in it. Nothing is shown when the engine has no such route (an older backend).
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { Loader2, RotateCcw, Sparkles, Square } from "lucide-react";
-import type { Critique, CritiqueModelPart, CritiqueReviewer, CritiqueReviewers, ModelWeakness, PointReading } from "@rp/contracts";
+import type {
+	Critique,
+	CritiqueModelPart,
+	CritiqueReviewer,
+	CritiqueReviewers,
+	ModelWeakness,
+	PointReading,
+	ShownModel,
+} from "@rp/contracts";
 import { EvidenceLink, EvidenceLinks } from "@/components/evidence-link";
 import { Button, Heading } from "@/components/ui/button";
 import { api } from "@/lib/api";
@@ -28,8 +36,10 @@ import {
 	scoreLine,
 	scoreTitle,
 } from "@/lib/critique";
+import { shownModel } from "@/lib/cost";
 import { ready, useAsync } from "@/lib/use-async";
-import { count, money } from "@/lib/units";
+import { useFollowedJob } from "@/lib/use-followed-job";
+import { count, knownMoney } from "@/lib/units";
 import { cn } from "@/lib/utils";
 
 /** The reviewer's own words: shown as said; a click shows them in their section of the review, marked. */
@@ -199,12 +209,6 @@ function Weakness({ weakness }: { weakness: ModelWeakness }) {
 	);
 }
 
-/** Asking, as an explicit state: nothing asked, the request on its way, the job running, or failed. */
-type Asking =
-	{ state: "idle" } | { state: "starting" } | { state: "running"; job: number; usd: number } | { state: "failed"; error: string };
-
-const POLL_MS = 1200;
-
 function ModelPart({
 	part,
 	shown,
@@ -218,42 +222,20 @@ function ModelPart({
 	onChanged: () => void;
 	id: string;
 }) {
-	const [asking, setAsking] = useState<Asking>({ state: "idle" });
-	// while the job runs, and only then, the engine is asked how it stands
-	useEffect(() => {
-		if (asking.state !== "running") return;
-		const timer = setTimeout(async () => {
-			try {
-				const status = await api.status(0);
-				// the job is ours while it runs; once another has started, ours has ended
-				if (status.id === asking.job && status.state === "running") {
-					setAsking({ state: "running", job: asking.job, usd: status.progress?.usd ?? asking.usd });
-					return;
-				}
-				if (status.id === asking.job && status.state === "failed")
-					setAsking({ state: "failed", error: status.error ?? "The model could not be asked." });
-				else setAsking({ state: "idle" });
-				onChanged();
-			} catch {
-				// the engine did not answer this once: the job goes on, and is asked about again
-				setAsking({ ...asking });
-			}
-		}, POLL_MS);
-		return () => clearTimeout(timer);
-	}, [asking, onChanged]);
-
-	const ask = async (model: string) => {
-		setAsking({ state: "starting" });
-		try {
-			const started = await api.readCritique(id, model);
-			if (started.outcome === "kept") {
-				setAsking({ state: "idle" });
-				onChanged();
-			} else setAsking({ state: "running", job: started.job, usd: 0 });
-		} catch (error) {
-			setAsking({ state: "failed", error: (error as Error).message });
-		}
+	const [starting, setStarting] = useState(false);
+	// the job is followed until it ends; then what is kept is read again
+	const { job, start } = useFollowedJob(() => onChanged());
+	const ask = async (shown: ShownModel) => {
+		setStarting(true);
+		await start(async () => {
+			const started = await api.readCritique(id, shownModel(shown));
+			if (started.outcome === "started") return started.job;
+			onChanged(); // read before: nothing was asked
+			return null;
+		});
+		setStarting(false);
 	};
+	const asking = { running: job.state === "running", starting };
 
 	const heading = <Heading title={MODEL_NOTE}>The model&apos;s reading, not a review</Heading>;
 	if (part.state === "no_pdf")
@@ -266,7 +248,11 @@ function ModelPart({
 		return <p className="text-xs text-muted-foreground">The paper&apos;s PDF could not be read, so the model cannot be asked about it.</p>;
 	if (part.state === "not_asked") {
 		const cost = estimateLine(part.estimate);
-		const running = asking.state === "running" || asking.state === "starting";
+		const running = asking.running || asking.starting;
+		const spent =
+			job.state === "running" && job.progress
+				? knownMoney(job.progress.usd > 0 ? job.progress.usd : null, { code: "USD", rate: 1, date: null })
+				: null;
 		return (
 			<div className="flex flex-col items-start gap-2">
 				{heading}
@@ -277,11 +263,11 @@ function ModelPart({
 					{part.cut !== null &&
 						` The paper is too long to send whole: only its first ${count(part.cut, "character")} (as sent, with page marks) would be read.`}
 				</p>
-				{asking.state === "running" ? (
+				{job.state === "running" ? (
 					<div className="flex items-center gap-2 text-xs text-muted-foreground">
 						<Loader2 className="size-3.5 animate-spin" />
-						The model is reading the paper ({money(asking.usd, { code: "USD", rate: 1, date: null })} spent so far)
-						<Button variant="ghost" size="icon" title="Stop" onClick={() => void api.cancelJob(asking.job).catch(() => undefined)}>
+						The model is reading the paper{spent ? ` (${spent} spent so far)` : ""}
+						<Button variant="ghost" size="icon" title="Stop" onClick={() => void api.cancelJob(job.id).catch(() => undefined)}>
 							<Square />
 						</Button>
 					</div>
@@ -290,16 +276,16 @@ function ModelPart({
 						variant="outline"
 						disabled={!part.api_key_set || running}
 						title={estimateTitle(part.estimate)}
-						onClick={() => void ask(part.model)}
+						onClick={() => void ask(part)}
 					>
-						{asking.state === "starting" ? <Loader2 className="animate-spin" /> : <Sparkles />}
-						{cost
-							? `Ask the model (${part.model}): ${cost}, an estimate`
-							: `Ask the model (${part.model}): its price is not known, no estimate`}
+						{asking.starting ? <Loader2 className="animate-spin" /> : <Sparkles />}
+						{`Ask the model (${part.model}): ${cost}, an estimate`}
 					</Button>
 				)}
-				{!part.api_key_set && <p className="text-xs text-muted-foreground">No key for the model is set, so it cannot be asked.</p>}
-				{asking.state === "failed" && <p className="text-xs text-destructive">{asking.error}</p>}
+				{!part.api_key_set && (
+					<p className="text-xs text-muted-foreground">The chosen provider&apos;s key is not set, so the model cannot be asked.</p>
+				)}
+				{job.state === "failed" && <p className="text-xs text-destructive">{job.error}</p>}
 			</div>
 		);
 	}

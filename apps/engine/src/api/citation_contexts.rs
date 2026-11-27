@@ -11,7 +11,8 @@
 //!                                                       ([`KindsSummary`])
 //! GET    /api/runs/{run}/citation-kinds/estimate?community=c&scope=sample|rest
 //!                                                       what reading those kinds would cost; nothing is sent
-//! POST   /api/runs/{run}/citation-kinds                 {community, scope, budget_usd}: read them, a job
+//! POST   /api/runs/{run}/citation-kinds                 {community, scope, provider, model, to_ask, budget_usd |
+//!                                                       budget_tokens}: read them, a job
 //! DELETE /api/runs/{run}/citation-kinds[?community=c]   forget the kinds read for the papers the community cites
 //! ```
 //!
@@ -38,12 +39,12 @@ use crate::analysis::citation_kinds::{
 };
 use crate::analysis::citations::Linker;
 use crate::evidence::Evidence;
-use crate::jobs::Progress;
+use crate::jobs::{Finished, Progress};
 use crate::library::citation_contexts::{ContextsReading, Entries};
 use crate::library::{Feature, Library, PaperReading, Subject};
 use crate::model::batch::{Asking, BatchEstimate, IN_FLIGHT, estimate_batch};
-use crate::model::language::{Budget, Counting, Https, Limit};
-use crate::settings;
+use crate::model::chosen::{Accepted, Chosen, Refused, Terms, budget};
+use crate::model::language::Provider;
 use crate::text::passages::Passages;
 use crate::text::references::Citing;
 use crate::usage::Usd;
@@ -52,6 +53,8 @@ use crate::usage::Usd;
 pub const MOST_CITING: usize = 100;
 /// The most a request may let a job spend, in US dollars.
 pub const MOST_BUDGET_USD: f64 = 100.0;
+/// The same for a model with no price, in tokens.
+pub const MOST_BUDGET_TOKENS: u64 = 100_000_000;
 /// A tree path is short ("c7.0.1"); anything longer is not one.
 const LONGEST_TREE_PATH: usize = 200;
 /// The most papers one job reads the citing sentences of.
@@ -65,11 +68,6 @@ pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
         ("/api/runs/{run}/citation-kinds", get(summary).post(classify_run).delete(redo)),
         ("/api/runs/{run}/citation-kinds/estimate", get(estimate)),
     ]
-}
-
-/// The model the person chose in the settings.
-fn chosen_model(engine: &Shared) -> Result<String, ApiError> {
-    Ok(settings::load(&engine.settings_file(), &engine.choices)?.describe_model)
 }
 
 // ------------------------------------------------------------------------------------------------ one paper
@@ -149,7 +147,7 @@ struct InRun {
 /// longer the same sentence in `passages` are counted in `left_out`.
 fn shown(
     library: &Library,
-    model: &str,
+    chosen: &Chosen,
     citing: &str,
     cited: &str,
     passages: &Passages,
@@ -160,7 +158,7 @@ fn shown(
         .iter()
         .map(|context| Case { citing: citing.to_owned(), cited: cited.to_owned(), context: (*context).clone() })
         .collect();
-    let readings = kept_readings(library, model, &cases)?;
+    let readings = kept_readings(library, chosen, &cases)?;
     let mut tally = Tally { papers: 1, ..Tally::default() };
     let mut sentences = Vec::new();
     for (case, reading) in cases.into_iter().zip(readings) {
@@ -220,7 +218,8 @@ fn contexts_of_paper(
 ) -> Result<PaperCitationContexts, ApiError> {
     let library = engine.library()?;
     library.paper(paper)?.ok_or(ApiError::NotFound)?;
-    let model = chosen_model(engine)?;
+    let chosen = engine.chosen()?;
+    let model = chosen.model().to_owned();
     let run_ids = run.map(|run| papers_of(engine, run, None)).transpose()?;
     let citing_ids = match (run, tree_path(community)?) {
         (Some(run), Some(community)) => Some(papers_of(engine, run, Some(community))?),
@@ -245,7 +244,7 @@ fn contexts_of_paper(
             let titles = titles(&library, &ids)?;
             let mut cites = Vec::new();
             for (cited, contexts) in &linked {
-                let (tally, sentences) = shown(&library, &model, paper, cited, &passages, contexts, &mut left_out)?;
+                let (tally, sentences) = shown(&library, &chosen, paper, cited, &passages, contexts, &mut left_out)?;
                 if !sentences.is_empty() {
                     let title = titles.get(cited).cloned().unwrap_or_else(|| cited.clone());
                     cites.push(Between { paper: cited.clone(), title, tally, sentences });
@@ -280,7 +279,7 @@ fn contexts_of_paper(
         let (Some(passages), Some(contexts)) = (reading.passages(), kept.get(*citer)) else { continue };
         let linked = contexts.in_library();
         let Some((_, contexts)) = linked.iter().find(|(cited, _)| cited == paper) else { continue };
-        let (tally, sentences) = shown(&library, &model, citer, paper, passages, contexts, &mut left_out)?;
+        let (tally, sentences) = shown(&library, &chosen, citer, paper, passages, contexts, &mut left_out)?;
         if !sentences.is_empty() {
             let title = titles.get(*citer).cloned().unwrap_or_else(|| (*citer).to_owned());
             cited_by.push(Between { paper: (*citer).to_owned(), title, tally, sentences });
@@ -322,7 +321,6 @@ async fn read_run(State(engine): State<Shared>, Path(run): Path<String>) -> Resu
             return Err(ApiError::Invalid(format!("a run of more than {MOST_PAPERS} papers is read in parts")));
         }
         let library = shared.library()?;
-        let name = run.clone();
         let id = shared.job.start_tracked("reading citing sentences", move |tracker| {
             let fail = |error: crate::library::LibraryError| error.to_string();
             let papers = library.link_papers().map_err(fail)?;
@@ -344,7 +342,7 @@ async fn read_run(State(engine): State<Shared>, Path(run): Path<String>) -> Resu
                 count(|reading| matches!(reading, ContextsReading::Unreadable(_))),
                 if read.len() < wanted.len() { "; stopped before the rest" } else { "" }
             ));
-            Ok(name)
+            Ok(Finished::Nothing)
         })?;
         Ok(id)
     })
@@ -432,9 +430,10 @@ pub struct KindsSummary {
 
 fn summary_of(engine: &Shared, run: &str, community: Option<&str>) -> Result<KindsSummary, ApiError> {
     let library = engine.library()?;
-    let model = chosen_model(engine)?;
+    let chosen = engine.chosen()?;
+    let model = chosen.model().to_owned();
     let found = citations_of(engine, &library, run, community)?;
-    let readings = kept_readings(&library, &model, &found.cases)?;
+    let readings = kept_readings(&library, &chosen, &found.cases)?;
     let tallies = tallies(&found.cases, &readings);
     let mut tally = Tally::default();
     for (case, reading) in found.cases.iter().zip(&readings) {
@@ -501,7 +500,7 @@ fn plan_of(
     community: Option<&str>,
     scope: Scope,
 ) -> Result<Plan, ApiError> {
-    let model = chosen_model(engine)?;
+    let chosen = engine.chosen()?;
     let found = citations_of(engine, library, run, community)?;
     let cases = match scope {
         Scope::Sample => {
@@ -510,7 +509,7 @@ fn plan_of(
         }
         Scope::Rest => found.cases,
     };
-    Ok(Plan::new(&model, cases, &found.records, |key| {
+    Ok(Plan::new(&chosen, cases, &found.records, |key| {
         Ok(library.kept::<Classified>(Feature::CitationKinds, key)?.is_some())
     })?)
 }
@@ -519,6 +518,7 @@ fn plan_of(
 #[derive(Serialize)]
 pub struct KindsEstimate {
     pub scope: Scope,
+    pub provider: Provider,
     pub model: String,
     /// Citing sentences in the scope.
     pub sentences: usize,
@@ -526,7 +526,7 @@ pub struct KindsEstimate {
     pub kept: usize,
     pub to_ask: usize,
     pub estimate: BatchEstimate,
-    /// Whether the model can be asked at all (a key is set); never the key.
+    /// Whether the model can be asked at all (its provider's key is set); never the key.
     pub can_ask: bool,
 }
 
@@ -546,15 +546,16 @@ async fn estimate(
         let library = engine.library()?;
         let plan = plan_of(&engine, &library, &run, community.as_deref(), scope)?;
         let items = plan.items();
-        let estimate = estimate_batch::<Said>(&library, &items, Counting::ASSUMED)?;
+        let estimate = estimate_batch::<Said>(&library, &items, &plan.chosen)?;
         Ok(KindsEstimate {
             scope,
             sentences: plan.kept + plan.to_ask(),
             kept: plan.kept,
             to_ask: plan.to_ask(),
-            model: plan.model.clone(),
+            provider: plan.chosen.provider(),
+            model: plan.chosen.model().to_owned(),
             estimate,
-            can_ask: engine.endpoint().is_ok(),
+            can_ask: plan.chosen.can_ask(),
         })
     })
     .await?;
@@ -566,23 +567,18 @@ async fn estimate(
 struct ClassifyRequest {
     community: Option<String>,
     scope: Scope,
-    /// The most the job may spend, in US dollars.
-    budget_usd: f64,
-    /// The model and the number of sentences the estimate the person saw was for: asking another model, or more
-    /// sentences, is refused (estimate again).
+    /// The most the job may spend: in US dollars, or in tokens for a model with no price.
+    budget_usd: Option<f64>,
+    budget_tokens: Option<u64>,
+    /// The model (of its provider) and the number of sentences the estimate the person saw was for: asking
+    /// another model, or more sentences, is refused (estimate again).
+    provider: Option<Provider>,
     model: String,
     to_ask: usize,
 }
 
-fn budget_of(usd: f64) -> Result<Budget, ApiError> {
-    if !(usd > 0.0 && usd <= MOST_BUDGET_USD) {
-        return Err(ApiError::Invalid(format!(
-            "the budget must be more than 0 and at most {MOST_BUDGET_USD} US dollars"
-        )));
-    }
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let picodollars = (usd * 1e12).round() as u64;
-    Ok(Budget::new(Limit::Dollars(Usd::from_picodollars(picodollars))))
+fn refused(why: Refused) -> ApiError {
+    ApiError::Invalid(why.to_string())
 }
 
 async fn classify_run(
@@ -591,38 +587,51 @@ async fn classify_run(
     body: Result<Json<ClassifyRequest>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let Json(request) = body?;
-    let budget = budget_of(request.budget_usd)?;
+    let accepted = match Accepted::of(request.budget_usd, request.budget_tokens).map_err(refused)? {
+        Accepted::Shown => return Err(ApiError::Invalid("give the budget the job may spend".to_owned())),
+        accepted => accepted,
+    };
     one_name(&run)?;
-    let endpoint = engine.endpoint().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
     let started = on_the_side(move || {
+        let chosen = engine.chosen()?;
+        let endpoint =
+            chosen.endpoint().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
         let library = engine.library()?;
         let community = tree_path(request.community.as_deref())?.map(str::to_owned);
         papers_of(&engine, &run, community.as_deref())?; // a run or community that is not there is not found now
-        if chosen_model(&engine)? != request.model {
-            return Err(ApiError::Invalid("the model chosen changed since the estimate was shown: estimate again".to_owned()));
-        }
+        chosen.as_shown(request.provider, &request.model).map_err(|why| ApiError::Invalid(why.to_string()))?;
+        // in dollars for a model with a price, in tokens for one without, as the estimate was shown
+        let plan = plan_of(&engine, &library, &run, community.as_deref(), request.scope)?;
+        let cost = estimate_batch::<Said>(&library, &plan.items(), &plan.chosen)?.cost;
+        let terms = Terms::AtMost { usd: MOST_BUDGET_USD, tokens: MOST_BUDGET_TOKENS };
+        let budget = budget(&cost, accepted, terms).map_err(refused)?;
         let shared = engine.clone();
+        let transport = engine.transport.clone();
+        let subject = match &community {
+            Some(community) => Subject::Community { run: run.clone(), community: community.clone() },
+            None => Subject::Run(run.clone()),
+        };
         let id = engine.job.start_tracked("reading citation kinds", move |tracker| {
             let plan = plan_of(&shared, &library, &run, community.as_deref(), request.scope)
                 .map_err(|error| error.to_string())?;
-            if plan.model != request.model || plan.to_ask() > request.to_ask {
+            if plan.chosen.as_shown(request.provider, &request.model).is_err() || plan.to_ask() > request.to_ask {
                 return Err("What would be asked changed since the estimate was shown: estimate again.".to_owned());
             }
             tracker.log(&format!(
                 "Reading the kinds of {} citing sentences with {} ({} read before), in {} calls.",
                 plan.to_ask(),
-                plan.model,
+                plan.chosen,
                 plan.kept,
                 plan.calls.len()
             ));
-            let transport = Https::default();
-            let asking = Asking { library: &library, transport: &transport, endpoint, recorder: &*library, in_flight: IN_FLIGHT };
+            let asking =
+                Asking { library: &library, transport: &*transport, endpoint, recorder: &*library, in_flight: IN_FLIGHT };
             let done = citation_kinds::classify(asking, &plan, &budget, tracker).map_err(|error| error.to_string())?;
             tracker.log(&format!(
                 "Read {} citing sentences; {} were missing from the answers, {} calls had no usable answer, {} were not started.",
                 done.read, done.unanswered, done.failed, done.not_started
             ));
-            Ok(run)
+            Ok(Finished::Feature { feature: Feature::CitationKinds, subject })
         })?;
         Ok(id)
     })
@@ -837,7 +846,7 @@ mod tests {
             let context = linked.iter().find(|(paper, _)| paper == cited).unwrap().1[0];
             let slot = Slot {
                 feature: Feature::CitationKinds,
-                key: sentence_key(MODEL, "seed", cited, &context.address),
+                key: sentence_key(&crate::model::chosen::Chosen::claude(MODEL), "seed", cited, &context.address),
                 subject: Subject::Paper(cited.to_owned()),
             };
             library.keep(&slot, MODEL, PROMPT, &Classified { kind, quote: quote.to_owned() }).unwrap();
@@ -869,6 +878,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn another_provider_is_priced_asked_in_its_own_shape_kept_and_asked_again_when_the_provider_changes() {
+        use super::super::other_providers::{
+            BUDGET, Chosen as Asked, MODEL, Scripted, accepting, call, choose, finished, priced_for, router, sent_to,
+        };
+
+        let data = data();
+        // the baseline is justified by words of its sentence; the other reading is a mention
+        let transport = Scripted::new(|body: &str| {
+            let said = if body.contains("Resolving interference") {
+                json!([{"id": "1", "kind": "baseline", "quote": "We compare against the merging of"}])
+            } else {
+                json!([{"id": "1", "kind": "mention", "quote": ""}])
+            };
+            json!({"citations": said}).to_string()
+        });
+        let router = router(data.path(), Asked::OpenAi, &transport);
+        call(&router, "GET", "/api/papers/seed/citation-contexts", None).await;
+        let mut sent = 0;
+        for chosen in [Asked::OpenAi, Asked::ThisComputer] {
+            choose(data.path(), chosen);
+            let (_, estimate) = call(&router, "GET", "/api/runs/r1/citation-kinds/estimate?scope=sample", None).await;
+            assert_eq!(
+                (estimate["to_ask"].clone(), estimate["can_ask"].clone()),
+                (json!(2), json!(true)),
+                "{estimate}"
+            );
+            assert_eq!(estimate["provider"], chosen.provider().id());
+            priced_for(&estimate["estimate"], chosen);
+            assert_eq!(transport.sent().len(), sent, "an estimate sends nothing");
+
+            let mut asked = accepting(&estimate["estimate"], BUDGET);
+            asked["scope"] = json!("sample");
+            asked["to_ask"] = estimate["to_ask"].clone();
+            let (status, begun) = call(&router, "POST", "/api/runs/r1/citation-kinds", Some(asked.clone())).await;
+            assert_eq!(status, StatusCode::OK, "{begun}");
+            let done = finished(&router, &begun["id"]).await;
+            assert_eq!(done["state"], "done", "{done}");
+            let made = json!({"kind": "feature", "feature": "citation_kinds", "subject": {"run": "r1"}});
+            assert_eq!((done["outcome"].clone(), done["result"].clone()), (made, Value::Null), "no run to open");
+            let all = transport.sent();
+            assert_eq!(all.len() - sent, 2, "one call per cited paper");
+            sent_to(&all[sent..], chosen);
+            sent = all.len();
+
+            let (_, summary) = call(&router, "GET", "/api/runs/r1/citation-kinds", None).await;
+            assert_eq!(summary["model"], MODEL);
+            assert_eq!(summary["baseline"][0]["paper"], "ties", "{summary}");
+            let (_, again) = call(&router, "GET", "/api/runs/r1/citation-kinds/estimate?scope=sample", None).await;
+            assert_eq!(again["to_ask"], 0, "kept: nothing left to ask");
+            asked["to_ask"] = json!(0);
+            let (_, begun) = call(&router, "POST", "/api/runs/r1/citation-kinds", Some(asked)).await;
+            assert_eq!(finished(&router, &begun["id"]).await["state"], "done");
+            assert_eq!(transport.sent().len(), sent, "kept: not asked again");
+        }
+    }
+
+    #[tokio::test]
     async fn the_estimate_sends_nothing_and_asking_needs_a_key_and_a_budget() {
         let data = data();
         let (router, _) = serve(&data, false);
@@ -876,7 +942,7 @@ mod tests {
         let (status, estimate) = ask(&router, "GET", "/api/runs/r1/citation-kinds/estimate?scope=sample", None).await;
         assert_eq!(status, StatusCode::OK, "{estimate}");
         assert_eq!((estimate["sentences"].clone(), estimate["to_ask"].clone()), (json!(2), json!(2)));
-        assert_eq!(estimate["estimate"]["by_model"][0]["calls"], 2, "one call per cited paper");
+        assert_eq!(estimate["estimate"]["calls"], 2, "one call per cited paper");
         assert_eq!(estimate["can_ask"], false);
         assert!(estimate["estimate"]["usd"].as_f64().unwrap() > 0.0);
         let body = json!({"scope": "sample", "budget_usd": 1.0, "model": MODEL, "to_ask": 2}).to_string();
@@ -907,7 +973,7 @@ mod tests {
         let other = json!({"scope": "rest", "budget_usd": 1.0, "model": "another-model", "to_ask": 2}).to_string();
         let (status, told) = ask(&router, "POST", "/api/runs/r1/citation-kinds", Some(other)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
-        assert!(told["error"].as_str().unwrap().contains("estimate again"));
+        assert!(told["error"].as_str().unwrap().contains("estimate before asking"));
     }
 
     #[tokio::test]
@@ -920,7 +986,7 @@ mod tests {
                 while !tracker.cancelled() {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
-                Ok("stopped".to_owned())
+                Ok(crate::jobs::Finished::Nothing)
             })
             .unwrap();
         assert_eq!(ask(&router, "POST", "/api/runs/r1/citation-contexts", None).await.0, StatusCode::CONFLICT);
@@ -930,7 +996,11 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{started}");
         let status = finished(&router).await;
         assert_eq!(status["state"], "done", "{status}");
-        assert_eq!(status["result"], "r1");
+        assert_eq!(
+            (status["outcome"].clone(), status["result"].clone()),
+            (json!({"kind": "nothing"}), Value::Null),
+            "no run to open"
+        );
         assert!(
             status["log"].to_string().contains("Citing sentences read for 1 of 3 papers: 2 have no PDF kept"),
             "{status}"

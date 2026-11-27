@@ -4,5 +4,6 @@
 
 pub mod answers;
 pub mod batch;
+pub mod chosen;
 pub mod embed;
 pub mod language;

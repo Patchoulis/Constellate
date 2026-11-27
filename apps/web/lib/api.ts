@@ -134,8 +134,10 @@ export const api = {
 	/** a paper's weaknesses: the reviewers' points, and the model's reading kept or what asking would cost (nothing is sent) */
 	critique: (id: string) => call<Critique>(`/api/papers/${encodeURIComponent(id)}/critique`),
 	/** ask the model to read the paper for weaknesses, as the one job; capped at the estimate's worst case */
-	readCritique: (id: string, model: string) =>
-		call<CritiqueStarted>(`/api/papers/${encodeURIComponent(id)}/critique`, send("POST", { model })),
+	/** ask for the model's reading, for the model the estimate was shown for, within a budget (the worst case shown
+	 *  when none is named): in US dollars, or in tokens for a model with no price */
+	readCritique: (id: string, shown: import("@rp/contracts").ShownModel, budget?: import("@rp/contracts").BudgetOf) =>
+		call<CritiqueStarted>(`/api/papers/${encodeURIComponent(id)}/critique`, send("POST", { ...shown, ...budget })),
 	/** forget the model's reading of the paper, so that it can be asked again */
 	forgetCritique: (id: string) => call<{ forgotten: number }>(`/api/papers/${encodeURIComponent(id)}/critique`, { method: "DELETE" }),
 	/** where a community's papers (or the marked ones) stand on a question (engine api/stances.rs) */
@@ -185,13 +187,15 @@ export const api = {
 	/** what asking the sample or the rest would cost; nothing is sent */
 	extractionEstimate: (name: string, scope: import("@rp/contracts").ExtractionScope, part: import("@rp/contracts").ExtractionPart) =>
 		call<import("@rp/contracts").ExtractionEstimate>(`${run(name)}/extraction/estimate`, send("POST", { scope, part })),
-	/** start asking, as a job, spending at most `budgetUsd` US dollars; answers the job's number */
+	/** start asking, as a job, within `budget` (US dollars, or tokens for a model with no price), of the model the
+	 *  estimate was shown for; answers the job's number */
 	runExtraction: (
 		name: string,
 		scope: import("@rp/contracts").ExtractionScope,
 		part: import("@rp/contracts").ExtractionPart,
-		budgetUsd: number,
-	) => call<{ ok: true; id: number }>(`${run(name)}/extraction/run`, send("POST", { scope, part, budget_usd: budgetUsd })),
+		budget: import("@rp/contracts").BudgetOf,
+		shown: import("@rp/contracts").ShownModel,
+	) => call<{ ok: true; id: number }>(`${run(name)}/extraction/run`, send("POST", { scope, part, ...budget, ...shown })),
 	/** forget these papers' cells, so that they are asked again at the next run */
 	forgetExtraction: (name: string, papers: string[]) =>
 		call<{ forgotten: number }>(`${run(name)}/extraction/forget`, send("POST", { papers })),
@@ -199,11 +203,16 @@ export const api = {
 	prepareExplanation: (id: string, address: PassageAddress) =>
 		call<ExplanationPrepared>(`/api/papers/${encodeURIComponent(id)}/explanation/prepare`, send("POST", { address })),
 	/** ask the model to explain the passage at `address`, as a job (none is started when one is kept) */
-	explain: (id: string, address: PassageAddress, model: string, mostUsd: number | null) =>
-		call<ExplanationStarted>(`/api/papers/${encodeURIComponent(id)}/explanation`, send("POST", { address, model, most_usd: mostUsd })),
-	/** set the kept explanation of a passage aside, so that it is asked for again */
+	/** ask, for the model and the worst case the reader was shown (the engine refuses if either changed) */
+	explain: (
+		id: string,
+		address: PassageAddress,
+		shown: import("@rp/contracts").ShownModel,
+		accepted: import("@rp/contracts").AcceptedCost,
+	) => call<ExplanationStarted>(`/api/papers/${encodeURIComponent(id)}/explanation`, send("POST", { address, ...shown, ...accepted })),
+	/** forget the kept explanation of a passage, so that it is asked for again; `redone` says whether there was one */
 	redoExplanation: (id: string, address: PassageAddress) =>
-		call<{ redone: true }>(`/api/papers/${encodeURIComponent(id)}/explanation`, send("DELETE", { address })),
+		call<{ redone: boolean }>(`/api/papers/${encodeURIComponent(id)}/explanation`, send("DELETE", { address })),
 	/** the passages of a paper with an explanation kept for the model chosen */
 	explainedPassages: (id: string) => call<ExplainedPassages>(`/api/papers/${encodeURIComponent(id)}/explanations`),
 	/** passages of the run's papers near this one that share the passage's words (no model) */
@@ -272,7 +281,8 @@ export const api = {
 
 type StanceScope = import("@rp/contracts").StanceScope;
 /** What the user was shown when they clicked: the model and the estimate's "at most" in US dollars (null: price not known). */
-type StanceApproved = { model: string; approved_usd: number | null };
+/** The terms a stances job is asked on: the model (of its provider) and the most it was shown to cost. */
+type StanceApproved = import("@rp/contracts").ShownModel & import("@rp/contracts").AcceptedCost;
 
 /** Where a scope's stances routes are: a community's, or the run's marked papers'. */
 function stancesAt(name: string, scope: StanceScope): string {

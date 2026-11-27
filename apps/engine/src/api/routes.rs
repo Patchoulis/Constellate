@@ -1,9 +1,9 @@
 //! What the interface can ask, and how the engine's errors are told to it.
 //!
 //! ```text
-//! GET /api/status?since=N   the job (jobs.rs) with its log from line N on and its progress, the warnings about
-//!                           how it listens, the mode (local or network), the settings the server owns, and
-//!                           whether a key for the Claude API is set (never the key)
+//! GET /api/status?since=N   the job (jobs.rs) with its log from line N on, its progress and what it made, the
+//!                           warnings about how it listens, the mode (local or network), the settings the server
+//!                           owns, and whether a key for the chosen provider is set (never the key)
 //! POST /api/job/cancel      {id}: ask the running job to stop (it finishes what is under way)
 //! GET /api/settings         the settings
 //! PUT /api/settings         change some of them: a JSON object of the ones to change
@@ -36,9 +36,10 @@ use tower_http::timeout::TimeoutLayer;
 
 use super::config::Mode;
 use super::security::{self, Guard, LARGEST_BODY};
-use crate::jobs::{Busy, Job, Snapshot};
+use crate::jobs::{Busy, Counted, Finished, Job, Phase, Progress};
 use crate::library::{Library, LibraryError};
-use crate::model::language::{Endpoint, Provider, Unavailable};
+use crate::model::chosen::Chosen;
+use crate::model::language::{Endpoint, Https, Provider, Transport, Unavailable};
 use crate::settings::{self, Choices, Settings, SettingsError};
 
 /// How long a request may take from its first byte to its answer: a client that sends its body slowly (to hold
@@ -47,8 +48,8 @@ const PATIENCE: Duration = Duration::from_secs(30);
 
 /// What every route shares.
 pub struct Engine {
-    /// The one background job (a run, reading declarations).
-    pub job: Job<String>,
+    /// The one background job (a run, reading declarations, a feature asking the model).
+    pub job: Job<Finished>,
     /// The data folder: settings, library, runs.
     pub data: PathBuf,
     /// What each choice among the settings may be.
@@ -62,6 +63,9 @@ pub struct Engine {
     /// One endpoint to ask whatever the settings say, when there is one: a test's. The program leaves it unset,
     /// and the provider chosen in the settings is asked ([`Engine::endpoint`]).
     pub language: Result<Endpoint, Unavailable>,
+    /// How the language model's requests reach its provider: the network, or a test's fake (which reaches nothing,
+    /// so that no test of a route can ever call a real provider).
+    pub transport: Arc<dyn Transport>,
     /// The library, opened when a route first needs it (and tried again after a failure to open).
     library: Mutex<Option<Arc<Library>>>,
 }
@@ -79,6 +83,7 @@ impl Engine {
             mode: Mode::Local,
             providers,
             language: Err(Unavailable::NoKey),
+            transport: Arc::new(Https::default()),
             library: Mutex::new(None),
         }
     }
@@ -101,15 +106,38 @@ impl Engine {
     /// Where the language model is asked: the provider chosen in the settings, with its key and address as
     /// read at start, or why it cannot be asked (its key is not set). Every feature that asks the model asks
     /// here, so that the choice in the interface is the one that is used.
+    ///
+    /// Settings that cannot be read (a damaged or hand-edited file) say nothing of which provider was chosen: that
+    /// is told ([`Unavailable::SettingsUnreadable`]), never taken for the Claude API, which the server may not be
+    /// set to send papers' text to.
     pub fn endpoint(&self) -> Result<Endpoint, Unavailable> {
-        if let Ok(fixed) = &self.language {
-            return Ok(fixed.clone());
+        let settings = self.read_settings()?;
+        self.endpoint_for(settings.describe_provider)
+    }
+
+    /// The settings, or why the provider to ask cannot be known from them.
+    fn read_settings(&self) -> Result<Settings, Unavailable> {
+        settings::load(&self.settings_file(), &self.choices).map_err(|error| {
+            eprintln!("settings: {error}");
+            Unavailable::SettingsUnreadable
+        })
+    }
+
+    fn endpoint_for(&self, provider: Provider) -> Result<Endpoint, Unavailable> {
+        match &self.language {
+            Ok(fixed) => Ok(fixed.clone()),
+            Err(_) => self.providers.endpoint(provider),
         }
-        let chosen = settings::load(&self.settings_file(), &self.choices)
-            .ok()
-            .map(|settings| settings.describe_provider)
-            .unwrap_or(Provider::Anthropic);
-        self.providers.endpoint(chosen)
+    }
+
+    /// The provider, model and effort every feature asks with, and the endpoint it asks at, read together from
+    /// the settings ([`Chosen::new`]): the one place a feature learns which model it asks, so that what it
+    /// estimates, keys its answers under and sends cannot be of different providers. Settings that cannot be read
+    /// are an error naming the file, never a provider guessed.
+    pub fn chosen(&self) -> Result<Chosen, ApiError> {
+        let settings = self.read_settings().map_err(|why| ApiError::Invalid(why.to_string()))?;
+        let provider = settings.describe_provider;
+        Chosen::new(self.endpoint_for(provider), provider, &settings).map_err(|why| ApiError::Invalid(why.to_string()))
     }
 
     pub fn settings_file(&self) -> PathBuf {
@@ -338,16 +366,32 @@ struct Since {
     since: Option<usize>,
 }
 
+/// `Status` in the contracts: the job as it is now, and what the interface needs to know of the engine.
 #[derive(Serialize)]
 struct Status<'a> {
-    #[serde(flatten)]
-    job: Snapshot<String>,
+    id: u64,
+    kind: String,
+    state: Phase,
+    /// What a finished job made ([`Finished`]): a run, a feature's answers, or nothing to open.
+    outcome: Option<Finished>,
+    /// The name of the run a finished job made, and nothing else: what the Python backend's `result` is, so that
+    /// an interface that knows only that never takes a feature's job for a run.
+    result: Option<String>,
+    error: Option<String>,
+    /// The log's lines from `since` on, and how many it has in all.
+    log: Vec<String>,
+    total: usize,
+    /// Calls done of how many, and dollars spent so far, for a job that reports them.
+    progress: Option<Progress>,
+    /// Papers done of how many, for a job that counts them.
+    papers: Option<Counted>,
     warnings: &'a [String],
     /// `local` or `network`: what kind of engine the interface is talking to.
     mode: &'static str,
     /// The settings the interface may not change ([`server_owned`]).
     server_owned: &'static [&'static str],
-    /// Whether the Claude API can be asked: a key is set (and its address is usable). Only that, never the key.
+    /// Whether the chosen provider's model can be asked: its key is set (and its address is usable). Only that,
+    /// never the key.
     api_key_set: bool,
 }
 
@@ -360,8 +404,22 @@ async fn status(
         Mode::Local => "local",
         Mode::Network => "network",
     };
+    let job = engine.job.snapshot(since.unwrap_or(0));
+    let result = match &job.result {
+        Some(Finished::Run { run }) => Some(run.clone()),
+        Some(Finished::Feature { .. } | Finished::Nothing) | None => None,
+    };
     let told = Status {
-        job: engine.job.snapshot(since.unwrap_or(0)),
+        id: job.id,
+        kind: job.kind,
+        state: job.state,
+        outcome: job.result,
+        result,
+        error: job.error,
+        log: job.log,
+        total: job.total,
+        progress: job.progress,
+        papers: job.papers,
         warnings: &engine.warnings,
         mode,
         server_owned: server_owned(engine.mode),
@@ -432,6 +490,34 @@ mod tests {
         for bad in devices.into_iter().chain(others) {
             assert!(matches!(one_name(bad), Err(ApiError::NotFound)), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn settings_that_cannot_be_read_ask_no_provider_rather_than_the_claude_api() {
+        let data = tempfile::tempdir().unwrap();
+        let mut engine = Engine::new(data.path().to_path_buf(), Choices::default());
+        engine.providers = crate::model::language::Providers::from_lookup(|name| {
+            matches!(name, "ANTHROPIC_API_KEY" | "OPENAI_API_KEY").then(|| "test-key-not-real".to_owned())
+        });
+        std::fs::write(engine.settings_file(), r#"{"describe_provider": "openai""#).unwrap();
+        assert_eq!(engine.endpoint().unwrap_err(), Unavailable::SettingsUnreadable);
+        let refused = engine.chosen().unwrap_err();
+        assert!(matches!(refused, ApiError::Invalid(_)) && refused.to_string().contains("settings.json"), "{refused}");
+        // read again once the file can be: the provider it names
+        std::fs::write(engine.settings_file(), r#"{"describe_provider": "openai"}"#).unwrap();
+        assert_eq!(engine.endpoint().unwrap().provider(), Provider::OpenAi);
+    }
+
+    #[test]
+    fn every_route_of_the_table_is_documented_in_the_readme() {
+        let readme = include_str!("../../README.md");
+        let missing: Vec<&str> = table()
+            .iter()
+            .map(|(path, _)| *path)
+            // written as `METHOD path` in a row, the path ending at the backtick or at its query
+            .filter(|path| !readme.contains(&format!(" {path}`")) && !readme.contains(&format!(" {path}?")))
+            .collect();
+        assert!(missing.is_empty(), "routes not in apps/engine/README.md: {missing:?}");
     }
 
     #[test]

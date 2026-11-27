@@ -31,13 +31,14 @@ import {
 	searchedLine,
 	symbolSource,
 } from "@/lib/explanation";
+import { accepting, shownModel } from "@/lib/cost";
 import { money } from "@/lib/units";
 import { ready, useAsync } from "@/lib/use-async";
+import { useFollowedJob } from "@/lib/use-followed-job";
 import { cn } from "@/lib/utils";
 
 export type ExplainMode = "explain" | "related";
 
-const POLL_MS = 1200;
 const USD = { code: "USD", rate: 1, date: null };
 
 /** "Do not ask again below": kept in this browser only; unreadable storage means always asking. */
@@ -219,7 +220,28 @@ function ExplainView({
 }) {
 	const prepared = useAsync(() => api.prepareExplanation(paper, passage.address), [paper, passage.address.page, passage.address.start]);
 	const found = ready(prepared);
-	const [asking, setAsking] = useState<Asking>({ state: "idle" });
+	const [starting, setStarting] = useState(false);
+	const [failure, setFailure] = useState<string | null>(null);
+	// follow the job until it is over (asking only for what is new); then what was kept is read
+	const reload = useRef(prepared.reload);
+	reload.current = prepared.reload;
+	const explained = useRef(onExplained);
+	explained.current = onExplained;
+	const { job, start: follow } = useFollowedJob((ended) => {
+		if (ended.state !== "done") return;
+		reload.current();
+		explained.current();
+	});
+	const asking: Asking =
+		job.state === "running"
+			? { state: "running", job: job.id, progress: job.progress, unanswered: job.unanswered }
+			: starting
+				? { state: "starting" }
+				: failure !== null
+					? { state: "failed", error: failure }
+					: job.state === "failed"
+						? { state: "failed", error: job.error }
+						: { state: "idle" };
 	const [askBelow, setAskBelow] = useState<number | null>(null);
 	// what decides asking without a confirmation is the setting as it was when the panel opened: changing it
 	// applies to the next passage, never to the estimate on screen
@@ -232,49 +254,19 @@ function ExplainView({
 
 	const start = async () => {
 		if (found?.state !== "ready" || !found.estimate) return;
+		const estimate = found.estimate;
 		askedOnce.add(key);
-		setAsking({ state: "starting" });
-		try {
-			// the model and the worst case shown go with the request: the engine refuses if either changed
-			const started = await api.explain(paper, passage.address, found.model, found.estimate.most_usd);
-			if (started.started && started.job !== null) setAsking({ state: "running", job: started.job, progress: null, unanswered: null });
-			else {
-				setAsking({ state: "idle" });
-				prepared.reload();
-			}
-		} catch (error) {
-			setAsking({ state: "failed", error: (error as Error).message });
-		}
+		setStarting(true);
+		setFailure(null);
+		// the model and the worst case shown go with the request: the engine refuses if either changed
+		await follow(async () => {
+			const started = await api.explain(paper, passage.address, shownModel(found), accepting(estimate));
+			if (started.started && started.job !== null) return started.job;
+			prepared.reload();
+			return null;
+		});
+		setStarting(false);
 	};
-
-	// follow the job until it is over; then what was kept is read
-	const reload = useRef(prepared.reload);
-	reload.current = prepared.reload;
-	const explained = useRef(onExplained);
-	explained.current = onExplained;
-	useEffect(() => {
-		if (asking.state !== "running") return;
-		const timer = setTimeout(async () => {
-			try {
-				const status = await api.status(0);
-				if (status.id === asking.job && status.state === "running") {
-					setAsking({ ...asking, progress: status.progress ?? null, unanswered: null });
-					return;
-				}
-				if (status.id === asking.job && status.state === "failed") {
-					setAsking({ state: "failed", error: status.error ?? "The explanation could not be written." });
-					return;
-				}
-				setAsking({ state: "idle" });
-				reload.current();
-				explained.current();
-			} catch (error) {
-				// the job may still be running: keep looking, and keep the Stop button
-				setAsking({ ...asking, unanswered: (error as Error).message });
-			}
-		}, POLL_MS);
-		return () => clearTimeout(timer);
-	}, [asking]);
 
 	const estimate = found?.state === "ready" ? found.estimate : null;
 	useEffect(() => {
@@ -312,7 +304,7 @@ function ExplainView({
 							askedOnce.add(key); // a redo asks again only on a click
 							prepared.reload();
 						} catch (error) {
-							setAsking({ state: "failed", error: (error as Error).message });
+							setFailure((error as Error).message);
 						}
 					}}
 				/>
@@ -336,7 +328,7 @@ function ExplainView({
 					<Loader2 className="size-3.5 animate-spin" />
 					<span className="flex-1">
 						Asking the model…
-						{asking.progress && ` ${money(asking.progress.usd, USD)} spent so far.`}
+						{asking.progress && asking.progress.usd > 0 && ` ${money(asking.progress.usd, USD)} spent so far.`}
 						{asking.unanswered && ` (${asking.unanswered}: looking again.)`}
 					</span>
 					<Button

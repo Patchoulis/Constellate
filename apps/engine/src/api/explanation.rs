@@ -5,16 +5,18 @@
 //! POST   /api/papers/{id}/explanation/prepare  {address}: what explaining the passage there involves, free:
 //!                                              the passage, the definitions found, the kept explanation if
 //!                                              there is one, else the estimate ([`Prepared`])
-//! POST   /api/papers/{id}/explanation          {address}: ask, as a tracked job ({started, job}); nothing is
-//!                                              asked when an explanation is kept
-//! DELETE /api/papers/{id}/explanation          {address}: redo: the kept explanation is set aside
+//! POST   /api/papers/{id}/explanation          {address, provider, model, accepted_usd | accepted_tokens}: ask,
+//!                                              as a tracked job ({started, job}), refused when the model or its
+//!                                              worst case changed since the estimate was shown; nothing is asked
+//!                                              when an explanation is kept
+//! DELETE /api/papers/{id}/explanation          {address}: redo: the kept explanation is forgotten
 //! GET    /api/papers/{id}/explanations         the passages with an explanation kept for the model chosen
 //! POST   /api/runs/{run}/papers/{id}/related   {address}: passages of nearby papers sharing its words ([`Related`])
 //! ```
 //!
 //! `address` is a passage's address as `GET /api/papers/{id}/passages` gives it (the reader resolves a selection
 //! to one with the locate route first): the passage explained is the one that address starts in. The model is
-//! the one chosen in the settings (`describe_model`).
+//! the one chosen in the settings, of the provider chosen there ([`Engine::chosen`](super::routes::Engine::chosen)).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -31,16 +33,15 @@ use crate::evidence::{Evidence, PaperText};
 use crate::explanation::definitions::{Definition, Term, definitions};
 use crate::explanation::related::{Candidate, Place, Searched, related};
 use crate::explanation::{
-    self, Checked, NEARBY_PAPERS, PROMPT, PURPOSE, Prompt, Question, Redone, Said, budget, estimate, explain, item,
-    prompt, schema, slot,
+    self, Checked, NEARBY_PAPERS, PURPOSE, Prompt, Question, Said, estimate, explain, item, prompt, schema, slot,
 };
+use crate::jobs::Finished;
 use crate::library::store::read_json;
-use crate::library::{Feature, Library, PaperReading};
+use crate::library::{Feature, Library, PaperReading, Subject};
 use crate::model::batch::Asking;
-use crate::model::language::{Counting, DEFAULT_MODEL, Https};
-use crate::settings;
+use crate::model::chosen::{Accepted, Chosen, Terms, budget};
+use crate::model::language::{Estimate, Provider};
 use crate::text::passages::{Address, Kind, Passages};
-use crate::usage::Usd;
 
 /// The longest section heading taken in an address: a heading is a line, not a page.
 const LONGEST_SECTION: usize = 1_000;
@@ -67,12 +68,6 @@ fn take(body: Result<Json<Request>, JsonRejection>) -> Result<Address, ApiError>
         return Err(ApiError::Invalid(format!("the section is longer than {LONGEST_SECTION} characters")));
     }
     Ok(address)
-}
-
-/// The model chosen in the settings, or the default when none is.
-fn chosen_model(engine: &Shared) -> Result<String, ApiError> {
-    let chosen = settings::load(&engine.settings_file(), &engine.choices)?.describe_model;
-    Ok(if chosen.trim().is_empty() { DEFAULT_MODEL.to_owned() } else { chosen })
 }
 
 /// Why a paper has no text to explain.
@@ -115,7 +110,7 @@ struct Opened {
     passages: Passages,
     index: usize,
     question: Question,
-    model: String,
+    chosen: Chosen,
     definitions: Vec<Definition>,
     prompt: Prompt,
 }
@@ -126,7 +121,7 @@ impl Opened {
     }
 
     fn slot(&self) -> crate::library::Slot {
-        slot(&self.paper, &self.model, self.address(), self.question)
+        slot(&self.paper, &self.chosen, self.address(), self.question)
     }
 
     fn kept(&self) -> Result<Option<crate::library::Kept<Said>>, ApiError> {
@@ -147,10 +142,10 @@ fn open(engine: &Shared, paper: &str, address: &Address) -> Result<Result<Opened
             "a title or a heading cannot be explained: choose a paragraph, an equation or a caption".into(),
         )
     })?;
-    let model = chosen_model(engine)?;
+    let chosen = engine.chosen()?;
     let found = definitions(&passages, index);
     let prompt = prompt(paper, &record.title, &record.r#abstract, &passages, index, &found);
-    Ok(Ok(Opened { library, paper: paper.to_owned(), passages, index, question, model, definitions: found, prompt }))
+    Ok(Ok(Opened { library, paper: paper.to_owned(), passages, index, question, chosen, definitions: found, prompt }))
 }
 
 /// A term the passage uses and the sentence that introduces it, as evidence: `DefinedTerm` in the contracts.
@@ -162,7 +157,7 @@ struct Defined {
 
 /// The passage explained.
 #[derive(Serialize)]
-struct Chosen {
+struct Explaining {
     kind: Kind,
     address: Address,
 }
@@ -175,17 +170,6 @@ struct Explained {
     kept_at: String,
     #[serde(flatten)]
     checked: Checked,
-}
-
-/// What explaining is likely to cost, and at most: `ExplanationEstimate` in the contracts. Always an estimate.
-#[derive(Serialize)]
-struct Cost {
-    usd: Option<Usd>,
-    most_usd: Option<Usd>,
-    /// Likely tokens: the prompt, and the answer with its thinking.
-    prompt_tokens: u64,
-    answer_tokens: u64,
-    counting: Counting,
 }
 
 /// The answer to `prepare`: `ExplanationPrepared` in the contracts.
@@ -203,17 +187,20 @@ enum Prepared {
 #[derive(Serialize)]
 struct Ready {
     paper: String,
-    passage: Chosen,
+    passage: Explaining,
     question: Question,
     /// The passage's text as extracted may be garbled (an equation, a table): the answer must say so.
     garbled: bool,
-    /// The model that would be asked: the one chosen in the settings.
+    /// The model that would be asked, of its provider: the one chosen in the settings.
+    provider: Provider,
     model: String,
+    /// Whether it can be asked at all (its provider's key is set); never the key.
+    api_key_set: bool,
     definitions: Vec<Defined>,
     /// Kept from before: shown at no cost.
     explained: Option<Explained>,
-    /// What asking would cost; null when an explanation is kept.
-    estimate: Option<Cost>,
+    /// What asking would cost (`AskingCost` in the contracts); null when an explanation is kept.
+    estimate: Option<Estimate>,
 }
 
 fn prepared(opened: &Opened) -> Result<Prepared, ApiError> {
@@ -235,23 +222,17 @@ fn prepared(opened: &Opened) -> Result<Prepared, ApiError> {
         None
     } else {
         let schema = schema();
-        let item = item(opened.slot(), &opened.model, &opened.prompt, &schema);
-        let estimate = estimate(&opened.library, &item)?;
-        let tokens = estimate.by_model.iter().fold(crate::usage::Tokens::default(), |sum, model| sum + model.tokens);
-        Some(Cost {
-            usd: estimate.usd,
-            most_usd: estimate.most_usd,
-            prompt_tokens: tokens.prompt(),
-            answer_tokens: tokens.output,
-            counting: estimate.by_model.first().map_or(Counting::ASSUMED, |model| model.counting),
-        })
+        let item = item(opened.slot(), &opened.chosen, &opened.prompt, &schema);
+        Some(estimate(&opened.library, &item, &opened.chosen)?.cost)
     };
     Ok(Prepared::Ready(Box::new(Ready {
         paper: opened.paper.clone(),
-        passage: Chosen { kind: passage.kind, address: passage.address.clone() },
+        passage: Explaining { kind: passage.kind, address: passage.address.clone() },
         question: opened.question,
         garbled: Question::garbled(passage.kind),
-        model: opened.model.clone(),
+        provider: opened.chosen.provider(),
+        model: opened.chosen.model().to_owned(),
+        api_key_set: opened.chosen.can_ask(),
         definitions: defined,
         explained,
         estimate,
@@ -287,32 +268,19 @@ fn no_text(why: NoText) -> ApiError {
     })
 }
 
-/// `ExplanationStart` in the contracts: the passage, and the model and worst case the reader was shown, so that
-/// what is paid is never more than what they agreed to.
+/// `ExplanationStart` in the contracts: the passage, and the model (of its provider) and the worst case the
+/// reader was shown, in dollars or, for a model with no price, in tokens, so that what is paid is never more than
+/// what they agreed to.
 #[derive(Deserialize)]
 struct Start {
     address: Address,
+    #[serde(default)]
+    provider: Option<Provider>,
     model: String,
-    most_usd: Option<f64>,
-}
-
-/// Does what would be asked now cost at most what the reader was shown, with the model they were shown?
-fn as_shown(model: &str, estimate: &crate::model::batch::BatchEstimate, seen: &Start) -> Result<(), ApiError> {
-    let changed = || {
-        ApiError::Invalid(
-            "the model or the cost changed since the estimate was shown: look at the new estimate before asking"
-                .to_owned(),
-        )
-    };
-    if model != seen.model {
-        return Err(changed());
-    }
-    match (estimate.most_usd, seen.most_usd) {
-        (None, None) => Ok(()),
-        // a hundredth of a cent of rounding in how the amount travelled
-        (Some(most), Some(shown)) if most.dollars() <= shown + 1e-6 => Ok(()),
-        _ => Err(changed()),
-    }
+    #[serde(alias = "most_usd")]
+    accepted_usd: Option<f64>,
+    #[serde(default)]
+    accepted_tokens: Option<u64>,
 }
 
 async fn start(
@@ -327,26 +295,29 @@ async fn start(
         if opened.kept()?.is_some() {
             return Ok(Started { started: false, job: None });
         }
-        let endpoint = engine.endpoint().map_err(|why| ApiError::Invalid(why.to_string()))?;
+        let endpoint = opened.chosen.endpoint().map_err(|why| ApiError::Invalid(why.to_string()))?;
+        opened.chosen.as_shown(seen.provider, &seen.model).map_err(|why| ApiError::Invalid(why.to_string()))?;
         let schema = schema();
         let shown = {
-            let item = item(opened.slot(), &opened.model, &opened.prompt, &schema);
-            estimate(&opened.library, &item)?
+            let item = item(opened.slot(), &opened.chosen, &opened.prompt, &schema);
+            estimate(&opened.library, &item, &opened.chosen)?
         };
-        as_shown(&opened.model, &shown, &seen)?;
+        // never more than the worst case the reader was shown before the click
+        let accepted = Accepted::of(seen.accepted_usd, seen.accepted_tokens)
+            .and_then(|accepted| budget(&shown.cost, accepted, Terms::AsShown))
+            .map_err(|why| ApiError::Invalid(why.to_string()))?;
+        let transport = engine.transport.clone();
         let job = engine.job.start_tracked(PURPOSE, move |tracker| {
-            let item = item(opened.slot(), &opened.model, &opened.prompt, &schema);
-            // never more than the worst case the reader was shown before the click
-            let budget = budget(&item, &shown);
-            let transport = Https::default();
+            let item = item(opened.slot(), &opened.chosen, &opened.prompt, &schema);
             let asking = Asking {
                 library: &opened.library,
-                transport: &transport,
+                transport: &*transport,
                 endpoint,
                 recorder: &*opened.library,
                 in_flight: 1,
             };
-            explain(asking, &item, &budget, tracker).map(|_| "explained".to_owned()).map_err(|why| why.to_string())
+            explain(asking, &item, &accepted, tracker).map_err(|why| why.to_string())?;
+            Ok(Finished::Feature { feature: Feature::Explanation, subject: Subject::Paper(opened.paper.clone()) })
         })?;
         Ok(Started { started: true, job: Some(job) })
     })
@@ -360,13 +331,14 @@ async fn redo(
     body: Result<Json<Request>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let address = take(body)?;
-    on_the_side(move || {
+    let forgotten = on_the_side(move || {
         let opened = open(&engine, &paper, &address)?.map_err(no_text)?;
-        opened.library.keep(&opened.slot(), &opened.model, PROMPT, &Redone { redone: true })?;
-        Ok(())
+        // that one explanation only: the paper's others stay
+        Ok(opened.library.forget_key(Feature::Explanation, &opened.slot().key)?)
     })
     .await?;
-    Ok(Json(serde_json::json!({ "redone": true })))
+    // false when there was no explanation to forget, said rather than a redo that did nothing
+    Ok(Json(serde_json::json!({ "redone": forgotten })))
 }
 
 /// The passages of a paper with an explanation kept: `ExplainedPassages` in the contracts.
@@ -380,12 +352,13 @@ async fn explained(State(engine): State<Shared>, Path(paper): Path<String>) -> R
     let marks = on_the_side(move || {
         let library = engine.library()?;
         library.paper(&paper)?.ok_or(ApiError::NotFound)?;
-        let model = chosen_model(&engine)?;
+        let chosen = engine.chosen()?;
+        let model = chosen.model().to_owned();
         let Ok(passages) = read(&library, &paper)? else { return Ok(Marks { model, explained: Vec::new() }) };
         let mut explained = Vec::new();
         for passage in &passages.passages {
             let Some(question) = Question::of(passage.kind) else { continue };
-            let key = slot(&paper, &model, &passage.address, question).key;
+            let key = slot(&paper, &chosen, &passage.address, question).key;
             if library.kept::<Said>(Feature::Explanation, &key)?.is_some() {
                 explained.push(passage.address.clone());
             }
@@ -673,6 +646,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn another_provider_is_priced_asked_in_its_own_shape_kept_and_asked_again_when_the_provider_changes() {
+        use super::super::other_providers::{
+            ACCEPTED, Chosen as Asked, MODEL, Scripted, accepting, call, choose, finished, priced_for, router, sent_to,
+        };
+
+        let data = data();
+        let transport = Scripted::new(|_| {
+            json!({"statements": [{"statement": {"part": "explanation", "symbol": "", "text": "Passages are kept.", "source": "paper"},
+                "quotes": [{"paper": "2601.00001", "quote": "kept passages are served to the reader"}]}]})
+            .to_string()
+        });
+        let router = router(data.path(), Asked::OpenAi, &transport);
+        let address = address_of(&router, "2601.00001", "kept passages").await;
+        let prepare = "/api/papers/2601.00001/explanation/prepare";
+        let mut sent = 0;
+        for chosen in [Asked::OpenAi, Asked::ThisComputer] {
+            choose(data.path(), chosen);
+            let (_, told) = call(&router, "POST", prepare, Some(json!({"address": address}))).await;
+            assert_eq!(
+                (told["provider"].clone(), told["model"].clone()),
+                (json!(chosen.provider().id()), json!(MODEL)),
+                "{told}"
+            );
+            assert_eq!((told["explained"].clone(), told["api_key_set"].clone()), (Value::Null, json!(true)));
+            let cost = told["estimate"].clone();
+            priced_for(&cost, chosen);
+            assert_eq!(transport.sent().len(), sent, "preparing sends nothing");
+
+            let mut asked = accepting(&cost, ACCEPTED);
+            asked["address"] = address.clone();
+            let (status, started) =
+                call(&router, "POST", "/api/papers/2601.00001/explanation", Some(asked.clone())).await;
+            assert_eq!((status, started["started"].clone()), (StatusCode::OK, json!(true)), "{started}");
+            let done = finished(&router, &started["job"]).await;
+            assert_eq!(done["state"], "done", "{done}");
+            let made = json!({"kind": "feature", "feature": "explanation", "subject": {"paper": "2601.00001"}});
+            assert_eq!((done["outcome"].clone(), done["result"].clone()), (made, Value::Null), "no run to open");
+            let all = transport.sent();
+            sent_to(&all[sent..], chosen);
+            sent = all.len();
+
+            let (_, told) = call(&router, "POST", prepare, Some(json!({"address": address}))).await;
+            assert_eq!(told["estimate"], Value::Null, "kept: nothing to pay");
+            assert_eq!(told["explained"]["statements"][0]["evidence"][0]["established"]["kind"], "verified", "{told}");
+            let (_, again) = call(&router, "POST", "/api/papers/2601.00001/explanation", Some(asked)).await;
+            assert_eq!(again, json!({"started": false, "job": null}));
+            assert_eq!(transport.sent().len(), sent, "kept: not asked again");
+        }
+        // a redo forgets that one explanation, of this provider's model only
+        let (_, redone) =
+            call(&router, "DELETE", "/api/papers/2601.00001/explanation", Some(json!({"address": address}))).await;
+        assert_eq!(redone, json!({"redone": true}));
+        assert_ne!(call(&router, "POST", prepare, Some(json!({"address": address}))).await.1["estimate"], Value::Null);
+        choose(data.path(), Asked::OpenAi);
+        assert_eq!(call(&router, "POST", prepare, Some(json!({"address": address}))).await.1["estimate"], Value::Null);
+    }
+
+    #[tokio::test]
     async fn preparing_tells_the_passage_and_the_estimate_and_asks_nothing() {
         let data = data();
         let router = serve(&data, |_| {});
@@ -686,7 +717,11 @@ mod tests {
         assert_eq!(told["explained"], Value::Null);
         let estimate = &told["estimate"];
         assert!(estimate["usd"].as_f64().unwrap() > 0.0 && estimate["usd"].as_f64() <= estimate["most_usd"].as_f64());
-        assert!(estimate["prompt_tokens"].as_u64().unwrap() > 100);
+        assert!(estimate["most_tokens"].as_u64().unwrap() > 100, "the worst case in tokens");
+        assert_eq!(
+            (estimate["provider"].clone(), estimate["model"].clone()),
+            (json!("anthropic"), json!("claude-opus-5-5"))
+        );
         assert_eq!(estimate["counting"]["kind"], "assumed");
         // nothing was asked: nothing is recorded in the ledger
         let library = Library::open(&data.path().join("library")).unwrap();
@@ -711,8 +746,13 @@ mod tests {
                         "quotes": [{"paper": "2601.00001", "quote": "this sentence is not anywhere in the paper"}]}),
                 ],
             };
-            let slot = slot("2601.00001", "claude-opus-5-5", &parsed, Question::Passage);
-            library.keep(&slot, "claude-opus-5-5", PROMPT, &said).unwrap();
+            let slot = slot(
+                "2601.00001",
+                &crate::model::chosen::Chosen::claude("claude-opus-5-5"),
+                &parsed,
+                Question::Passage,
+            );
+            library.keep(&slot, "claude-opus-5-5", crate::explanation::PROMPT, &said).unwrap();
         }
         let (_, told) = ask(&router, "POST", "/api/papers/2601.00001/explanation/prepare", body(&address)).await;
         let explained = &told["explained"];
@@ -732,6 +772,8 @@ mod tests {
 
         let (status, redone) = ask(&router, "DELETE", "/api/papers/2601.00001/explanation", body(&address)).await;
         assert_eq!((status, redone), (StatusCode::OK, json!({"redone": true})));
+        let (_, twice) = ask(&router, "DELETE", "/api/papers/2601.00001/explanation", body(&address)).await;
+        assert_eq!(twice, json!({"redone": false}), "nothing left to forget, and said so");
         let (_, again) = ask(&router, "POST", "/api/papers/2601.00001/explanation/prepare", body(&address)).await;
         assert_eq!(again["explained"], Value::Null);
         assert!(again["estimate"].is_object());
@@ -766,7 +808,7 @@ mod tests {
                     while !tracker.cancelled() {
                         std::thread::sleep(std::time::Duration::from_millis(1));
                     }
-                    Ok("stopped".to_owned())
+                    Ok(crate::jobs::Finished::Nothing)
                 })
                 .unwrap();
         });
@@ -780,7 +822,7 @@ mod tests {
             let (status, told) =
                 ask(&busy, "POST", "/api/papers/2601.00001/explanation", shown(&address, model, most)).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
-            assert!(told["error"].as_str().unwrap().contains("changed since the estimate"), "{told}");
+            assert!(told["error"].as_str().unwrap().contains("estimate before asking"), "{told}");
         }
         let (_, status) = ask(&busy, "GET", "/api/status", None).await;
         assert_eq!(status["kind"], "a run");

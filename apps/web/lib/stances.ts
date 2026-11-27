@@ -5,7 +5,8 @@
  * and every paper counts once, whatever its design.
  */
 import type { Acceptance, GraphNode, StanceCostEstimate, StanceFilter, StanceGroup, StanceResult, StanceRow } from "@rp/contracts";
-import { count, money, type Currency } from "@/lib/units";
+import { costWords } from "@/lib/cost";
+import { count, type Currency } from "@/lib/units";
 
 /** Said wherever placements are shown. */
 export const STANCE_NOTE =
@@ -129,14 +130,14 @@ export function abstractOnlyLine(rows: StanceRow[]): string | null {
 /** What a part would cost, labelled as an estimate: "about USD 0.42, at most USD 1.10 (an estimate)", or that it is free. */
 export function costLine(estimate: StanceCostEstimate, currency: Currency, locale?: string): string {
 	if (estimate.to_ask === 0) return "nothing to pay: every answer is kept";
-	if (estimate.usd === null || estimate.most_usd === null) return `${count(estimate.to_ask, "call")}, at a price not known here`;
-	return `about ${money(estimate.usd, currency, locale)}, at most ${money(estimate.most_usd, currency, locale)} (an estimate)`;
+	// a model with no price: only the tokens it can take, never a dollar figure that is not known
+	return `${costWords(estimate, currency, locale)} (an estimate)`;
 }
 
 /** The hover text of a cost: how it was reckoned. */
 export function costNote(estimate: StanceCostEstimate): string {
 	const kept = estimate.kept ? ` ${count(estimate.kept, "answer")} kept from before cost nothing.` : "";
-	const counted = estimate.by_model.some((model) => model.counting.kind === "measured") ? "measured" : "assumed";
+	const counted = estimate.counting.kind === "measured" ? "measured" : "assumed";
 	return `An estimate, not a bill: tokens are reckoned from the papers' characters (a ratio ${counted}), the answers' length is a guess, and repeated prompts are counted as cache reads.${kept} The job never spends more than the "at most" figure.`;
 }
 

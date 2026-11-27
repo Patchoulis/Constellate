@@ -252,6 +252,15 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (run, answer_key)
     );
     ",
+    // 9 (every provider): which provider a question was asked of; and a redone explanation is forgotten by its key
+    r#"
+    -- The provider of the model a question was asked of (a Provider's id): every question asked before there were
+    -- others was asked of the Claude API. The answer's key depends on it (library/answers.rs AnswerKey::new).
+    ALTER TABLE asked_questions ADD COLUMN provider TEXT NOT NULL DEFAULT 'anthropic';
+    -- A redone explanation was once kept as a marker that read as no answer; it is now forgotten instead, and the
+    -- markers left are rows of nothing.
+    DELETE FROM kept_answers WHERE feature = 'explanation' AND content = '{"redone":true}';
+    "#,
 ];
 
 /// Bring `connection` to the last of `migrations`. Refuses a database newer than the list.

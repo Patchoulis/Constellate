@@ -18,7 +18,8 @@ import type {
 	WeaknessKind,
 } from "@rp/contracts";
 import { codePoints } from "@/lib/evidence";
-import { count, money, onScale } from "@/lib/units";
+import { costTitle, costWords } from "@/lib/cost";
+import { count, onScale } from "@/lib/units";
 
 /** Said wherever the model's part is shown: what it is, and what it is not. */
 export const MODEL_NOTE =
@@ -113,18 +114,13 @@ export function absenceLine(absence: Absence): string | null {
 	}
 }
 
-/** "about USD 0.17, at most USD 0.35": an estimate, in US dollars; null when the model's price is not known. */
-export function estimateLine(estimate: CritiqueEstimate, locale?: string): string | null {
-	if (estimate.usd === null) return null;
-	const most = estimate.most_usd === null ? "" : `, at most ${money(estimate.most_usd, DOLLARS, locale)}`;
-	return `about ${money(estimate.usd, DOLLARS, locale)}${most}`;
+/** "about USD 0.17, at most USD 0.35": an estimate; for a model with no price, only the tokens it can take
+ *  ("at most 38k tokens"), never a dollar figure that is not known. */
+export function estimateLine(estimate: CritiqueEstimate, locale?: string): string {
+	return costWords(estimate, DOLLARS, locale);
 }
 
 /** What hovering the estimate says: how it was reckoned. */
 export function estimateTitle(estimate: CritiqueEstimate): string {
-	const counted = estimate.by_model[0]?.counting.kind === "measured" ? "measured on this prompt" : "assumed (it errs high)";
-	return (
-		`An estimate, in US dollars, from the paper's length: tokens are reckoned from characters, at a ratio ${counted}. ` +
-		"The call is capped at the worst case: nothing is sent until you click."
-	);
+	return `${costTitle(estimate)} The call is capped at the worst case: nothing is sent until you click.`;
 }

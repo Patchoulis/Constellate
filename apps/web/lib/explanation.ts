@@ -14,7 +14,8 @@ import type {
 	PassageKind,
 } from "@rp/contracts";
 import { passageAt } from "@/lib/evidence";
-import { count, money, tokens } from "@/lib/units";
+import { costWords } from "@/lib/cost";
+import { count, tokens } from "@/lib/units";
 
 /** The longest selection looked for, in characters: as the engine's locate route allows (api/passages.rs). */
 export const LONGEST_SELECTION = 5_000;
@@ -99,12 +100,12 @@ export function askFirst(estimate: ExplanationEstimate, askBelow: number | null)
 
 const USD = { code: "USD", rate: 1, date: null };
 
-/** What explaining would cost, with its currency, said to be an estimate. */
+/** What explaining would cost, with its currency, said to be an estimate; for a model with no price, only its
+ *  tokens (no dollar figure at all). */
 export function costLine(estimate: ExplanationEstimate, locale?: string): string {
-	const asked = `${tokens(estimate.prompt_tokens)} sent, about ${tokens(estimate.answer_tokens)} back`;
-	if (estimate.usd === null || estimate.most_usd === null)
-		return `Estimate: ${asked}. The price of this model is not known, so no amount can be given.`;
-	return `Estimate: about ${money(estimate.usd, USD, locale)}, at most ${money(estimate.most_usd, USD, locale)} (${asked}).`;
+	const { input, cache_read, cache_write_5m, cache_write_1h, output } = estimate.tokens;
+	const asked = `${tokens(input + cache_read + cache_write_5m + cache_write_1h)} sent, about ${tokens(output)} back`;
+	return `Estimate: ${costWords(estimate, USD, locale)} (${asked}).`;
 }
 
 /** How the estimate was reckoned, for its hover. */

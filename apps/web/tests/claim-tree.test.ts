@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ClaimNode, ClaimNodeReviews, ClaimsEstimate, Evidence, PointMapping, ReviewPoint } from "@rp/contracts";
+import { batchCost } from "./costs";
 import {
 	allOpen,
 	budgetFor,
@@ -118,23 +119,17 @@ test("what was left out is counted with why, and nothing is said when nothing wa
 	);
 });
 
-const estimate = (usd: number | null, most: number | null, toAsk = 2): ClaimsEstimate => ({
-	items: 2,
-	kept: 2 - toAsk,
-	to_ask: toAsk,
-	by_model: [],
-	usd,
-	most_usd: most,
-});
+const estimate = (usd: number | null, most: number | null, toAsk = 2): ClaimsEstimate =>
+	batchCost(usd, most, toAsk, { items: 2, kept: 2 - toAsk });
 
 test("the estimate says it is one, in its currency, and the budget is its most rounded up to the cent", () => {
 	assert.equal(estimateLine(estimate(0.0412, 0.3101)), "About USD 0.0412, at most USD 0.3101, for 2 calls (an estimate)");
 	assert.equal(estimateLine(estimate(0, 0, 0)), "Nothing to ask: every answer is kept.");
-	assert.match(estimateLine(estimate(null, null)), /price is not known/);
-	assert.equal(budgetFor(estimate(0.0412, 0.3101)), 0.32);
-	assert.equal(budgetFor(estimate(0.0001, 0.0002)), 0.01);
-	assert.equal(budgetFor(estimate(null, null)), null);
-	assert.equal(budgetFor(estimate(30, 40)), 10, "never past what the engine accepts");
+	assert.equal(estimateLine(estimate(null, null)), "At most 28k tokens, for 2 calls (an estimate)", "no price: no dollar figure");
+	assert.deepEqual(budgetFor(estimate(0.0412, 0.3101)), { budget_usd: 0.32 });
+	assert.deepEqual(budgetFor(estimate(0.0001, 0.0002)), { budget_usd: 0.01 });
+	assert.deepEqual(budgetFor(estimate(null, null)), { budget_tokens: 28_000 }, "no price: held to its tokens");
+	assert.deepEqual(budgetFor(estimate(30, 40)), { budget_usd: 10 }, "never past what the engine accepts");
 });
 
 test("a point's justifying words are marked in the reviewer's own text, counted in code points", () => {

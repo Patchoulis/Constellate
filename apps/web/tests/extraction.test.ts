@@ -65,6 +65,7 @@ const table: ExtractionTable = {
 		{ id: "headline", label: "Headline result", question: "What is the headline result?", kind: "number" },
 		{ id: "datasets", label: "Datasets", question: "Which datasets?", kind: "list" },
 	],
+	provider: "anthropic",
 	model: "claude-opus-5-5",
 	rows,
 	sample: 5,

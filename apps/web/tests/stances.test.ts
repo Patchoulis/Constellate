@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Evidence, GraphNode, StanceCostEstimate, StanceFilter, StancePlaced, StanceResult, StanceRow } from "@rp/contracts";
 import { breakdown, costLine, countsLine, coverageLine, groupSets, skippedLine, starter, tally } from "@/lib/stances";
+import { batchCost } from "./costs";
 
 const evidence: Evidence = {
 	paper: "p",
@@ -67,6 +68,7 @@ test("coverage says how many papers are still to ask", () => {
 		id: "x",
 		question: "q?",
 		asked_at: "",
+		provider: "anthropic",
 		model: "m",
 		filter,
 		to_ask: 45,
@@ -79,11 +81,11 @@ test("coverage says how many papers are still to ask", () => {
 });
 
 test("a cost is shown with its currency and as an estimate, or as nothing to pay", () => {
-	const estimate: StanceCostEstimate = { items: 10, kept: 0, to_ask: 10, by_model: [], usd: 0.42, most_usd: 1.1 };
+	const estimate: StanceCostEstimate = batchCost(0.42, 1.1, 10);
 	const usd = { code: "USD", rate: 1, date: null };
 	assert.equal(costLine(estimate, usd, "en-US"), "about USD 0.4200, at most USD 1.10 (an estimate)");
 	assert.equal(costLine({ ...estimate, to_ask: 0 }, usd, "en-US"), "nothing to pay: every answer is kept");
-	assert.match(costLine({ ...estimate, usd: null, most_usd: null }, usd, "en-US"), /price not known/);
+	assert.equal(costLine({ ...estimate, usd: null, most_usd: null }, usd, "en-US"), "at most 28k tokens (an estimate)");
 });
 
 test("each group's papers are found on the graph by id", () => {

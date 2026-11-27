@@ -3,6 +3,7 @@
  * one explicit state machine, so that they are tested (tests/answers.test.ts); components/ask.tsx draws them.
  */
 import type { AnswerCounts, AnswerEstimate, AnswerSummary, AnswerView, PassageFound, PassagesFound, SearchCoverage } from "@rp/contracts";
+import { costWords } from "@/lib/cost";
 import { count, money, tokens } from "@/lib/units";
 
 /** Said wherever a statement of an answer is shown. */
@@ -41,13 +42,12 @@ export function indexingLine(done: number, of: number): string {
 
 type ReadyEstimate = Extract<AnswerEstimate, { state: "ready" }>;
 
-/** What the button that asks says: "Ask the model: about USD 0.12, at most USD 0.25". */
+/** What the button that asks says: "Ask the model: about USD 0.12, at most USD 0.25"; for a model with no price,
+ *  only the tokens it can take ("Ask the model: at most 9k tokens"), never a dollar figure that is not known. */
 export function costLine(estimate: ReadyEstimate): string {
 	if (estimate.kept) return "Open the kept answer: no cost";
-	const likely = estimate.cost?.usd;
-	if (likely == null || estimate.most_usd == null)
-		return `Ask the model: price of ${estimate.model} not known, at most ${tokens(estimate.most_tokens)}`;
-	return `Ask the model: about ${usd(likely)}, at most ${usd(estimate.most_usd)}`;
+	if (estimate.cost === null) return `Ask the model: at most ${tokens(estimate.most_tokens)}`;
+	return `Ask the model: ${costWords(estimate.cost)}`;
 }
 
 /** What the hover over that button says: the tokens, the cap, and that it is an estimate. */
@@ -64,7 +64,8 @@ export function costTitle(estimate: ReadyEstimate): string {
 export function cannotAsk(estimate: ReadyEstimate): string | null {
 	if (estimate.kept) return null;
 	if (estimate.passages === 0) return "No passage of these papers matches the question: there is nothing to answer it from.";
-	if (!estimate.api_key_set) return "No API key is set for the model, so it cannot be asked. The passages found are above.";
+	if (!estimate.api_key_set)
+		return "The chosen provider's key is not set (see the settings), so the model cannot be asked. The passages found are above.";
 	return null;
 }
 

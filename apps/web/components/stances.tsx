@@ -34,12 +34,13 @@ import {
 	starter,
 	tally,
 } from "@/lib/stances";
+import { accepting, shownModel } from "@/lib/cost";
 import { ready, useAsync } from "@/lib/use-async";
+import { useFollowedJob } from "@/lib/use-followed-job";
 import { cn, hsl } from "@/lib/utils";
 import { count, currencyOf, money, type Currency } from "@/lib/units";
 
 const DOLLAR: Currency = { code: "USD", rate: 1, date: null };
-const POLL_MS = 1200;
 
 /** Where asking a question stands: one of these at a time. */
 type Step =
@@ -66,34 +67,15 @@ function useCurrency(): { currency: Currency; locale?: string } {
 
 /** Follow job `job` until it is no longer running, then call `onEnd` once. Its progress meanwhile. */
 function useJobProgress(job: number | null, onEnd: (error: string | null) => void): JobProgress | null {
-	const [progress, setProgress] = useState<JobProgress | null>(null);
 	const ended = useRef(onEnd);
 	ended.current = onEnd;
+	// the one way a feature follows a job: only what is new is asked for while it runs
+	const { job: followed, follow, reset } = useFollowedJob((end) => ended.current(end.state === "failed" ? end.error : null));
 	useEffect(() => {
-		if (job === null) return;
-		let stopped = false;
-		let timer: ReturnType<typeof setTimeout>;
-		const poll = async () => {
-			try {
-				const status = await api.status(Number.MAX_SAFE_INTEGER);
-				if (stopped) return;
-				if (status.id !== job || status.state !== "running") {
-					ended.current(status.id === job && status.state === "failed" ? status.error : null);
-					return;
-				}
-				setProgress(status.progress ?? null);
-			} catch (error) {
-				if (stopped) return;
-			}
-			timer = setTimeout(poll, POLL_MS);
-		};
-		void poll();
-		return () => {
-			stopped = true;
-			clearTimeout(timer);
-		};
-	}, [job]);
-	return progress;
+		if (job === null) reset();
+		else follow(job);
+	}, [job, follow, reset]);
+	return followed.state === "running" ? followed.progress : null;
 }
 
 function Running({ job, progress, what, onDone }: { job: number; progress: JobProgress | null; what: string; onDone?: () => void }) {
@@ -102,7 +84,7 @@ function Running({ job, progress, what, onDone }: { job: number; progress: JobPr
 		<div className="flex items-center gap-2 text-xs text-muted-foreground tabular-nums">
 			<span className="flex-1">
 				{progress
-					? `${progress.done} of ${count(progress.of, what)} done · ${money(progress.usd, currency, locale)} spent so far`
+					? `${progress.done} of ${count(progress.of, what)} done${progress.usd > 0 ? ` · ${money(progress.usd, currency, locale)} spent so far` : ""}`
 					: "Starting…"}
 			</span>
 			<Button
@@ -407,7 +389,7 @@ function Proposals({
 					<Button
 						title={costNote(step.plan.estimate)}
 						onClick={() =>
-							api.stances.propose(run, community, step.fresh, { model: step.plan.model, approved_usd: step.plan.estimate.most_usd }).then(
+							api.stances.propose(run, community, step.fresh, { ...shownModel(step.plan), ...accepting(step.plan.estimate) }).then(
 								(started) => setStep({ kind: "asking", job: started.job }),
 								(error: Error) => setStep({ kind: "failed", error: error.message }),
 							)
@@ -523,8 +505,8 @@ export function CommunityStances({ run, scope, onOpenPaper }: { run: string; sco
 					onAsk={(part) =>
 						api.stances
 							.ask(run, scope, step.plan.question, step.includeUnrelated, part, {
-								model: step.plan.model,
-								approved_usd: (part === "sample" ? step.plan.sample : step.plan.all).estimate.most_usd,
+								...shownModel(step.plan),
+								...accepting((part === "sample" ? step.plan.sample : step.plan.all).estimate),
 							})
 							.then(
 								(started) => {

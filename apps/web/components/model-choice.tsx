@@ -120,7 +120,7 @@ export function ModelChoice({
 											key={model.id}
 											disabled={off}
 											className={cn(ROW, off && "cursor-default opacity-50")}
-											title={priced ? priceLabel(model.price, currency, locale) : undefined}
+											title={(priced && priceLabel(model.price, currency, locale)) || undefined}
 											onSelect={() => pick(group.provider.id, model.id)}
 										>
 											<Check
@@ -159,7 +159,7 @@ export function ModelChoice({
 	);
 }
 
-/** The chosen model's price in words, for beside the cost: "cost not known" rather than nothing. */
+/** The chosen model's price in words, for beside the cost; null (nothing shown) when it has no price. */
 export function chosenPrice(choosable: Choosable, settings: Picked | undefined, currency: Currency, locale?: string): string | null {
 	if (choosable.source !== "engine") return null;
 	const chosen = chosenOf(choosable.catalog, settings);

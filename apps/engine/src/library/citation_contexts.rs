@@ -244,7 +244,10 @@ impl Library {
                 }
             }
             relinked.sort_unstable();
-            let to_read: Vec<&str> = round.iter().copied().filter(|id| !kept.contains_key(*id)).collect();
+            // each paper once, however many times it is asked for: every place it is asked at gets its reading
+            let mut to_read: Vec<&str> = round.iter().copied().filter(|id| !kept.contains_key(*id)).collect();
+            let mut seen = std::collections::HashSet::new();
+            to_read.retain(|id| seen.insert(*id));
             let readings: Vec<PaperReading> =
                 to_read.iter().map(|id| readings.remove(id).unwrap_or(PaperReading::NotInLibrary)).collect();
             let read = self.read_round(&to_read, &readings, linker);
@@ -262,12 +265,13 @@ impl Library {
                     .filter_map(|id| kept.get(id).map(|(hash, contexts)| (id.as_str(), hash.as_str(), contexts))),
             );
             self.keep_contexts(&to_keep)?;
-            let mut read: HashMap<&str, ContextsReading> =
+            let read: HashMap<&str, ContextsReading> =
                 to_read.into_iter().zip(read.into_iter().map(|(_, reading)| reading)).collect();
             for id in round {
-                let reading = match kept.remove(*id) {
-                    Some((_, contexts)) => ContextsReading::Read(contexts),
-                    None => read.remove(id).unwrap_or(ContextsReading::NotInLibrary),
+                // looked up, not taken out: a paper asked for twice is answered at both places
+                let reading = match kept.get(*id) {
+                    Some((_, contexts)) => ContextsReading::Read(contexts.clone()),
+                    None => read.get(id).cloned().unwrap_or(ContextsReading::NotInLibrary),
                 };
                 answer.push(((*id).to_owned(), reading));
             }
@@ -372,6 +376,20 @@ mod tests {
         assert_eq!(kept["seed"].entries.len(), 2, "only the entries in the library");
         assert_eq!(library.kept_contexts(&["seed"], Entries::All).unwrap()["seed"].entries.len(), 3);
         assert_eq!(library.contexts_kept_among(&["seed", "arith"]).unwrap(), HashSet::from(["seed".to_owned()]));
+    }
+
+    #[test]
+    fn a_paper_asked_for_twice_is_answered_at_both_places_whether_kept_or_read_now() {
+        let (_folder, library) = library();
+        // read now, both times in one round
+        let first = read(&library, &["seed", "arith", "seed"]);
+        assert_eq!(first.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["seed", "arith", "seed"]);
+        assert!(matches!(first[0].1, ContextsReading::Read(_)) && first[2].1 == first[0].1, "{first:?}");
+        // kept by now
+        let again = read(&library, &["seed", "seed", "arith", "seed"]);
+        assert!(matches!(again[0].1, ContextsReading::Read(_)), "{again:?}");
+        assert_eq!((&again[1].1, &again[3].1), (&again[0].1, &again[0].1));
+        assert_eq!(again[2].1, ContextsReading::NoPdf);
     }
 
     #[test]

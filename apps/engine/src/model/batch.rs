@@ -36,13 +36,14 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use super::chosen::Chosen;
 use super::language::{
-    Answered, ApiKey, Ask, AskError, Budget, Client, Counting, Endpoint, Estimate, NoAnswer, OverBudget, Planned,
-    Recorder, Reply, Transport, TransportError, Unavailable, estimate,
+    Answered, ApiKey, Ask, AskError, Budget, Client, Counting, Endpoint, Estimate, KeyHeader, NoAnswer, OverBudget,
+    Planned, Recorder, Reply, Transport, TransportError, Unavailable,
 };
 use crate::jobs::{Progress, Tracker};
 use crate::library::{AnswerKey, Feature, Kept, Library, LibraryError, Slot};
-use crate::usage::Usd;
+use crate::usage::Call;
 
 /// Calls under way at once when a feature has no reason to choose otherwise: enough to finish 739 papers in
 /// minutes, few enough to stay under the API's rate limits for most accounts.
@@ -61,19 +62,18 @@ pub struct Item<'a> {
     pub likely_tokens: u32,
 }
 
-/// What a batch would cost, before anything is asked: what the interface shows as "about N dollars".
+/// What a batch would cost, before anything is asked: what the interface shows as "about N dollars" (`BatchCost`
+/// in the contracts: the items, and what asking those not kept would cost, flattened beside them).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct BatchEstimate {
     pub items: usize,
     /// Kept already: they cost nothing.
     pub kept: usize,
     pub to_ask: usize,
-    /// One estimate per model asked ([`Estimate::counting`] says how tokens were reckoned: it is an estimate).
-    pub by_model: Vec<Estimate>,
-    /// Likely cost of all of them; `None` when a model's price is not known.
-    pub usd: Option<Usd>,
-    /// If every answer took its `max_tokens` and nothing was read from the cache.
-    pub most_usd: Option<Usd>,
+    /// What asking the rest would cost, at the chosen provider's prices ([`Estimate::counting`] says how tokens
+    /// were reckoned: it is an estimate).
+    #[serde(flatten)]
+    pub cost: Estimate,
 }
 
 /// What came of one item.
@@ -180,39 +180,35 @@ fn characters(text: &str) -> u64 {
     u64::try_from(text.chars().count()).unwrap_or(u64::MAX)
 }
 
-/// What asking the items not kept yet would cost, with prompt tokens reckoned as `counting` says (the client's
-/// [`Client::counting`] once it has been calibrated, else [`Counting::ASSUMED`]). Nothing is sent.
+/// What asking the items not kept yet would cost, asked of `chosen` (whose model every item asks), at its
+/// provider's prices and as it caches and answers in JSON ([`Chosen::estimate`]), prompt tokens reckoned from
+/// characters ([`Counting::ASSUMED`]). Nothing is sent.
 pub fn estimate_batch<T: DeserializeOwned>(
     library: &Library,
     items: &[Item<'_>],
-    counting: Counting,
+    chosen: &Chosen,
 ) -> Result<BatchEstimate, LibraryError> {
     let Sorted { to_ask, repeats, .. } = sorted::<T>(library, items)?;
-    let mut by_model: Vec<(&str, Vec<Planned>)> = Vec::new();
+    let pricing = chosen.pricing();
+    let mut plans: Vec<Planned> = Vec::new();
     for lane in lanes(items, &to_ask) {
         let asks: Vec<&Item<'_>> = lane.iter().map(|index| &items[*index]).collect();
         let first = &asks[0].ask;
-        let plan = Planned {
+        debug_assert_eq!(first.model, chosen.model(), "a batch asks the chosen model");
+        plans.push(Planned {
             shared_chars: characters(first.system) + first.shared.map_or(0, characters),
-            question_chars: asks.iter().map(|item| characters(item.ask.question)).max().unwrap_or(0),
+            // as sent there: with the schema in it where the provider cannot be held to one
+            question_chars: asks.iter().map(|item| pricing.question_chars(&item.ask)).max().unwrap_or(0),
             questions: u32::try_from(asks.len()).unwrap_or(u32::MAX),
             answer_tokens: asks.iter().map(|item| item.likely_tokens).max().unwrap_or(0),
             max_tokens: asks.iter().map(|item| item.ask.max_tokens).max().unwrap_or(0),
-        };
-        match by_model.iter_mut().find(|(model, _)| *model == first.model) {
-            Some((_, plans)) => plans.push(plan),
-            None => by_model.push((first.model, vec![plan])),
-        }
+        });
     }
-    let by_model: Vec<Estimate> = by_model.iter().map(|(model, plans)| estimate(model, plans, counting)).collect();
-    let total = |cost: fn(&Estimate) -> Option<Usd>| by_model.iter().map(cost).sum::<Option<Usd>>();
     Ok(BatchEstimate {
         items: items.len(),
         kept: items.len() - to_ask.len() - repeats.len(),
         to_ask: to_ask.len(),
-        usd: total(|estimate| estimate.usd),
-        most_usd: total(|estimate| estimate.most_usd),
-        by_model,
+        cost: chosen.estimate(&plans, Counting::ASSUMED),
     })
 }
 
@@ -237,7 +233,9 @@ where
     report(*locked(&done));
 
     let paced = Paced { inner: asking.transport, gate: Mutex::new(Gate::default()) };
-    let client = Client::new(&paced, asking.endpoint, asking.recorder);
+    // the calls each thread's item took are held until its answer is kept with them, in one transaction
+    let pending = Pending::default();
+    let client = Client::new(&paced, asking.endpoint.clone(), &pending);
     // the first reason to stop is the one told
     let stop: Mutex<Option<Stopped>> = Mutex::new(None);
     let stopped = || {
@@ -260,7 +258,7 @@ where
                         if stopped().is_some() {
                             return; // the rest are told as not started
                         }
-                        let call = || ask_one(&client, asking.library, &items[index], budget);
+                        let call = || ask_one(&client, &pending, &asking, &items[index], budget);
                         let Some(outcome) = flight.ask(&stopped, call) else { return };
                         if let Some(why) = halts(&outcome) {
                             locked(&stop).get_or_insert(why);
@@ -346,25 +344,58 @@ impl Flight {
     }
 }
 
+/// The calls made on each thread and not yet written: a thread asks its items one after the other, so what it holds
+/// is what its item under way took (every attempt of it).
+#[derive(Default)]
+struct Pending {
+    calls: Mutex<HashMap<thread::ThreadId, Vec<Call>>>,
+}
+
+impl Pending {
+    /// What this thread's item took, taken out.
+    fn take(&self) -> Vec<Call> {
+        locked(&self.calls).remove(&thread::current().id()).unwrap_or_default()
+    }
+}
+
+impl Recorder for Pending {
+    fn record(&self, call: Call) {
+        locked(&self.calls).entry(thread::current().id()).or_default().push(call);
+    }
+}
+
 fn ask_one<T: DeserializeOwned + Serialize>(
     client: &Client<'_>,
-    library: &Library,
+    pending: &Pending,
+    asking: &Asking<'_>,
     item: &Item<'_>,
     budget: &Budget,
 ) -> Outcome<T> {
-    match catch_unwind(AssertUnwindSafe(|| client.ask_json::<T>(&item.ask, budget))) {
+    let asked = catch_unwind(AssertUnwindSafe(|| client.ask_json::<T>(&item.ask, budget)));
+    let calls = pending.take();
+    let outcome = match asked {
         Ok(Ok(answered)) => {
-            if let Err(error) = library.keep(&item.slot, &answered.model, item.prompt, &answered.answer) {
+            // the answer and what it cost, kept together: never a call paid for whose answer is lost
+            let content = serde_json::to_string(&answered.answer).map_err(LibraryError::from);
+            let kept = content.and_then(|content| {
+                asking.recorder.keep_paid(asking.library, &item.slot, &answered.model, item.prompt, &content, calls)
+            });
+            if let Err(error) = kept {
                 // the answer is still handed back; it is asked for again next time
                 eprintln!("library: an answer for {} could not be kept: {error}", item.slot.feature.name());
             }
-            Outcome::Answered(answered)
+            return Outcome::Answered(answered);
         }
         Ok(Err(AskError::NoAnswer(why))) => Outcome::Failed(Failure::NoAnswer(why)),
         Ok(Err(AskError::Unavailable(why))) => Outcome::Failed(Failure::Unavailable(why)),
         Ok(Err(AskError::OverBudget(why))) => Outcome::NotStarted(Stopped::OverBudget(why)),
         Err(_) => Outcome::Failed(Failure::Panicked),
+    };
+    // no usable answer: what was paid for is recorded all the same
+    for call in calls {
+        asking.recorder.record(call);
     }
+    outcome
 }
 
 /// When the requests of a batch may go: held back by a wait one of them was told to make, then let go
@@ -393,9 +424,23 @@ impl Gate {
 
 /// The caller's transport, with the batch's [`Gate`] in front: a wait the client makes after a rate limit (or an
 /// overloaded server) holds back every thread's next request, not only its own.
+///
+/// Every request goes through [`Transport::post_keyed`], which must reach the caller's transport as it is, with the
+/// header the key is sent in: left to its default, it would become a `post`, whose key goes as `x-api-key`, the
+/// Claude API's header, which no other provider reads (OpenAI's would answer that no key was sent).
 struct Paced<'a> {
     inner: &'a dyn Transport,
     gate: Mutex<Gate>,
+}
+
+impl Paced<'_> {
+    /// Wait for this request's turn, when the batch is held back.
+    fn turn(&self) {
+        let wait = locked(&self.gate).turn(Instant::now());
+        if let Some(wait) = wait {
+            self.inner.wait(wait);
+        }
+    }
 }
 
 impl Transport for Paced<'_> {
@@ -407,11 +452,26 @@ impl Transport for Paced<'_> {
         body: &[u8],
         patience: Duration,
     ) -> Result<Reply, TransportError> {
-        let wait = locked(&self.gate).turn(Instant::now());
-        if let Some(wait) = wait {
-            self.inner.wait(wait);
-        }
+        self.turn();
         self.inner.post(url, key, headers, body, patience)
+    }
+
+    fn post_keyed(
+        &self,
+        url: &str,
+        key: &ApiKey,
+        sent_as: KeyHeader,
+        headers: &[(&str, &str)],
+        body: &[u8],
+        patience: Duration,
+    ) -> Result<Reply, TransportError> {
+        self.turn();
+        self.inner.post_keyed(url, key, sent_as, headers, body, patience)
+    }
+
+    fn get(&self, url: &str, key: &ApiKey, sent_as: KeyHeader, patience: Duration) -> Result<Reply, TransportError> {
+        self.turn();
+        self.inner.get(url, key, sent_as, patience)
     }
 
     fn wait(&self, duration: Duration) {
@@ -428,12 +488,17 @@ mod tests {
     use serde::Deserialize;
     use serde_json::{Value, json};
 
-    use super::super::language::fake::{error, message, ok};
-    use super::super::language::{Effort, Form, KEY_VARIABLE, Limit};
+    use super::super::language::fake::{self, Fake, error, message, ok, response};
+    use super::super::language::{Effort, Form, KEY_VARIABLE, Limit, Provider};
     use super::*;
     use crate::jobs::Cancel;
     use crate::library::{AnswerKey, Feature, Subject};
-    use crate::usage::Call;
+    use crate::usage::{Call, Usd};
+
+    /// The Claude API's model these items ask, as a feature would have it chosen.
+    fn chosen() -> Chosen {
+        Chosen::of(Provider::Anthropic, "claude-opus-5-5", Effort::Low, Ok(endpoint()))
+    }
 
     /// The Claude API as these tests need it: it answers each question with the question itself, counts how many
     /// requests are under way at once, and fails for the questions that say so. Never the network.
@@ -515,7 +580,14 @@ mod tests {
             .map(|(question, shared)| Item {
                 slot: Slot {
                     feature: Feature::Answers,
-                    key: AnswerKey::new(Feature::Answers, "claude-opus-5-5", 1, &[shared.as_str()], question),
+                    key: AnswerKey::new(
+                        Feature::Answers,
+                        Provider::Anthropic,
+                        "claude-opus-5-5",
+                        1,
+                        &[shared.as_str()],
+                        question,
+                    ),
                     subject: Subject::Paper(shared.clone()),
                 },
                 prompt: 1,
@@ -616,7 +688,7 @@ mod tests {
         assert_eq!(first.iter().filter(|outcome| matches!(outcome, Outcome::Answered(_))).count(), 5);
         let posted = echo.posts.load(Ordering::SeqCst);
 
-        let estimate = estimate_batch::<Said>(&library, &items, Counting::ASSUMED).unwrap();
+        let estimate = estimate_batch::<Said>(&library, &items, &chosen()).unwrap();
         assert_eq!((estimate.items, estimate.kept, estimate.to_ask), (6, 5, 1));
         let again = Run::new().ask(&library, &echo, &items, &plenty(), 2);
         assert!(again.iter().enumerate().all(|(index, outcome)| (index == 2) != matches!(outcome, Outcome::Kept(_))));
@@ -665,7 +737,7 @@ mod tests {
         let papers = vec!["paper".to_owned(); 3];
         let schema = schema();
         let items = items(&questions, &papers, &schema);
-        assert_eq!(estimate_batch::<Said>(&library, &items, Counting::ASSUMED).unwrap().by_model[0].calls, 1);
+        assert_eq!(estimate_batch::<Said>(&library, &items, &chosen()).unwrap().cost.calls, 1);
         let echo = Echo::default();
         let outcomes = Run::new().ask(&library, &echo, &items, &plenty(), 2);
         assert_eq!(echo.posts.load(Ordering::SeqCst), 1);
@@ -734,12 +806,12 @@ mod tests {
             ["a", "a", "a", "b", "b", "c"].iter().map(|paper| format!("{paper}{}", "x".repeat(3_000))).collect();
         let schema = schema();
         let items = items(&questions, &papers, &schema);
-        let estimate = estimate_batch::<Said>(&library, &items, Counting::ASSUMED).unwrap();
-        assert_eq!((estimate.to_ask, estimate.by_model.len(), estimate.by_model[0].calls), (6, 1, 6));
-        let tokens = &estimate.by_model[0].tokens;
+        let estimate = estimate_batch::<Said>(&library, &items, &chosen()).unwrap();
+        assert_eq!((estimate.to_ask, estimate.cost.calls), (6, 6));
+        let tokens = &estimate.cost.tokens;
         // a: written once, read twice; b: written once, read once; c: written once
         assert!(tokens.cache_write_5m > 0 && tokens.cache_read == tokens.cache_write_5m, "{tokens:?}");
-        assert!(estimate.usd.unwrap() < estimate.most_usd.unwrap());
+        assert!(estimate.cost.usd.unwrap() < estimate.cost.most_usd.unwrap());
         assert_eq!(
             lanes(&items, &[0, 1, 2, 3, 4, 5]),
             [vec![0, 1, 2], vec![3, 4], vec![5]],
@@ -747,7 +819,91 @@ mod tests {
         );
         let unpriced: Vec<Item<'_>> =
             items.into_iter().map(|item| Item { ask: Ask { model: "claude-unknown-1", ..item.ask }, ..item }).collect();
-        assert_eq!(estimate_batch::<Said>(&library, &unpriced, Counting::ASSUMED).unwrap().usd, None);
+        let unknown = Chosen::of(Provider::Anthropic, "claude-unknown-1", Effort::Low, Ok(endpoint()));
+        let estimate = estimate_batch::<Said>(&library, &unpriced, &unknown).unwrap();
+        assert_eq!((estimate.cost.usd, estimate.cost.most_usd), (None, None));
+        assert!(estimate.cost.most_tokens > estimate.cost.tokens.all(), "the worst case is still told, in tokens");
+    }
+
+    #[test]
+    fn a_batch_is_estimated_at_the_chosen_providers_prices_and_as_it_caches() {
+        let (_folder, library) = library();
+        let questions: Vec<String> = (0..3).map(|n| format!("question {n}")).collect();
+        let papers = vec!["a".repeat(3_000); 3];
+        let schema = schema();
+        let at = |provider: Provider, model: &'static str| {
+            let items: Vec<Item<'_>> = items(&questions, &papers, &schema)
+                .into_iter()
+                .map(|item| Item { ask: Ask { model, ..item.ask }, ..item })
+                .collect();
+            let chosen = Chosen::of(provider, model, Effort::Low, Ok(fake::endpoint(provider)));
+            estimate_batch::<Said>(&library, &items, &chosen).unwrap().cost
+        };
+        let openai = at(Provider::OpenAi, "gpt-6.2-sol");
+        assert_eq!((openai.provider, openai.model.as_str()), (Provider::OpenAi, "gpt-6.2-sol"));
+        assert!(openai.usd.is_some(), "priced from OpenAI's prices, not reported as unknown");
+        // a server on this computer: no API fee, no caching reported (each question pays for the prefix in full)
+        let local = at(Provider::Compatible, "qwen3:32b");
+        assert_eq!((local.usd, local.on_this_computer), (None, true));
+        assert_eq!(local.tokens.cache_read, 0);
+        assert!(local.tokens.input >= 3 * 1_000, "{:?}", local.tokens);
+        // a provider that takes no schema: it is written into every question, and counted there
+        let prompted = at(Provider::Meta, "muse-spark-1.3");
+        let held = at(Provider::Groq, "openai/gpt-oss-120b");
+        assert!(prompted.tokens.input > held.tokens.input, "the schema written into the question is counted");
+    }
+
+    #[test]
+    fn every_answer_is_kept_with_what_it_cost_and_a_failed_call_is_recorded_alone() {
+        let (_folder, library) = library();
+        let (mut questions, papers) = numbered(4);
+        questions[3] = "fail".to_owned();
+        let schema = schema();
+        let items = items(&questions, &papers, &schema);
+        let echo = Echo { took: (40, 20), ..Echo::default() };
+        let cancel = Cancel::new();
+        let (log, progress) = (|_: &str| {}, |_: Progress| {});
+        let tracker = Tracker::new(&log, &progress, &cancel);
+        let asking =
+            Asking { library: &library, transport: &echo, endpoint: endpoint(), recorder: &library, in_flight: 2 };
+        let outcomes = ask_all::<Said>(asking, &items, &plenty(), &tracker).unwrap();
+        assert_eq!(outcomes.iter().filter(|outcome| matches!(outcome, Outcome::Answered(_))).count(), 3);
+        for item in &items[..3] {
+            assert!(library.kept::<Said>(Feature::Answers, &item.slot.key).unwrap().is_some());
+        }
+        // three answers and their calls; the failing one was tried three times, each answered with an error the
+        // API does not bill: nothing of it reaches the ledger as tokens
+        let spending = library.spending().unwrap();
+        assert_eq!(spending.total.calls, 3, "one row per answered call, written with its answer");
+    }
+
+    #[test]
+    fn a_batch_to_another_provider_sends_the_key_as_that_provider_reads_it() {
+        let (_folder, library) = library();
+        let (questions, papers) = numbered(1);
+        let schema = schema();
+        let items: Vec<Item<'_>> = items(&questions, &papers, &schema)
+            .into_iter()
+            .map(|item| Item { ask: Ask { model: "gpt-6.2-sol", ..item.ask }, ..item })
+            .collect();
+        let answer = json!({"said": "question 0"}).to_string();
+        let fake =
+            Fake::new(vec![Ok(ok(&response("gpt-6.2-sol", &answer, json!({"input_tokens": 9, "output_tokens": 3}))))]);
+        let run = Run::new();
+        let log = |_: &str| {};
+        let progress = |_: Progress| {};
+        let tracker = Tracker::new(&log, &progress, &run.cancel);
+        let asking = Asking {
+            library: &library,
+            transport: &fake,
+            endpoint: fake::endpoint(Provider::OpenAi),
+            recorder: &run.calls,
+            in_flight: 1,
+        };
+        let outcomes = ask_all::<Said>(asking, &items, &plenty(), &tracker).unwrap();
+        assert!(matches!(outcomes[0], Outcome::Answered(_)), "{outcomes:?}");
+        let sent = fake.sent();
+        assert_eq!((sent[0].url.as_str(), sent[0].key_as), ("https://api.openai.com/v1/responses", KeyHeader::Bearer));
     }
 
     #[test]

@@ -15,6 +15,7 @@ import { Button, Heading, RowButton } from "@/components/ui/button";
 import { Input } from "@/components/ui/field";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
+import { accepting, shownModel } from "@/lib/cost";
 import {
 	cannotAsk,
 	costLine,
@@ -170,7 +171,7 @@ export function AskBox({
 					dispatch({ type: "viewed", view });
 					if (view.state !== "asking") setVersion((value) => value + 1);
 					if (view.state === "unanswered" && job !== null)
-						api.status(0).then(
+						api.status(Number.MAX_SAFE_INTEGER).then(
 							(status) => setJobError(status.id === job ? status.error : null),
 							() => {},
 						);
@@ -199,7 +200,7 @@ export function AskBox({
 		const estimate = state.estimate;
 		setPosting(true); // one click, one request
 		api
-			.askQuestion(run, { question: state.question, community, model: estimate.model, accepted_usd: estimate.most_usd })
+			.askQuestion(run, { question: state.question, community, ...shownModel(estimate), ...accepting(estimate) })
 			.then(
 				(started) => {
 					setVersion((value) => value + 1);

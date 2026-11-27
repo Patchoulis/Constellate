@@ -155,7 +155,7 @@ fn walk(value: &Value, schema: &Value, at: &str) -> Result<(), String> {
 /// Whether OpenAI's strict mode can take `schema`: every object closed (`additionalProperties: false`) and every
 /// property required, which strict mode refuses a schema without. When not, the schema is sent without `strict`
 /// and the answer checked here.
-pub(super) fn strict_ready(schema: &Value) -> bool {
+pub fn strict_ready(schema: &Value) -> bool {
     match schema {
         Value::Object(fields) => {
             let closed_and_complete = match fields.get("properties").and_then(Value::as_object) {

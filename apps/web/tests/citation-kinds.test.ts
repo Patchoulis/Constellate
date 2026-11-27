@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { CitationKindsEstimate, CitationTally, CitingSentenceShown, Evidence, PaperCitationContexts } from "@rp/contracts";
+import { batchCost } from "./costs";
 import {
 	budgetFor,
 	coverageLine,
@@ -122,32 +123,19 @@ test("the network's lines take the main justified kind of the citations they sta
 test("a job is capped at the estimate's worst case, rounded up to the cent", () => {
 	const estimate = (most: number | null, toAsk: number): CitationKindsEstimate => ({
 		scope: "sample",
+		provider: "anthropic",
 		model: "m",
 		sentences: 50,
 		kept: 0,
 		to_ask: toAsk,
-		estimate: {
-			items: 2,
-			kept: 0,
-			to_ask: 2,
-			by_model: [
-				{
-					model: "m",
-					calls: 2,
-					tokens: { input: 9_000, output: 3_000, cache_read: 0, cache_write_5m: 3_000, cache_write_1h: 0 },
-					usd: 0.05,
-					most_usd: most,
-					counting: { kind: "assumed", chars_per_token: 3 },
-				},
-			],
-			usd: 0.05,
-			most_usd: most,
-		},
+		estimate: batchCost(most === null ? null : 0.05, most, 2, {
+			tokens: { input: 9_000, output: 3_000, cache_read: 0, cache_write_5m: 3_000, cache_write_1h: 0 },
+		}),
 		can_ask: true,
 	});
-	assert.equal(budgetFor(estimate(0.1234, 50)), 0.13);
-	assert.equal(budgetFor(estimate(0.0001, 50)), 0.01);
-	assert.equal(budgetFor(estimate(null, 50)), null, "no price, no cap: nothing is started");
+	assert.deepEqual(budgetFor(estimate(0.1234, 50)), { budget_usd: 0.13 });
+	assert.deepEqual(budgetFor(estimate(0.0001, 50)), { budget_usd: 0.01 });
+	assert.deepEqual(budgetFor(estimate(null, 50)), { budget_tokens: 28_000 }, "no price: capped in tokens, still started");
 	assert.equal(tokensPerSentence(estimate(1, 50)), 300);
 	assert.equal(tokensPerSentence(estimate(1, 0)), null);
 });
