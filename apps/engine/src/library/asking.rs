@@ -17,7 +17,8 @@
 //! An intent left behind is a call whose outcome is unknown: it may have been billed. [`Library::unsettled`] says
 //! how many there are and the most they may have cost, in the ledger's terms, and the interface and the start of
 //! the engine show it as such. Such a call is not asked again by itself: only when the user starts that work
-//! again, and its intent is then replaced by the new one ([`Library::intend`]).
+//! again; the new call then has an intent of its own, and the one left behind is moved into the summary row (below)
+//! rather than erased, since the earlier call may have been billed whatever comes of the new one.
 //!
 //! The table is bounded: intents older than [`FOLD_AFTER_DAYS`] days, or beyond the newest [`KEPT_INTENTS`], are
 //! folded into one summary row (feature `folded`), which keeps their count, the most they may have cost and the
@@ -35,6 +36,13 @@ pub const FOLD_AFTER_DAYS: i64 = 30;
 pub const KEPT_INTENTS: i64 = 1_000;
 /// The summary row's feature: never a feature's name (`Feature::name`).
 const FOLDED: &str = "folded";
+/// How rows put into the summary row are added to what it holds.
+const MERGE: &str = "ON CONFLICT (feature, answer_key) DO UPDATE SET
+                 calls = asking.calls + excluded.calls,
+                 unpriced_calls = asking.unpriced_calls + excluded.unpriced_calls,
+                 most_tokens = asking.most_tokens + excluded.most_tokens,
+                 most_micros = asking.most_micros + excluded.most_micros,
+                 asked_at = MIN(asking.asked_at, excluded.asked_at)";
 
 /// A call about to be sent: what [`Library::intend`] writes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -104,6 +112,18 @@ impl Library {
         self.write(|transaction| {
             let at = now();
             fold(transaction, &at)?;
+            // an intent left for the same slot by an earlier call that may have been billed is not erased by this
+            // one (which may yet be refused, or not sent): it goes into the summary row, still told
+            transaction
+                .prepare_cached(&format!(
+                    "INSERT INTO asking (feature, answer_key, subject, provider, model, calls, unpriced_calls,
+                                         most_tokens, most_micros, asked_at)
+                     SELECT ?3, '', '', '', '', calls, unpriced_calls, most_tokens, most_micros, asked_at
+                     FROM asking WHERE feature = ?1 AND answer_key = ?2
+                     {MERGE}"
+                ))?
+                .execute(params![intent.slot.feature.name(), intent.slot.key.as_str(), FOLDED])?;
+            settle(transaction, intent.slot)?;
             transaction
                 .prepare_cached(
                     "INSERT INTO asking (feature, answer_key, subject, provider, model, calls, unpriced_calls,
@@ -201,12 +221,7 @@ fn fold(connection: &Connection, at: &str) -> Result<(), LibraryError> {
              SELECT ?1, '', '', '', '', SUM(calls), SUM(unpriced_calls), SUM(most_tokens), SUM(most_micros),
                     MIN(asked_at)
              FROM asking WHERE {old} HAVING COUNT(*) > 0
-             ON CONFLICT (feature, answer_key) DO UPDATE SET
-                 calls = asking.calls + excluded.calls,
-                 unpriced_calls = asking.unpriced_calls + excluded.unpriced_calls,
-                 most_tokens = asking.most_tokens + excluded.most_tokens,
-                 most_micros = asking.most_micros + excluded.most_micros,
-                 asked_at = MIN(asking.asked_at, excluded.asked_at)"
+             {MERGE}"
         ))?
         .execute(params![FOLDED, cutoff, beyond])?;
     connection.prepare_cached(&format!("DELETE FROM asking WHERE {old}"))?.execute(params![FOLDED, cutoff, beyond])?;
@@ -258,13 +273,15 @@ mod tests {
     }
 
     #[test]
-    fn asking_again_replaces_the_intent_left_for_the_same_question() {
+    fn asking_again_keeps_the_intent_left_for_the_same_question_in_the_summary_row() {
         let (_folder, library) = library();
         let first = slot("one");
         library.intend(&intent(&first, Some(40_000))).unwrap();
         library.intend(&intent(&first, Some(30_000))).unwrap();
         let unsettled = library.unsettled().unwrap();
-        assert_eq!((unsettled.calls, unsettled.most_micros), (1, 30_000));
+        assert_eq!((unsettled.calls, unsettled.most_micros), (2, 70_000), "the earlier one may have been billed too");
+        assert!(library.not_billed(&first).unwrap());
+        assert_eq!(library.unsettled().unwrap().calls, 1, "the new one not billed: the earlier one is still told");
     }
 
     #[test]

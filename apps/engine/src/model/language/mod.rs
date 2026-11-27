@@ -859,6 +859,15 @@ impl Hold<'_> {
         }
     }
 
+    /// Whether it was billed is not known (the request was sent and then lost): what was held, its worst case, is
+    /// counted as spent.
+    pub fn spend_all(mut self) {
+        if let Some(held) = self.held.take() {
+            let took = Tokens { input: held.tokens, ..Tokens::default() };
+            self.budget.settle(held, &took, None);
+        }
+    }
+
     /// Nothing was billed: what was held is given back.
     pub fn release(mut self) {
         if let Some(held) = self.held.take() {
@@ -1537,7 +1546,13 @@ impl<'a> Client<'a> {
         let reply = match sent {
             Ok(reply) => reply,
             Err(error) => {
-                held.release(); // a failed request is not billed
+                // a request that was refused or never sent is not billed; one lost after it was sent may have been, at
+                // worst what it held, which stays counted so that the rest of the batch keeps to the budget
+                if error == AskError::NoAnswer(NoAnswer::Transport(TransportError::Lost)) {
+                    held.spend_all();
+                } else {
+                    held.release();
+                }
                 return Err(error);
             }
         };
@@ -1709,7 +1724,13 @@ impl<'a> Client<'a> {
             let reply = match self.send(&path, ask.model, &[], body.to_string().as_bytes()) {
                 Ok(reply) => reply,
                 Err(error) => {
-                    held.release(); // a failed request is not billed
+                    // a request that was refused or never sent is not billed; one lost after it was sent may have been, at
+                    // worst what it held, which stays counted so that the rest of the batch keeps to the budget
+                    if error == AskError::NoAnswer(NoAnswer::Transport(TransportError::Lost)) {
+                        held.spend_all();
+                    } else {
+                        held.release();
+                    }
                     return Err(error);
                 }
             };

@@ -1190,13 +1190,14 @@ mod tests {
         assert!(unsettled.most_micros > 0, "{unsettled:?}");
         assert!(unsettled.said().unwrap().contains("may have been billed"));
         assert!(library.kept::<Said>(Feature::Answers, &items[0].slot.key).unwrap().is_none());
-        // asked again when the user starts that work again: the intent is replaced, then settled with the answer
+        // asked again when the user starts that work again: a new intent, settled with the answer; the one left
+        // behind stays told, since that call may have been billed
         let watching = Watching { echo: Echo::default(), library: &library, seen: Mutex::new(Vec::new()) };
         let tracker = Tracker::new(&log, &progress, &cancel);
         let outcomes = ask_all::<Said>(asking(&library, &watching, &library), &items, &plenty(), &tracker).unwrap();
         assert!(matches!(outcomes[0], Outcome::Answered(_)));
-        assert_eq!(*watching.seen.lock().unwrap(), [1], "replaced while it was asked, not added to");
-        assert_eq!(library.unsettled().unwrap().calls, 0);
+        assert_eq!(*watching.seen.lock().unwrap(), [2], "the earlier and the new one, while it was asked");
+        assert_eq!(library.unsettled().unwrap().calls, 1, "the call lost in the crash is still told");
     }
 
     #[test]
@@ -1251,9 +1252,12 @@ mod tests {
         let cancel = Cancel::new();
         let (log, progress) = (|_: &str| {}, |_: Progress| {});
         let tracker = Tracker::new(&log, &progress, &cancel);
-        let outcomes = ask_all::<Said>(asking(&library, &losing, &library), &items, &plenty(), &tracker).unwrap();
+        let budget = plenty();
+        let outcomes = ask_all::<Said>(asking(&library, &losing, &library), &items, &budget, &tracker).unwrap();
         assert_eq!(outcomes[1], Outcome::Failed(Failure::NoAnswer(NoAnswer::Transport(TransportError::Lost))));
         assert_eq!(losing.0.load(Ordering::SeqCst), 3 + 1, "the unreachable one tried three times, the lost one once");
         assert_eq!(library.unsettled().unwrap().calls, 1, "only the lost one may have been billed");
+        // what the lost one held is counted as spent, so the rest of a batch keeps to the budget; nothing stays held
+        assert!(budget.spent().1 > Usd::ZERO && budget.held() == (0, Usd::ZERO), "{budget:?}");
     }
 }
