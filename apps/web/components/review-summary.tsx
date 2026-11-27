@@ -185,7 +185,8 @@ function Theme({ theme, titles, onOpenPaper }: { theme: ReviewTheme; titles: Rec
 /** A community's Reviews section: how many of its papers have reviews read, how they are rated, where reviewers
  *  disagreed, and what they praise and criticise. Nothing is shown when the engine has no answer (an older backend). */
 export function CommunityReviews({ run, treePath, onOpenPaper }: { run: string; treePath: string; onOpenPaper: (id: string) => void }) {
-	const summary = ready(useAsync(() => api.reviewSummary(run, treePath), [run, treePath]));
+	// one community's figures are never shown under another's name while its own are asked for
+	const summary = ready(useAsync(() => api.reviewSummary(run, treePath), [run, treePath], { keep: false }));
 	if (!summary) return null;
 	const disagreed = summary.most_disagreed.filter((paper) => paper.overall.spread > 0);
 	return (

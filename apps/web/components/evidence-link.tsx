@@ -28,7 +28,10 @@ const labels = new Map<string, Promise<string>>();
 function labelOf(paper: string): Promise<string> {
 	let label = labels.get(paper);
 	if (!label) {
-		label = api.paper(paper).then(shortLabel, () => paper);
+		label = api.paper(paper).then(shortLabel, () => {
+			labels.delete(paper); // shown by its id this time; asked again by the next citation of it
+			return paper;
+		});
 		labels.set(paper, label);
 	}
 	return label;
@@ -44,7 +47,8 @@ function labelOf(paper: string): Promise<string> {
  */
 export function EvidenceLink({ evidence, label, className }: { evidence: Evidence; label?: string; className?: string }) {
 	const actions = useContext(Actions);
-	const fetched = useAsync(label ? null : () => labelOf(evidence.paper), [evidence.paper, label]);
+	// another paper's label is never shown for this one, not even while this one's is asked for
+	const fetched = useAsync(label ? null : () => labelOf(evidence.paper), [evidence.paper, label], { keep: false });
 	const shown = label ?? ready(fetched) ?? evidence.paper;
 	const fromAbstract = evidence.established.kind === "abstract";
 	return (

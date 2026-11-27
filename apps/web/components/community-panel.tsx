@@ -456,7 +456,8 @@ function Communities({
 				)}
 			</div>
 			{selected ? (
-				<div className="min-h-0 flex-1 overflow-y-auto">
+				// one community's sections start afresh for another: nothing of the last one is shown under its name
+				<div key={`${result.name}/${selected.community.tree_path}`} className="min-h-0 flex-1 overflow-y-auto">
 					<Detail node={selected} marks={marks} onSelect={onSelect} onOverview={onOverview} onOpenPaper={onOpenPaper} />
 					<CommunityReviews run={result.name} treePath={selected.community.tree_path} onOpenPaper={onOpenPaper} />
 					<CommunityStances
