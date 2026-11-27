@@ -84,6 +84,9 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   once and kept, and is read again only when the PDF or the way papers are read changes.
 - A Claude API key (and address) set in a `.env` file beside the new engine is now used, like its other settings;
   the key is never shown, logged or passed on to another program.
+- Reviewers' scores on older OpenReview pages (reviews signed "AnonReviewer2", as ICLR 2021 and earlier sign them)
+  are now counted review by review, as the Reviews tab shows them, instead of being read as a guess from the whole
+  page.
 
 ### Security
 
