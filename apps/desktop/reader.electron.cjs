@@ -441,7 +441,10 @@ async function main() {
 	await window.webContents.executeJavaScript(`document.getElementById("link").src = "https://evil.example/from-a-pdf"`);
 	await wait(1000);
 	const link = window.webContents.mainFrame.frames.find((frame) => frame.name === "" && frame.url.includes("/blank"));
-	check(framesStopped.some((stopped) => stopped === "https://evil.example/from-a-pdf"), "a frame of the app's page went to another site");
+	check(
+		framesStopped.some((stopped) => stopped === "https://evil.example/from-a-pdf"),
+		"a frame of the app's page went to another site",
+	);
 	check(link !== undefined, "the app's frame left its own address");
 	check(windowOutside.join() === "https://evil.example/from-a-pdf", `handed to the browser: ${windowOutside.join(", ")}`);
 	const paperFrame = window.webContents.mainFrame.frames.find((frame) => frame.url.endsWith("/paper.pdf"));
