@@ -1105,8 +1105,8 @@ pub(super) mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::api::config::tests::STRONG;
-    use crate::api::config::{Environment, Listen};
+    use crate::api::guard::config::tests::STRONG;
+    use crate::api::guard::config::{Environment, Listen};
     use crate::api::routes::Engine;
     use crate::api::tests::served;
     use crate::library::Known;
@@ -1525,7 +1525,8 @@ pub(super) mod tests {
             call(&router, "POST", "/api/runs/r1/marked/stances/estimate", Some(marked)).await.0,
             StatusCode::BAD_REQUEST
         );
-        let huge = Body::from(format!("{{\"question\": \"{}\"}}", "a".repeat(crate::api::security::LARGEST_BODY)));
+        let huge =
+            Body::from(format!("{{\"question\": \"{}\"}}", "a".repeat(crate::api::guard::security::LARGEST_BODY)));
         assert_eq!(call_raw(&router, "POST", &format!("{C0}/estimate"), huge).await.0, StatusCode::PAYLOAD_TOO_LARGE);
         let approved = json!({"question": QUESTION, "part": "sample", "model": "claude-opus-5-5", "approved_usd": 1.0});
         let (status, refused) = call(&router, "POST", &format!("{C0}/ask"), Some(approved)).await;

@@ -1083,7 +1083,7 @@ pub(crate) mod tests {
         let starting = ["Command", "::new("].concat();
         for file in files {
             let text = fs::read_to_string(&file).unwrap();
-            if file.ends_with(Path::new("api").join("config.rs")) {
+            if file.ends_with(Path::new("api").join("guard").join("config.rs")) {
                 assert_eq!(text.matches(&starting).count(), 1);
             } else {
                 assert!(!text.contains(&starting), "{} starts a program without child_process", file.display());

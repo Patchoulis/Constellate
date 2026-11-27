@@ -23,7 +23,7 @@ use axum::extract::{Path, State};
 use axum::routing::{MethodRouter, get};
 use serde::{Deserialize, Serialize};
 
-use crate::api::reviews::papers_of;
+use crate::api::papers::reviews::papers_of;
 use crate::api::routes::{ApiError, Shared, on_the_side};
 use crate::features::claim_tree::asking::{Asked, Askers, AskingError, ask};
 use crate::features::claim_tree::{self, ClaimsView, Contested};
@@ -230,8 +230,8 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::api::config::tests::STRONG;
-    use crate::api::config::{Environment, Listen};
+    use crate::api::guard::config::tests::STRONG;
+    use crate::api::guard::config::{Environment, Listen};
     use crate::api::routes::Engine;
     use crate::api::tests::served;
     use crate::features::claim_tree::asking::tests::{

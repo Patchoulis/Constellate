@@ -525,8 +525,8 @@ mod tests {
     use axum::http::StatusCode;
     use serde_json::{Value, json};
 
-    use crate::api::config::tests::STRONG;
-    use crate::api::config::{Environment, Listen};
+    use crate::api::guard::config::tests::STRONG;
+    use crate::api::guard::config::{Environment, Listen};
     use crate::api::other_providers::{
         ACCEPTED, Chosen as Picked, LOCAL, Scripted, accepting, call, choices, choose, finished, priced_for, sent_to,
     };

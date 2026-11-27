@@ -9,10 +9,10 @@
 //! PUT /api/settings         change some of them: a JSON object of the ones to change
 //! ```
 //!
-//! and a paper's reviews, read from the page the user opened ([`super::reviews`]), and a paper's text and where a
-//! quote is in it ([`super::passages`]).
+//! and a paper's reviews, read from the page the user opened ([`crate::api::papers::reviews`]), and a paper's text and where a
+//! quote is in it ([`crate::api::papers::passages`]).
 //!
-//! Across a network the owner's sign-in routes are served too (`/auth/...`, [`super::login`]).
+//! Across a network the owner's sign-in routes are served too (`/auth/...`, [`crate::api::guard::login`]).
 //!
 //! A route is a function of the shared [`Engine`]; adding one is a line in [`table`] (or a `Router<Shared>` of
 //! its own given to [`secured`]). Whatever is added passes the security layer like everything else: it is
@@ -34,8 +34,8 @@ use serde_json::{Map, Value};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 
-use super::config::Mode;
-use super::security::{self, Guard, LARGEST_BODY};
+use crate::api::guard::config::Mode;
+use crate::api::guard::security::{self, Guard, LARGEST_BODY};
 use crate::jobs::{Busy, Counted, Finished, Job, Phase, Progress};
 use crate::library::{Library, LibraryError};
 use crate::model::chosen::Chosen;
@@ -54,7 +54,7 @@ pub struct Engine {
     pub data: PathBuf,
     /// What each choice among the settings may be.
     pub choices: Choices,
-    /// What is unsafe about how the engine listens ([`super::config::Listen::warnings`]), for the interface.
+    /// What is unsafe about how the engine listens ([`crate::api::guard::config::Listen::warnings`]), for the interface.
     pub warnings: Vec<String>,
     /// This computer only, or a network: set by the server from how it listens.
     pub mode: Mode,
@@ -362,15 +362,15 @@ pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
         ("/api/settings", get(read_settings).put(change_settings)),
         ("/api/usage/unsettled", get(unsettled)),
     ];
-    table.extend(super::reviews::table());
-    table.extend(super::passages::table());
+    table.extend(crate::api::papers::reviews::table());
+    table.extend(crate::api::papers::passages::table());
     table.extend(crate::features::critique::routes::table());
     table.extend(crate::features::stances::routes::table());
     table.extend(crate::features::extraction::routes::table());
     table.extend(crate::features::explanation::routes::table());
     table.extend(crate::features::claim_tree::routes::table());
     table.extend(crate::features::citation_contexts::routes::table());
-    table.extend(super::citations::table());
+    table.extend(crate::api::papers::citations::table());
     table.extend(crate::features::answers::routes::table());
     table.extend(super::models::table());
     table.extend(crate::features::writing::routes::table());

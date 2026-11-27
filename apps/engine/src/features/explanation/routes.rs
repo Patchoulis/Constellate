@@ -572,10 +572,10 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::api::config::tests::STRONG;
-    use crate::api::config::{Environment, Listen};
+    use crate::api::guard::config::tests::STRONG;
+    use crate::api::guard::config::{Environment, Listen};
+    use crate::api::guard::security::LARGEST_BODY;
     use crate::api::routes::Engine;
-    use crate::api::security::LARGEST_BODY;
     use crate::api::tests::served;
     use crate::library::papers::passages::fixtures::pdf_with;
     use crate::library::papers::tests::paper;

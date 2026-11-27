@@ -473,11 +473,11 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
-    use super::super::config::tests::STRONG;
-    use super::super::config::{Environment, Listen};
     use super::super::routes::Engine;
     use super::super::tests::served;
     use super::*;
+    use crate::api::guard::config::tests::STRONG;
+    use crate::api::guard::config::{Environment, Listen};
     use crate::pipeline::tests::{PYTHON_RUN, python_data_folder};
     use crate::settings::Choices;
 

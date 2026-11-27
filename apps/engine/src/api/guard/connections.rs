@@ -6,7 +6,7 @@
 //! runs out of them, without knowing the token. So every connection takes a seat ([`MOST_OPEN`] in all, and
 //! across a network [`MOST_PER_ADDRESS`] for each remote address), and one through which nothing has moved in
 //! either direction for a while is closed. HTTP/1 also has its own deadline for a request's headers, and HTTP/2
-//! pings its peer (`super::patient`); this covers what comes before either, and connections that merely idle.
+//! pings its peer (`crate::api::patient`); this covers what comes before either, and connections that merely idle.
 
 use std::collections::HashMap;
 use std::future::{Future, Ready, ready};

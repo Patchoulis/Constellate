@@ -23,7 +23,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-use crate::api::config::Cookie;
+use crate::api::guard::config::Cookie;
 
 /// A session that sees no request for this long ends: a window left open over lunch stays signed in, one left
 /// overnight does not.

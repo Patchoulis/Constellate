@@ -24,14 +24,14 @@ use axum::extract::{Path, State};
 use axum::routing::{MethodRouter, get};
 use serde::{Deserialize, Serialize};
 
-use super::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::analysis::reviews::{PaperFigures, ReviewSummary, Reviewed, paper_figures, summarise, venue_of};
+use crate::api::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::library::core::store::read_json;
 use crate::library::{Keeping, KeptReviews, Library, Ratings};
 use crate::text::discussion::{Discussion, read_discussion};
 use crate::text::reviews::{MAX_TEXT, forum, read_ratings};
 
-/// The routes of this module, for [`super::routes::table`].
+/// The routes of this module, for [`crate::api::routes::table`].
 pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
     vec![
         ("/api/papers/{id}/reviews", get(kept).post(read)),
@@ -260,10 +260,10 @@ mod tests {
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
-    use super::super::config::tests::STRONG;
-    use super::super::config::{Environment, Listen};
-    use super::super::routes::Engine;
-    use super::super::tests::served;
+    use crate::api::guard::config::tests::STRONG;
+    use crate::api::guard::config::{Environment, Listen};
+    use crate::api::routes::Engine;
+    use crate::api::tests::served;
     use crate::library::Known;
     use crate::library::papers::tests::paper;
     use crate::settings::Choices;

@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use constellate::api::Server;
-use constellate::api::config::{self, DATA, Environment, Listen};
+use constellate::api::guard::config::{self, DATA, Environment, Listen};
 use constellate::api::routes::{Engine, routes};
 use constellate::library::core::place;
 use constellate::model::language;

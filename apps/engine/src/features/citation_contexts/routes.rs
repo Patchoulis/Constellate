@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::analysis::citations::Linker;
-use crate::api::reviews::papers_of;
+use crate::api::papers::reviews::papers_of;
 use crate::api::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::evidence::Evidence;
 use crate::features::citation_contexts::kinds::{
@@ -719,8 +719,8 @@ mod tests {
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
-    use crate::api::config::tests::STRONG;
-    use crate::api::config::{Environment, Listen};
+    use crate::api::guard::config::tests::STRONG;
+    use crate::api::guard::config::{Environment, Listen};
     use crate::api::routes::Engine;
     use crate::features::citation_contexts::kinds::{Classified, PROMPT, sentence_key};
     use crate::library::papers::passages::fixtures::pdf_with;
@@ -796,14 +796,14 @@ mod tests {
         if key {
             engine.set_claude_key("test-key-not-real-0123456789", None);
         }
-        let provider = std::sync::Arc::new(crate::api::login::oidc::tests::Fake::new(&[]));
+        let provider = std::sync::Arc::new(crate::api::guard::login::oidc::tests::Fake::new(&[]));
         let (router, engine, _) = crate::api::application(
             &listen,
             AT.parse().unwrap(),
             engine,
             crate::api::routes::routes(),
             provider,
-            || Ok(crate::api::login::password::Hashing::light()),
+            || Ok(crate::api::guard::login::password::Hashing::light()),
         )
         .unwrap();
         (router, engine)

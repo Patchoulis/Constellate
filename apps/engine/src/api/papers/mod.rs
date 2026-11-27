@@ -11,9 +11,13 @@
 //!
 //! These replace the Python backend's `GET /api/papers/<id>`, `GET /api/pdf/<id>`, `POST /api/declarations/<id>`,
 //! `POST /api/runs/<name>/declarations` and `GET /api/reviews`; its `POST /api/reviews/<id>` is the engine's
-//! `POST /api/papers/{id}/reviews` ([`super::reviews`]). A paper id comes percent-encoded in one path segment
+//! `POST /api/papers/{id}/reviews` ([`crate::api::papers::reviews`]). A paper id comes percent-encoded in one path segment
 //! (an old arXiv id has a `/`: `hep-th%2F9901001`) and is decoded once, by the router. It never becomes a path
 //! here: the PDF's file is the library's own naming of it ([`crate::library::Library::pdf_file`]).
+
+pub mod citations;
+pub mod passages;
+pub mod reviews;
 
 use std::collections::HashMap;
 use std::io::{Seek, SeekFrom};
@@ -27,9 +31,9 @@ use axum::routing::{MethodRouter, get, post};
 use serde::Serialize;
 use serde_json::Value;
 
-use super::citations::{Refusal, no_pdf, paper_id};
-use super::reviews::papers_of;
 use super::routes::{ApiError, Shared, on_the_side, one_name};
+use crate::api::papers::citations::{Refusal, no_pdf, paper_id};
+use crate::api::papers::reviews::papers_of;
 use crate::jobs::Finished;
 use crate::library::{Declarations, Ratings, Reading};
 use crate::papers::declarations::{Declared, declarations_of, read_and_count};
@@ -253,11 +257,11 @@ mod tests {
     use serde_json::json;
     use tower::ServiceExt;
 
-    use super::super::config::tests::STRONG;
-    use super::super::config::{Environment, Listen};
     use super::super::routes::Engine;
     use super::super::tests::served;
     use super::*;
+    use crate::api::guard::config::tests::STRONG;
+    use crate::api::guard::config::{Environment, Listen};
     use crate::library::papers::passages::fixtures::pdf_with;
     use crate::library::papers::tests::paper;
     use crate::library::{Known, Library, Paper};
@@ -362,7 +366,7 @@ mod tests {
 
     /// The fields of an interface of the contracts, as written there.
     fn contract_fields(name: &str) -> BTreeSet<String> {
-        let contracts = include_str!("../../../../packages/contracts/src/index.ts");
+        let contracts = include_str!("../../../../../packages/contracts/src/index.ts");
         let start = contracts.find(&format!("export interface {name} {{")).unwrap();
         let body = &contracts[start..];
         let body = &body[body.find('{').unwrap() + 1..body.find("\n}").unwrap()];

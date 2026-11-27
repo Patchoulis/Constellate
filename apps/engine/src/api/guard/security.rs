@@ -40,7 +40,7 @@ use super::config::{Access, Listen, Mode, Origin, Programs, Transport};
 use super::login::oidc::Provider;
 use super::login::password::{Hashing, PasswordError, SetupCode};
 use super::login::{self, Login, LoginError};
-use super::routes::ApiError;
+use crate::api::routes::ApiError;
 
 /// The largest request body accepted: the largest thing the interface sends is a page's text.
 pub const LARGEST_BODY: usize = 4 * 1024 * 1024;

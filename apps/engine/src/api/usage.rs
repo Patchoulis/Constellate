@@ -208,11 +208,11 @@ mod tests {
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
-    use super::super::config::tests::STRONG;
-    use super::super::config::{Environment, Listen};
     use super::super::routes::Engine;
     use super::super::tests::served;
     use super::*;
+    use crate::api::guard::config::tests::STRONG;
+    use crate::api::guard::config::{Environment, Listen};
     use crate::library::{Call, Library};
     use crate::model::language::{Effort, Provider, Unavailable};
     use crate::settings::Choices;

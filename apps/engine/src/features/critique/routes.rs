@@ -292,8 +292,8 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::api::config::tests::STRONG;
-    use crate::api::config::{Environment, Listen};
+    use crate::api::guard::config::tests::STRONG;
+    use crate::api::guard::config::{Environment, Listen};
     use crate::api::other_providers::{ACCEPTED, accepting};
     use crate::api::routes::Engine;
     use crate::api::tests::served;

@@ -15,14 +15,14 @@ use axum::extract::{Path, State};
 use axum::routing::{MethodRouter, get, post};
 use serde::Deserialize;
 
-use super::routes::{ApiError, Shared, on_the_side};
+use crate::api::routes::{ApiError, Shared, on_the_side};
 use crate::library::PaperReading;
 use crate::text::passages::{LocateAnswer, Passages};
 
 /// The longest quote looked for, in characters: a paragraph or two. A quote is the paper's words, not the paper.
 pub const LONGEST_QUOTE: usize = 5_000;
 
-/// The routes of this module, for [`super::routes::table`].
+/// The routes of this module, for [`crate::api::routes::table`].
 pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
     vec![("/api/papers/{id}/passages", get(passages)), ("/api/papers/{id}/locate", post(locate))]
 }
@@ -75,10 +75,10 @@ mod tests {
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
-    use super::super::config::tests::STRONG;
-    use super::super::config::{Environment, Listen};
-    use super::super::routes::Engine;
-    use super::super::tests::served;
+    use crate::api::guard::config::tests::STRONG;
+    use crate::api::guard::config::{Environment, Listen};
+    use crate::api::routes::Engine;
+    use crate::api::tests::served;
     use crate::library::papers::passages::fixtures::pdf_with;
     use crate::library::papers::tests::paper;
     use crate::library::{Known, Library};

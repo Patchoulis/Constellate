@@ -14,7 +14,7 @@
 //! to gigabytes, objects that refer to themselves or nest thousands deep. A panic can be caught, but running out of
 //! memory or overflowing the stack aborts the whole process, and that would take the engine down every time it met
 //! that paper, in every run that includes it. So the engine reads each PDF in a short-lived child process of its
-//! own program (the hidden argument [`CHILD_ARGUMENT`], started through [`crate::api::config::child_process`], so
+//! own program (the hidden argument [`CHILD_ARGUMENT`], started through [`crate::api::guard::config::child_process`], so
 //! it inherits none of the engine's secrets):
 //!
 //! ```text
@@ -299,7 +299,7 @@ static PLACES: LazyLock<Places> = LazyLock::new(|| {
 /// among the children ([`readers_at_once`]); `time` runs from when the child starts.
 pub fn read_in_child(program: &Path, bytes: &[u8], time: Duration) -> Result<Vec<String>, Unreadable> {
     let _place = PLACES.take();
-    let mut command = crate::api::config::child_process(program);
+    let mut command = crate::api::guard::config::child_process(program);
     command.arg(CHILD_ARGUMENT).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     // a group of its own: Ctrl-C in the engine's terminal stops the engine, which stops its children, rather than
     // reaching them first and being taken for something the PDF did
@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn a_childs_death_is_told_by_what_it_said_last() {
-        let status = crate::api::config::child_process(std::env::current_exe().unwrap())
+        let status = crate::api::guard::config::child_process(std::env::current_exe().unwrap())
             .arg("--this-flag-is-not-one-the-test-harness-takes")
             .stdout(Stdio::null())
             .stderr(Stdio::null())

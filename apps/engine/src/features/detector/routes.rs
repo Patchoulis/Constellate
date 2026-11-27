@@ -367,8 +367,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::api::config::tests::STRONG;
-    use crate::api::config::{Environment, Listen};
+    use crate::api::guard::config::tests::STRONG;
+    use crate::api::guard::config::{Environment, Listen};
     use crate::api::other_providers::{Chosen as Asked, MODEL, Scripted, call, choices, finished, router};
     use crate::api::tests::served;
     use crate::features::detector::tests::{HUMAN, MACHINE, build_in, text};

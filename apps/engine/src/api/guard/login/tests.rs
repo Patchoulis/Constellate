@@ -17,8 +17,8 @@ use url::Url;
 use super::oidc::tests::{Fake, Signer, claims, rsa_signer};
 use super::password::{Hashing, SetupCode};
 use super::sessions::CSRF_HEADER;
-use crate::api::config::tests::STRONG;
-use crate::api::config::{Environment, Listen};
+use crate::api::guard::config::tests::STRONG;
+use crate::api::guard::config::{Environment, Listen};
 use crate::api::routes::{self, Engine};
 use crate::settings::Choices;
 

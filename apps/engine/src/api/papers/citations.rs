@@ -37,8 +37,8 @@ use serde::Deserialize;
 use url::Url;
 
 use super::reviews::papers_of;
-use super::routes::{ApiError, Shared, on_the_side};
 use crate::analysis::citations::{CitationNetwork, Linker, LookupsStopped, network};
+use crate::api::routes::{ApiError, Shared, on_the_side};
 use crate::library::papers::references::{
     Arxiv, KeptReferences, Looked, ReferencesReading, Stopped, look_up, to_look_up,
 };
@@ -91,7 +91,7 @@ impl Drop for Claim<'_> {
     }
 }
 
-/// The routes of this module, for [`super::routes::table`].
+/// The routes of this module, for [`crate::api::routes::table`].
 pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
     vec![("/api/papers/{id}/citations", get(citations_of)), ("/api/papers/{id}/references", post(read_references))]
 }
@@ -277,10 +277,10 @@ mod tests {
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
-    use super::super::config::tests::STRONG;
-    use super::super::config::{Environment, Listen};
-    use super::super::routes::Engine;
     use super::*;
+    use crate::api::guard::config::tests::STRONG;
+    use crate::api::guard::config::{Environment, Listen};
+    use crate::api::routes::Engine;
     use crate::library::papers::passages::fixtures::pdf_with;
     use crate::library::papers::references::Lookup;
     use crate::library::papers::tests::paper;
@@ -374,14 +374,14 @@ mod tests {
         .unwrap();
         let mut engine = Engine::new(data.path().to_path_buf(), choices());
         engine.pdfs = crate::papers::pdf::Pdfs::new(fake);
-        let provider = Arc::new(super::super::login::oidc::tests::Fake::new(&[]));
-        let (router, _, _) = super::super::application(
+        let provider = Arc::new(crate::api::guard::login::oidc::tests::Fake::new(&[]));
+        let (router, _, _) = crate::api::application(
             &listen,
             AT.parse().unwrap(),
             engine,
-            super::super::routes::routes(),
+            crate::api::routes::routes(),
             provider,
-            || Ok(super::super::login::password::Hashing::light()),
+            || Ok(crate::api::guard::login::password::Hashing::light()),
         )
         .unwrap();
         router

@@ -59,8 +59,8 @@ use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
 use super::config::{Cookie, Environment, Origin, switch};
-use super::routes::{ApiError, Shared};
 use super::security::{self, Allowance, Strikes};
+use crate::api::routes::{ApiError, Shared};
 use oidc::{Callback, Oidc, Provider};
 use password::{Hashing, PasswordError, Passwords, Setup, SetupCode};
 use sessions::{Current, Sessions, cookies};
