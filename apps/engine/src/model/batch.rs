@@ -19,6 +19,7 @@
 //!    unknown model fails only its own items), or when the job is asked to stop. What was not started is
 //!    [`Outcome::NotStarted`] with why. A stop cuts short a rate-limit wait already begun (within [`SPACING`]),
 //!    and the request that waited is not sent. Items with the same slot are asked once and all given that outcome
+//!    (and counted as done together).
 //! 5. **A rate limit pauses everyone, then lets them go one by one.** The client waits out a `retry-after`; here
 //!    that wait holds back every thread's next request too, and when it is over they go [`SPACING`] apart rather
 //!    than all at once into the same limit.
@@ -231,6 +232,11 @@ where
     let done = Mutex::new(of - asked);
     let report = |done: u64| tracker.progress(Progress { done, of, usd: budget.spent().1 });
     report(*locked(&done));
+    // an item asked in the place of repeats of it is done for them too
+    let mut with_repeats: HashMap<usize, u64> = HashMap::new();
+    for (_, original) in &repeats {
+        *with_repeats.entry(*original).or_default() += 1;
+    }
 
     let cancelled = || tracker.cancelled();
     let paced = Paced { inner: asking.transport, gate: Mutex::new(Gate::default()), cancelled: &cancelled };
@@ -266,7 +272,7 @@ where
                         }
                         locked(&answered).push((index, outcome));
                         let mut done = locked(&done);
-                        *done += 1;
+                        *done += 1 + with_repeats.get(&index).copied().unwrap_or(0);
                         report(*done);
                     }
                 }
@@ -992,5 +998,18 @@ mod tests {
         assert_eq!(outcomes, [Outcome::NotStarted(Stopped::Cancelled), Outcome::NotStarted(Stopped::Cancelled)]);
         assert_eq!(stopping.echo.posts.load(Ordering::SeqCst), 1, "only the request that was limited was sent");
         assert_eq!(stopping.echo.waited.lock().unwrap().len(), 1, "one step of the seven seconds, then stopped");
+    }
+
+    #[test]
+    fn the_same_question_twice_counts_both_as_done_when_it_is_answered() {
+        let (_folder, library) = library();
+        let questions = vec!["question".to_owned(), "question".to_owned(), "other".to_owned()];
+        let papers = vec!["paper".to_owned(); 3];
+        let schema = schema();
+        let items = items(&questions, &papers, &schema);
+        let run = Run::new();
+        run.ask(&library, &Echo::default(), &items, &plenty(), 1);
+        let progress = run.progress.lock().unwrap();
+        assert_eq!(progress.last().map(|progress| (progress.done, progress.of)), Some((3, 3)));
     }
 }
