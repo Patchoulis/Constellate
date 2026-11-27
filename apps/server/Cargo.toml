@@ -11,11 +11,15 @@ workspace = true
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+half = "2"
+# ONNX Runtime with DirectML: any DirectX 12 graphics card on Windows (NVIDIA, AMD, Intel), else the processor
+ort = { version = "=2.0.0-rc.15", features = ["directml", "half"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10"
 thiserror = "2"
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 
 [dev-dependencies]
 tempfile = "3"
