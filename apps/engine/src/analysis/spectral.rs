@@ -188,20 +188,41 @@ fn median(values: &[f64]) -> f64 {
 /// Two-way cut of one group of papers (its similarity graph `sub`): `true` for the papers on one side. `None`
 /// when the group cannot be cut.
 ///
-/// A group in several pieces is cut into its largest piece (the first of equal ones) and the rest: no
-/// eigenvector is needed to see that cut. A connected group is cut by the sign of its Fiedler vector (the second
-/// eigenvector, in the random-walk scaling); if every paper has the same sign, by the vector's median.
+/// A group in several pieces of linked papers is cut into its largest piece (the first of equal ones) and the
+/// rest: no eigenvector is needed to see that cut. A connected group is cut by the sign of its Fiedler vector (the
+/// second eigenvector, in the random-walk scaling); if every paper has the same sign, by the vector's median.
+///
+/// Papers linked to nobody in the group (an outlier whose only similar papers went to the other half of an
+/// earlier cut, an embedding with nothing in it) say nothing about where to cut. They are set aside, the linked
+/// papers cut as above, and they join the smaller side. Counted as pieces of their own they would make every cut
+/// "the largest piece and a few strays", which no size limit accepts, and the group could never be cut again.
 pub fn fiedler_side(sub: ArrayView2<f32>) -> Result<Option<Vec<bool>>, EigenError> {
     let papers = sub.nrows();
     if papers < 2 {
         return Ok(None);
     }
     let (piece, pieces) = components(sub);
-    if pieces > 1 {
-        let mut sizes = vec![0; pieces];
-        for &one in &piece {
-            sizes[one] += 1;
+    let mut sizes = vec![0; pieces];
+    for &one in &piece {
+        sizes[one] += 1;
+    }
+    let linked: Vec<usize> = (0..papers).filter(|&paper| sizes[piece[paper]] > 1).collect();
+    if linked.len() < papers {
+        if linked.len() < 2 {
+            return Ok(None);
         }
+        let inner: Array2<f32> =
+            Array2::from_shape_fn((linked.len(), linked.len()), |(i, j)| sub[[linked[i], linked[j]]]);
+        let Some(inner_side) = fiedler_side(inner.view())? else { return Ok(None) };
+        let first = inner_side.iter().filter(|&&here| here).count();
+        let strays_first = 2 * first < inner_side.len();
+        let mut side = vec![strays_first; papers];
+        for (&paper, &here) in linked.iter().zip(&inner_side) {
+            side[paper] = here;
+        }
+        return Ok(Some(side));
+    }
+    if pieces > 1 {
         let largest = (0..pieces).fold(0, |best, one| if sizes[one] > sizes[best] { one } else { best });
         return Ok(Some(piece.iter().map(|&one| one == largest).collect()));
     }
@@ -300,6 +321,33 @@ mod tests {
         }
         let side = fiedler_side(graph.view()).unwrap().unwrap();
         assert_eq!(side, vec![false, true, false, true, true, false]);
+    }
+
+    #[test]
+    fn papers_linked_to_nobody_are_set_aside_and_join_the_smaller_side() {
+        // two cliques of 30 and 20, weakly joined, and papers 50 and 51 linked to nobody
+        let mut graph = Array2::<f32>::zeros((52, 52));
+        for i in 0..50 {
+            for j in 0..50 {
+                if i != j {
+                    graph[[i, j]] = if (i < 30) == (j < 30) { 1.0 } else { 0.01 };
+                }
+            }
+        }
+        let side = fiedler_side(graph.view()).unwrap().unwrap();
+        assert!(side[..30].iter().all(|here| *here == side[0]));
+        assert!(side[30..50].iter().all(|here| *here == side[30]));
+        assert_ne!(side[0], side[30]);
+        assert!(side[50] == side[30] && side[51] == side[30], "the strays join the smaller clique");
+        // pieces of linked papers are still cut into the largest and the rest, the strays with the rest
+        let mut pieces = Array2::<f32>::zeros((7, 7));
+        for (a, b) in [(0, 1), (1, 2), (3, 4)] {
+            pieces[[a, b]] = 0.5;
+            pieces[[b, a]] = 0.5;
+        }
+        assert_eq!(fiedler_side(pieces.view()).unwrap().unwrap(), vec![true, true, true, false, false, false, false]);
+        // nothing linked at all: nothing to cut by
+        assert_eq!(fiedler_side(Array2::<f32>::zeros((5, 5)).view()).unwrap(), None);
     }
 
     #[test]

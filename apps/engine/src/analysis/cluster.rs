@@ -580,6 +580,20 @@ mod tests {
     }
 
     #[test]
+    fn the_fiedler_method_still_cuts_a_graph_with_a_paper_linked_to_nobody() {
+        let (adjacency, vectors, truth) = blob_papers();
+        // a 121st paper with no similarity to any other
+        let mut lonely = Array2::<f32>::zeros((121, 121));
+        lonely.slice_mut(ndarray::s![..120, ..120]).assign(&adjacency);
+        let mut with_it = Array2::<f32>::zeros((121, vectors.ncols()));
+        with_it.slice_mut(ndarray::s![..120, ..]).assign(&vectors);
+        let papers = Papers { adjacency: lonely.view(), vectors: with_it.view() };
+        let partition = communities(Method::Fiedler, papers, 3, loose(0)).unwrap();
+        assert_eq!(partition.communities.len(), 3, "{:?}", partition.cuts);
+        assert!(same_grouping(&partition.labels(121)[..120], &truth));
+    }
+
+    #[test]
     fn a_group_too_small_to_split_is_left_whole() {
         let (adjacency, vectors, _) = blob_papers();
         let papers = Papers { adjacency: adjacency.view(), vectors: vectors.view() };
