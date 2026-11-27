@@ -7,6 +7,8 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The paper reader has a Claims tab: the paper's central claims as a tree, with the findings and evidence (experiments, tables, figures, theorems) the paper offers for each, every one linked to the paper's own words; the points of its OpenReview reviews placed on the claims they are about, each with the reviewer's words beside the paper's, how many reviewers challenged or supported each claim with their ratings on the venue's own scale, a filter for contested claims, points that could not be placed listed apart, and the model's own reading of possible gaps shown last. The cost is estimated before anything is asked.
+
 - Opening a paper's Reviews tab now keeps the whole discussion (each review by section, rebuttals, the meta-review and the decision), shows the paper's mean, range and confidence-weighted mean on its venue's own scale, and adds a Reviews section to each community: how many of its papers have reviews read, ratings per conference and year, the papers reviewers disagreed on most, and what reviewers most often praise and criticise, each linked to the reviewer's words.
 
 - The paper reader has a Text tab showing the paper's text section by section, and citations open it at the exact place they quote, with the words highlighted; quotes Claude gives as evidence are only shown once they have been found in the paper they are attributed to.

@@ -1,6 +1,9 @@
 import type {
 	Catalog,
 	CitationNetwork,
+	ClaimsStart,
+	ClaimsView,
+	ContestedClaims,
 	Declarations,
 	GraphData,
 	Library,
@@ -111,4 +114,14 @@ export const api = {
 	/** read this paper's reference list from its PDF (slow the first time: the PDF is fetched); answers its network */
 	readReferences: (id: string, inRun?: string) =>
 		call<CitationNetwork>(`/api/papers/${id}/references${inRun ? `?run=${encodeURIComponent(inRun)}` : ""}`, { method: "POST" }),
+	/** a paper's claim tree with its reviews mapped onto it, as kept, and what asking the rest would cost (asks nothing) */
+	claims: (id: string) => call<ClaimsView>(`/api/papers/${encodeURIComponent(id)}/claims`),
+	/** ask the model what is not kept, within `budget_usd`; answers the job's number */
+	startClaims: (id: string, start: ClaimsStart) =>
+		call<{ job: number }>(`/api/papers/${encodeURIComponent(id)}/claims`, send("POST", start)),
+	/** forget the paper's tree and mapping: asked again on the next start */
+	forgetClaims: (id: string) => call<{ forgotten: number }>(`/api/papers/${encodeURIComponent(id)}/claims`, { method: "DELETE" }),
+	/** per paper of a community whose reviews were mapped, its contested claims */
+	contestedClaims: (name: string, treePath: string) =>
+		call<ContestedClaims>(`${run(name)}/communities/${encodeURIComponent(treePath)}/claims/contested`),
 };
