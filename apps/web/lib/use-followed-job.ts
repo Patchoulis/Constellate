@@ -210,6 +210,7 @@ export function createPoller(
 		restart() {
 			generation += 1;
 			known = { id: undefined, log: [] };
+			failures = 0; // the engine just started the job: it answers, and its first look is not put off
 			last = null;
 		},
 	};

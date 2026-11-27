@@ -207,3 +207,17 @@ test("a look under way when a job is started is asked again before anyone is tol
 	assert.deepEqual(told, [{ seen: answers[1] }], "the job before's end was not told");
 	assert.deepEqual(asked, [0, 0]);
 });
+
+test("a job just started is looked at after the usual wait, whatever the engine's silence before", async () => {
+	const down = new Error("The engine is not reachable.");
+	const { poller, tick, waits } = scripted([down, down, down, status("running")]);
+	const stop = poller.watch(() => undefined);
+	await tick();
+	await tick();
+	await tick();
+	assert.equal(waits[0]?.ms, 8 * POLL_MS, "backing off while it did not answer");
+	stop();
+	poller.restart();
+	poller.watch(() => undefined);
+	assert.equal(waits.at(-1)?.ms, POLL_MS);
+});
