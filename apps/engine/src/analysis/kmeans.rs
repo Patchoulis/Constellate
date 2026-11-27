@@ -49,18 +49,32 @@ pub fn kmeans(points: ArrayView2<f32>, groups: usize, seed: u64) -> Clustering {
         return Clustering { labels: vec![0; count], objective: 0.0 };
     }
     let lengths: Array1<f32> = points.rows().into_iter().map(|row| row.dot(&row)).collect();
-    let mut random = Random::new(seed);
+    let tried: Vec<Clustering> =
+        (0..RESTARTS).into_par_iter().map(|restart| attempt(points, &lengths, groups, seed, restart)).collect();
+    // the first of the best, in the order of the restarts: the same one whichever finished first
     let mut best: Option<Clustering> = None;
-    for _ in 0..RESTARTS {
-        let centres = seed_centres(points, groups, &mut random);
-        let labels = lloyd(points, &lengths, centres);
-        let objective = objective(points, &labels, &Groups::of(points, &labels, groups));
-        if best.as_ref().is_none_or(|kept| objective < kept.objective) {
-            best = Some(Clustering { labels, objective });
+    for clustering in tried {
+        if best.as_ref().is_none_or(|kept| clustering.objective < kept.objective) {
+            best = Some(clustering);
         }
     }
     let start = best.unwrap_or_else(|| Clustering { labels: vec![0; count], objective: 0.0 });
     let labels = hartigan(points, start, groups);
+    let objective = objective(points, &labels, &Groups::of(points, &labels, groups));
+    Clustering { labels, objective }
+}
+
+/// One restart: its seeding, then Lloyd's rounds.
+///
+/// The restarts run side by side, yet each draws the numbers it would have drawn after the restarts before it,
+/// so the answer is the one restarts made one after another give: a seeding draws exactly `groups` numbers (its
+/// first centre and one for each further centre), and the generator can be moved on by any count of draws at
+/// once ([`Random::skip`]). Nothing is shared between restarts but the points, which nobody writes.
+fn attempt(points: ArrayView2<f32>, lengths: &Array1<f32>, groups: usize, seed: u64, restart: usize) -> Clustering {
+    let mut random = Random::new(seed);
+    random.skip((restart * groups) as u64);
+    let centres = seed_centres(points, groups, &mut random);
+    let labels = lloyd(points, lengths, centres);
     let objective = objective(points, &labels, &Groups::of(points, &labels, groups));
     Clustering { labels, objective }
 }
@@ -110,25 +124,37 @@ fn pick_by_weight(weights: &[f64], random: &mut Random) -> usize {
     weights.iter().rposition(|weight| *weight > 0.0).unwrap_or(0)
 }
 
-/// Each point's nearest centre and its squared distance: `|x|^2 - 2 x.c + |c|^2`, the middle term for all points and
-/// centres in one matrix product.
+/// Points whose nearest centres one thread finds together, in one matrix product.
+const POINTS_PER_PIECE: usize = 256;
+
+/// Each point's nearest centre and its squared distance: `|x|^2 - 2 x.c + |c|^2`, the middle term for a piece of
+/// points and every centre in one matrix product, a piece per thread. A point's answer depends on its own row
+/// alone, and the pieces are put back in order.
 fn nearest_centres(points: ArrayView2<f32>, lengths: &Array1<f32>, centres: &Array2<f32>) -> Vec<(usize, f32)> {
     let centre_lengths: Vec<f32> = centres.rows().into_iter().map(|row| row.dot(&row)).collect();
-    let products = points.dot(&centres.t());
-    products
-        .outer_iter()
-        .zip(lengths)
-        .map(|(row, length)| {
-            row.iter()
-                .zip(&centre_lengths)
-                .map(|(product, centre)| (length - 2.0 * product + centre).max(0.0))
-                .enumerate()
-                .fold(
-                    (0, f32::INFINITY),
-                    |best, (group, distance)| if distance < best.1 { (group, distance) } else { best },
-                )
+    let pieces: Vec<Vec<(usize, f32)>> = points
+        .axis_chunks_iter(Axis(0), POINTS_PER_PIECE)
+        .into_par_iter()
+        .zip(lengths.axis_chunks_iter(Axis(0), POINTS_PER_PIECE))
+        .map(|(piece, lengths)| {
+            let products = piece.dot(&centres.t());
+            products
+                .outer_iter()
+                .zip(lengths)
+                .map(|(row, length)| {
+                    row.iter()
+                        .zip(&centre_lengths)
+                        .map(|(product, centre)| (length - 2.0 * product + centre).max(0.0))
+                        .enumerate()
+                        .fold(
+                            (0, f32::INFINITY),
+                            |best, (group, distance)| if distance < best.1 { (group, distance) } else { best },
+                        )
+                })
+                .collect()
         })
-        .collect()
+        .collect();
+    pieces.into_iter().flatten().collect()
 }
 
 /// Lloyd's rounds from the given centres, until no point changes its nearest centre. Returns each point's group.
@@ -316,6 +342,42 @@ pub(crate) mod tests {
     fn the_same_seed_gives_the_same_groups() {
         let (points, _) = blobs();
         assert_eq!(kmeans(points.view(), 5, 7), kmeans(points.view(), 5, 7));
+    }
+
+    /// Points enough for several pieces of [`POINTS_PER_PIECE`], in eight loose groups.
+    fn many_points() -> Array2<f32> {
+        let mut random = Random::new(3);
+        let centres = Array2::from_shape_simple_fn((8, 24), || 2.0 * random.normal());
+        Array2::from_shape_fn((3 * POINTS_PER_PIECE + 41, 24), |(point, axis)| {
+            (centres[[point % 8, axis]] + random.normal()) as f32
+        })
+    }
+
+    #[test]
+    fn restarts_side_by_side_choose_what_restarts_one_after_another_chose() {
+        let points = many_points();
+        let lengths: Array1<f32> = points.rows().into_iter().map(|row| row.dot(&row)).collect();
+        // the restarts as they were made before they ran side by side: one generator, drawn from in turn
+        let mut random = Random::new(9);
+        let one_after_another: Vec<Clustering> = (0..RESTARTS)
+            .map(|_| {
+                let centres = seed_centres(points.view(), 6, &mut random);
+                let labels = lloyd(points.view(), &lengths, centres);
+                let objective = objective(points.view(), &labels, &Groups::of(points.view(), &labels, 6));
+                Clustering { labels, objective }
+            })
+            .collect();
+        let side_by_side: Vec<Clustering> =
+            (0..RESTARTS).map(|restart| attempt(points.view(), &lengths, 6, 9, restart)).collect();
+        assert_eq!(side_by_side, one_after_another);
+    }
+
+    #[test]
+    fn k_means_gives_the_same_groups_on_one_thread_and_on_many() {
+        let points = many_points();
+        let (one, many) = crate::threads::on_one_and_many(|| kmeans(points.view(), 8, 4));
+        assert_eq!(one.labels, many.labels);
+        assert_eq!(one.objective.to_bits(), many.objective.to_bits());
     }
 
     #[test]

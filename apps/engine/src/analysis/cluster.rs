@@ -13,6 +13,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use ndarray::{Array2, ArrayView2, Axis, CowArray, Ix2};
+use rayon::prelude::*;
 
 use super::eigen::EigenError;
 use super::graph::{make_unit, modularity};
@@ -311,10 +312,12 @@ pub fn communities(method: Method, papers: Papers, count: usize, limits: Limits)
     };
     // a stable sort: communities of equal size keep their order
     tops.sort_by_key(|community| std::cmp::Reverse(community.papers.len()));
-    let communities = tops
-        .into_iter()
-        .map(|community| subdivide(method, papers, community, limits.sub_levels, limits))
-        .collect::<Result<_, _>>()?;
+    // Every community is subdivided on its own, side by side: what a community is cut into depends on its own
+    // papers, the graph and the fixed seed, all only read. The answers are collected in the communities' order,
+    // and the first error in that order is the one told, so neither depends on which finished first.
+    let subdivided: Vec<Result<Community, ClusterError>> =
+        tops.into_par_iter().map(|community| subdivide(method, papers, community, limits.sub_levels, limits)).collect();
+    let communities = subdivided.into_iter().collect::<Result<_, _>>()?;
     Ok(Partition { communities, cuts })
 }
 
@@ -360,10 +363,17 @@ fn restricted<'a>(matrix: ArrayView2<'a, f32>, members: &[usize]) -> CowArray<'a
     let everything =
         members.len() == matrix.nrows() && members.iter().enumerate().all(|(index, &paper)| index == paper);
     if everything {
-        CowArray::from(matrix)
-    } else {
-        CowArray::from(Array2::from_shape_fn((members.len(), members.len()), |(i, j)| matrix[[members[i], members[j]]]))
+        return CowArray::from(matrix);
     }
+    // row by row on every core: each row of the copy is written by one thread, from the graph nobody writes
+    let mut copy = Array2::<f32>::zeros((members.len(), members.len()));
+    copy.axis_iter_mut(Axis(0)).into_par_iter().zip(members.par_iter()).for_each(|(mut row, &paper)| {
+        let source = matrix.row(paper);
+        for (entry, &other) in row.iter_mut().zip(members) {
+            *entry = source[other];
+        }
+    });
+    CowArray::from(copy)
 }
 
 /// The rows of `vectors` listed in `members`, without a copy when that is every row in order.
@@ -426,8 +436,13 @@ pub fn subdivide(
     let Some((modularity, [first, second])) = split(method, papers, &community, limits)? else {
         return Ok(community);
     };
-    let halves =
-        [subdivide(method, papers, first, levels - 1, limits)?, subdivide(method, papers, second, levels - 1, limits)?];
+    // the two halves side by side, for the same reasons as the communities ([`communities`]); the first half's
+    // error first
+    let (first, second) = rayon::join(
+        || subdivide(method, papers, first, levels - 1, limits),
+        || subdivide(method, papers, second, levels - 1, limits),
+    );
+    let halves = [first?, second?];
     Ok(Community { parts: Parts::Halves { modularity, halves: Box::new(halves) }, ..community })
 }
 
@@ -639,6 +654,26 @@ mod tests {
         assert!(restricted(matrix.view(), &[0, 1, 2]).is_view());
         assert!(!restricted(matrix.view(), &[0, 2]).is_view());
         assert_eq!(restricted(matrix.view(), &[2, 0]).into_owned(), Array2::<f32>::eye(2));
+    }
+
+    #[test]
+    fn every_method_cuts_the_same_communities_and_sub_communities_on_one_thread_and_on_many() {
+        // twelve loose groups of 25: enough communities to be cut side by side, each large enough to be cut again
+        let mut random = crate::analysis::random::Random::new(21);
+        let centres = Array2::from_shape_simple_fn((12, 20), || 3.0 * random.normal());
+        let points = Array2::from_shape_fn((300, 20), |(point, axis)| {
+            (centres[[point % 12, axis]] + 1.5 * random.normal()) as f32
+        });
+        let adjacency = adjacency_matrix(points.view(), true).unwrap();
+        let mut vectors = &points - &points.mean_axis(Axis(0)).unwrap();
+        make_unit(&mut vectors);
+        let papers = Papers { adjacency: adjacency.view(), vectors: vectors.view() };
+        let limits = Limits { min_community_size: 4, min_split_modularity: 0.0, sub_levels: 3 };
+        for method in Method::ALL {
+            let (one, many) = crate::threads::on_one_and_many(|| communities(method, papers, 6, limits).unwrap());
+            assert_eq!(one, many, "{method}");
+            assert!(one.communities.iter().any(|community| community.descendants() > 0), "{method}: nothing was cut");
+        }
     }
 
     /// How long a conference-sized run takes on this computer: `cargo test --release -- --ignored --nocapture`.
