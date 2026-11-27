@@ -9,6 +9,8 @@
 //! | [`library`] | what is kept on disk: the file store everything is written through             |
 //! | [`jobs`]    | the one background job at a time, as an explicit state machine                  |
 //! | [`model`]   | the embedding model, on any graphics card or the processor                     |
+//! | [`runs`]    | many runs: the list without loading any, a cache by use, warm-up at start      |
+//! | [`usage`]   | what calls to the language model cost, from prices built into the engine       |
 //! | [`selection`] | which papers a run is about: conferences, or a date range                     |
 //! | [`sources`] | where papers come from: conference lists, arXiv, proceedings' PDFs             |
 //! | [`text`]    | what is read out of text: authors' declarations, reviewers' scores             |
