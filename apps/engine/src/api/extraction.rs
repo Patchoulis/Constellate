@@ -168,7 +168,9 @@ fn papers_of(engine: &Shared, run: &str, scope: &Scope) -> Result<(Graph, Vec<St
         }
         Scope::Papers(papers) => {
             if papers.len() > MOST_PAPERS || papers.iter().any(|paper| paper.len() > LONGEST_ID) {
-                return Err(ApiError::Invalid(format!("a table has at most {MOST_PAPERS} papers")));
+                return Err(ApiError::Invalid(format!(
+                    "a table has at most {MOST_PAPERS} papers, each id at most {LONGEST_ID} characters"
+                )));
             }
             let known: HashSet<&str> = graph.nodes.iter().map(|node| node.id.as_str()).collect();
             if let Some(stranger) = papers.iter().find(|paper| !known.contains(paper.as_str())) {
@@ -519,8 +521,10 @@ async fn start(
                 "{} answered, {} kept from before, {} with no usable answer, {} not asked",
                 ran.answered, ran.kept, ran.failed, ran.not_started
             ));
+            // stopped early (the budget reached, a stop asked for, the API unusable): told as the job's failure,
+            // so that it is never shown as a finished table; what was answered is kept either way
             if let Some(why) = ran.stopped {
-                tracker.log(&format!("Stopped early: {why}"));
+                return Err(format!("{why}: {} of {} papers were not asked", ran.not_started, ran.papers));
             }
             // a job's result names the run it was about, as a run's job does
             Ok(run)
@@ -742,7 +746,7 @@ mod tests {
         assert_eq!(cells[0]["evidence"][0]["paper"], "p01");
         assert_eq!(cells[0]["evidence"][0]["established"]["address"]["page"], 1);
         assert_eq!(cells[5], json!({"kind": "not_verified", "why": "quotes_not_found"}), "the fabricated quote");
-        assert_eq!(table["left_out"], json!({"quotes_not_found": 1, "number_not_in_quote": 0, "malformed": 0}));
+        assert_eq!(table["left_out"], json!({"quotes_not_found": 1, "value_not_in_quote": 0, "malformed": 0}));
         assert!(!table.to_string().contains("512 TPUs"), "a value without found evidence is never sent");
         let marked = json!({"scope": {"papers": ["p02", "p01"]}});
         let (_, picked) = post(&router, "/api/runs/r1/extraction/table", marked).await;

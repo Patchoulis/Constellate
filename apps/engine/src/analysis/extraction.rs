@@ -145,6 +145,8 @@ pub enum InvalidColumns {
     Id,
     #[error("two columns have the id {0}")]
     Repeated(String),
+    #[error("the column {0} asks what another column asks, of the same kind")]
+    SameQuestion(String),
     #[error("a column's label is 1 to {LONGEST_LABEL} characters")]
     Label,
     #[error("a column's question is 1 to {LONGEST_QUESTION} characters, on one line")]
@@ -171,6 +173,10 @@ pub fn check_columns(columns: &[Column]) -> Result<(), InvalidColumns> {
         if columns[..index].iter().any(|before| before.id == column.id) {
             return Err(InvalidColumns::Repeated(column.id.clone()));
         }
+        // the same question twice would be one cell kept for two columns
+        if columns[..index].iter().any(|before| before.asked() == column.asked()) {
+            return Err(InvalidColumns::SameQuestion(column.label.clone()));
+        }
         if !within(&column.label, LONGEST_LABEL) {
             return Err(InvalidColumns::Label);
         }
@@ -193,7 +199,7 @@ pub struct Said {
 #[serde(default)]
 pub struct SaidCell {
     pub column: String,
-    /// `stated` or `not_stated`.
+    /// `stated` or `not_stated` as the model writes it; [`OMITTED`] when its answer had no cell for the column.
     pub status: String,
     pub text: String,
     /// `yes`, `no` or empty.
@@ -207,6 +213,10 @@ pub struct SaidCell {
     /// Copied word for word from the paper, the model says.
     pub quotes: Vec<String>,
 }
+
+/// The status kept for a column the model's answer left out: shown as [`Malformed::Omitted`], so that it is
+/// neither mistaken for "not stated" nor left looking unasked (a redo asks it again).
+pub const OMITTED: &str = "omitted";
 
 /// Yes or no.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -245,6 +255,8 @@ pub enum Value {
 pub enum Malformed {
     #[error("the answer is neither stated nor not stated")]
     Status,
+    #[error("the answer had no cell for this column")]
+    Omitted,
     #[error("the answer is stated but empty")]
     Empty,
     #[error("the answer is not yes or no")]
@@ -261,8 +273,10 @@ pub enum Malformed {
 pub enum Unverified {
     /// None of its quotes was found in the paper.
     QuotesNotFound,
-    /// Its quotes were found, but the number is in none of them.
+    /// Its quotes were found, but the number (with its sign) is in none of them.
     NumberNotInQuote,
+    /// Its quotes were found, but none of its items (or not the address it gives) is in them.
+    ValueNotInQuote,
 }
 
 /// One cell of the table, as shown.
@@ -286,6 +300,7 @@ pub fn value_of(column: &Column, said: &SaidCell) -> Result<Option<Value>, Malfo
     match said.status.trim() {
         "not_stated" => return Ok(None),
         "stated" => {}
+        OMITTED => return Err(Malformed::Omitted),
         _ => return Err(Malformed::Status),
     }
     let text = |text: &str| -> Result<String, Malformed> {
@@ -345,22 +360,82 @@ fn digits_of(number: &str) -> Option<String> {
     well_formed.then_some(digits)
 }
 
-/// Is the number `written` one of the numbers in `text`? Compared as digits ([`digits_of`]), so "1,024" in the
-/// paper is the model's "1024"; "84.3" is not "84.30", nor inside "184.3".
+fn is_minus(c: char) -> bool {
+    matches!(c, '-' | '\u{2212}')
+}
+
+/// Is the number `written` one of the numbers in `text`, with the same sign? Compared as digits
+/// ([`digits_of`]), so "1,024" in the paper is the model's "1024"; "84.3" is not "84.30", nor inside "184.3"; and
+/// "-0.5" is not the "0.5" of "improves by 0.5".
 pub fn number_in(text: &str, written: &str) -> bool {
     let Some(wanted) = digits_of(written) else { return false };
+    let negative = written.trim().starts_with(is_minus);
     let mut run = String::new();
+    let mut before = ' ';
+    let mut sign = false;
     let mut found = false;
     for c in text.chars().chain([' ']) {
-        if c.is_ascii_digit() || c == '.' || joins_digits(c) {
+        if c.is_ascii_digit() || (!run.is_empty() && (c == '.' || joins_digits(c))) {
+            if run.is_empty() {
+                sign = is_minus(before);
+            }
             run.push(c);
         } else if !run.is_empty() {
             let piece = run.trim_matches(|c: char| c == '.' || joins_digits(c));
-            found |= digits_of(piece).is_some_and(|digits| digits == wanted);
+            found |= sign == negative && digits_of(piece).is_some_and(|digits| digits == wanted);
             run.clear();
+        }
+        if run.is_empty() {
+            before = c;
         }
     }
     found
+}
+
+/// Letters and digits only, in lower case: how an item is looked for in a quote.
+fn bare(text: &str) -> String {
+    text.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
+/// The web addresses a text answer gives ("github.com/x/y", "https://..."), as written.
+fn addresses(text: &str) -> Vec<&str> {
+    text.split_whitespace()
+        .map(|word| word.trim_matches(|c: char| "()[]<>\"'.,;:".contains(c)))
+        .filter(|word| {
+            word.contains("://") || word.starts_with("www.") || word.contains(".com/") || word.contains(".org/")
+        })
+        .collect()
+}
+
+/// `value` as far as the found quotes bear it out: a number only when it is in one of them, with its sign; of
+/// a list, only the items named in them; a text only when every address it gives is in them.
+fn borne_out(value: Value, found: &[&str]) -> Result<Value, Unverified> {
+    let quotes: Vec<String> = found.iter().map(|quote| bare(quote)).collect();
+    let named = |text: &str| {
+        let wanted = bare(text);
+        !wanted.is_empty() && quotes.iter().any(|quote| quote.contains(&wanted))
+    };
+    match value {
+        Value::Number { ref written, .. } => {
+            if found.iter().any(|quote| number_in(quote, written)) {
+                Ok(value)
+            } else {
+                Err(Unverified::NumberNotInQuote)
+            }
+        }
+        Value::List { items } => {
+            let items: Vec<String> = items.into_iter().filter(|item| named(item)).collect();
+            if items.is_empty() { Err(Unverified::ValueNotInQuote) } else { Ok(Value::List { items }) }
+        }
+        Value::Text { ref text } => {
+            if addresses(text).iter().all(|address| named(address)) {
+                Ok(value)
+            } else {
+                Err(Unverified::ValueNotInQuote)
+            }
+        }
+        Value::YesNo { .. } => Ok(value),
+    }
 }
 
 /// The key one cell's answer is kept under: what it depends on is the model, the paper, and the column's
@@ -627,10 +702,11 @@ pub fn run(asking: Asking<'_>, plan: &Plan, budget: &Budget, tracker: &Tracker<'
             }
         };
         for column in &ask.columns {
-            // a column the answer left out is not kept: it is asked again next time
-            if let Some(cell) = said.cells.iter().find(|cell| cell.column.trim() == column.id) {
-                library.keep(&cell_slot(&plan.model, &ask.paper, column), &model, PROMPT, cell)?;
-            }
+            // a column the answer left out is kept as left out: asking the same call again would only find the
+            // same kept answer; a redo asks it again
+            let omitted = SaidCell { column: column.id.clone(), status: OMITTED.to_owned(), ..SaidCell::default() };
+            let cell = said.cells.iter().find(|cell| cell.column.trim() == column.id).unwrap_or(&omitted);
+            library.keep(&cell_slot(&plan.model, &ask.paper, column), &model, PROMPT, cell)?;
         }
     }
     Ok(ran)
@@ -683,14 +759,10 @@ fn checked(paper: &str, columns: &[Column], kept: &[Option<SaidCell>], text: Opt
     for cited in evidence::check(claims, &papers, Rules::ONE_PAPER).cited {
         let index = cited.statement;
         let Some(value) = values[index].take() else { continue };
-        let shown = match &value {
-            Value::Number { written, .. } => cited.evidence.iter().any(|found| number_in(found.quote(), written)),
-            Value::Text { .. } | Value::YesNo { .. } | Value::List { .. } => true,
-        };
-        cells[index] = if shown {
-            Cell::Stated { value, evidence: cited.evidence }
-        } else {
-            Cell::NotVerified { why: Unverified::NumberNotInQuote }
+        let found: Vec<&str> = cited.evidence.iter().map(Evidence::quote).collect();
+        cells[index] = match borne_out(value, &found) {
+            Ok(value) => Cell::Stated { value, evidence: cited.evidence },
+            Err(why) => Cell::NotVerified { why },
         };
     }
     cells
@@ -743,7 +815,8 @@ pub fn by_centrality(papers: &[String], nodes: &[String], links: &[(usize, usize
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct LeftOut {
     pub quotes_not_found: usize,
-    pub number_not_in_quote: usize,
+    /// A number, a list's items or an address not in the quotes found for it.
+    pub value_not_in_quote: usize,
     pub malformed: usize,
 }
 
@@ -753,7 +826,9 @@ impl LeftOut {
         for cell in rows.iter().flatten() {
             match cell {
                 Cell::NotVerified { why: Unverified::QuotesNotFound } => left.quotes_not_found += 1,
-                Cell::NotVerified { why: Unverified::NumberNotInQuote } => left.number_not_in_quote += 1,
+                Cell::NotVerified { why: Unverified::NumberNotInQuote | Unverified::ValueNotInQuote } => {
+                    left.value_not_in_quote += 1;
+                }
                 Cell::Malformed { .. } => left.malformed += 1,
                 Cell::Stated { .. } | Cell::NotStated | Cell::NotAsked => {}
             }
@@ -1014,7 +1089,7 @@ mod tests {
 
         // p3, no PDF: asked from its abstract, honestly not stated
         assert!(rows[2].iter().all(|cell| *cell == Cell::NotStated));
-        assert_eq!(LeftOut::of(&rows), LeftOut { quotes_not_found: 2, number_not_in_quote: 1, malformed: 0 });
+        assert_eq!(LeftOut::of(&rows), LeftOut { quotes_not_found: 2, value_not_in_quote: 1, malformed: 0 });
 
         // and a value is never sent without its evidence
         let told = serde_json::to_value(&rows[1]).unwrap();
@@ -1112,10 +1187,11 @@ mod tests {
         assert!(rows[0].iter().all(|cell| *cell == Cell::NotAsked), "p1 failed: asked again next time");
         assert_eq!(rows[1][1], Cell::Malformed { why: Malformed::Status });
         assert_eq!(rows[1][2], Cell::Malformed { why: Malformed::NotANumber });
-        // p3's answer had no cells: none kept, asked again next time
-        assert!(rows[2].iter().all(|cell| *cell == Cell::NotAsked));
+        // p3's answer had no cells: kept as left out, since asking again would find the same kept answer
+        assert!(rows[2].iter().all(|cell| *cell == Cell::Malformed { why: Malformed::Omitted }));
+        assert_eq!(LeftOut::of(&rows).malformed, 6);
         let (next, _) = super::tests::plan(&library, &columns);
-        assert_eq!(next.asks.iter().map(|ask| ask.paper.as_str()).collect::<Vec<_>>(), ["p1", "p3"]);
+        assert_eq!(next.asks.iter().map(|ask| ask.paper.as_str()).collect::<Vec<_>>(), ["p1"]);
     }
 
     #[test]
@@ -1178,6 +1254,21 @@ mod tests {
         assert!(number_in("trained on 1,024 GPUs", "1024"));
         assert!(number_in("trained on 1024 GPUs.", "1,024"));
         assert!(number_in("a loss of -0.5 at the end", "-0.5"));
+        assert!(!number_in("it improves by 0.5 points", "-0.5"), "the sign is checked too");
+        assert!(!number_in("a loss of -0.5", "0.5"));
+        assert!(number_in("in 2024-25 we saw 25 runs", "25"));
+        // a list keeps only the items its quotes name; a text's address must be in them
+        let quotes = ["We evaluate on ImageNet-1k and on the COCO detection benchmark."];
+        let list = Value::List { items: vec!["ImageNet 1k".to_owned(), "CIFAR-10".to_owned(), "coco".to_owned()] };
+        let kept = Value::List { items: vec!["ImageNet 1k".to_owned(), "coco".to_owned()] };
+        assert_eq!(borne_out(list, &quotes), Ok(kept));
+        let none = Value::List { items: vec!["MNIST".to_owned()] };
+        assert_eq!(borne_out(none, &quotes), Err(Unverified::ValueNotInQuote));
+        let code = ["Our code is at https://github.com/lab/moe-vision for everyone."];
+        let text = |text: &str| Value::Text { text: text.to_owned() };
+        assert!(borne_out(text("Yes: https://github.com/lab/moe-vision"), &code).is_ok());
+        assert_eq!(borne_out(text("Yes: github.com/lab/other/"), &code), Err(Unverified::ValueNotInQuote));
+        assert!(borne_out(text("Code is released"), &code).is_ok());
         assert!(!number_in("a top-1 accuracy of 184.3%", "84.3"));
         assert!(!number_in("84.30 points", "84.3"));
         assert!(!number_in("84 and 3", "84.3"));
@@ -1207,6 +1298,9 @@ mod tests {
         assert_eq!(check_columns(&one("ok", "x", "line\nbreak")), Err(InvalidColumns::Question));
         let twice = [default_columns()[0].clone(), default_columns()[0].clone()];
         assert_eq!(check_columns(&twice), Err(InvalidColumns::Repeated("task".to_owned())));
+        let asked_twice =
+            [default_columns()[0].clone(), Column { id: "task-2".to_owned(), ..default_columns()[0].clone() }];
+        assert_eq!(check_columns(&asked_twice), Err(InvalidColumns::SameQuestion("Task".to_owned())));
     }
 
     #[test]

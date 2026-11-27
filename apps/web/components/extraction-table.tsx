@@ -43,9 +43,9 @@ import { cn } from "@/lib/utils";
 
 const USD = { code: "USD", rate: 1, date: null };
 const usd = (amount: number) => money(amount, USD);
-/** A budget is sent as the "at most" shown, rounded up to a hundredth of a cent, so that what was shown is what
- *  is allowed. */
-const ceiling = (amount: number) => Math.ceil(amount * 1e4) / 1e4;
+/** A budget is the "at most" shown, rounded up to the cent it is shown in, so that what is allowed is what was
+ *  shown. */
+const ceiling = (amount: number) => Math.ceil(amount * 100) / 100;
 
 const readNote = (model: string) =>
 	`Read from the paper by the model (${model}): its reading, not the paper's statement. The quotes beside it are the paper's own words, found in it; a value whose quotes were not found is never shown.`;
@@ -54,8 +54,12 @@ const readNote = (model: string) =>
 type Asking =
 	| { step: "idle" }
 	| { step: "starting"; part: ExtractionPart }
-	| { step: "running"; part: ExtractionPart; job: number; done: number; of: number; usd: number }
-	| { step: "finished"; part: ExtractionPart; usd: number; error: string | null };
+	/** `part` is null for a run found under way when the table was opened */
+	| { step: "running"; part: ExtractionPart | null; job: number; done: number; of: number; usd: number }
+	| { step: "finished"; part: ExtractionPart | null; usd: number; error: string | null };
+
+/** The kind of job the engine gives a run of the table (engine api/extraction.rs). */
+const JOB_KIND = "the extraction table";
 
 const POLL_MS = 1200;
 
@@ -74,7 +78,12 @@ function EstimateLine({ estimate }: { estimate: ExtractionEstimate }) {
 			: estimate.basis.kind === "sample_texts"
 				? `from the mean length of the sample's ${count(estimate.basis.papers, "read paper")} (${count(estimate.basis.characters, "character")}), and each paper's own abstract when it has no PDF`
 				: `from a typical paper's length (${count(estimate.basis.characters, "character")}): no paper of the sample has been read yet`;
-	const all = estimate.tokens.input + estimate.tokens.output + estimate.tokens.cache_read + estimate.tokens.cache_write_5m;
+	const all =
+		estimate.tokens.input +
+		estimate.tokens.output +
+		estimate.tokens.cache_read +
+		estimate.tokens.cache_write_5m +
+		estimate.tokens.cache_write_1h;
 	const title =
 		`An estimate, reckoned ${basis}, at ${estimate.counting.chars_per_token} characters a token (${estimate.counting.kind}: it errs high); about ${tokens(all)}. ` +
 		`"At most" is if every answer took its longest. Billed by the model's provider in US dollars.`;
@@ -135,7 +144,7 @@ function ColumnsEditor({ run, given, onSaved }: { run: string; given: Extraction
 	const [error, setError] = useState<string | null>(null);
 	const missing = given.defaults.filter((one) => !columns.some((column) => column.id === one.id));
 	const add = () => {
-		const name = label.trim() || question.trim().slice(0, 40);
+		const name = label.trim() || question.trim().slice(0, 40).trimEnd();
 		const id = columnId(
 			name,
 			columns.map((column) => column.id),
@@ -263,7 +272,7 @@ function Grid({
 		link.href = url;
 		link.download = `extraction-table-${run}.csv`;
 		link.click();
-		URL.revokeObjectURL(url);
+		setTimeout(() => URL.revokeObjectURL(url), 10_000); // once the download has surely started
 	};
 	const options = filterOptions(table.rows, active);
 	return (
@@ -359,6 +368,7 @@ function RowView({
 	onForgotten: () => void;
 }) {
 	const asked = row.cells.some((cell) => cell.kind !== "not_asked");
+	const [confirming, setConfirming] = useState(false);
 	return (
 		<tr className="border-b last:border-b-0">
 			<td className="sticky left-0 w-56 bg-card p-2 align-top">
@@ -383,16 +393,31 @@ function RowView({
 						</span>
 					)}
 					{row.text === "not_in_library" && <span title="Not in the library: it is not asked">not in the library</span>}
-					{asked && (
+					{asked && !confirming && (
 						<Button
 							variant="ghost"
 							size="icon"
 							className="size-5"
-							title="Forget this paper's answers, so that it is asked again at the next run (after its estimate). Nothing is asked now."
-							onClick={() => void api.forgetExtraction(run, [row.paper]).then(onForgotten, onForgotten)}
+							title="Forget this paper's answers, so that it is asked again at the next run (asks first)"
+							onClick={() => setConfirming(true)}
 						>
 							<RotateCcw />
 						</Button>
+					)}
+					{confirming && (
+						<span className="flex flex-wrap items-center gap-1 text-foreground">
+							Forget its answers in every table? This cannot be undone, and asking again costs money.
+							<Button
+								variant="outline"
+								className="h-6 px-2"
+								onClick={() => void api.forgetExtraction(run, [row.paper]).then(onForgotten, onForgotten)}
+							>
+								Forget
+							</Button>
+							<Button variant="ghost" className="h-6 px-2" onClick={() => setConfirming(false)}>
+								Keep
+							</Button>
+						</span>
 					)}
 				</div>
 			</td>
@@ -426,9 +451,29 @@ function Opened({
 	const table = useAsync(() => api.extractionTable(run, scope), [run, where, version]);
 	const sample = useAsync(() => api.extractionEstimate(run, scope, "sample"), [run, where, version]);
 	const sampleDone = ready(sample)?.to_ask === 0;
-	const rest = useAsync(sampleDone ? () => api.extractionEstimate(run, scope, "rest") : null, [run, where, version, sampleDone]);
+	const tried = ready(table)?.rows.some((row) => row.sample && row.cells.some((cell) => cell.kind !== "not_asked")) ?? false;
+	const offerRest = sampleDone || tried;
+	const rest = useAsync(offerRest ? () => api.extractionEstimate(run, scope, "rest") : null, [run, where, version, offerRest]);
 	const [asking, setAsking] = useState<Asking>({ step: "idle" });
 	const [editing, setEditing] = useState(false);
+
+	// A run of the table already under way when this is opened (the section was closed, or another community
+	// looked at meanwhile) is followed again rather than offered anew.
+	useEffect(() => {
+		api.status(Number.MAX_SAFE_INTEGER).then(
+			(status) => {
+				if (status.state !== "running" || status.kind !== JOB_KIND || status.id === undefined) return;
+				const progress = status.progress;
+				const job = status.id;
+				setAsking((now) =>
+					now.step === "idle"
+						? { step: "running", part: null, job, done: progress?.done ?? 0, of: progress?.of ?? 0, usd: progress?.usd ?? 0 }
+						: now,
+				);
+			},
+			() => {},
+		);
+	}, []);
 
 	// While a run is under way, and only then, its progress is asked for; when it ends, the table is read again.
 	useEffect(() => {
@@ -470,6 +515,7 @@ function Opened({
 	const restEstimate = ready(rest);
 	const busy = asking.step === "starting" || asking.step === "running";
 	const sampleSize = shownTable?.sample ?? 0;
+
 	const note = shownTable && leftOutNote(shownTable);
 	return (
 		<div className="flex flex-col gap-2">
@@ -499,8 +545,8 @@ function Opened({
 					{asking.step === "finished" && (
 						<p className={cn("text-xs tabular-nums", asking.error ? "text-warning" : "text-foreground")}>
 							{asking.error
-								? `The run stopped: ${asking.error}`
-								: `${asking.part === "sample" ? "The sample" : "The rest"} cost ${usd(asking.usd)} (as billed at the engine's prices).`}
+								? `The run stopped: ${asking.error}. ${usd(asking.usd)} was spent; what was answered is kept.`
+								: `${asking.part === "sample" ? "The sample" : asking.part === "rest" ? "The rest" : "The run"} cost ${usd(asking.usd)} (as billed at the engine's prices).`}
 						</p>
 					)}
 					{sampleEstimate && sampleEstimate.to_ask > 0 && (
@@ -511,7 +557,7 @@ function Opened({
 							</Button>
 						</div>
 					)}
-					{sampleDone && restEstimate && restEstimate.to_ask > 0 && restEstimate.usd !== null && (
+					{offerRest && restEstimate && restEstimate.to_ask > 0 && restEstimate.usd !== null && (
 						<div className="flex flex-col gap-1">
 							<EstimateLine estimate={restEstimate} />
 							<Button variant="outline" disabled={busy} onClick={() => begin("rest", restEstimate)}>
@@ -547,7 +593,15 @@ function Opened({
 					{note}
 				</p>
 			)}
-			{shownTable && <Grid run={run} table={shownTable} onOpenPaper={onOpenPaper} onForgotten={again} />}
+			{shownTable && (
+				<Grid
+					key={shownTable.columns.map((column) => column.id).join(" ")}
+					run={run}
+					table={shownTable}
+					onOpenPaper={onOpenPaper}
+					onForgotten={again}
+				/>
+			)}
 		</div>
 	);
 }

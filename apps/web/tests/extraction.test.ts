@@ -68,7 +68,7 @@ const table: ExtractionTable = {
 	model: "claude-opus-5-5",
 	rows,
 	sample: 5,
-	left_out: { quotes_not_found: 1, number_not_in_quote: 2, malformed: 0 },
+	left_out: { quotes_not_found: 1, value_not_in_quote: 2, malformed: 0 },
 };
 
 test("a cell says what it is: a value, not stated, or left out, never a value without its evidence", () => {
@@ -130,15 +130,20 @@ test("the CSV has every cell's value, quotes and pages, and nothing a spreadshee
 	const lines = csv.trimEnd().split("\r\n");
 	assert.equal(
 		lines[0],
-		"paper,title,year,acceptance,read from,Headline result,Headline result: quotes,Headline result: pages,Datasets,Datasets: quotes,Datasets: pages",
+		"paper,title,year,acceptance,read from,values read by the model," +
+			"Headline result (the model's reading),Headline result: quotes (the paper's words),Headline result: pages," +
+			"Datasets (the model's reading),Datasets: quotes (the paper's words),Datasets: pages",
 	);
 	assert.equal(
 		lines[1],
-		'a,Title of a,2026,poster,PDF,84.3 % accuracy (ImageNet),we reach 84.3% accuracy on ImageNet,p. 3,"ImageNet, CIFAR-10",we evaluate on ImageNet and CIFAR-10,p. 3',
+		'a,Title of a,2026,poster,PDF,claude-opus-5-5,84.3 % accuracy (ImageNet),we reach 84.3% accuracy on ImageNet,p. 3,"ImageNet, CIFAR-10",we evaluate on ImageNet and CIFAR-10,p. 3',
 	);
 	assert.ok(lines[2].includes(`"'=HYPERLINK(""x"")"`), lines[2]);
 	assert.ok(lines[2].includes(`"a ""quoted"", line",p. 7`), lines[2]);
 	assert.ok(lines[2].endsWith(`${NOT_STATED},,`));
+	const formula = row("g", [{ kind: "stated", value: { kind: "text", text: "-1+SUM(A1)" }, evidence: [] }, number("g", -3)]);
+	const guarded = toCsv(table, [formula]).split("\r\n")[1];
+	assert.ok(guarded.includes(",'-1+SUM(A1),"), guarded);
 });
 
 test("the graph can be coloured by a column's values: the papers of each", () => {
@@ -152,9 +157,9 @@ test("the graph can be coloured by a column's values: the papers of each", () =>
 test("what was left out is said with its count and why", () => {
 	assert.equal(
 		leftOutNote(table),
-		"1 cell left out: their quotes were not found in the paper; 2 numbers left out: not in the quotes given for them.",
+		"1 cell left out: their quotes were not found in the paper; 2 values left out: not in the quotes given for them.",
 	);
-	assert.equal(leftOutNote({ ...table, left_out: { quotes_not_found: 0, number_not_in_quote: 0, malformed: 0 } }), null);
+	assert.equal(leftOutNote({ ...table, left_out: { quotes_not_found: 0, value_not_in_quote: 0, malformed: 0 } }), null);
 });
 
 test("a new column gets an id of its own, and columns move within the list", () => {

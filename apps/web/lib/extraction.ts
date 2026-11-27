@@ -44,9 +44,13 @@ export function cellText(cell: ExtractionCell): string {
 		case "not_stated":
 			return NOT_STATED;
 		case "not_verified":
-			return cell.why === "number_not_in_quote" ? `${LEFT_OUT} (the number is not in its quotes)` : LEFT_OUT;
+			return cell.why === "number_not_in_quote"
+				? `${LEFT_OUT} (the number is not in its quotes)`
+				: cell.why === "value_not_in_quote"
+					? `${LEFT_OUT} (the value is not in its quotes)`
+					: LEFT_OUT;
 		case "malformed":
-			return "the answer did not fit the column: left out";
+			return cell.why === "omitted" ? "the model gave no answer for this column" : "the answer did not fit the column: left out";
 		case "not_asked":
 			return "not asked yet";
 	}
@@ -165,29 +169,33 @@ export function evidencePlace(evidence: Evidence): string {
 		: `p. ${established.address.page}`;
 }
 
-/** One CSV field: quoted when it must be, and kept from being read as a formula by a spreadsheet. */
+/** One CSV field: quoted when it must be, and kept from being read as a formula by a spreadsheet (anything that
+ *  starts with a formula's first character and is not simply a number). */
 function field(text: string | number | null): string {
 	let value = text === null ? "" : String(text);
-	if (/^[=+@\t\r]/.test(value) || /^-[^\d.]/.test(value)) value = `'${value}`;
+	if (/^\s*[=+\-@\t\r]/.test(value) && !/^[+-]?\d+(\.\d+)?$/.test(value)) value = `'${value}`;
 	return /[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
 
+const READ_FROM: Record<ExtractionRow["text"], string> = {
+	pdf: "PDF",
+	no_pdf: "title and abstract",
+	unreadable: "title and abstract",
+	not_in_library: "not in the library",
+};
+
 /**
- * The table as CSV: for each paper its id, title, year and acceptance, then for each column its value (or what
- * stands in for one), the quotes it rests on, in the paper's words, and their pages.
+ * The table as CSV: for each paper its id, title, year and acceptance, the model that read it, then for each
+ * column its value as the model read it (or what stands in for one), the quotes it rests on in the paper's words,
+ * and their pages. The headers say which is the model's reading and which the paper's words.
  */
 export function toCsv(table: ExtractionTable, rows: ExtractionRow[] = table.rows): string {
-	const header = ["paper", "title", "year", "acceptance", "read from"];
-	for (const column of table.columns) header.push(column.label, `${column.label}: quotes`, `${column.label}: pages`);
+	const header = ["paper", "title", "year", "acceptance", "read from", "values read by the model"];
+	for (const column of table.columns)
+		header.push(`${column.label} (the model's reading)`, `${column.label}: quotes (the paper's words)`, `${column.label}: pages`);
 	const lines = [header.map(field).join(",")];
 	for (const row of rows) {
-		const fields: (string | number | null)[] = [
-			row.paper,
-			row.title,
-			row.year,
-			row.acceptance,
-			row.text === "pdf" ? "PDF" : "title and abstract",
-		];
+		const fields: (string | number | null)[] = [row.paper, row.title, row.year, row.acceptance, READ_FROM[row.text], table.model];
 		for (const cell of row.cells) {
 			const evidence = cell.kind === "stated" ? cell.evidence : [];
 			fields.push(cellText(cell), evidence.map((piece) => piece.quote).join(" | "), evidence.map(evidencePlace).join(" | "));
@@ -199,10 +207,10 @@ export function toCsv(table: ExtractionTable, rows: ExtractionRow[] = table.rows
 
 /** What the table leaves out, in words; null when nothing is. */
 export function leftOutNote(table: ExtractionTable): string | null {
-	const { quotes_not_found, number_not_in_quote, malformed } = table.left_out;
+	const { quotes_not_found, value_not_in_quote, malformed } = table.left_out;
 	const parts = [
 		quotes_not_found > 0 && `${count(quotes_not_found, "cell")} left out: their quotes were not found in the paper`,
-		number_not_in_quote > 0 && `${count(number_not_in_quote, "number")} left out: not in the quotes given for them`,
+		value_not_in_quote > 0 && `${count(value_not_in_quote, "value")} left out: not in the quotes given for them`,
 		malformed > 0 && `${count(malformed, "answer")} left out: they did not fit their column`,
 	].filter((part): part is string => Boolean(part));
 	return parts.length > 0 ? `${parts.join("; ")}.` : null;

@@ -742,8 +742,8 @@ export type ExtractionValue =
 export type ExtractionCell =
 	| { kind: "stated"; value: ExtractionValue; evidence: Evidence[] }
 	| { kind: "not_stated" }
-	| { kind: "not_verified"; why: "quotes_not_found" | "number_not_in_quote" }
-	| { kind: "malformed"; why: "status" | "empty" | "not_yes_no" | "not_a_number" | "too_long" }
+	| { kind: "not_verified"; why: "quotes_not_found" | "number_not_in_quote" | "value_not_in_quote" }
+	| { kind: "malformed"; why: "status" | "omitted" | "empty" | "not_yes_no" | "not_a_number" | "too_long" }
 	| { kind: "not_asked" };
 
 /** One paper of an extraction table. */
@@ -771,7 +771,7 @@ export interface ExtractionTable {
 	/** how many papers the sample has */
 	sample: number;
 	/** cells not shown as values, by why */
-	left_out: { quotes_not_found: number; number_not_in_quote: number; malformed: number };
+	left_out: { quotes_not_found: number; value_not_in_quote: number; malformed: number };
 }
 
 /** Which papers a table is about: a community by its tree path, or papers of the run chosen by hand. */
