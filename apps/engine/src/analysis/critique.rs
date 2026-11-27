@@ -764,8 +764,9 @@ pub struct ReplyShown {
     pub note: usize,
     pub heading: String,
     pub attachment: Attachment,
-    /// The reply's text from the kept page, its first [`REPLY_CHARS`] characters.
-    pub text: String,
+    /// The reply's text from the kept page, its first [`REPLY_CHARS`] characters; `None` when the page is not kept
+    /// (or no longer holds the reply's place), so that the interface says so rather than show an empty reply.
+    pub text: Option<String>,
     pub cut: bool,
     pub span: Span,
 }
@@ -827,11 +828,10 @@ pub fn reviewers(kept: &KeptReviews, page: Option<&ReviewPage>) -> ReviewersPart
     let discussion = &kept.discussion;
     let venue = venue_of(&kept.paper_id, discussion);
     let page_text: Option<Vec<char>> = page.map(|page| page.text.chars().collect());
-    let at = |span: Span| -> String {
-        page_text.as_ref().map_or_else(String::new, |text| {
-            text.get(span.start.min(text.len())..span.end.min(text.len()))
-                .map_or_else(String::new, |chars| chars.iter().collect())
-        })
+    // the page's text at `span`; none without the page, or when the span is not inside it
+    let at = |span: Span| -> Option<String> {
+        let text = page_text.as_ref()?;
+        text.get(span.start..span.end).map(|chars| chars.iter().collect())
     };
     let mut asked = 0;
     let mut all = 0;
@@ -875,12 +875,12 @@ pub fn reviewers(kept: &KeptReviews, page: Option<&ReviewPage>) -> ReviewersPart
                 .filter_map(|reply| {
                     let replied = discussion.notes.get(reply.note)?;
                     let text = at(replied.span);
-                    let cut = text.chars().count() > REPLY_CHARS;
+                    let cut = text.as_ref().is_some_and(|text| text.chars().count() > REPLY_CHARS);
                     Some(ReplyShown {
                         note: reply.note,
                         heading: replied.heading.clone(),
                         attachment: reply.attachment,
-                        text: text.chars().take(REPLY_CHARS).collect(),
+                        text: text.map(|text| text.chars().take(REPLY_CHARS).collect()),
                         cut,
                         span: replied.span,
                     })
@@ -1177,11 +1177,16 @@ pub(crate) mod tests {
         );
         let reply = &first.replies[0];
         assert!(matches!(reply.attachment, Attachment::Guessed { .. }));
-        assert!(reply.text.starts_with("Rebuttal by Authors") && reply.text.contains("add a third benchmark"));
+        let text = reply.text.as_deref().unwrap();
+        assert!(text.starts_with("Rebuttal by Authors") && text.contains("add a third benchmark"));
         assert_eq!(reviewers[1].replies[0].attachment, Attachment::Named);
         let told = serde_json::to_value(&reviewers[1]).unwrap();
         assert_eq!(told["replies"][0]["attachment"], json!({"kind": "named"}));
         assert_eq!(told["rating"]["scale"]["source"], "published");
+        // without the page the reply's words are not known: told as such, never as an empty reply
+        let ReviewersPart::Read { reviewers, .. } = super::reviewers(&kept, None) else { panic!() };
+        assert_eq!((reviewers[0].replies[0].text.as_deref(), reviewers[0].replies[0].cut), (None, false));
+        assert_eq!(serde_json::to_value(&reviewers[0]).unwrap()["replies"][0]["text"], Value::Null);
     }
 
     // ---------------------------------------------------------------------------------- through the library

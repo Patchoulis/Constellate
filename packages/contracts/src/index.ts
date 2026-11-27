@@ -927,8 +927,8 @@ export interface CritiqueReply {
 	note: number;
 	heading: string;
 	attachment: ReplyAttachment;
-	/** the reply's text from the kept page, cut when `cut` */
-	text: string;
+	/** the reply's text from the kept page, cut when `cut`; null when the page is not kept (its words are not known) */
+	text: string | null;
 	cut: boolean;
 	span: Span;
 }
