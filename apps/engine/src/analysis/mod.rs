@@ -4,6 +4,7 @@
 //! | module       | what lives there                                                              |
 //! |--------------|-------------------------------------------------------------------------------|
 //! | [`citations`] | who cites whom, from the papers' own reference lists                         |
+//! | [`claim_tree`] | a paper's claims as a tree, with its reviewers' points mapped onto them      |
 //! | [`graph`]    | the similarity graph itself, its degrees and modularity                       |
 //! | [`links`]    | each paper's closest papers: the links drawn, and the nearest-neighbour graph |
 //! | [`eigen`]    | eigenvectors of symmetric matrices, small and dense or large and matrix-free  |
@@ -14,6 +15,7 @@
 //! | [`reviews`]  | reviewers' ratings and words taken together: per paper, community and run     |
 
 pub mod citations;
+pub mod claim_tree;
 pub mod cluster;
 pub mod critique;
 pub mod eigen;

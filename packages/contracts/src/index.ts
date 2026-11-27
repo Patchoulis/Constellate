@@ -1194,3 +1194,193 @@ export interface RelatedPassages {
 	not_in_library: number;
 	found: RelatedPassage[];
 }
+
+// ---- Claim tree ----
+
+/** What evidence a paper offers for a claim (engine analysis/claim_tree/tree.rs). */
+export type ClaimEvidenceKind = "experiment" | "table" | "figure" | "theorem" | "ablation" | "citation" | "argument";
+
+/** One node of a paper's claim tree: a central claim, a finding under it, or the evidence the paper offers. Its
+ *  statement is the model's reading of the paper; every piece of `evidence` was found in the paper. */
+export type ClaimNode = ({ kind: "claim" } | { kind: "finding" } | { kind: "evidence"; evidence_kind: ClaimEvidenceKind }) & {
+	/** "n1", "n2", ... in the tree's order */
+	id: string;
+	parent: string | null;
+	statement: string;
+	evidence: Evidence[];
+	/** the caption of the table or figure, or the theorem's passage, it names, when the paper has it */
+	points_at: Evidence | null;
+};
+
+/** Nodes of the model's answer left out, by why: never shown, counted. */
+export interface ClaimsLeftOut {
+	/** its quotes were not found in the paper */
+	unquoted: number;
+	/** it stood under a node that was left out, and could not move up */
+	orphaned: number;
+	no_parent: number;
+	misplaced: number;
+	/** past the bounds on the tree's size */
+	over_bounds: number;
+}
+
+export type ClaimTreeState =
+	| { state: "no_text" }
+	| { state: "not_asked" }
+	| { state: "malformed"; why: { why: "duplicate_id" | "cycle"; id: string } | { why: "empty" }; kept_at: string }
+	| { state: "made"; nodes: ClaimNode[]; left_out: ClaimsLeftOut; kept_at: string; model: string };
+
+/** What a reviewer's point does to the node it is placed on. */
+export type ReviewStance = "supports" | "challenges" | "asks" | "presentation" | "whole_paper";
+
+/** One point of a review, exactly the kept page's text at `span` (code points of the page). */
+export interface ReviewPoint {
+	/** "p1", "p2", ... */
+	id: string;
+	/** the review's index among the paper's notes */
+	review: number;
+	reviewer: string;
+	section: string;
+	kind: "strength" | "weakness" | "question" | "limitation" | "general";
+	text: string;
+	span: Span;
+}
+
+/** A point placed on a node (null: the paper as a whole) by the model, with the reviewer's own words that justify
+ *  it, found in the point at `because_span` (code points of the page). */
+export interface PointPlacement {
+	point: string;
+	node: string | null;
+	stance: ReviewStance;
+	because: string;
+	because_span: Span;
+	matched: QuoteMatch;
+}
+
+export interface UnplacedPoint {
+	point: string;
+	why: "not_answered" | "unknown_node" | "not_in_point" | "too_short";
+}
+
+export interface PointMapping {
+	placed: PointPlacement[];
+	/** always shown */
+	unplaced: UnplacedPoint[];
+	ignored: { unknown_points: number; repeated: number };
+}
+
+export type PointMappingState =
+	| { state: "no_reviews" }
+	| { state: "no_points" }
+	| { state: "no_tree" }
+	| { state: "not_asked" }
+	| { state: "made"; mapping: PointMapping; kept_at: string; model: string };
+
+/** A reviewer's score on the venue's own scale for that field and year. */
+export interface ReviewerRating {
+	field: string;
+	value: number;
+	scale: Scale;
+}
+
+/** A reply to a review, and how it was attached to it: named by its title, or a guess. */
+export interface ClaimReply {
+	note: number;
+	signer: Signer;
+	heading: string;
+	attached: { by: "named" } | { by: "guessed"; basis: "same_reviewer" | "mentions_reviewer" | "follows_review" };
+	sections: ReviewSection[];
+}
+
+export interface ClaimReviewer {
+	note: number;
+	name: string;
+	overall: ReviewerRating | null;
+	confidence: ReviewerRating | null;
+	replies: ClaimReply[];
+}
+
+export interface ClaimReviews {
+	address: string;
+	read_at: string;
+	reviewers: ClaimReviewer[];
+	points: ReviewPoint[];
+	/** points past the bounds, not mapped */
+	left_out: number;
+	figures: PaperFigures;
+	meta_reviews: { signer: Signer; heading: string; sections: ReviewSection[] }[];
+	decision: string | null;
+}
+
+/** Reviewers by what their points do to one node, each named once per stance. */
+export interface ReviewStances {
+	supports: string[];
+	challenges: string[];
+	asks: string[];
+	presentation: string[];
+	whole_paper: string[];
+}
+
+export interface ClaimNodeReviews {
+	/** null: the root, the paper as a whole */
+	node: string | null;
+	points: string[];
+	reviewers: ReviewStances;
+	contested: boolean;
+}
+
+/** The model's reading of what is missing, shown apart from and after what reviewers said. */
+export interface ClaimGap {
+	kind: "no_stated_support" | "not_examined";
+	node: string;
+	statement: string;
+	evidence: Evidence[];
+}
+
+/** What a batch of calls is likely to cost, before anything is sent (engine model/batch.rs): an estimate. */
+export interface ClaimsEstimate {
+	items: number;
+	kept: number;
+	to_ask: number;
+	by_model: {
+		model: string;
+		calls: number;
+		tokens: { input: number; output: number; cache_read: number; cache_write_5m: number; cache_write_1h: number };
+		usd: number | null;
+		most_usd: number | null;
+		counting: { kind: "assumed" | "measured"; chars_per_token: number };
+	}[];
+	/** US dollars; null when a model's price is not known */
+	usd: number | null;
+	most_usd: number | null;
+}
+
+/** `GET /api/papers/<id>/claims`: the paper's claim tree with its reviews mapped onto it. */
+export interface ClaimsView {
+	paper_id: string;
+	/** the model chosen in the settings */
+	model: string;
+	paper: { state: "read"; passages: number; sent: number } | { state: "no_pdf" } | { state: "unreadable" };
+	tree: ClaimTreeState;
+	reviews: ClaimReviews | null;
+	mapping: PointMappingState;
+	/** the root first, then each node with points placed on it */
+	node_reviews: ClaimNodeReviews[];
+	contested: number;
+	gaps: ClaimGap[];
+	/** what asking what is not kept would cost; null when nothing can be asked */
+	estimate: ClaimsEstimate | null;
+}
+
+/** `POST /api/papers/<id>/claims`: the most the calls may spend, in US dollars. */
+export interface ClaimsStart {
+	budget_usd: number;
+}
+
+/** `GET /api/runs/<run>/communities/<tree path>/claims/contested`: per paper mapped, its contested claims. */
+export interface ContestedClaims {
+	papers: number;
+	papers_with_reviews: number;
+	papers_mapped: number;
+	counts: { paper_id: string; contested: number; nodes: number; reviewers: number }[];
+}

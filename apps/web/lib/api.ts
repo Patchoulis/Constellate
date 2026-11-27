@@ -3,6 +3,9 @@ import type {
 	CitationNetwork,
 	Critique,
 	CritiqueStarted,
+	ClaimsStart,
+	ClaimsView,
+	ContestedClaims,
 	Declarations,
 	GraphData,
 	Library,
@@ -196,6 +199,16 @@ export const api = {
 	/** passages of the run's papers near this one that share the passage's words (no model) */
 	relatedPassages: (name: string, id: string, address: PassageAddress) =>
 		call<RelatedPassages>(`${run(name)}/papers/${encodeURIComponent(id)}/related`, send("POST", { address })),
+	/** a paper's claim tree with its reviews mapped onto it, as kept, and what asking the rest would cost (asks nothing) */
+	claims: (id: string) => call<ClaimsView>(`/api/papers/${encodeURIComponent(id)}/claims`),
+	/** ask the model what is not kept, within `budget_usd`; answers the job's number */
+	startClaims: (id: string, start: ClaimsStart) =>
+		call<{ job: number }>(`/api/papers/${encodeURIComponent(id)}/claims`, send("POST", start)),
+	/** forget the paper's tree and mapping: asked again on the next start */
+	forgetClaims: (id: string) => call<{ forgotten: number }>(`/api/papers/${encodeURIComponent(id)}/claims`, { method: "DELETE" }),
+	/** per paper of a community whose reviews were mapped, its contested claims */
+	contestedClaims: (name: string, treePath: string) =>
+		call<ContestedClaims>(`${run(name)}/communities/${encodeURIComponent(treePath)}/claims/contested`),
 };
 
 type StanceScope = import("@rp/contracts").StanceScope;

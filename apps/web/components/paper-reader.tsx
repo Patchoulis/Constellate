@@ -1,10 +1,11 @@
 "use client";
 
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
-import { AlignLeft, ExternalLink, FileSearch, FileText, Loader2, MessagesSquare, Network, X } from "lucide-react";
+import { AlignLeft, ExternalLink, FileSearch, FileText, ListTree, Loader2, MessagesSquare, Network, X } from "lucide-react";
 import type { Catalog, CatalogItem, Declarations, Paper, Ratings, ReaderTarget } from "@rp/contracts";
 import { AcceptanceTag, AiTag, FlagTag, RatingTags } from "@/components/brand";
 import { Citations } from "@/components/citation-network";
+import { ClaimsView } from "@/components/claims-view";
 import { CommunityDot, MarkButton } from "@/components/community-panel";
 import { Weaknesses } from "@/components/critique";
 import { MathText } from "@/components/math-text";
@@ -29,7 +30,7 @@ export interface Related {
 	community: CommunityNode;
 }
 
-type View = "abstract" | "paper" | "text" | "reviews" | "citations";
+type View = "abstract" | "paper" | "text" | "reviews" | "citations" | "claims";
 
 /**
  * Which tab a citation opens on. A place in the text lands on the Text tab, where the words are highlighted
@@ -376,6 +377,7 @@ export function PaperReader({
 			: []),
 		...(from.reviews ? [{ value: "reviews" as const, label: "Reviews", icon: <MessagesSquare /> }] : []),
 		...(found ? [{ value: "citations" as const, label: "Citations", icon: <Network /> }] : []),
+		...(found ? [{ value: "claims" as const, label: "Claims", icon: <ListTree /> }] : []),
 	];
 	const flagNames = Object.fromEntries((catalog?.flags ?? []).flatMap((group) => group.items).map((item) => [item.name, item]));
 	const pdf = from.paper && { ...from.paper, url: pdfAt(from.paper.url, pdfPage) };
@@ -433,11 +435,14 @@ export function PaperReader({
 					{paper.status === "failed" && <p className="text-sm text-destructive">{paper.error}</p>}
 					{paper.status === "loading" && <p className="text-sm text-muted-foreground">Loading…</p>}
 					{found && view === "citations" && <Citations paper={found} run={run} onOpen={onOpen} />}
+					{found && view === "claims" && (
+						<ClaimsView key={found.id} id={found.id} onOpenReviews={from.reviews && EMBEDS ? () => setView("reviews") : undefined} />
+					)}
 					{found && view === "text" && (
 						// a new citation starts afresh: nothing of the last one may stay highlighted while this one is found
 						<PaperText key={JSON.stringify(at ?? null)} id={found.id} at={at} onOpenPdf={from.paper ? openPdf : undefined} run={run} />
 					)}
-					{found && view !== "citations" && view !== "text" && (
+					{found && view !== "citations" && view !== "text" && view !== "claims" && (
 						<Abstract
 							paper={found}
 							community={community}
