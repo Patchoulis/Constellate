@@ -12,12 +12,30 @@ papers that are on arXiv and say so.
 """
 
 import re
+from urllib.parse import urlsplit
 
 import requests
 
 from .catalog import official_host
 
 HEADERS = {"User-Agent": "research-partitioner/0.1 (python-requests)"}
+
+
+def web_address(text) -> str | None:
+    """`text` when it is an address the window may open: http(s), with a host and no user name before it
+    (`https://openreview.net@evil.example/` names evil.example).  A list is the conference site's to write, so
+    `javascript:`, `data:` and the like are no address at all."""
+    if not isinstance(text, str):
+        return None
+    parts = urlsplit(text.strip())
+    fine = parts.scheme in ("http", "https") and parts.hostname and "@" not in parts.netloc
+    return parts.geturl() if fine else None
+
+
+def _page_on(host: str, path) -> str:
+    """The paper's page on the conference's own site; the site itself when the path is not a path on it."""
+    path = path if isinstance(path, str) and path.startswith("/") and not path.startswith("//") else "/"
+    return f"https://{host}{path}"
 
 
 class NoOfficialList(Exception):
@@ -87,7 +105,7 @@ def accepted_papers(venue: str, log=print) -> list:
                 "comment": entry.get("decision") or "",
                 "primary_category": topic,
                 "categories": [topic] if topic else [],
-                "url": entry.get("paper_url") or f"https://{host}{entry.get('virtualsite_url', '')}",
+                "url": web_address(entry.get("paper_url")) or _page_on(host, entry.get("virtualsite_url")),
                 "pdf_url": f"https://openreview.net/pdf?id={forum}" if forum else None,
             }
         )
