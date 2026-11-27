@@ -150,6 +150,15 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A rating scale is said to be the venue's published one only where it was found in the venue's own reviewer
   guidelines (NeurIPS 2022 to 2025, ICML 2024 and 2025); every ICLR scale, and older ICML ones, are now shown as
   assumed.
+- What asking the model would cost is worked out again as soon as another provider or model is chosen, and an old
+  figure is never shown beside a button that would accept it; a double click starts one job, not two.
+- A job asking the model keeps being shown when its section is closed and opened again (another reader tab,
+  another community and back), instead of offering to ask again; a job running elsewhere is said, a job that
+  stopped early says how many papers were not asked, and an engine that stops answering is asked less often.
+- Forgetting an answer the model was paid for (a paper's weaknesses, its claims, an explanation, a question) now
+  asks first and says why when it fails; a refused setting is said beside it in the settings dialog.
+- "List the server's models" for an OpenAI-compatible endpoint offers only ids that can be used, and says when the
+  server is down, slow or answers something else.
 
 ### Security
 
