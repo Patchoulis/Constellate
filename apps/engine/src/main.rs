@@ -14,6 +14,7 @@ use constellate::api::routes::{Engine, routes};
 use constellate::library::place;
 use constellate::model::language;
 use constellate::settings::Choices;
+use constellate::text::pdf;
 
 /// The choices among the settings. Until the modules that own them are ported (clustering, the acceptance
 /// tiers, authors' declarations, the embedding models), they are listed here as the Python
@@ -83,7 +84,20 @@ fn shout(warnings: &[String]) {
     eprintln!("{rule}");
 }
 
+/// Every allocation of the program counted against a ceiling: none for the engine itself; [`pdf::CHILD_HEAP`] for
+/// a child reading one PDF, so that a hostile PDF ends that child with an allocation failure instead of filling
+/// the computer's memory.
+#[global_allocator]
+static ALLOCATOR: cap::Cap<std::alloc::System> = cap::Cap::new(std::alloc::System, usize::MAX);
+
 fn main() -> ExitCode {
+    // a child started to read one PDF (src/text/pdf.rs): nothing else, not even the configuration, is read
+    if std::env::args_os().nth(1).is_some_and(|argument| argument == pdf::CHILD_ARGUMENT) {
+        if ALLOCATOR.set_limit(pdf::CHILD_HEAP).is_err() {
+            return ExitCode::FAILURE;
+        }
+        return pdf::serve_one_reading();
+    }
     let started = Environment::read(Path::new(".")).and_then(|environment| {
         let listen = Listen::from_environment(&environment)?;
         let threads = config::threads(&environment)?;
@@ -103,6 +117,16 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     eprintln!("constellate: computing on {threads} threads");
+    // every PDF from here on is read in a child of this same program, which a hostile PDF cannot take down
+    match std::env::current_exe() {
+        Ok(program) => {
+            pdf::read_in_children(program);
+        }
+        Err(error) => {
+            eprintln!("constellate: not started: this program cannot tell where it is ({error})");
+            return ExitCode::FAILURE;
+        }
+    }
     // never the folder the engine happened to be started from: this system's place for a program's own data
     let data = match place::data_folder(environment.get(DATA).map(str::to_owned)) {
         Ok(data) => data,
