@@ -363,18 +363,21 @@ pub fn prompt(
     } else {
         &target.address.section
     };
-    let mut shared = format!(
-        "Paper id: {paper}\nTitle: {title}\nAbstract: {}\n\nThe section \"{section}\" around the passage, as \
-         extracted from the PDF (page numbers in brackets; the passage itself is marked):\n",
-        first_chars(abstract_text, ABSTRACT_CHARS),
+    // the paper's part only: the same for every passage of the paper, so that a provider's cache of it serves the
+    // next passage explained; what depends on the passage (its section, the mark) is the question's
+    let shared =
+        format!("Paper id: {paper}\nTitle: {title}\nAbstract: {}\n", first_chars(abstract_text, ABSTRACT_CHARS));
+    let mut asked = format!(
+        "The section \"{section}\" around the passage, as extracted from the PDF (page numbers in brackets; the \
+         passage itself is marked):\n"
     );
     for at in context(passages, index) {
         let passage = &passages.passages[at];
         let marked = if at == index { " >>> THE PASSAGE TO EXPLAIN >>>" } else { "" };
-        shared.push_str(&format!("\n[p. {}]{marked} {}\n", passage.address.page, passage.text));
+        asked.push_str(&format!("\n[p. {}]{marked} {}\n", passage.address.page, passage.text));
     }
-    let mut asked = format!(
-        "The passage to explain is a {} on page {} of paper {paper}:\n\n{}\n\n{}",
+    asked.push_str(&format!(
+        "\nThe passage to explain is a {} on page {} of paper {paper}:\n\n{}\n\n{}",
         match target.kind {
             Kind::Equation => "displayed equation",
             Kind::TableCaption => "table caption",
@@ -386,7 +389,7 @@ pub fn prompt(
         target.address.page,
         target.text,
         question.task(),
-    );
+    ));
     if Question::garbled(target.kind) {
         asked.push_str(" Its text was extracted from the PDF and may be garbled.");
     }
@@ -582,16 +585,14 @@ update.\n\nTable 1. Accuracy of merged models on eight vision tasks, with and wi
         let equation = index_of(&passages, "∆W =");
         let found = definitions::definitions(&passages, equation);
         let prompt = prompt(PAPER, "Spectral Merging", "We study merging.", &passages, equation, &found);
+        assert_eq!(prompt.shared, "Paper id: 2601.00001\nTitle: Spectral Merging\nAbstract: We study merging.\n");
+        assert!(prompt.question.starts_with("The section \"2. Method\" around the passage"));
+        assert!(prompt.question.contains("[p. 2] The merged update is the sum of the task updates"));
+        assert!(prompt.question.contains("[p. 2] >>> THE PASSAGE TO EXPLAIN >>> ∆W = α ∑ i ∆Wi (1)"));
+        assert!(prompt.question.contains("[p. 2] where ∆Wi is the update of task i."));
+        assert!(!prompt.question.contains("[p. 1]"), "another section is not sent");
         assert!(
-            prompt.shared.starts_with("Paper id: 2601.00001\nTitle: Spectral Merging\nAbstract: We study merging.")
-        );
-        assert!(prompt.shared.contains("The section \"2. Method\""));
-        assert!(prompt.shared.contains("[p. 2] The merged update is the sum of the task updates"));
-        assert!(prompt.shared.contains("[p. 2] >>> THE PASSAGE TO EXPLAIN >>> ∆W = α ∑ i ∆Wi (1)"));
-        assert!(prompt.shared.contains("[p. 2] where ∆Wi is the update of task i."));
-        assert!(!prompt.shared.contains("Let α be"), "another section is not sent");
-        assert!(
-            prompt.question.starts_with("The passage to explain is a displayed equation on page 2 of paper 2601.00001")
+            prompt.question.contains("\nThe passage to explain is a displayed equation on page 2 of paper 2601.00001")
         );
         assert!(prompt.question.contains("part \"symbol\""));
         assert!(prompt.question.contains("may be garbled"));
@@ -602,6 +603,40 @@ update.\n\nTable 1. Accuracy of merged models on eight vision tasks, with and wi
         let asked = super::prompt(PAPER, "t", "a", &passages, paragraph, &[]);
         assert!(asked.question.contains("a paragraph on page 1") && !asked.question.contains("garbled"));
         assert!(asked.question.contains("part \"prerequisite\"") && !asked.question.contains("Where the paper"));
+    }
+
+    #[test]
+    fn every_passage_of_a_paper_is_asked_with_the_same_system_and_shared_text_and_its_own_question() {
+        let passages = passages();
+        let schema = schema();
+        let chosen = Chosen::claude("claude-opus-5-5");
+        let asked: Vec<Prompt> = ["∆W =", "Model merging adds", "Table 1."]
+            .into_iter()
+            .map(|start| {
+                let index = index_of(&passages, start);
+                prompt(
+                    PAPER,
+                    "Spectral Merging",
+                    "We study merging.",
+                    &passages,
+                    index,
+                    &definitions::definitions(&passages, index),
+                )
+            })
+            .collect();
+        let items: Vec<Item<'_>> = asked
+            .iter()
+            .zip([Question::Equation, Question::Passage, Question::Table])
+            .map(|(prompt, question)| {
+                let address = &passages.passages[0].address;
+                item(slot(PAPER, &chosen, address, question), &chosen, prompt, &schema)
+            })
+            .collect();
+        for pair in items.windows(2) {
+            assert_eq!(pair[0].ask.system, pair[1].ask.system);
+            assert_eq!(pair[0].ask.shared, pair[1].ask.shared, "byte for byte: a provider's cache of it serves both");
+            assert_ne!(pair[0].ask.question, pair[1].ask.question);
+        }
     }
 
     #[test]
