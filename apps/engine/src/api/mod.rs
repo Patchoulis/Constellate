@@ -7,6 +7,7 @@
 //! | [`security`] | the checks every request passes (address, origin, token or session) and its headers |
 //! | [`login`]    | across a network: the owner's sign-in, with Google or a password, and sessions     |
 //! | [`routes`]   | the routes, the state they share and how errors are told                           |
+//! | [`reviews`]  | a paper's reviews read from the page the user opened, and what they come to        |
 //!
 //! [`Server`] puts them together: bound to its address, it says once where it is ([`Server::startup_line`]) and
 //! serves until it is told to stop.
@@ -14,6 +15,7 @@
 pub mod config;
 pub mod connections;
 pub mod login;
+pub mod reviews;
 pub mod routes;
 pub mod security;
 
