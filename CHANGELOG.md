@@ -22,6 +22,13 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- A paper's acceptance tag uses the conference's own word for it ("Highlight", "Notable top 5%", "Long
+  presentation") and says on hover what that meant at that conference that year and whether it counts as an oral or
+  a spotlight. Tiers are now looked up per conference and year from what each conference's list was seen to use,
+  which fixes ICML 2021 papers shown as spotlights (there every ordinary paper was called a spotlight) and finds the
+  orals of CVPR 2025, ECCV, WACV, AISTATS 2026 and ICML 2026, which their lists name only by the talk. For a
+  conference downloaded before, use Settings, "Download again", to get those orals; runs saved before keep the tiers
+  they were saved with, under the tier's generic name, until they are run again.
 - The backend is being rewritten in Rust (`apps/engine`), organised by subject; the Python backend stays until the
   Rust one does everything it does.
 

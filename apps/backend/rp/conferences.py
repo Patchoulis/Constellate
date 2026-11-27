@@ -40,6 +40,19 @@ def _forum(entry: dict) -> str | None:
     return found.group(1) if found else None
 
 
+def decision_with_events(decision: str, kinds: list) -> str:
+    """A paper's decision as the library keeps it: the list's decision, then the kind of each of its other events
+    ("Oral", "Spotlight") that the decision does not already name, best first.  Some lists name a paper's oral
+    only by its talk (a decision of "Accept Poster", or none, and an "Oral" event); tiers.py reads the two
+    together per conference and year."""
+    rank = {"Oral": 0, "Spotlight": 1}
+    parts = [decision] if decision else []
+    for kind in sorted(kinds, key=lambda kind: (rank.get(kind, 2), kind)):
+        if kind.lower() not in decision.lower() and kind not in parts:
+            parts.append(kind)
+    return "; ".join(parts)
+
+
 def accepted_papers(venue: str, log=print) -> list:
     """Library records for every accepted paper of e.g. "NeurIPS 2025".  Raises NoOfficialList."""
     name, year = venue.rsplit(" ", 1)
@@ -48,15 +61,20 @@ def accepted_papers(venue: str, log=print) -> list:
         raise NoOfficialList(f"no official list is known for {name}")
     entries = _data(host, slug, year, "orals-posters")["results"]
     abstracts = _data(host, slug, year, "abstracts", required=False)
-    found, seen = [], set()
+    found, seen, events = [], {}, []
     for entry in sorted(entries, key=lambda e: e.get("eventtype") != "Poster"):  # posters first: one per paper
         # A paper with an oral is listed again for the talk, often without its paper link (or with a made-up
-        # one), so two entries are the same paper when they share the link OR the title.
+        # one), so two entries are the same paper when they share the link OR the title.  The kind of its other
+        # entries is kept with the decision (decision_with_events).
         forum = _forum(entry)
-        keys = {re.sub(r"\W+", "", entry["name"].lower())} | ({forum} if forum else set())
-        if keys & seen:
+        keys = [re.sub(r"\W+", "", entry["name"].lower())] + ([forum] if forum else [])  # the title first
+        kind = [entry["eventtype"]] if entry.get("eventtype") not in (None, "", "Poster") else []
+        index = next((seen[key] for key in keys if key in seen), None)
+        if index is not None:
+            events[index] += kind
             continue
-        seen |= keys
+        seen |= dict.fromkeys(keys, len(found))
+        events.append(kind)
         topic = entry.get("topic") or ""
         found.append(
             {
@@ -73,5 +91,7 @@ def accepted_papers(venue: str, log=print) -> list:
                 "pdf_url": f"https://openreview.net/pdf?id={forum}" if forum else None,
             }
         )
+    for paper, kinds in zip(found, events):
+        paper["comment"] = decision_with_events(paper["comment"], kinds)
     log(f"    {len(found)} accepted papers on {host} ({sum(not p['abstract'] for p in found)} without an abstract)")
     return found

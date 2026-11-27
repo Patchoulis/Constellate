@@ -1,11 +1,10 @@
-"""Acceptance states, what authors declare, and the filters built on them: across conferences and formats."""
+"""What authors declare, and the filters built on it and on acceptance tiers: across conferences and formats."""
 
 import numpy as np
 import pytest
 
 from conftest import paper
 from rp import pipeline, proceedings, settings, store
-from rp.library import acceptance
 from rp.selection import Selection
 
 NEURIPS = """
@@ -143,28 +142,6 @@ def test_a_section_that_merely_starts_with_the_word_is_not_a_statement():
         "statements": [],
         "flags": [],
     }
-
-
-@pytest.mark.parametrize(
-    "decision, tier",
-    [
-        ("Accept (oral)", "oral"),
-        ("Accept (Oral)", "oral"),
-        ("Award Candidate", "oral"),
-        ("Accept (spotlight)", "spotlight"),
-        ("Highlight", "spotlight"),
-        ("Accept (poster)", "poster"),
-        ("Accept (regular)", "poster"),
-        ("Accept", "poster"),
-        ("", "poster"),
-    ],
-)
-def test_acceptance_is_read_the_same_whatever_the_conference_calls_it(decision, tier):
-    assert acceptance(paper("cvpr-2026-123", comment=decision)) == tier
-
-
-def test_an_arxiv_paper_has_no_acceptance_state():
-    assert acceptance(paper("2512.01234", comment="Accepted as an oral at NeurIPS 2025")) is None
 
 
 def test_pdf_addresses_come_from_where_each_conference_publishes(monkeypatch):

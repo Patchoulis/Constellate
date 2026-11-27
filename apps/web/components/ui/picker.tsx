@@ -47,7 +47,9 @@ function Line({ item }: { item: CatalogItem }) {
 	return (
 		<>
 			<span className="shrink-0">{item.label ?? item.name}</span>
-			<span className="min-w-0 flex-1 truncate text-right text-xs text-muted-foreground">{item.note}</span>
+			<span className="min-w-0 flex-1 truncate text-right text-xs text-muted-foreground" title={item.note || undefined}>
+				{item.note}
+			</span>
 		</>
 	);
 }

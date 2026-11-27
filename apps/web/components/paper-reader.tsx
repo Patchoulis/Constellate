@@ -228,7 +228,7 @@ function Abstract({
 				{paper.venues?.map((venue) => (
 					<span key={venue}>{venue}</span>
 				))}
-				<AcceptanceTag state={paper.acceptance} />
+				<AcceptanceTag state={paper.acceptance} term={paper.acceptance_term} />
 				{paper.ai?.flagged && <AiTag verdict={paper.ai} />}
 			</div>
 			{ratings ? (

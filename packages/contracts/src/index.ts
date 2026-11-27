@@ -112,6 +112,8 @@ export interface GraphNode {
 	/** flagged by the AI-text detector */
 	ai: boolean;
 	acceptance: Acceptance | null;
+	/** the conference's own term, for orals and spotlights; absent in runs saved before terms were kept */
+	acceptance_term?: AcceptanceTerm | null;
 }
 
 export interface GraphData {
@@ -136,6 +138,8 @@ export interface Paper {
 	/** what the AI-text detector found; null when the paper was never scored or is too short to score */
 	ai: AiVerdict | null;
 	acceptance: Acceptance | null;
+	/** the conference's own term for it; absent from a backend older than terms */
+	acceptance_term?: AcceptanceTerm | null;
 	/** can the backend serve this paper's PDF (it is published somewhere a program may fetch from)? */
 	readable: boolean;
 	/** what its authors declare in the paper; null until it has been read from the PDF */
@@ -156,6 +160,18 @@ export interface Ratings {
 
 /** How a conference paper was accepted, in tiers that hold across conferences; best first. */
 export type Acceptance = "oral" | "spotlight" | "poster";
+
+/** How the conference itself named a paper's acceptance (rp/tiers.py, docs/acceptance-tiers.md). */
+export interface AcceptanceTerm {
+	/** the conference and year: "CVPR 2024" */
+	conference: string;
+	/** its own word for it, as it writes it: "Highlight", "Notable top 5%" */
+	called: string;
+	/** what it is there: its share of the list's papers and what it involves */
+	means: string;
+	/** false when the term was never seen at that conference, so its tier was read from its wording */
+	known: boolean;
+}
 
 /** What the authors of a paper declare in it (rp/proceedings.py). */
 export interface Declarations {

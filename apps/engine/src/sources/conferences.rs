@@ -17,7 +17,7 @@
 //! not the list). Only the second may fall back to arXiv comments and be remembered as done. Treating the third
 //! like the second would store a partial sample as if it were the official list, and never fetch the list again.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -120,9 +120,25 @@ fn event_id(entry: &Value) -> Option<String> {
     }
 }
 
+/// A paper's decision as the library keeps it: the list's decision, then the kind of each of its other events
+/// ("Oral", "Spotlight") that the decision does not already name, best first. Some lists name a paper's oral only
+/// by its talk (a decision of "Accept Poster", or none, and an "Oral" event), and acceptance.rs reads the two
+/// together per conference and year.
+pub fn decision_with_events(decision: &str, events: &[String]) -> String {
+    let mut events: Vec<&String> = events.iter().collect();
+    events.sort_by_key(|kind| (["Oral", "Spotlight"].iter().position(|best| best == kind).unwrap_or(2), kind.as_str()));
+    let mut parts: Vec<&str> = if decision.is_empty() { Vec::new() } else { vec![decision] };
+    for kind in events {
+        if !decision.to_lowercase().contains(&kind.to_lowercase()) && !parts.contains(&kind.as_str()) {
+            parts.push(kind);
+        }
+    }
+    parts.join("; ")
+}
+
 /// A list's entries as papers. A paper with an oral is listed again for the talk, often without its paper link
 /// (or with a made-up one), so posters are read first and two entries are the same paper when they share the
-/// link OR the title.
+/// link OR the title; the kind of the other entries is kept with the decision ([`decision_with_events`]).
 pub fn read_entries(
     entries: &[Value],
     abstracts: &Map<String, Value>,
@@ -132,18 +148,25 @@ pub fn read_entries(
 ) -> Vec<Paper> {
     let mut entries: Vec<&Value> = entries.iter().collect();
     entries.sort_by_key(|entry| field(entry, "eventtype") != Some("Poster"));
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
     let mut papers = Vec::new();
+    // for each paper, its events other than its poster
+    let mut events: Vec<Vec<String>> = Vec::new();
     for entry in entries {
         let (Some(id), Some(name)) = (event_id(entry), field(entry, "name")) else { continue };
         let forum = forum(entry);
         let title_key: String =
             name.chars().flat_map(char::to_lowercase).filter(|c| c.is_alphanumeric() || *c == '_').collect();
         let keys: Vec<String> = std::iter::once(title_key).chain(forum.clone()).collect();
-        if keys.iter().any(|key| seen.contains(key)) {
+        let kind = field(entry, "eventtype").filter(|kind| *kind != "Poster").map(str::to_owned);
+        if let Some(index) = keys.iter().find_map(|key| seen.get(key).copied()) {
+            events[index].extend(kind);
             continue;
         }
-        seen.extend(keys);
+        for key in keys {
+            seen.insert(key, papers.len());
+        }
+        events.push(kind.into_iter().collect());
         let topic = field(entry, "topic").unwrap_or_default();
         let when = field(entry, "starttime").map_or_else(|| format!("{year}-01-01"), str::to_owned);
         let abstract_text =
@@ -172,6 +195,9 @@ pub fn read_entries(
             // a link for the reader to show; nothing here fetches from OpenReview
             pdf_url: forum.map(|forum| format!("https://openreview.net/pdf?id={forum}")),
         });
+    }
+    for (paper, events) in papers.iter_mut().zip(&events) {
+        paper.comment = decision_with_events(&paper.comment, events);
     }
     papers
 }
@@ -285,6 +311,32 @@ mod tests {
         assert!(slow.categories.is_empty());
         // nothing was asked of OpenReview: its addresses are only written down
         assert!(fake.asked().iter().all(|address| !address.contains("openreview")));
+    }
+
+    #[test]
+    fn a_papers_talk_is_kept_with_its_decision_when_the_decision_does_not_name_it() {
+        let Listing::List { papers, .. } =
+            accepted_papers(&Fake::new().with(LIST, ok("application/json", &list())), "NeurIPS 2025", &quiet)
+        else {
+            panic!()
+        };
+        // "Fast Things" says oral already; "Slow Things" has no decision, only its oral talk
+        assert_eq!(papers[0].comment, "Accept (oral)");
+        assert_eq!(papers[1].comment, "Oral");
+        // as WACV 2026 and ICML 2026 list their orals
+        let entries = [
+            json!({"id": 1, "name": "A", "eventtype": "Poster", "decision": "Accept Poster"}),
+            json!({"id": 2, "name": "A", "eventtype": "Oral", "decision": "Accept Poster"}),
+            json!({"id": 3, "name": "B", "eventtype": "Spotlight"}),
+            json!({"id": 4, "name": "B", "eventtype": "Oral"}),
+            json!({"id": 5, "name": "C", "eventtype": "Poster", "decision": "Accept (spotlight)"}),
+            json!({"id": 6, "name": "C", "eventtype": "Spotlight", "decision": "Accept (spotlight)"}),
+        ];
+        let comments: Vec<String> = read_entries(&entries, &Map::new(), "wacv.thecvf.com", "wacv", "2026")
+            .into_iter()
+            .map(|p| p.comment)
+            .collect();
+        assert_eq!(comments, ["Accept Poster; Oral", "Accept (spotlight)", "Oral; Spotlight"]);
     }
 
     #[test]

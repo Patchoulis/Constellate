@@ -10,7 +10,7 @@ import numpy as np
 from scipy.sparse.csgraph import connected_components
 from scipy.sparse.linalg import LinearOperator, eigsh
 
-from .library import acceptance
+from .library import accepted
 
 DENSE_LIMIT = 30_000  # a dense n x n float32 matrix: 30k papers = 3.6 GB, and it is the only one made
 
@@ -112,6 +112,13 @@ def natural_neighbours(adjacency: np.ndarray, most=8) -> list:
     return [[a, b, similarity] for (a, b), similarity in edges.items()]
 
 
+def _acceptance(paper: dict) -> dict:
+    """A node's tier and, for the papers that get a tag (orals and spotlights), the conference's own term for it;
+    a poster's term is left out to keep the graph small."""
+    tier, term = accepted(paper)
+    return {"acceptance": tier} | ({"acceptance_term": term} if tier in ("oral", "spotlight") else {})
+
+
 def drawing(papers, embeddings, adjacency, communities: list, flagged, most_links=8) -> dict:
     """What the graph view needs: every paper with its community and a rough position (the two leading
     principal components of the embeddings), which decides where communities sit relative to each other; and
@@ -133,7 +140,7 @@ def drawing(papers, embeddings, adjacency, communities: list, flagged, most_link
                 "x": round(float(x), 4),
                 "y": round(float(y), 4),
                 "ai": bool(ai),
-                "acceptance": acceptance(p),
+                **_acceptance(p),
             }
             for p, c, (x, y), ai in zip(papers, community, position, flagged)
         ],
