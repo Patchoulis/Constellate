@@ -202,6 +202,22 @@ pub const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX kept_answers_by_subject ON kept_answers (feature, subject);
     ",
+    // 6 (cited answers, library/questions.rs): the questions asked of a run or one of its communities
+    r"
+    -- One question asked of a run (community NULL) or of one of its communities (its tree path): what the
+    -- interface lists as the run's questions. The model's answer is in kept_answers under answer_key; `passages`
+    -- is the JSON list of the passages it was given, best first.
+    CREATE TABLE asked_questions (
+        run        TEXT NOT NULL,
+        answer_key TEXT NOT NULL,
+        community  TEXT,
+        question   TEXT NOT NULL,
+        model      TEXT NOT NULL,
+        passages   TEXT NOT NULL,
+        asked_at   TEXT NOT NULL,
+        PRIMARY KEY (run, answer_key)
+    );
+    ",
 ];
 
 /// Bring `connection` to the last of `migrations`. Refuses a database newer than the list.
