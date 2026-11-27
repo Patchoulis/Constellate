@@ -2,7 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BookOpenText, Loader2, RotateCw } from "lucide-react";
-import type { CitationNeighbour, CitationNetwork, Paper } from "@rp/contracts";
+import type { CitationKind, CitationNeighbour, CitationNetwork, Paper } from "@rp/contracts";
+import { contextsOf } from "@/components/citation-contexts";
+import { KIND_HUE, edgeKinds, lineKind } from "@/lib/citation-kinds";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { Input } from "@/components/ui/field";
@@ -92,7 +94,17 @@ function Work({ work, hovered }: { work: PlacedWork; hovered: boolean }) {
 }
 
 /** The network as a picture: time left to right, the seed in the middle. */
-function Picture({ network, seed, onOpen }: { network: CitationNetwork; seed: Paper; onOpen: (work: CitationNeighbour) => void }) {
+function Picture({
+	network,
+	seed,
+	onOpen,
+	kinds,
+}: {
+	network: CitationNetwork;
+	seed: Paper;
+	onOpen: (work: CitationNeighbour) => void;
+	kinds?: Map<string, CitationKind>;
+}) {
 	const [box, width] = useWidth();
 	const [hovered, setHovered] = useState<number | null>(null);
 	const seedYear = Number(seed.published.slice(0, 4)) || null;
@@ -127,7 +139,14 @@ function Picture({ network, seed, onOpen }: { network: CitationNetwork; seed: Pa
 							const from = picture.works[line.from];
 							const to = picture.works[line.to];
 							const lit = touching(line);
-							const stroke = lit ? "rgba(255,255,255,0.75)" : line.seed ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.2)";
+							const kind = lineKind(picture.works, line, kinds);
+							const stroke = lit
+								? "rgba(255,255,255,0.75)"
+								: kind
+									? hsl(KIND_HUE[kind] ?? 0, 62, 0.6)
+									: line.seed
+										? "rgba(255,255,255,0.05)"
+										: "rgba(255,255,255,0.2)";
 							return <line key={at} x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={stroke} strokeWidth={lit ? 1.2 : 0.8} />;
 						})}
 						{picture.works.map((work, index) => (
@@ -206,6 +225,11 @@ function Picture({ network, seed, onOpen }: { network: CitationNetwork; seed: Pa
 				<span title="Filled: in your library (click to open it here). Ring: on arXiv. Dashed ring: not found; what was read of it is shown.">
 					filled: in your library · ring: on arXiv · dashed: not found
 				</span>
+				{kinds && kinds.size > 0 && (
+					<span title="The model's reading of the citing sentences, listed below with each sentence and the words that show it: an estimate.">
+						coloured line: the kind of citation, as the model read it
+					</span>
+				)}
 				<span title="Size is how many papers Constellate has read cite the work: only papers whose PDFs it has read are counted.">
 					size: times cited by papers read
 				</span>
@@ -313,6 +337,7 @@ export function Citations({ paper, run, onOpen }: { paper: Paper; run?: string; 
 	const [asked, setAsked] = useState(false);
 	const reading = useAsync(asked ? () => api.readReferences(paper.id, run) : null, [asked, paper.id, run]);
 	const network = ready(reading) ?? ready(kept);
+	const kinds = ready(useAsync(() => contextsOf(paper.id, run).then(edgeKinds), [paper.id, run]));
 	const open = opener(onOpen);
 
 	if (!network) {
@@ -360,7 +385,7 @@ export function Citations({ paper, run, onOpen }: { paper: Paper; run?: string; 
 					)}
 				</div>
 			)}
-			{totals.references + totals.citations > 0 && <Picture network={network} seed={paper} onOpen={open} />}
+			{totals.references + totals.citations > 0 && <Picture network={network} seed={paper} onOpen={open} kinds={kinds} />}
 			<Lists network={network} onOpen={open} />
 		</div>
 	);

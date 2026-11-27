@@ -5,6 +5,7 @@ import { AlignLeft, ExternalLink, FileSearch, FileText, Loader2, MessagesSquare,
 import type { Catalog, CatalogItem, Declarations, Paper, Ratings, ReaderTarget } from "@rp/contracts";
 import { AcceptanceTag, AiTag, FlagTag, RatingTags } from "@/components/brand";
 import { Citations } from "@/components/citation-network";
+import { CitationSentences } from "@/components/citation-contexts";
 import { CommunityDot, MarkButton } from "@/components/community-panel";
 import { MathText } from "@/components/math-text";
 import { PaperText } from "@/components/paper-text";
@@ -429,6 +430,7 @@ export function PaperReader({
 					{paper.status === "failed" && <p className="text-sm text-destructive">{paper.error}</p>}
 					{paper.status === "loading" && <p className="text-sm text-muted-foreground">Loading…</p>}
 					{found && view === "citations" && <Citations paper={found} run={run} onOpen={onOpen} />}
+					{found && view === "citations" && <CitationSentences paper={found.id} run={run} onOpen={onOpen} />}
 					{found && view === "text" && (
 						// a new citation starts afresh: nothing of the last one may stay highlighted while this one is found
 						<PaperText key={JSON.stringify(at ?? null)} id={found.id} at={at} onOpenPdf={from.paper ? openPdf : undefined} />
