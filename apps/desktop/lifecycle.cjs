@@ -65,4 +65,18 @@ class Lifecycle {
 	}
 }
 
-module.exports = { Lifecycle, TRANSITIONS };
+/**
+ * The arguments that run the Node script `script` (an ES module or not) so that it stops when this shell does.
+ *
+ * Every way out of the shell that it sees coming stops its children (before-quit). One it does not see (the shell
+ * ended from the Task Manager, or crashed) leaves them running: the backend watches its standard input for that
+ * (RP_EXIT_WITH_PARENT), and a script run this way does the same. Its standard input is a pipe from the shell,
+ * which the system closes when the shell is gone, however it went. Without this the interface's server stayed
+ * behind, holding the port the next launch wanted.
+ */
+function withParent(script) {
+	const watch = "process.stdin.on('end',()=>process.exit(0)).resume();import(require('node:url').pathToFileURL(process.argv[1]).href)";
+	return ["-e", watch, script];
+}
+
+module.exports = { Lifecycle, TRANSITIONS, withParent };

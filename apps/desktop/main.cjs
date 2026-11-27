@@ -22,7 +22,7 @@ const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
-const { Lifecycle } = require("./lifecycle.cjs");
+const { Lifecycle, withParent } = require("./lifecycle.cjs");
 const { interfacePort } = require("./port.cjs");
 const { READER, readable, refused } = require("./reader.cjs");
 const setup = require("./setup.cjs");
@@ -209,7 +209,7 @@ async function startServers() {
 		serve(
 			"The interface",
 			process.execPath,
-			[places.web],
+			withParent(places.web),
 			{
 				cwd: path.dirname(places.web),
 				env: { ...withoutKeys(process.env), ELECTRON_RUN_AS_NODE: "1", PORT: String(port), HOSTNAME: "127.0.0.1" },
@@ -310,3 +310,6 @@ if (first) {
 }
 app.on("window-all-closed", () => life.quitsWhenWindowsClose && app.quit());
 app.on("before-quit", stopEverything);
+// Ctrl+C in the terminal that ran `npm run app`, or the system asking the app to end: quit the ordinary way, so
+// that before-quit stops the servers (by default Node would end this process alone).
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => app.quit());

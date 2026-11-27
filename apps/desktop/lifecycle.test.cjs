@@ -1,7 +1,11 @@
 /** The desktop app's lifecycle: which steps are legal, and what each state allows.    node --test */
 const assert = require("node:assert/strict");
+const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { test } = require("node:test");
-const { Lifecycle, TRANSITIONS } = require("./lifecycle.cjs");
+const { Lifecycle, TRANSITIONS, withParent } = require("./lifecycle.cjs");
 
 /** A lifecycle taken along `path`; every step must be legal. */
 function at(...path) {
@@ -67,6 +71,21 @@ test("a server stopping is a failure to report only once the app is ready", () =
 	assert.ok(at("serving", "ready").childExitIsFailure);
 	assert.equal(at("serving").childExitIsFailure, false); // whoever waits for it reports it
 	assert.equal(at("serving", "ready", "quitting").childExitIsFailure, false); // it was asked to stop
+});
+
+test("a server run with the shell's watch on it runs, and stops once the shell's end of its input is gone", async () => {
+	// an ES module that would run for ever, as the interface's server.js does, and says when it has started
+	const folder = fs.mkdtempSync(path.join(os.tmpdir(), "rp-parent-"));
+	const script = path.join(folder, "server.mjs");
+	fs.writeFileSync(script, "setInterval(() => {}, 1000);\nconsole.log(`started ${import.meta.url.length > 0}`);\n");
+	const child = spawn(process.execPath, withParent(script), { stdio: ["pipe", "pipe", "inherit"] });
+	const exited = new Promise((resolve) => child.once("exit", (code) => resolve(code)));
+	await new Promise((resolve) => child.stdout.once("data", resolve));
+	child.stdin.end(); // what the system does to the pipe when the shell ends, however it ends
+	const timer = setTimeout(() => child.kill(), 10_000);
+	assert.equal(await exited, 0); // killed by the timer instead, it would have no exit code
+	clearTimeout(timer);
+	fs.rmSync(folder, { recursive: true, force: true });
 });
 
 test("closing every window quits the app only when there is a main window to have closed", () => {
