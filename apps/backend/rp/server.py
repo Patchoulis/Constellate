@@ -17,7 +17,21 @@ import shutil
 
 from flask import Flask, jsonify, request, send_file
 
-from . import LIBRARY, RUNS, catalog, claude, currency, detect, pipeline, proceedings, reviews, settings, store, usage
+from . import (
+    LIBRARY,
+    RUNS,
+    catalog,
+    claude,
+    currency,
+    detect,
+    machine,
+    pipeline,
+    proceedings,
+    reviews,
+    settings,
+    store,
+    usage,
+)
 from .jobs import Busy, Job, State
 from .library import Papers, acceptance
 from .overview import Overviews
@@ -295,7 +309,13 @@ def library():
     models = {
         index.parent.name: len(json.loads(index.read_text())) for index in (LIBRARY / "embeddings").glob("*/index.json")
     }
-    return jsonify(papers=count, embeddings=models, ai_validation=store.read_json(detect.REPORT))
+    return jsonify(
+        papers=count,
+        embeddings=models,
+        ai_validation=store.read_json(detect.REPORT),
+        ai_detector=detect.availability(settings.load()["detect_ai"]),
+        machine=machine.summary(),
+    )
 
 
 def _stop_with_the_app():

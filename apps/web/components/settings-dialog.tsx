@@ -6,6 +6,7 @@ import type { Catalog, Library, RedoStep, Settings } from "@rp/contracts";
 import { Button, Heading } from "@/components/ui/button";
 import { Input, Label, SwitchRow } from "@/components/ui/field";
 import { Choice, GroupedPicker } from "@/components/ui/picker";
+import { cn } from "@/lib/utils";
 
 /** The whole dialog as data: every setting appears once here, with how it is edited. */
 type Field = { key: keyof Settings; label: string; hint?: string } & (
@@ -75,6 +76,12 @@ const GROUPS: { title: string; note?: string; columns?: number; fields: Field[] 
 			"Every abstract is scored for wording of the kind language models produce, and papers above a threshold " +
 			"are tagged. It is an estimate from word choice, never proof of how a paper was written.",
 		fields: [
+			{
+				kind: "switch",
+				key: "detect_ai",
+				label: "Check abstracts for AI-style wording",
+				hint: "Works without a graphics card. Off: nothing is scored or tagged",
+			},
 			{
 				kind: "switch",
 				key: "include_ai_papers",
@@ -154,6 +161,8 @@ export function SettingsDialog({
 	settings,
 	catalog,
 	validation,
+	detector,
+	machine,
 	onOpenChange,
 	onChange,
 	onRedo,
@@ -164,6 +173,10 @@ export function SettingsDialog({
 	catalog: Catalog | undefined;
 	/** how the AI-text detector did when it was last measured, if it was */
 	validation: Library["ai_validation"] | undefined;
+	/** whether abstracts get scored in the next run, and why */
+	detector: Library["ai_detector"] | undefined;
+	/** what this computer can do, and what that means for embedding */
+	machine: Library["machine"] | undefined;
 	onOpenChange: (open: boolean) => void;
 	onChange: (changes: Partial<Settings>) => void;
 	/** Run the open run again with one step redone; undefined when there is no run to redo, or one is running. */
@@ -219,7 +232,13 @@ export function SettingsDialog({
 											</Button>
 										</div>
 									)}
-									{group.title === AI_GROUP && validation && (
+									{group.title === "Embeddings" && machine && (
+										<p className={cn("text-xs", machine.gpu ? "text-muted-foreground" : "text-warning")}>{machine.embedding}</p>
+									)}
+									{group.title === AI_GROUP && detector && (
+										<p className={cn("text-xs", detector.state === "ready" ? "text-muted-foreground" : "text-warning")}>{detector.why}</p>
+									)}
+									{group.title === AI_GROUP && validation && detector?.state === "ready" && (
 										<p className="text-xs text-warning">
 											Measured on {validation.held_out} abstracts it was not trained on: it catches{" "}
 											{Math.round(100 * validation.written_caught)}% of abstracts a model wrote from the title and{" "}

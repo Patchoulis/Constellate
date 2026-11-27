@@ -67,6 +67,11 @@ def embed_papers(run: Run):
 
 
 def detect_ai(run: Run):
+    available = detect.availability(run.settings["detect_ai"])
+    if available["state"] is not detect.Availability.READY:
+        run.log(f"  {available['why']}")
+        run.flagged = np.zeros(len(run.papers), dtype=bool)
+        return
     detector = detect.Detector(run.log)
     scores = detector.scores(run.papers)
     run.flagged = np.nan_to_num(scores, nan=-np.inf) > detector.threshold

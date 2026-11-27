@@ -30,6 +30,8 @@ The first release.
 - **What authors declare**: the NeurIPS checklist and the limitations, impact, ethics, reproducibility and
   LLM-usage statements of other venues, read from the PDF, with flags derived from them.
 - **Reviewers' ratings**, read from a paper's reviews page when it is opened in the reader.
+- **Works without a graphics card**: Settings says whether one was found and what that means for speed, and the
+  AI-text check can be switched off; Settings says whether it is on, off or not yet trained, and why.
 - **"AI detected"** tag: a statistical estimate from word choice (a classifier trained on abstracts and
   model-written mirrors of them), with its measured error rates shown.
 - **Show or dim by kind** on the graph: chips for orals, spotlights, posters, AI detected and not, with counts.

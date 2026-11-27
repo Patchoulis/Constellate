@@ -11,6 +11,9 @@ DEFAULTS = {
     "min_split_modularity": 0.05,  # a Fiedler split is kept only if its two halves are this distinct
     "sub_levels": 2,  # how many times a community is split again into sub-communities
     "max_links": 8,  # most links drawn from one paper to its closest papers
+    # Score every abstract for wording of the kind language models produce, and tag those above the threshold.
+    # It needs a trained detector (detect.availability says whether there is one); it needs no graphics card.
+    "detect_ai": True,
     # Papers the AI-text detector flags are always tagged; switch this off to leave them out of a run altogether.
     "include_ai_papers": True,
     # Which conference papers go into a run: "all", "highlights" (spotlights and orals) or "oral".

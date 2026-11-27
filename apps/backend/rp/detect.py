@@ -43,6 +43,7 @@ is local and takes seconds.  Until the training set has been built nothing is fl
 
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
+from enum import StrEnum
 
 import numpy as np
 
@@ -322,6 +323,37 @@ def classifier() -> Classifier | None:
             },
         )
     return _classifier["value"]
+
+
+class Availability(StrEnum):
+    """Whether abstracts get scored in the next run.  Exactly one holds, and `availability` says why."""
+
+    OFF = "off"  # switched off in Settings
+    UNTRAINED = "untrained"  # switched on, but there is no detector on this computer to score with
+    READY = "ready"  # switched on and there is one
+
+
+def availability(enabled: bool) -> dict:
+    """{"state": an Availability, "why": a sentence for the interface}."""
+    if not enabled:
+        return {
+            "state": Availability.OFF,
+            "why": "Switched off: abstracts are not scored and no paper is tagged. Papers tagged in earlier runs "
+            "keep their tag in those runs.",
+        }
+    if classifier() is None:
+        return {
+            "state": Availability.UNTRAINED,
+            "why": "Not available yet: no detector has been trained on this computer, so no paper is tagged. "
+            "Training has a language model write and polish about 1,700 abstracts to learn its wording from; that "
+            "needs an Anthropic API key and costs a few US dollars once. Run `python -m rp.detect --train` in "
+            "apps/backend. It does not need a graphics card.",
+        }
+    return {
+        "state": Availability.READY,
+        "why": "On: every abstract is scored once (a fraction of a second per thousand, no graphics card needed) "
+        "and papers above the threshold are tagged.",
+    }
 
 
 class Detector:

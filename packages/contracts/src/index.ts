@@ -12,6 +12,8 @@ export interface Settings {
 	sub_levels: number;
 	/** most links drawn from one paper to its closest papers */
 	max_links: number;
+	/** score abstracts for AI-style wording and tag those above the threshold */
+	detect_ai: boolean;
 	/** false: papers the AI-text detector flags are left out of a run (they are tagged either way) */
 	include_ai_papers: boolean;
 	/** which conference papers go into a run: one of Catalog.acceptance */
@@ -259,6 +261,10 @@ export interface UsageEntry {
 export interface Library {
 	papers: number;
 	embeddings: Record<string, number>;
+	/** whether abstracts get scored in the next run, and why (rp/detect.py `availability`) */
+	ai_detector: { state: "off" | "untrained" | "ready"; why: string };
+	/** what this computer can do: its NVIDIA graphics card, if any, and what that means for embedding */
+	machine: { gpu: string | null; embedding: string };
 	/** what was measured about the AI-text detector on papers it was not trained on; null until it is trained */
 	ai_validation: {
 		/** the models whose text it was trained to recognise */

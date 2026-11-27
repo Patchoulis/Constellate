@@ -77,8 +77,10 @@ export default function Home() {
 				settings={settings}
 				catalog={ready(catalog)}
 				validation={ready(library)?.ai_validation}
+				detector={ready(library)?.ai_detector}
+				machine={ready(library)?.machine}
 				onOpenChange={setSettingsOpen}
-				onChange={change}
+				onChange={(changes) => void change(changes).then(library.reload)} // what the library reports depends on some settings
 				onReadDeclarations={
 					current && !running
 						? () => {
