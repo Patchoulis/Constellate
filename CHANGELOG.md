@@ -7,6 +7,8 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The paper reader has a Text tab showing the paper's text section by section, and citations open it at the exact place they quote, with the words highlighted; quotes Claude gives as evidence are only shown once they have been found in the paper they are attributed to.
+
 - The runs sidebar, the communities panel, the paper reader, the overview and the activity log can be resized by dragging their edge (or with the arrow keys once the edge is focused); double-click an edge to put it back, and the sizes are remembered.
 
 - `npm run setup` (or `make setup`) gets a fresh clone ready to work on in one command.
