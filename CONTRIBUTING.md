@@ -104,7 +104,7 @@ every layout that was once read wrongly. The shell's server tests need the inter
 it) and the engine's program (`cargo test` leaves one); without them they are skipped, except in CI, where they
 fail instead.
 
-Run one test with `cargo test -p constellate name`, `npx tsx --test apps/web/tests/graph.test.ts` or
+Run one test with `cargo test -p constellate name`, `npx tsx --test apps/web/tests/graph/graph.test.ts` or
 `node --test apps/desktop/reader.test.cjs`.
 
 To work on the interface with hot reload, `npm run dev` starts the engine and `next dev` on http://localhost:3210

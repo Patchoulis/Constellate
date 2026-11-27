@@ -236,7 +236,7 @@ test("the interface's server forwards /api with the token it adds itself, and th
 });
 
 test("the shell and the interface's server name the window's cookie alike, and the window gets it unreadable", () => {
-	const policy = fs.readFileSync(path.join(REPO, "apps", "web", "lib", "page-policy.ts"), "utf8");
+	const policy = fs.readFileSync(path.join(REPO, "apps", "web", "lib", "net", "page-policy.ts"), "utf8");
 	assert.ok(policy.includes(`export const WINDOW_COOKIE = "${WINDOW_COOKIE}";`));
 	const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
 	assert.match(main, /cookies\.set\(\{ url, name: WINDOW_COOKIE, value: WINDOW_KEY, httpOnly: true, sameSite: "strict" \}\)/);

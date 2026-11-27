@@ -58,7 +58,7 @@ test("a \\href shows its text and links to its address; an address written out i
 	assert.ok(bare.endsWith(", then more"));
 });
 
-test("a plain http address in a record is shown, not made a link (lib/links.ts: https only)", () => {
+test("a plain http address in a record is shown, not made a link (lib/net/links.ts: https only)", () => {
 	const plain = shown("data at http://example.org/data and \\href{http://example.org/x}{there}");
 	assert.ok(!plain.includes("<a "), plain);
 	assert.ok(plain.includes("http://example.org/data"));

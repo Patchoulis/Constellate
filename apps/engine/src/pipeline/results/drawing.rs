@@ -2,7 +2,7 @@
 //! position, its AI-text flag and how it was accepted; and each paper's few closest papers as edges.
 //!
 //! The position is the paper's place along the two leading principal components of the mean-centred embeddings,
-//! scaled into [-1, 1]. The interface's layout (`apps/web/lib/layout.ts`) starts its packing of the communities
+//! scaled into [-1, 1]. The interface's layout (`apps/web/lib/graph/layout.ts`) starts its packing of the communities
 //! from where these put them; it computes every position it draws itself.
 //!
 //! Field for field what the Python wrote (`rp/graph.py`, `drawing`), with two differences that change no

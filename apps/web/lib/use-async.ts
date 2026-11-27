@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type DependencyList } from "react";
-import { problemOf, withSignal, type RequestProblem } from "@/lib/request";
+import { problemOf, withSignal, type RequestProblem } from "@/lib/net/request";
 
 /**
  * Something fetched, in exactly one of these at a time:
@@ -12,7 +12,7 @@ import { problemOf, withSignal, type RequestProblem } from "@/lib/request";
  *     reloading   asked again while the last answer stays shown (`reload`, or new deps with `keep`)
  *     failed      the answer is an error; `data` is the answer before it when asking again failed, so what
  *                 the user was reading is not taken away; `problem` is what went wrong for code (a request's
- *                 status: lib/no-pdf.ts reads it) when the error was a request's
+ *                 status: lib/reader/no-pdf.ts reads it) when the error was a request's
  *
  * A spinner and an error at once cannot be written, nor an error that hides the answer it came after.
  */

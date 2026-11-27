@@ -10,10 +10,10 @@ import {
 	isBackendPath,
 	newNonce,
 	windowAdmitted,
-} from "@/lib/page-policy";
+} from "@/lib/net/page-policy";
 
 /**
- * Runs before every request the interface's server answers (lib/page-policy.ts says why): a request addressed to
+ * Runs before every request the interface's server answers (lib/net/page-policy.ts says why): a request addressed to
  * a name that is not the interface's is refused; /api and /auth are forwarded to the engine, with the engine's
  * token added on that hop alone (the page never has it); every page gets a Content-Security-Policy with a nonce
  * of its own, which Next puts on the scripts it writes.
