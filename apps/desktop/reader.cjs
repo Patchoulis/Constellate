@@ -161,4 +161,20 @@ function reachable(address, as, approved = NONE) {
 	return onPaperSite(host) || READER_ASSETS.includes(host) || approved.has(host);
 }
 
-module.exports = { READER, READER_SITES, READER_ASSETS, readable, reachable, askable, local };
+/**
+ * Where every connection of the reader's goes, as Chromium's proxy settings: directly to a paper site, a host on
+ * READER_ASSETS or an approved site, and to anything else (this computer and the local network included: "<-loopback>"
+ * takes away Chromium's own exception for them) only through a proxy that is not there, so it fails. This is for
+ * the connections no request check is told of: a relay of a call between browsers over TCP (WebRTC's TURN),
+ * WebTransport (which refuses any connection that is not direct), whatever a later Chromium adds. Requests are
+ * checked by `reachable` first; this is the same list a second time, by host.
+ */
+function proxyRules(approved = NONE) {
+	const direct = [...READER_SITES.flatMap((site) => [site, `*.${site}`]), ...READER_ASSETS, ...approved];
+	return { mode: "fixed_servers", proxyRules: NOWHERE, proxyBypassRules: ["<-loopback>", ...direct].join(";") };
+}
+
+/** A proxy that is never there: a port on this computer nothing listens on, so a connection to it is refused. */
+const NOWHERE = "127.0.0.1:1";
+
+module.exports = { READER, READER_SITES, READER_ASSETS, NOWHERE, readable, reachable, askable, local, proxyRules };

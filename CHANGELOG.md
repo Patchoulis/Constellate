@@ -156,6 +156,12 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Pages shown in the reader can no longer send anything to the app's own interface, its API or the engine on this
   computer, nor to the local network, nor open files: every request such a page makes is checked, not only the
   frames it opens.
+- The reader is closed off further: a page in it can no longer show dialogs that look like the app's own, make the
+  "not a paper site" question appear without your click (or again and again), keep a service worker running after
+  it is gone, keep the window from closing, or reach this computer or other sites through calls between browsers
+  (WebRTC) or WebTransport; a link in a paper's PDF opens in your browser rather than inside the app's window; no
+  page is given a certificate of yours; the app no longer listens on your network (which made Windows ask whether
+  "Electron" may use it); and the app's API refuses requests sent to the interface under another site's name.
 - The new engine answers only the app itself: every request must carry a secret token and be addressed to the
   engine, and pages of other sites are refused. Run on another machine than the app, it requires HTTPS, and warns
   loudly if HTTPS is turned off.
