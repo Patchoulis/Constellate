@@ -120,4 +120,50 @@ export const api = {
 		call<CritiqueStarted>(`/api/papers/${encodeURIComponent(id)}/critique`, send("POST", { model })),
 	/** forget the model's reading of the paper, so that it can be asked again */
 	forgetCritique: (id: string) => call<{ forgotten: number }>(`/api/papers/${encodeURIComponent(id)}/critique`, { method: "DELETE" }),
+	/** where a community's papers (or the marked ones) stand on a question (engine api/stances.rs) */
+	stances: {
+		listing: (name: string, scope: StanceScope) =>
+			"community" in scope
+				? call<import("@rp/contracts").StanceListing>(stancesAt(name, scope))
+				: call<import("@rp/contracts").StanceListing>(`${stancesAt(name, scope)}/list`, send("POST", { papers: scope.papers })),
+		/** what asking would cost; nothing is sent to the model */
+		estimate: (name: string, scope: StanceScope, question: string, includeUnrelated: boolean) =>
+			call<import("@rp/contracts").StancePlan>(
+				`${stancesAt(name, scope)}/estimate`,
+				send("POST", { question, include_unrelated: includeUnrelated, papers: "papers" in scope ? scope.papers : [] }),
+			),
+		/** start the job that asks the most central papers ("sample") or all of them, on the terms the user was shown:
+		 *  the model and the most it could cost (the engine refuses a job that would now ask another or cost more) */
+		ask: (
+			name: string,
+			scope: StanceScope,
+			question: string,
+			includeUnrelated: boolean,
+			part: "sample" | "all",
+			approved: StanceApproved,
+		) =>
+			call<import("@rp/contracts").StanceStarted>(
+				`${stancesAt(name, scope)}/ask`,
+				send("POST", { question, include_unrelated: includeUnrelated, part, papers: "papers" in scope ? scope.papers : [], ...approved }),
+			),
+		result: (name: string, scope: StanceScope, id: string) =>
+			call<import("@rp/contracts").StanceResult>(`${stancesAt(name, scope)}/${encodeURIComponent(id)}`),
+		/** forget this question's answers for a fresh reading (the next ask pays again) */
+		redo: (name: string, scope: StanceScope, id: string) =>
+			call<import("@rp/contracts").StanceAsked>(`${stancesAt(name, scope)}/${encodeURIComponent(id)}/redo`, { method: "POST" }),
+		/** what proposing questions would cost; `fresh` to propose anew past the proposals kept */
+		proposalEstimate: (name: string, community: string, fresh: boolean) =>
+			call<import("@rp/contracts").StanceProposalPlan>(`${stancesAt(name, { community })}/proposals/estimate`, send("POST", { fresh })),
+		propose: (name: string, community: string, fresh: boolean, approved: StanceApproved) =>
+			call<import("@rp/contracts").StanceStarted>(`${stancesAt(name, { community })}/proposals`, send("POST", { fresh, ...approved })),
+	},
 };
+
+type StanceScope = import("@rp/contracts").StanceScope;
+/** What the user was shown when they clicked: the model and the estimate's "at most" in US dollars (null: price not known). */
+type StanceApproved = { model: string; approved_usd: number | null };
+
+/** Where a scope's stances routes are: a community's, or the run's marked papers'. */
+function stancesAt(name: string, scope: StanceScope): string {
+	return "community" in scope ? `${run(name)}/communities/${encodeURIComponent(scope.community)}/stances` : `${run(name)}/marked/stances`;
+}

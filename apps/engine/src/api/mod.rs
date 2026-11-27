@@ -9,6 +9,7 @@
 //! | [`routes`]   | the routes, the state they share and how errors are told                           |
 //! | [`reviews`]  | a paper's reviews read from the page the user opened, and what they come to        |
 //! | [`passages`] | a paper's text from its PDF, and where a quote is in it                            |
+//! | [`stances`]  | where a community's papers agree and disagree on a question                        |
 //!
 //! [`Server`] puts them together: bound to its address, it says once where it is ([`Server::startup_line`]) and
 //! serves until it is told to stop.
@@ -21,6 +22,7 @@ pub mod passages;
 pub mod reviews;
 pub mod routes;
 pub mod security;
+pub mod stances;
 
 use std::future::Future;
 use std::io;

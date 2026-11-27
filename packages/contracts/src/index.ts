@@ -861,3 +861,147 @@ export interface Critique {
 
 /** `POST /api/papers/<id>/critique`: the job started, or nothing asked because the reading is kept. */
 export type CritiqueStarted = { outcome: "started"; job: number } | { outcome: "kept" };
+
+// ---- Agree / disagree (stances) ----
+
+/** Which papers a question is about: a community of the run (by its tree path), or papers the user marked. */
+export type StanceScope = { community: string } | { papers: string[] };
+
+/**
+ * Where the model placed one paper on a yes/no question (engine analysis/stances.rs). Every placement but
+ * `not_addressed` comes with the paper's own words, found in it; a placement whose quotes were not found is
+ * `not_verified` and is never counted for or against. `unusable`: the kept answer is not one the question allows.
+ */
+export type StancePlaced =
+	| { group: "supports"; evidence: Evidence[] }
+	| { group: "mixed"; /** the model's words for when the answer is yes */ condition: string; evidence: Evidence[] }
+	| { group: "contradicts"; evidence: Evidence[] }
+	| { group: "not_addressed" }
+	| { group: "not_verified"; quotes_not_found: number }
+	| { group: "unusable" };
+
+export type StanceGroup = StancePlaced["group"];
+
+export interface StanceRow {
+	paper: string;
+	title: string;
+	tier: Acceptance | null;
+	year: number | null;
+	/** what the model read: the PDF's text, or only the title and abstract (a weaker reading) */
+	read: "pdf" | "abstract";
+	placed: StancePlaced;
+	/** one of the most central papers, asked first */
+	in_sample: boolean;
+}
+
+/** What the pre-filter (no model) decided: papers sharing no distinctive word with the question are skipped. */
+export interface StanceFilter {
+	papers: number;
+	related: number;
+	unrelated: number;
+	include_unrelated: boolean;
+	/** the words looked for, folded ("model" for "models") */
+	terms: string[];
+}
+
+/** What a batch of calls would cost, before anything is sent (engine model/batch.rs BatchEstimate): an estimate. */
+export interface StanceCostEstimate {
+	items: number;
+	/** answered before: they cost nothing */
+	kept: number;
+	to_ask: number;
+	by_model: {
+		model: string;
+		calls: number;
+		tokens: { input: number; output: number; cache_read: number; cache_write_5m: number; cache_write_1h: number };
+		usd: number | null;
+		most_usd: number | null;
+		counting: { kind: "assumed" | "measured"; chars_per_token: number };
+	}[];
+	/** in US dollars; null when the model's price is not known */
+	usd: number | null;
+	most_usd: number | null;
+}
+
+export interface StancePartEstimate {
+	papers: number;
+	with_pdf: number;
+	abstract_only: number;
+	estimate: StanceCostEstimate;
+}
+
+/** `POST .../stances/estimate`: what asking a question would cost. Nothing is sent. */
+export interface StancePlan {
+	id: string;
+	question: string;
+	model: string;
+	filter: StanceFilter;
+	/** the most central papers, asked first */
+	sample: StancePartEstimate;
+	/** every paper to ask (those answered already counted as kept) */
+	all: StancePartEstimate;
+}
+
+/** `GET .../stances/<id>`: what is known so far about a question. */
+export interface StanceResult {
+	id: string;
+	question: string;
+	asked_at: string;
+	model: string;
+	filter: StanceFilter;
+	/** papers that would be asked */
+	to_ask: number;
+	/** of them, those with an answer */
+	answered: number;
+	sample: number;
+	/** most central first */
+	rows: StanceRow[];
+}
+
+/** A question kept for a scope, to open again without paying. */
+export interface StanceAsked {
+	id: string;
+	question: string;
+	round: number;
+	include_unrelated: boolean;
+	papers: string[];
+	asked_at: string;
+}
+
+/** A word or pair of words a community's titles and abstracts keep using, counted without a model. */
+export interface StanceRecurring {
+	term: string;
+	papers: number;
+	/** how many times more often its papers use it than the run's */
+	lift: number;
+}
+
+/** Questions the model proposed, each with quotes found in at least two papers' abstracts. */
+export interface StanceProposals {
+	questions: Cited<string>[];
+	/** proposals left out: their quotes were not found in two papers' abstracts */
+	left_out: number;
+	model: string;
+	kept_at: string;
+}
+
+/** `GET .../stances` (a community) or `POST .../marked/stances/list` (marked papers). */
+export interface StanceListing {
+	papers: number;
+	questions: StanceAsked[];
+	suggestions: StanceRecurring[];
+	proposals: StanceProposals | null;
+}
+
+/** `POST .../stances/proposals/estimate`: what proposing questions would cost. An estimate. */
+export interface StanceProposalPlan {
+	papers: number;
+	model: string;
+	estimate: StanceCostEstimate;
+}
+
+/** A job started: its number (for `/api/status` and `api.cancelJob`) and the question's id. */
+export interface StanceStarted {
+	job: number;
+	id: string;
+}
