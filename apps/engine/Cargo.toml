@@ -10,11 +10,13 @@ publish = false
 workspace = true
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 half = "2"
 # matrix products through matrixmultiply on every core: the similarity matrix is one n x n product
 ndarray = { version = "0.17", features = ["matrixmultiply-threading"] }
 ort = { version = "=2.0.0-rc.15", features = ["half"] }
+# text out of a paper's PDF, for its reference list: pure Rust, so it builds anywhere with no system library
+pdf-extract = "0.12"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
