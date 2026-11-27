@@ -43,6 +43,39 @@ Network mode only, for the owner's sign-in ([Running a server](#running-a-server
 An empty value counts as unset. A value that is wrong stops the engine at once with a message on standard error
 that says what to do; messages never repeat a value (the token could be one).
 
+### The language model
+
+Names, descriptions and overviews are written by a language model, from the provider chosen in the settings
+(`describe_provider`, `describe_model`, `describe_effort`). Each provider is reached with a key from the environment
+or `.env`, and nowhere else: the interface cannot set one, and nothing the engine logs, shows in an error or answers
+on a route contains it (`GET /api/models` says only whether each key is set, and of an address only its host). An
+address must be `https`, or `http` only to this computer (`localhost`, `127.0.0.1`, `[::1]`), so that a key is never
+sent in clear over a network.
+
+| Variable                                                                                                                                                                                                                                                                                             | Provider                                                                                                                                                          | What it is                                                                                                                                                                             |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ANTHROPIC_API_KEY`                                                                                                                                                                                                                                                                                  | Anthropic (the Claude API)                                                                                                                                        | The key. Without one, communities are named by their terms.                                                                                                                            |
+| `ANTHROPIC_BASE_URL`                                                                                                                                                                                                                                                                                 | Anthropic                                                                                                                                                         | Another address (a proxy, a gateway); Anthropic's own when unset.                                                                                                                      |
+| `OPENAI_API_KEY`                                                                                                                                                                                                                                                                                     | OpenAI                                                                                                                                                            | The key.                                                                                                                                                                               |
+| `OPENAI_BASE_URL`                                                                                                                                                                                                                                                                                    | OpenAI                                                                                                                                                            | Another address, ending in `/v1` as OpenAI's own does (`https://api.openai.com/v1` when unset).                                                                                        |
+| `GEMINI_API_KEY`                                                                                                                                                                                                                                                                                     | Google Gemini                                                                                                                                                     | The key (Google also documents `GOOGLE_API_KEY`; the engine reads this one only).                                                                                                      |
+| `GEMINI_BASE_URL`                                                                                                                                                                                                                                                                                    | Google Gemini                                                                                                                                                     | Another address; `https://generativelanguage.googleapis.com` when unset.                                                                                                               |
+| `CONSTELLATE_MODEL_BASE_URL`                                                                                                                                                                                                                                                                         | OpenAI-compatible endpoint                                                                                                                                        | The address of any server that speaks OpenAI's Chat Completions, as it gives it, ending in `/v1`: Ollama `http://localhost:11434/v1`, LM Studio `http://localhost:1234/v1`, a gateway. |
+| `CONSTELLATE_MODEL_API_KEY`                                                                                                                                                                                                                                                                          | OpenAI-compatible endpoint                                                                                                                                        | Its key, when it needs one (a server on this computer usually does not).                                                                                                               |
+| `CONSTELLATE_MODEL_JSON`                                                                                                                                                                                                                                                                             | OpenAI-compatible endpoint                                                                                                                                        | `prompt` for a server that refuses a JSON schema (`response_format`): the schema is then asked for in the question. `schema` (the default) sends it.                                   |
+| `OPENROUTER_API_KEY`, `XAI_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`, `GROQ_API_KEY`, `TOGETHER_API_KEY`, `FIREWORKS_API_KEY`, `CEREBRAS_API_KEY`, `MOONSHOT_API_KEY`, `MINIMAX_API_KEY`, `ZAI_API_KEY`, `NVIDIA_API_KEY`, `HF_TOKEN`, `AI_GATEWAY_API_KEY`, `BASETEN_API_KEY`, `META_API_KEY` | OpenRouter, xAI, Mistral, DeepSeek, Groq, Together AI, Fireworks AI, Cerebras, Moonshot AI, MiniMax, Z.AI, NVIDIA, Hugging Face, Vercel AI Gateway, Baseten, Meta | Each provider's key, under the name its own documentation uses; they are reached at their own addresses.                                                                               |
+
+What each provider can and cannot do is one table in `src/model/language/provider.rs`, shown in the settings in
+plain words. Where a provider cannot hold an answer to a JSON schema, the schema is asked for in the question, the
+answer is checked by the engine and asked for once more; where it reports no prompt caching, estimates count the
+shared text in full for every question; where it cannot count tokens, they are estimated from characters and said
+to be estimates. A model with no published price (a typed id, a model of a server) has its cost "not known", never
+0, and a budget in dollars is refused for it (a budget in tokens still works); a server on this computer costs no
+API fee. Whatever model answered, a quote is shown as evidence only once found in the paper (`src/evidence.rs`).
+
+Keys are not pasted into the app: the engine would have to keep them, and it keeps nothing secret in a file. They
+belong in the environment or `.env` of the computer the engine runs on.
+
 ### Local mode: a loopback address
 
 Traffic to `127.0.0.1` or `::1` never leaves the computer, so there is nothing on a wire for anyone to read and TLS
@@ -123,9 +156,12 @@ reaching the engine directly (it serves the sign-in page itself), or let the pro
 
 ### The settings the server owns
 
-In network mode `GET /api/status` says `"mode": "network"` and `"server_owned": ["embedding_model"]`: the embedding
-model is the library's, and changing it from a window would embed the whole library again. `PUT /api/settings`
-refuses to change it (`403`); it is changed in the server's own `settings.json`.
+In network mode `GET /api/status` says `"mode": "network"` and `"server_owned": ["embedding_model",
+"describe_provider"]`: the embedding model is the library's, and changing it from a window would embed the whole
+library again; the language model's provider is the server's, since its key, its account and the address papers'
+text is sent to are the owner's. The model and effort within that provider may be chosen from a window.
+`PUT /api/settings` refuses to change a server-owned setting (`403`); it is changed in the server's own
+`settings.json`.
 
 ## The startup line
 
@@ -180,11 +216,13 @@ web build forwards `/api`), so no other origin may ever read an answer.
 
 ### Routes
 
-| Route                     | What it answers                                                                                                                                                                                                                              |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/status?since=N` | The background job: `id`, `kind`, `state`, `result`, `error`, its `log` from line N on, `total` lines, `warnings` about how the engine listens, `mode` (`local` or `network`) and `server_owned`, the settings the interface may not change. |
-| `GET /api/settings`       | The settings (`Settings` in `packages/contracts`).                                                                                                                                                                                           |
-| `PUT /api/settings`       | Changes some: a JSON object of the ones to change. A bad value changes nothing and is answered `400` with what is wrong; a server-owned one `403`.                                                                                           |
+| Route                      | What it answers                                                                                                                                                                                                                                 |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/status?since=N`  | The background job: `id`, `kind`, `state`, `result`, `error`, its `log` from line N on, `total` lines, `warnings` about how the engine listens, `mode` (`local` or `network`) and `server_owned`, the settings the interface may not change.    |
+| `GET /api/settings`        | The settings (`Settings` in `packages/contracts`).                                                                                                                                                                                              |
+| `PUT /api/settings`        | Changes some: a JSON object of the ones to change. A bad value changes nothing and is answered `400` with what is wrong; a server-owned one `403`.                                                                                              |
+| `GET /api/models`          | Every language model provider: whether its key is set (never the key), the host it is reached at, why it cannot be used ("set OPENAI_API_KEY"), what it cannot do, its models with their efforts and prices; and the model the settings choose. |
+| `GET /api/models/endpoint` | The models the OpenAI-compatible endpoint says it has (`GET <address>/models`).                                                                                                                                                                 |
 
 Across a network, also (the first six answer anyone; the last two need the session):
 

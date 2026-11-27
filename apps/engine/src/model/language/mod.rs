@@ -1,8 +1,27 @@
-//! The language model: questions to the Claude API over HTTPS, answers as JSON, every call priced and recorded.
+//! The language model: questions to a provider's API over HTTPS, answers as JSON, every call priced and recorded.
 //!
-//! There is no official Rust SDK, so this is the Messages API over plain HTTP (`ureq`, as the sources use), as the
-//! API's own reference describes it for raw HTTP: `POST /v1/messages` with `x-api-key`, `anthropic-version` and a
-//! JSON body. What it does, and why:
+//! The provider is a choice ([`Provider`], with one row per provider in `provider.rs`): the Claude API, OpenAI,
+//! Gemini, a dozen hosted providers that speak OpenAI's Chat Completions, and any OpenAI-compatible server the user
+//! points it at (Ollama or LM Studio on this computer, a gateway). A [`Client`] is made for one provider's
+//! [`Endpoint`], and callers ask it the same [`Ask`] whichever it is: each provider's request and answer shapes are
+//! in a file of their own (`anthropic.rs`, `responses.rs`, `gemini.rs`, `chat.rs`). Where a provider cannot do
+//! something the features rely on, the client says so and does what it can instead, never silently:
+//!
+//! | it cannot                       | so                                                                       |
+//! |---------------------------------|--------------------------------------------------------------------------|
+//! | hold an answer to a schema      | the schema is asked for in the question, the answer checked here (`schema.rs`), asked once more, then [`NoAnswer::NotJson`] |
+//! | cache the shared prefix         | [`Estimate::caching`] says so, and the prefix is priced in full for every question |
+//! | count tokens                    | they are estimated from characters, marked [`Counting::Assumed`]           |
+//! | report its usage                | the call's tokens are estimated from its characters                       |
+//! | publish a price                 | the cost is "not known" (`None`), never 0, and a budget in dollars is refused |
+//!
+//! Whatever model answers, quotes it gives are evidence only once found in the paper (`crate::evidence`): a weaker
+//! model's answers pass through the same check.
+//!
+//! The rest of this describes the Claude API, the first provider and the one whose behaviour is unchanged by the
+//! others. There is no official Rust SDK, so this is the Messages API over plain HTTP (`ureq`, as the sources use),
+//! as the API's own reference describes it for raw HTTP: `POST /v1/messages` with `x-api-key`, `anthropic-version`
+//! and a JSON body. What it does, and why:
 //!
 //! - **Models** are listed once, in [`MODELS`], with what the interface shows for each; [`DEFAULT_MODEL`] is the
 //!   reference's default, Claude Opus 5.5.
@@ -27,8 +46,9 @@
 //! - **A budget** ([`Budget`]) is checked before every call: a call whose worst case would take the batch past
 //!   what its caller is willing to spend is not started. [`estimate`] says what a batch is likely to cost before
 //!   it is started.
-//! - **The key** is read from `ANTHROPIC_API_KEY` only, the address from `ANTHROPIC_BASE_URL` when it is set.
-//!   Neither is ever logged, shown in a `Debug`, or put in an error.
+//! - **The key** is read from `ANTHROPIC_API_KEY` only, the address from `ANTHROPIC_BASE_URL` when it is set (and
+//!   each other provider's from the variables its row names). Neither is ever logged, shown in a `Debug`, put in an
+//!   error, or returned by a route ([`Providers`] tells only whether a key is set).
 //!
 //! Every test runs against a fake [`Transport`] serving answers shaped as the API's reference documents them: no
 //! test makes a real call, which would cost money.
@@ -46,8 +66,20 @@ use crate::library::Library;
 use crate::usage::{Call, Tokens, Usd, price_of};
 
 mod anthropic;
+mod chat;
+mod gemini;
+pub mod provider;
+mod providers;
+mod responses;
+mod schema;
 
 use anthropic::{Block, Message, Usage, failure};
+pub use provider::{
+    About, Address, Answers, Caching, Capabilities, EffortControl, Key, ModelIds, Offered, Provider, TokenCount,
+    variables,
+};
+use provider::{Api, effort_for};
+pub use providers::{AddressState, Availability, KeyState, Listed, ListedModel, Place, Providers};
 
 /// The version of the API this speaks (`anthropic-version`).
 pub const API_VERSION: &str = "2026-10-21";
@@ -142,11 +174,38 @@ impl fmt::Debug for ApiKey {
     }
 }
 
-/// Where requests go and with what key.
+/// How a [`Transport`] sends the key: each provider reads it from a header of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyHeader {
+    /// `x-api-key` (the Claude API).
+    XApiKey,
+    /// `Authorization: Bearer` (OpenAI and everything that speaks its APIs).
+    Bearer,
+    /// `x-goog-api-key` (Gemini).
+    GoogApiKey,
+    /// No key at all: a server on this computer that needs none.
+    NotSent,
+}
+
+/// Where requests go, with what key, for which provider.
 #[derive(Clone)]
 pub struct Endpoint {
     key: ApiKey,
     base: Url,
+    provider: Provider,
+    /// How JSON answers are had: the provider's, unless [`provider::ANSWERS_VARIABLE`] says otherwise.
+    answers: Answers,
+}
+
+/// `text` as an address a key may be sent to: https, or plain http only to this computer.
+fn safe_base(text: &str) -> Option<Url> {
+    let base = Url::parse(text).ok()?;
+    // the key goes in a header: never over plain HTTP to another computer
+    (base.scheme() == "https" || (base.scheme() == "http" && on_loopback(&base))).then_some(base)
+}
+
+fn on_loopback(base: &Url) -> bool {
+    matches!(base.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
 }
 
 impl fmt::Debug for Endpoint {
@@ -167,18 +226,77 @@ impl Endpoint {
         let given = |name: &str| lookup(name).map(|value| value.trim().to_owned()).filter(|value| !value.is_empty());
         let key = given(KEY_VARIABLE).ok_or(Unavailable::NoKey)?;
         let base = given(BASE_VARIABLE).unwrap_or_else(|| DEFAULT_BASE.to_owned());
-        let base = Url::parse(&base).map_err(|_| Unavailable::BadEndpoint)?;
-        let local = matches!(base.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
-        // the key goes in a header: never over plain HTTP to another computer
-        if !(base.scheme() == "https" || (base.scheme() == "http" && local)) {
-            return Err(Unavailable::BadEndpoint);
-        }
-        Ok(Self { key: ApiKey(key), base })
+        let base = safe_base(&base).ok_or(Unavailable::BadEndpoint)?;
+        Ok(Self { key: ApiKey(key), base, provider: Provider::Anthropic, answers: Answers::Enforced })
     }
 
-    /// Is the endpoint Anthropic's own, or another the user set?
+    /// The endpoint of `provider`, from whatever `lookup` says the variables of its row are: its key (required, or
+    /// optional for a server on this computer) and its address. The Claude API's is [`Endpoint::from_lookup`]'s.
+    pub fn for_provider(provider: Provider, lookup: impl Fn(&str) -> Option<String>) -> Result<Self, Unavailable> {
+        if provider == Provider::Anthropic {
+            return Self::from_lookup(lookup);
+        }
+        let about = provider.about();
+        let given = |name: &str| lookup(name).map(|value| value.trim().to_owned()).filter(|value| !value.is_empty());
+        let key = match about.key {
+            Key::Required(variable) => given(variable).ok_or(Setup::KeyNotSet(variable))?,
+            Key::Optional(variable) => given(variable).unwrap_or_default(),
+        };
+        let base = match about.address {
+            Address::Fixed(default) => default.to_owned(),
+            Address::Overridable { variable, default } => given(variable).unwrap_or_else(|| default.to_owned()),
+            Address::Required(variable) => given(variable).ok_or(Setup::AddressNotSet(variable))?,
+        };
+        let base = safe_base(&base).ok_or(Setup::NotHttps(about.address.variable().unwrap_or(about.id)))?;
+        let answers = match (provider, given(provider::ANSWERS_VARIABLE).as_deref()) {
+            (Provider::Compatible, Some("prompt")) => Answers::Prompted,
+            _ => about.capabilities.answers,
+        };
+        Ok(Self { key: ApiKey(key), base, provider, answers })
+    }
+
+    /// Is the endpoint the provider's own, or another the user set?
     pub fn is_default(&self) -> bool {
-        self.base.as_str().trim_end_matches('/') == DEFAULT_BASE
+        let own = match self.provider.about().address {
+            Address::Fixed(default) | Address::Overridable { default, .. } => default,
+            Address::Required(_) => return false,
+        };
+        self.base.as_str().trim_end_matches('/') == own
+    }
+
+    pub fn provider(&self) -> Provider {
+        self.provider
+    }
+
+    /// What the provider can do, as this endpoint reaches it.
+    pub fn capabilities(&self) -> Capabilities {
+        Capabilities { answers: self.answers, ..self.provider.about().capabilities }
+    }
+
+    /// The name of the computer requests go to, with its port when it names one: what the settings show of the
+    /// address (never its path, which may carry a gateway's credentials, nor anything else).
+    pub fn host(&self) -> Option<String> {
+        let host = self.base.host_str()?;
+        Some(match self.base.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_owned(),
+        })
+    }
+
+    /// Is the model run on this computer (a server on loopback), so that it costs nothing in API fees?
+    pub fn on_this_computer(&self) -> bool {
+        self.provider == Provider::Compatible && on_loopback(&self.base)
+    }
+
+    fn key_header(&self) -> KeyHeader {
+        if self.key.0.is_empty() {
+            return KeyHeader::NotSent;
+        }
+        match self.provider.about().api {
+            Api::Messages => KeyHeader::XApiKey,
+            Api::Responses | Api::ChatCompletions(_) => KeyHeader::Bearer,
+            Api::GenerateContent => KeyHeader::GoogApiKey,
+        }
     }
 
     fn url(&self, path: &str) -> String {
@@ -257,9 +375,9 @@ pub struct Reply {
 /// Why no answer came back at all. No message: the transport's own could name the address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum TransportError {
-    #[error("the Claude API could not be reached")]
+    #[error("the language model's API could not be reached")]
     Unreachable,
-    #[error("the Claude API took too long to answer")]
+    #[error("the language model's API took too long to answer")]
     TimedOut,
 }
 
@@ -274,6 +392,29 @@ pub trait Transport: Send + Sync {
         body: &[u8],
         patience: Duration,
     ) -> Result<Reply, TransportError>;
+
+    /// [`Transport::post`] with the key sent as the provider reads it (`sent_as`), and in no other place. What
+    /// every request goes through. A transport that was written for the Claude API alone keeps working for it: by
+    /// default this is `post`, which sends the key as `x-api-key`.
+    fn post_keyed(
+        &self,
+        url: &str,
+        key: &ApiKey,
+        sent_as: KeyHeader,
+        headers: &[(&str, &str)],
+        body: &[u8],
+        patience: Duration,
+    ) -> Result<Reply, TransportError> {
+        let _ = sent_as;
+        self.post(url, key, headers, body, patience)
+    }
+
+    /// A `GET` (a server's list of its models), the key sent as with [`Transport::post_keyed`]. A transport without
+    /// it reaches nothing.
+    fn get(&self, url: &str, key: &ApiKey, sent_as: KeyHeader, patience: Duration) -> Result<Reply, TransportError> {
+        let _ = (url, key, sent_as, patience);
+        Err(TransportError::Unreachable)
+    }
 
     /// Wait before trying again; the tests' transport only notes it.
     fn wait(&self, duration: Duration) {
@@ -310,21 +451,63 @@ impl Transport for Https {
         body: &[u8],
         patience: Duration,
     ) -> Result<Reply, TransportError> {
-        let failed = |error: ureq::Error| match error {
-            ureq::Error::Timeout(_) => TransportError::TimedOut,
-            _ => TransportError::Unreachable,
-        };
+        self.post_keyed(url, key, KeyHeader::XApiKey, headers, body, patience)
+    }
+
+    fn post_keyed(
+        &self,
+        url: &str,
+        key: &ApiKey,
+        sent_as: KeyHeader,
+        headers: &[(&str, &str)],
+        body: &[u8],
+        patience: Duration,
+    ) -> Result<Reply, TransportError> {
         let mut request = self.agent.post(url).config().timeout_global(Some(patience)).build();
-        request = request.header("x-api-key", key.expose()).header("content-type", "application/json");
+        request = keyed(request, key, sent_as).header("content-type", "application/json");
         for (name, value) in headers {
             request = request.header(*name, *value);
         }
-        let mut response = request.send(body).map_err(failed)?;
-        let header = |name: &str| response.headers().get(name).and_then(|value| value.to_str().ok()).map(str::to_owned);
-        let (retry_after, should_retry) = (header("retry-after"), header("x-should-retry"));
-        let body = response.body_mut().with_config().limit(LARGEST_ANSWER).read_to_vec().map_err(failed)?;
-        Ok(Reply { status: response.status().as_u16(), retry_after, should_retry, body })
+        reply_of(request.send(body).map_err(transport_failed)?)
     }
+
+    fn get(&self, url: &str, key: &ApiKey, sent_as: KeyHeader, patience: Duration) -> Result<Reply, TransportError> {
+        let request = self.agent.get(url).config().timeout_global(Some(patience)).build();
+        reply_of(keyed(request, key, sent_as).call().map_err(transport_failed)?)
+    }
+}
+
+fn transport_failed(error: ureq::Error) -> TransportError {
+    match error {
+        ureq::Error::Timeout(_) => TransportError::TimedOut,
+        _ => TransportError::Unreachable,
+    }
+}
+
+/// The request with the key in the one header `sent_as` names.
+fn keyed<B>(request: ureq::RequestBuilder<B>, key: &ApiKey, sent_as: KeyHeader) -> ureq::RequestBuilder<B> {
+    match sent_as {
+        KeyHeader::XApiKey => request.header("x-api-key", key.expose()),
+        KeyHeader::Bearer => request.header("authorization", format!("Bearer {}", key.expose())),
+        KeyHeader::GoogApiKey => request.header("x-goog-api-key", key.expose()),
+        KeyHeader::NotSent => request,
+    }
+}
+
+/// The answer as a [`Reply`]. A wait asked for in milliseconds (`retry-after-ms`, which some OpenAI-compatible
+/// servers send instead) is given in seconds, as `retry-after` is.
+fn reply_of(mut response: ureq::http::Response<ureq::Body>) -> Result<Reply, TransportError> {
+    let header = |name: &str| response.headers().get(name).and_then(|value| value.to_str().ok()).map(str::to_owned);
+    let in_millis = || {
+        header("retry-after-ms")
+            .and_then(|millis| millis.trim().parse::<f64>().ok())
+            .map(|ms| (ms / 1000.0).to_string())
+    };
+    let retry_after = header("retry-after").or_else(in_millis);
+    let should_retry = header("x-should-retry");
+    let status = response.status().as_u16();
+    let body = response.body_mut().with_config().limit(LARGEST_ANSWER).read_to_vec().map_err(transport_failed)?;
+    Ok(Reply { status, retry_after, should_retry, body })
 }
 
 /// Where each call is recorded for the ledger.
@@ -361,7 +544,8 @@ impl Recorder for Library {
     }
 }
 
-/// The Claude API cannot be used at all: asking again will not help until something is changed.
+/// The provider cannot be used at all: asking again will not help until something is changed. The variants without
+/// a variable named are the Claude API's own words (`ANTHROPIC_*`); [`Setup`] names the variable of any provider.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Unavailable {
     #[error("No API key is set (ANTHROPIC_API_KEY)")]
@@ -372,30 +556,48 @@ pub enum Unavailable {
     KeyRefused,
     #[error("This API key is not allowed to do this")]
     NotAllowed,
-    #[error("The Claude API account has a billing problem")]
+    #[error("The provider's account has a billing problem")]
     Billing,
-    #[error("The Claude API account has reached its spend limit")]
+    #[error("The provider's account has reached its spend limit")]
     SpendLimit,
     #[error("The model {0} is not available to this account")]
     UnknownModel(String),
     #[error("ANTHROPIC_BASE_URL does not lead to the Claude API")]
     NoSuchEndpoint,
+    /// What is missing or wrong in how a provider other than the Claude API is set up.
+    #[error(transparent)]
+    Setup(#[from] Setup),
+}
+
+/// What is missing or wrong in a provider's variables, naming the variable (never its value).
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum Setup {
+    #[error("No API key is set ({0})")]
+    KeyNotSet(&'static str),
+    #[error("No address is set ({0}): the address of an OpenAI-compatible API, such as http://localhost:11434/v1")]
+    AddressNotSet(&'static str),
+    #[error("{0} is not an https address (plain http is allowed only to this computer)")]
+    NotHttps(&'static str),
+    #[error("{0} does not lead to an API the engine can speak")]
+    NoSuchEndpoint(&'static str),
+    #[error("This provider cannot count tokens: they are estimated from characters")]
+    CannotCount,
 }
 
 /// This request gave nothing usable; the next one may work.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum NoAnswer {
-    #[error("The Claude API is limiting requests; try again later")]
+    #[error("The language model's API is limiting requests; try again later")]
     RateLimited { retry_after: Option<Duration> },
-    #[error("The Claude API is overloaded; try again later")]
+    #[error("The language model's API is overloaded; try again later")]
     Overloaded,
-    #[error("The Claude API failed ({0})")]
+    #[error("The language model's API failed ({0})")]
     ServerError(u16),
     #[error(transparent)]
     Transport(#[from] TransportError),
-    #[error("The request is too large for the Claude API")]
+    #[error("The request is too large for the language model's API")]
     TooLarge,
-    #[error("The Claude API refused the request: {0}")]
+    #[error("The language model's API refused the request: {0}")]
     Rejected(String),
     #[error("The model declined to answer")]
     Refused { category: Option<String> },
@@ -405,7 +607,7 @@ pub enum NoAnswer {
     Empty,
     #[error("The answer was not the JSON asked for: {0}")]
     NotJson(String),
-    #[error("The Claude API answered in a way this does not understand")]
+    #[error("The language model's API answered in a way this does not understand")]
     Unexpected,
 }
 
@@ -416,7 +618,7 @@ pub enum OverBudget {
     Tokens { limit: u64, spent: u64, needed: u64 },
     #[error("This could cost more than the budget allows")]
     Dollars { limit: Usd, spent: Usd, needed: Usd },
-    #[error("The price of {0} is not known, so a budget in dollars cannot be kept")]
+    #[error("The price of {0} is not known, so a budget in dollars cannot be kept: set a budget in tokens instead")]
     Unpriced(String),
 }
 
@@ -567,38 +769,115 @@ pub struct Estimate {
     pub most_usd: Option<Usd>,
     /// How the prompt's tokens were reckoned: it is an estimate either way.
     pub counting: Counting,
+    /// How the shared prefix was counted: written once and read after, or, for a provider that reports no caching
+    /// ([`Caching::NotReported`]), paid for in full by every question.
+    pub caching: Caching,
 }
 
-/// What `planned` calls to `model` are likely to cost, and at most. Prompt caching is counted as it works when
-/// the questions over one shared part are asked one after the other within five minutes: the first writes the
-/// cache, the others read it.
+/// What `planned` calls to the Claude API's `model` are likely to cost, and at most. Prompt caching is counted as
+/// it works when the questions over one shared part are asked one after the other within five minutes: the first
+/// writes the cache, the others read it.
 pub fn estimate(model: &str, planned: &[Planned], counting: Counting) -> Estimate {
+    estimate_for(Provider::Anthropic, model, planned, counting)
+}
+
+/// [`estimate`] for `model` of any provider, its prompt caching counted as that provider caches
+/// ([`Capabilities::caching`]): marked or written at a price of its own, the first question writes the prefix and
+/// the rest read it; cached by itself at no extra price, the first pays for it in full and the rest read it; not
+/// reported, every question pays for it in full. The most is always every answer at `max_tokens` and nothing read.
+pub fn estimate_for(provider: Provider, model: &str, planned: &[Planned], counting: Counting) -> Estimate {
+    let priced = price_key(provider, model);
+    let caching = provider.about().capabilities.caching;
     let mut likely = Tokens::default();
     let mut likely_usd = Some(Usd::ZERO);
     let mut most_usd = Some(Usd::ZERO);
     let mut calls = 0u64;
     let add = |total: &mut Option<Usd>, tokens: &Tokens| {
-        *total = total.and_then(|sum| price_of(model, tokens).map(|cost| sum + cost));
+        *total = total.and_then(|sum| price_of(&priced, tokens).map(|cost| sum + cost));
     };
     for plan in planned {
         let shared = counting.tokens(plan.shared_chars);
         let question = counting.tokens(plan.question_chars);
         for asked in 0..plan.questions {
-            let call = Tokens {
-                input: question,
-                output: u64::from(plan.answer_tokens),
-                cache_read: if asked == 0 { 0 } else { shared },
-                cache_write_5m: if asked == 0 { shared } else { 0 },
-                cache_write_1h: 0,
+            let first = asked == 0;
+            let output = u64::from(plan.answer_tokens);
+            let (call, worst) = match caching {
+                Caching::Marked | Caching::AutomaticWritesBilled => {
+                    let call = Tokens {
+                        input: question,
+                        output,
+                        cache_read: if first { 0 } else { shared },
+                        cache_write_5m: if first { shared } else { 0 },
+                        cache_write_1h: 0,
+                    };
+                    let worst =
+                        Tokens { output: u64::from(plan.max_tokens), cache_read: 0, cache_write_5m: shared, ..call };
+                    (call, worst)
+                }
+                Caching::Automatic => {
+                    let call = Tokens {
+                        input: if first { question + shared } else { question },
+                        output,
+                        cache_read: if first { 0 } else { shared },
+                        ..Tokens::default()
+                    };
+                    let worst = Tokens { input: question + shared, output: u64::from(plan.max_tokens), ..call };
+                    (call, Tokens { cache_read: 0, ..worst })
+                }
+                Caching::NotReported => {
+                    let call = Tokens { input: question + shared, output, ..Tokens::default() };
+                    (call, Tokens { output: u64::from(plan.max_tokens), ..call })
+                }
             };
             add(&mut likely_usd, &call);
             likely = likely + call;
-            let worst = Tokens { output: u64::from(plan.max_tokens), cache_read: 0, cache_write_5m: shared, ..call };
             add(&mut most_usd, &worst);
             calls += 1;
         }
     }
-    Estimate { model: model.to_owned(), calls, tokens: likely, usd: likely_usd, most_usd, counting }
+    Estimate { model: model.to_owned(), calls, tokens: likely, usd: likely_usd, most_usd, counting, caching }
+}
+
+/// The id a model's price is kept under in the prices file, and its calls in the ledger: the Claude API's models by
+/// their own id (as they always were), every other provider's as `provider:id`, since two providers may sell the
+/// same model under the same id at different prices.
+pub fn price_key(provider: Provider, model: &str) -> String {
+    match provider {
+        Provider::Anthropic => model.to_owned(),
+        other => format!("{}:{model}", other.id()),
+    }
+}
+
+/// What a model's price is, as the interface is told it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Price {
+    /// US dollars per million tokens, as published; reading from the cache where that has a price of its own.
+    Known { input: f64, output: f64, cache_read: Option<f64> },
+    /// Not published, or not known here: shown as "cost not known", never as nothing.
+    NotKnown,
+    /// A server on this computer: there is no fee for the API.
+    ThisComputer,
+}
+
+/// The price of `model` at `provider`, as the interface shows it: a server on this computer costs no fee.
+pub fn listed_price(provider: Provider, model: &str, on_this_computer: bool) -> Price {
+    if on_this_computer {
+        return Price::ThisComputer;
+    }
+    let per_million = |picodollars: u64| {
+        #[allow(clippy::cast_precision_loss)]
+        let dollars = picodollars as f64 / 1e6;
+        dollars
+    };
+    match crate::usage::model_price(&price_key(provider, model)) {
+        Some(price) => Price::Known {
+            input: per_million(price.rate.input),
+            output: per_million(price.rate.output),
+            cache_read: price.rate.cache.map(|cache| per_million(cache.read)),
+        },
+        None => Price::NotKnown,
+    }
 }
 
 /// An answer, with what it took.
@@ -610,6 +889,58 @@ pub struct Answered<T> {
     pub tokens: Tokens,
     /// `None` when the model's price is not known.
     pub cost: Option<Usd>,
+}
+
+/// An [`Ask`] as it is sent to a provider other than the Claude API: the question as worded for it, and the effort
+/// the model has nearest to the one asked for (none for a model without one).
+pub(super) struct Asked<'a> {
+    pub(super) ask: Ask<'a>,
+    pub(super) question: String,
+    pub(super) effort: Option<Effort>,
+    pub(super) answers: Answers,
+}
+
+/// A request in a provider's shapes: where under the endpoint it goes, and its body.
+pub(super) struct Request {
+    pub(super) path: String,
+    pub(super) body: Value,
+}
+
+/// An answer as read in a provider's shapes, before anything of it is used.
+pub(super) struct Read {
+    /// The model that answered, as the provider named it.
+    pub(super) model: Option<String>,
+    /// What it took, by how it is billed; `None` when the server did not say.
+    pub(super) tokens: Option<Tokens>,
+    pub(super) outcome: Outcome,
+}
+
+/// What an answer is, told before its content is read.
+pub(super) enum Outcome {
+    Text(String),
+    /// The model or the provider's filters declined, for this reason when one was given.
+    Refused(Option<String>),
+    /// Cut off at the most tokens allowed.
+    Cut,
+    /// The provider said, in a successful reply, that it failed.
+    Failed(AskError),
+}
+
+/// The models an OpenAI-compatible server says it has (`GET <address>/models`), for the user to pick from rather
+/// than type: what a server on this computer has downloaded. Only the compatible endpoint is asked; listing models
+/// costs nothing, and nothing is recorded.
+pub fn discover(transport: &dyn Transport, endpoint: &Endpoint) -> Result<Vec<String>, AskError> {
+    if endpoint.provider != Provider::Compatible {
+        return Ok(endpoint.provider.about().models.iter().map(|model| model.id.to_owned()).collect());
+    }
+    let reply = transport
+        .get(&endpoint.url("/models"), &endpoint.key, endpoint.key_header(), Duration::from_secs(15))
+        .map_err(NoAnswer::from)?;
+    if !(200..300).contains(&reply.status) {
+        return Err(chat::openai_style_failure(&reply, "", Provider::Compatible));
+    }
+    chat::read_models(&reply.body)
+        .ok_or_else(|| Unavailable::Setup(Setup::NoSuchEndpoint("CONSTELLATE_MODEL_BASE_URL")).into())
 }
 
 /// How long a reply's `retry-after` header says to wait. A header that is negative, not a number, or absurd is no
@@ -687,11 +1018,12 @@ impl<'a> Client<'a> {
     fn send(&self, path: &str, model: &str, headers: &[(&str, &str)], body: &[u8]) -> Result<Reply, AskError> {
         self.stopped()?;
         let url = self.endpoint.url(path);
+        let (key, sent_as) = (&self.endpoint.key, self.endpoint.key_header());
         let mut attempt = 0;
         loop {
-            let (error, says) = match self.transport.post(&url, &self.endpoint.key, headers, body, PATIENCE) {
+            let (error, says) = match self.transport.post_keyed(&url, key, sent_as, headers, body, PATIENCE) {
                 Ok(reply) if (200..300).contains(&reply.status) => return Ok(reply),
-                Ok(reply) => (failure(&reply, model), reply.should_retry),
+                Ok(reply) => (self.failure(&reply, model), reply.should_retry),
                 Err(error) => (NoAnswer::from(error).into(), None),
             };
             self.stop(&error);
@@ -702,6 +1034,17 @@ impl<'a> Client<'a> {
                 }
                 None => return Err(error),
             }
+        }
+    }
+
+    /// What a request that failed with `reply.status` means, in the words of the provider's API.
+    fn failure(&self, reply: &Reply, model: &str) -> AskError {
+        let provider = self.endpoint.provider;
+        match provider.about().api {
+            Api::Messages => failure(reply, model),
+            Api::Responses => responses::failure(reply, model, provider),
+            Api::GenerateContent => gemini::failure(reply, model),
+            Api::ChatCompletions(_) => chat::openai_style_failure(reply, model, provider),
         }
     }
 
@@ -748,7 +1091,14 @@ impl<'a> Client<'a> {
 
     /// Ask, and get the answer's text: JSON when the form is [`Form::Json`]. Refused before anything is sent when
     /// the call's worst case would take `budget` past its limit.
+    ///
+    /// From a provider that does not guarantee an answer follows the schema, the JSON is checked against it here,
+    /// and asked for once more, with what was wrong, when it does not: then [`NoAnswer::NotJson`]. The answer is the
+    /// JSON alone (without a fence or words around it). Each attempt is recorded and held against `budget`.
     pub fn ask(&self, ask: &Ask<'_>, budget: &Budget) -> Result<Answered<String>, AskError> {
+        if self.endpoint.provider != Provider::Anthropic {
+            return self.ask_provider(ask, budget);
+        }
         self.stopped()?;
         let held = budget.hold(ask.model, &self.worst(ask))?;
         let mut body = ask.body();
@@ -808,11 +1158,161 @@ impl<'a> Client<'a> {
         Ok(Answered { answer, model, tokens, cost })
     }
 
-    /// The prompt tokens of `ask`, counted by the API's token-counting endpoint (no answer is written).
+    /// What is sent for `ask` to a provider other than the Claude API: the question with the schema written into
+    /// it where the provider cannot be held to one, and on a second attempt what was wrong with the first answer.
+    fn asked<'b>(&self, ask: &Ask<'b>, wrong: Option<&str>) -> Asked<'b> {
+        let capabilities = self.endpoint.capabilities();
+        let question = match ask.form {
+            Form::Json(schema) => schema::question(ask.question, schema, capabilities.answers, wrong),
+            Form::Text => ask.question.to_owned(),
+        };
+        let effort = match capabilities.effort {
+            EffortControl::ByModel => {
+                self.endpoint.provider.about().model(ask.model).and_then(|model| effort_for(ask.effort, model.efforts))
+            }
+            EffortControl::NotSent => None,
+        };
+        Asked { ask: *ask, question, effort, answers: capabilities.answers }
+    }
+
+    /// The request for `asked`, in the provider's shapes.
+    fn request(&self, asked: &Asked<'_>) -> Request {
+        match self.endpoint.provider.about().api {
+            // the Claude API's requests are made by `ask` itself, as they always were
+            Api::Messages => Request { path: "/v1/messages".to_owned(), body: asked.ask.body() },
+            Api::Responses => responses::request(asked),
+            Api::GenerateContent => gemini::request(asked),
+            Api::ChatCompletions(chat) => chat::request(asked, chat),
+        }
+    }
+
+    /// What an answer says, in the provider's shapes; `None` when it is not shaped as one.
+    fn read(&self, body: &[u8], model: &str) -> Option<Read> {
+        let provider = self.endpoint.provider;
+        match provider.about().api {
+            Api::Messages => None,
+            Api::Responses => responses::read(body),
+            Api::GenerateContent => gemini::read(body),
+            Api::ChatCompletions(_) => chat::read(body, model, provider),
+        }
+    }
+
+    /// The worst `asked` can take. The prefix is counted as written to the cache where writing it has a price of
+    /// its own, and as plain input everywhere else (where an unpriced cache would make the worst case unpriced).
+    fn worst_asked(&self, asked: &Asked<'_>) -> Tokens {
+        let counting = self.counting();
+        let count = |text: &str| counting.tokens(u64::try_from(text.chars().count()).unwrap_or(u64::MAX));
+        let prefix = count(asked.ask.system) + asked.ask.shared.map_or(0, count);
+        let question = count(&asked.question);
+        let output = u64::from(asked.ask.max_tokens);
+        match self.endpoint.provider.about().capabilities.caching {
+            Caching::Marked | Caching::AutomaticWritesBilled => {
+                Tokens { input: question, output, cache_write_5m: prefix, ..Tokens::default() }
+            }
+            Caching::Automatic | Caching::NotReported => {
+                Tokens { input: question + prefix, output, ..Tokens::default() }
+            }
+        }
+    }
+
+    /// What a call took when the server did not say: its prompt and its answer, estimated from their characters.
+    fn estimated(&self, asked: &Asked<'_>, answer: &str) -> Tokens {
+        let counting = self.counting();
+        let count = |text: &str| counting.tokens(u64::try_from(text.chars().count()).unwrap_or(u64::MAX));
+        let prompt = count(asked.ask.system) + asked.ask.shared.map_or(0, count) + count(&asked.question);
+        Tokens { input: prompt, output: count(answer), ..Tokens::default() }
+    }
+
+    /// [`Client::ask`] for any provider but the Claude API.
+    fn ask_provider(&self, ask: &Ask<'_>, budget: &Budget) -> Result<Answered<String>, AskError> {
+        let provider = self.endpoint.provider;
+        // a model id goes into a URL path (Gemini) and the ledger: only a plain one is sent anywhere
+        if !provider::plain_id(ask.model) {
+            return Err(Unavailable::UnknownModel(ask.model.to_owned()).into());
+        }
+        let priced = price_key(provider, ask.model);
+        let mut wrong: Option<String> = None;
+        loop {
+            self.stopped()?;
+            let asked = self.asked(ask, wrong.as_deref());
+            let worst = self.worst_asked(&asked);
+            let held = budget.hold(&priced, &worst)?;
+            let Request { path, body } = self.request(&asked);
+            let reply = match self.send(&path, ask.model, &[], body.to_string().as_bytes()) {
+                Ok(reply) => reply,
+                Err(error) => {
+                    budget.settle(held, &Tokens::default(), Some(Usd::ZERO)); // a failed request is not billed
+                    return Err(error);
+                }
+            };
+            let Some(read) = self.read(&reply.body, ask.model) else {
+                // answered, and so probably billed, but in no shape this knows: its worst case is recorded
+                let call = Call { model: priced.clone(), purpose: ask.purpose.to_owned(), tokens: worst };
+                budget.settle(held, &worst, call.cost());
+                self.recorder.record(call);
+                return Err(NoAnswer::Unexpected.into());
+            };
+            let answered = read.model.clone().unwrap_or_else(|| ask.model.to_owned());
+            let said = match &read.outcome {
+                Outcome::Text(text) => text.as_str(),
+                _ => "",
+            };
+            // a server that reports no usage (some local ones) is counted from characters rather than as nothing
+            let tokens = read.tokens.unwrap_or_else(|| self.estimated(&asked, said));
+            // a dated or suffixed id of the model asked for has its price
+            let recorded = if answered.starts_with(ask.model) { ask.model } else { answered.as_str() };
+            let call = Call { model: price_key(provider, recorded), purpose: ask.purpose.to_owned(), tokens };
+            let cost = call.cost();
+            // paid for whether or not the answer is usable: recorded before it is looked at
+            budget.settle(held, &tokens, cost);
+            self.recorder.record(call);
+            let text = match read.outcome {
+                Outcome::Text(text) => text,
+                Outcome::Refused(category) => return Err(NoAnswer::Refused { category }.into()),
+                Outcome::Cut => return Err(NoAnswer::Cut.into()),
+                Outcome::Failed(error) => {
+                    self.stop(&error);
+                    return Err(error);
+                }
+            };
+            if text.is_empty() {
+                return Err(NoAnswer::Empty.into());
+            }
+            let Form::Json(schema) = ask.form else {
+                return Ok(Answered { answer: text, model: answered, tokens, cost });
+            };
+            let why = match schema::json_in(&text) {
+                Some((json, value)) => match schema::check(&value, schema) {
+                    Ok(()) => return Ok(Answered { answer: json, model: answered, tokens, cost }),
+                    Err(why) => why,
+                },
+                None => "it is not JSON".to_owned(),
+            };
+            if wrong.is_some() {
+                return Err(NoAnswer::NotJson(why).into());
+            }
+            wrong = Some(why);
+        }
+    }
+
+    /// The prompt tokens of `ask`, counted by the API's token-counting endpoint (no answer is written). A provider
+    /// with no such endpoint ([`TokenCount::Characters`]) says so: [`Setup::CannotCount`].
     pub fn count_tokens(&self, ask: &Ask<'_>) -> Result<u64, AskError> {
         #[derive(Deserialize)]
         struct Counted {
             input_tokens: u64,
+        }
+        if self.endpoint.provider != Provider::Anthropic {
+            if self.endpoint.capabilities().counting == TokenCount::Characters {
+                return Err(Unavailable::Setup(Setup::CannotCount).into());
+            }
+            let asked = Asked { effort: None, ..self.asked(ask, None) };
+            let gemini = self.endpoint.provider.about().api == Api::GenerateContent;
+            let Request { path, body } =
+                if gemini { gemini::count_request(&asked) } else { responses::count_request(&asked) };
+            let reply = self.send(&path, ask.model, &[], body.to_string().as_bytes())?;
+            let counted = if gemini { gemini::read_count(&reply.body) } else { responses::read_count(&reply.body) };
+            return counted.ok_or_else(|| NoAnswer::Unexpected.into());
         }
         let headers = self.headers(ask.model, false);
         let reply = self.send("/v1/messages/count_tokens", ask.model, &headers, ask.body().to_string().as_bytes())?;
@@ -822,7 +1322,13 @@ impl<'a> Client<'a> {
 
     /// Measure how many characters a token is for prompts like `ask`, with one token count, and reckon later
     /// prompts with it: what makes [`estimate`] and the budget's worst cases closer to what calls will cost.
+    ///
+    /// A provider that cannot count tokens is not asked: the counting stays [`Counting::Assumed`], which says that
+    /// what is reckoned with it is an estimate from characters.
     pub fn calibrate(&self, ask: &Ask<'_>) -> Result<Counting, AskError> {
+        if self.endpoint.capabilities().counting == TokenCount::Characters {
+            return Ok(self.counting());
+        }
         let tokens = self.count_tokens(ask)?.max(1);
         let (shared, question) = ask.characters();
         #[allow(clippy::cast_precision_loss)]
@@ -846,6 +1352,8 @@ pub(crate) mod fake {
         pub headers: Vec<(String, String)>,
         pub body: Value,
         pub key_given: bool,
+        /// The header the key was sent in.
+        pub key_as: KeyHeader,
     }
 
     #[derive(Default)]
@@ -892,6 +1400,78 @@ pub(crate) mod fake {
         }
     }
 
+    /// An answer as OpenAI's Responses reference documents it: a reasoning item, then the message.
+    pub fn response(model: &str, text: &str, usage: Value) -> Value {
+        json!({
+            "id": "resp_67ccd2bed1ec8190b14f964abc0542670bb6a6b452d3795b",
+            "object": "response",
+            "status": "completed",
+            "model": model,
+            "output": [
+                {"type": "reasoning", "id": "rs_1", "summary": []},
+                {"type": "message", "id": "msg_1", "status": "completed", "role": "assistant",
+                 "content": [{"type": "output_text", "text": text, "annotations": []}]}
+            ],
+            "usage": usage
+        })
+    }
+
+    /// An answer as Chat Completions documents it.
+    pub fn completion(model: &str, text: &str, usage: Value) -> Value {
+        json!({
+            "id": "chatcmpl-B9MBs8CjcvOU2jLn4n570S5qMJKcT",
+            "object": "chat.completion",
+            "model": model,
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": text, "refusal": null}, "finish_reason": "stop"}],
+            "usage": usage
+        })
+    }
+
+    /// An answer as Gemini's `generateContent` documents it.
+    pub fn generated(model: &str, text: &str, usage: Value) -> Value {
+        json!({
+            "candidates": [{"content": {"role": "model", "parts": [{"text": text}]}, "finishReason": "STOP", "index": 0}],
+            "usageMetadata": usage,
+            "modelVersion": model,
+            "responseId": "mAitaLmkHPPlz7IPvtfUqQ4"
+        })
+    }
+
+    /// An endpoint of `provider` with a key made up for the tests (and, for the compatible one, a server on this
+    /// computer).
+    pub fn endpoint(provider: Provider) -> Endpoint {
+        Endpoint::for_provider(provider, |name| match name {
+            "CONSTELLATE_MODEL_BASE_URL" => Some("http://localhost:11434/v1".to_owned()),
+            name if name.ends_with("_BASE_URL") => None,
+            _ => Some("test-key-not-real".to_owned()),
+        })
+        .unwrap_or_else(|why| panic!("{why}"))
+    }
+
+    impl Fake {
+        fn next(
+            &self,
+            url: &str,
+            sent_as: KeyHeader,
+            key: &ApiKey,
+            headers: &[(&str, &str)],
+            body: &[u8],
+        ) -> Result<Reply, TransportError> {
+            self.sent.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(Sent {
+                url: url.to_owned(),
+                headers: headers.iter().map(|(name, value)| ((*name).to_owned(), (*value).to_owned())).collect(),
+                body: serde_json::from_slice(body).unwrap_or(Value::Null),
+                key_given: !key.expose().is_empty(),
+                key_as: sent_as,
+            });
+            self.replies
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pop_front()
+                .unwrap_or(Err(TransportError::Unreachable))
+        }
+    }
+
     impl Transport for Fake {
         fn post(
             &self,
@@ -901,17 +1481,29 @@ pub(crate) mod fake {
             body: &[u8],
             _patience: Duration,
         ) -> Result<Reply, TransportError> {
-            self.sent.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(Sent {
-                url: url.to_owned(),
-                headers: headers.iter().map(|(name, value)| ((*name).to_owned(), (*value).to_owned())).collect(),
-                body: serde_json::from_slice(body).unwrap_or(Value::Null),
-                key_given: !key.expose().is_empty(),
-            });
-            self.replies
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .pop_front()
-                .unwrap_or(Err(TransportError::Unreachable))
+            self.next(url, KeyHeader::XApiKey, key, headers, body)
+        }
+
+        fn post_keyed(
+            &self,
+            url: &str,
+            key: &ApiKey,
+            sent_as: KeyHeader,
+            headers: &[(&str, &str)],
+            body: &[u8],
+            _patience: Duration,
+        ) -> Result<Reply, TransportError> {
+            self.next(url, sent_as, key, headers, body)
+        }
+
+        fn get(
+            &self,
+            url: &str,
+            key: &ApiKey,
+            sent_as: KeyHeader,
+            _patience: Duration,
+        ) -> Result<Reply, TransportError> {
+            self.next(url, sent_as, key, &[], b"")
         }
 
         fn wait(&self, duration: Duration) {
@@ -1237,5 +1829,364 @@ mod tests {
             assert!(model_price(offered.id).is_some(), "{} has a price", offered.id);
         }
         assert_eq!(model("claude-haiku-5-5").unwrap().fallback, Fallback::None);
+    }
+}
+
+/// The client with every other provider: the same [`Ask`], each provider's own shapes on the wire.
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod every_provider {
+    use super::fake::{Fake, completion, endpoint, generated, ok, response};
+    use super::*;
+
+    const KEY: &str = "test-key-not-real";
+
+    fn schema() -> Value {
+        json!({"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"], "additionalProperties": false})
+    }
+
+    fn ask<'a>(model: &'a str, schema: &'a Value) -> Ask<'a> {
+        Ask {
+            purpose: "questions about a paper",
+            model,
+            system: "Answer from the paper only.",
+            shared: Some("The paper's text."),
+            question: "What does the paper claim?",
+            form: Form::Json(schema),
+            effort: Effort::Max,
+            max_tokens: 2_000,
+        }
+    }
+
+    /// In tokens: most of these models have no price, and a budget in dollars would refuse them.
+    fn plenty() -> Budget {
+        Budget::new(Limit::Tokens(10_000_000))
+    }
+
+    fn chat_usage(prompt: u64, output: u64, cached: u64) -> Value {
+        json!({"prompt_tokens": prompt, "completion_tokens": output, "total_tokens": prompt + output,
+            "prompt_tokens_details": {"cached_tokens": cached}})
+    }
+
+    #[test]
+    fn each_provider_is_sent_its_own_shapes_with_the_key_in_its_own_header() {
+        let schema = schema();
+        let cases: [(Provider, &str, Value, &str, KeyHeader); 4] = [
+            (
+                Provider::OpenAi,
+                "gpt-6.2-sol",
+                response("gpt-6.2-sol", r#"{"answer": "it merges"}"#, json!({"input_tokens": 40, "output_tokens": 9})),
+                "https://api.openai.com/v1/responses",
+                KeyHeader::Bearer,
+            ),
+            (
+                Provider::Gemini,
+                "gemini-4-carbon",
+                generated(
+                    "gemini-4-carbon",
+                    r#"{"answer": "it merges"}"#,
+                    json!({"promptTokenCount": 40, "candidatesTokenCount": 9}),
+                ),
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-carbon:generateContent",
+                KeyHeader::GoogApiKey,
+            ),
+            (
+                Provider::Groq,
+                "openai/gpt-oss-120b",
+                completion("openai/gpt-oss-120b", r#"{"answer": "it merges"}"#, chat_usage(40, 9, 0)),
+                "https://api.groq.com/openai/v1/chat/completions",
+                KeyHeader::Bearer,
+            ),
+            (
+                Provider::Compatible,
+                "qwen3:32b",
+                completion("qwen3:32b", r#"{"answer": "it merges"}"#, chat_usage(40, 9, 0)),
+                "http://localhost:11434/v1/chat/completions",
+                KeyHeader::Bearer,
+            ),
+        ];
+        for (provider, model, answer, url, header) in cases {
+            let fake = Fake::new(vec![Ok(ok(&answer))]);
+            let calls = Mutex::new(Vec::new());
+            let client = Client::new(&fake, endpoint(provider), &calls);
+            let answered: Answered<Value> = client.ask_json(&ask(model, &schema), &plenty()).unwrap();
+            assert_eq!(answered.answer, json!({"answer": "it merges"}), "{provider:?}");
+            let sent = &fake.sent()[0];
+            assert_eq!((sent.url.as_str(), sent.key_as), (url, header), "{provider:?}");
+            assert!(sent.headers.is_empty(), "no Claude API headers go to {provider:?}");
+            assert!(!sent.body.to_string().contains(KEY), "the key is only ever a header");
+            let recorded = calls.into_inner().unwrap();
+            assert_eq!(recorded[0].model, price_key(provider, model), "recorded under its provider");
+            assert_eq!((recorded[0].tokens.input, recorded[0].tokens.output), (40, 9));
+        }
+    }
+
+    #[test]
+    fn an_effort_is_sent_as_the_model_has_it_and_not_at_all_where_it_has_none() {
+        let schema = schema();
+        let fake = Fake::new(vec![
+            Ok(ok(&generated("gemini-4-carbon", r#"{"answer": "x"}"#, json!({})))),
+            Ok(ok(&completion("mistral-large-4-0", r#"{"answer": "x"}"#, chat_usage(1, 1, 0)))),
+            Ok(ok(&response("gpt-7-nova", r#"{"answer": "x"}"#, json!({})))),
+        ]);
+        let calls = Mutex::new(Vec::new());
+        // Gemini 4 Carbon has low, medium and high: max is sent as high
+        let gemini = Client::new(&fake, endpoint(Provider::Gemini), &calls);
+        gemini.ask(&ask("gemini-4-carbon", &schema), &plenty()).unwrap();
+        let mistral = Client::new(&fake, endpoint(Provider::Mistral), &calls);
+        mistral.ask(&ask("mistral-large-4-0", &schema), &plenty()).unwrap();
+        // a model id typed rather than listed: its efforts are not known, so none is sent
+        let openai = Client::new(&fake, endpoint(Provider::OpenAi), &calls);
+        openai.ask(&ask("gpt-7-nova", &schema), &plenty()).unwrap();
+        let sent = fake.sent();
+        assert_eq!(sent[0].body["generationConfig"]["thinkingConfig"], json!({"thinkingLevel": "high"}));
+        assert!(sent[1].body.get("reasoning_effort").is_none());
+        assert!(sent[2].body.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn json_a_provider_cannot_be_held_to_is_checked_and_asked_for_once_more() {
+        let schema = schema();
+        // MiniMax takes no schema: it is written into the question, and the answer checked here
+        let fake = Fake::new(vec![
+            Ok(ok(&completion("MiniMax-M3", "Sure! The paper claims that merging works.", chat_usage(50, 10, 0)))),
+            Ok(ok(&completion("MiniMax-M3", "```json\n{\"answer\": \"merging works\"}\n```", chat_usage(60, 10, 0)))),
+        ]);
+        let calls = Mutex::new(Vec::new());
+        let client = Client::new(&fake, endpoint(Provider::MiniMax), &calls);
+        let answered = client.ask(&ask("MiniMax-M3", &schema), &plenty()).unwrap();
+        assert_eq!(answered.answer, r#"{"answer": "merging works"}"#, "the JSON alone, out of its fence");
+        let sent = fake.sent();
+        assert!(sent[0].body.get("response_format").is_none());
+        let first = sent[0].body["messages"][1]["content"].as_str().unwrap();
+        assert!(first.starts_with("The paper's text.\n\nWhat does the paper claim?") && first.contains("JSON Schema"));
+        let second = sent[1].body["messages"][1]["content"].as_str().unwrap();
+        assert!(second.contains("could not be used: it is not JSON"), "{second}");
+        assert_eq!(calls.into_inner().unwrap().len(), 2, "both attempts were paid for");
+
+        // a schema requested but not followed, twice: not JSON, after exactly one more try
+        let fake = Fake::new(vec![
+            Ok(ok(&completion("qwen3:32b", r#"{"answer": 3}"#, chat_usage(5, 5, 0)))),
+            Ok(ok(&completion("qwen3:32b", r#"{"reply": "x"}"#, chat_usage(5, 5, 0)))),
+            Ok(ok(&completion("qwen3:32b", r#"{"answer": "x"}"#, chat_usage(5, 5, 0)))),
+        ]);
+        let calls = Mutex::new(Vec::new());
+        let client = Client::new(&fake, endpoint(Provider::Compatible), &calls);
+        let error = client.ask(&ask("qwen3:32b", &schema), &plenty()).unwrap_err();
+        assert!(
+            matches!(error, AskError::NoAnswer(NoAnswer::NotJson(ref why)) if why.contains("lacks \"answer\"")),
+            "{error:?}"
+        );
+        assert_eq!(fake.sent().len(), 2);
+        assert!(fake.sent()[0].body["messages"][1]["content"].as_str().unwrap().contains("What does the paper claim?"));
+    }
+
+    #[test]
+    fn a_compatible_server_can_be_told_to_take_json_in_the_prompt() {
+        let endpoint = Endpoint::for_provider(Provider::Compatible, |name| match name {
+            "CONSTELLATE_MODEL_BASE_URL" => Some("http://127.0.0.1:1234/v1".to_owned()),
+            "CONSTELLATE_MODEL_JSON" => Some("prompt".to_owned()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(endpoint.capabilities().answers, Answers::Prompted);
+        let fake = Fake::new(vec![Ok(ok(&completion("local", r#"{"answer": "x"}"#, chat_usage(1, 1, 0))))]);
+        let calls = Mutex::new(Vec::new());
+        let schema = schema();
+        Client::new(&fake, endpoint, &calls).ask(&ask("local", &schema), &plenty()).unwrap();
+        let sent = &fake.sent()[0];
+        assert!(sent.body.get("response_format").is_none());
+        assert_eq!(sent.key_as, KeyHeader::NotSent, "no key is set, so none is sent");
+    }
+
+    #[test]
+    fn a_server_that_reports_no_usage_is_counted_from_characters_and_its_cost_is_not_known() {
+        let schema = schema();
+        let mut answer = completion("qwen3:32b", r#"{"answer": "it merges"}"#, Value::Null);
+        answer.as_object_mut().unwrap().remove("usage");
+        let fake = Fake::new(vec![Ok(ok(&answer))]);
+        let calls = Mutex::new(Vec::new());
+        let client = Client::new(&fake, endpoint(Provider::Compatible), &calls);
+        let budget = Budget::new(Limit::Tokens(100_000));
+        let answered = client.ask(&ask("qwen3:32b", &schema), &budget).unwrap();
+        assert!(answered.tokens.input > 0 && answered.tokens.output > 0, "{:?}", answered.tokens);
+        assert_eq!(answered.cost, None, "not known, which is not free");
+        assert_eq!(budget.spent().0, answered.tokens.all());
+    }
+
+    #[test]
+    fn an_unpriced_model_is_kept_to_a_budget_in_tokens_and_refused_one_in_dollars() {
+        let schema = schema();
+        let fake = Fake::new(vec![Ok(ok(&completion("qwen3:32b", r#"{"answer": "x"}"#, chat_usage(100, 100, 0))))]);
+        let calls = Mutex::new(Vec::new());
+        let client = Client::new(&fake, endpoint(Provider::Compatible), &calls);
+        let dollars = Budget::new(Limit::Dollars(Usd::from_picodollars(10_000_000_000_000)));
+        let refused = client.ask(&ask("qwen3:32b", &schema), &dollars).unwrap_err();
+        assert_eq!(refused, OverBudget::Unpriced("compatible:qwen3:32b".to_owned()).into());
+        assert!(refused.to_string().contains("set a budget in tokens instead"));
+        assert!(fake.sent().is_empty(), "refused before anything was sent");
+        assert!(matches!(
+            client.ask(&ask("qwen3:32b", &schema), &Budget::new(Limit::Tokens(1_000))),
+            Err(AskError::OverBudget(OverBudget::Tokens { .. }))
+        ));
+        let enough = Budget::new(Limit::Tokens(10_000));
+        client.ask(&ask("qwen3:32b", &schema), &enough).unwrap();
+        assert_eq!(enough.spent().0, 200);
+    }
+
+    #[test]
+    fn a_priced_model_of_another_provider_is_kept_to_a_budget_in_dollars() {
+        let schema = schema();
+        let fake = Fake::new(vec![]);
+        let calls = Mutex::new(Vec::new());
+        let client = Client::new(&fake, endpoint(Provider::OpenAi), &calls);
+        // 2000 answer tokens of GPT-6.2 Astra at $40 per million are $0.08: a budget of one cent cannot take it
+        let tight = Budget::new(Limit::Dollars(Usd::from_picodollars(10_000_000_000)));
+        assert!(matches!(
+            client.ask(&ask("gpt-6.2-astra", &schema), &tight),
+            Err(AskError::OverBudget(OverBudget::Dollars { .. }))
+        ));
+        assert!(fake.sent().is_empty());
+    }
+
+    #[test]
+    fn a_batch_is_estimated_as_each_provider_caches_and_says_how() {
+        let plan =
+            Planned { shared_chars: 40_000, question_chars: 300, questions: 3, answer_tokens: 800, max_tokens: 4_000 };
+        let counting = Counting::Measured { chars_per_token: 4.0 };
+        // nothing cached: every question pays for the whole prefix, and the estimate says so
+        let local = estimate_for(Provider::Compatible, "qwen3:32b", &[plan], counting);
+        assert_eq!(local.caching, Caching::NotReported);
+        assert_eq!((local.tokens.input, local.tokens.cache_read), (3 * (10_000 + 75), 0));
+        assert_eq!(local.usd, None, "a model of the user's own server has no price");
+        // cached by the provider at no extra price: the first pays in full, the others read
+        let gemini = estimate_for(Provider::Gemini, "gemini-4-carbon", &[plan], counting);
+        assert_eq!(gemini.caching, Caching::Automatic);
+        assert_eq!((gemini.tokens.input, gemini.tokens.cache_read), (10_000 + 3 * 75, 2 * 10_000));
+        assert!(gemini.usd.unwrap() < gemini.most_usd.unwrap());
+        // writing billed: as the Claude API's
+        let openai = estimate_for(Provider::OpenAi, "gpt-6.2-sol", &[plan], counting);
+        assert_eq!((openai.tokens.cache_write_5m, openai.tokens.cache_read), (10_000, 2 * 10_000));
+        // 10000 written at $2.50, 20000 read at $0.10, 225 question tokens at $2, 2400 answer tokens at $10
+        let expected = 10_000 * 2_500_000 + 20_000 * 100_000 + 225 * 2_000_000 + 2_400 * 10_000_000;
+        assert_eq!(openai.usd, Some(Usd::from_picodollars(expected)));
+        assert_eq!(estimate("claude-opus-5-5", &[plan], counting).caching, Caching::Marked);
+    }
+
+    #[test]
+    fn tokens_are_counted_where_the_provider_can_and_estimated_where_it_cannot() {
+        let schema = schema();
+        let fake = Fake::new(vec![
+            Ok(ok(&json!({"object": "response.input_tokens", "input_tokens": 12}))),
+            Ok(ok(&json!({"totalTokens": 12}))),
+        ]);
+        let calls = Mutex::new(Vec::new());
+        let openai = Client::new(&fake, endpoint(Provider::OpenAi), &calls);
+        assert!(matches!(openai.calibrate(&ask("gpt-6.2-sol", &schema)).unwrap(), Counting::Measured { .. }));
+        let gemini = Client::new(&fake, endpoint(Provider::Gemini), &calls);
+        assert_eq!(gemini.count_tokens(&ask("gemini-4-carbon", &schema)).unwrap(), 12);
+        let sent = fake.sent();
+        assert_eq!(sent[0].url, "https://api.openai.com/v1/responses/input_tokens");
+        assert!(sent[1].url.ends_with("/v1beta/models/gemini-4-carbon:countTokens"));
+
+        let local = Client::new(&fake, endpoint(Provider::Compatible), &calls);
+        assert_eq!(local.calibrate(&ask("qwen3:32b", &schema)).unwrap(), Counting::ASSUMED, "an estimate, and said so");
+        assert_eq!(local.count_tokens(&ask("qwen3:32b", &schema)), Err(Unavailable::Setup(Setup::CannotCount).into()));
+        assert_eq!(fake.sent().len(), 2, "nothing was sent to the provider that cannot count");
+        assert!(calls.into_inner().unwrap().is_empty());
+    }
+
+    #[test]
+    fn errors_of_any_provider_stop_the_asking_or_wait_as_the_claude_api_s_do() {
+        let schema = schema();
+        let refused = Reply {
+            status: 401,
+            retry_after: None,
+            should_retry: None,
+            body: json!({"error": {"message": "Incorrect API key provided", "type": "invalid_request_error", "code": "invalid_api_key"}})
+                .to_string()
+                .into_bytes(),
+        };
+        let fake = Fake::new(vec![Ok(refused)]);
+        let calls = Mutex::new(Vec::new());
+        let client = Client::new(&fake, endpoint(Provider::OpenAi), &calls);
+        assert_eq!(client.ask(&ask("gpt-6.2-sol", &schema), &plenty()), Err(Unavailable::KeyRefused.into()));
+        assert_eq!(client.ask(&ask("gpt-6.2-sol", &schema), &plenty()), Err(Unavailable::KeyRefused.into()));
+        assert_eq!(fake.sent().len(), 1, "nothing more is sent once the key was refused");
+
+        let limited = Reply {
+            status: 429,
+            retry_after: Some("4".to_owned()),
+            should_retry: None,
+            body: json!({"error": {"message": "Rate limit reached", "code": "rate_limit_exceeded"}})
+                .to_string()
+                .into_bytes(),
+        };
+        let fake = Fake::new(vec![
+            Ok(limited),
+            Ok(ok(&completion("openai/gpt-oss-120b", r#"{"answer": "x"}"#, chat_usage(1, 1, 0)))),
+        ]);
+        let client = Client::new(&fake, endpoint(Provider::Groq), &calls);
+        assert!(client.ask(&ask("openai/gpt-oss-120b", &schema), &plenty()).is_ok());
+        assert_eq!(*fake.waited.lock().unwrap(), [Duration::from_secs(4)]);
+
+        let refusal = json!({"model": "m", "choices": [{"message": {"content": null, "refusal": "No."}, "finish_reason": "stop"}],
+            "usage": chat_usage(3, 1, 0)});
+        let fake = Fake::new(vec![Ok(ok(&refusal))]);
+        let calls = Mutex::new(Vec::new());
+        let client = Client::new(&fake, endpoint(Provider::Mistral), &calls);
+        assert_eq!(
+            client.ask(&ask("mistral-large-4-0", &schema), &plenty()),
+            Err(NoAnswer::Refused { category: None }.into())
+        );
+        assert_eq!(calls.into_inner().unwrap().len(), 1, "a refusal was paid for");
+    }
+
+    #[test]
+    fn every_provider_s_keys_and_addresses_come_from_its_variables_and_are_never_shown() {
+        const SECRET: &str = "sk-test-abcdefghijklmnop-not-real";
+        for provider in Provider::ALL {
+            let about = provider.about();
+            let missing = Endpoint::for_provider(provider, |_| None);
+            if about.key == Key::Required(about.key.variable()) {
+                let error = missing.unwrap_err().to_string();
+                assert!(error.contains(about.key.variable()), "{provider:?}: {error}");
+            }
+            let set = Endpoint::for_provider(provider, |name| match name {
+                "CONSTELLATE_MODEL_BASE_URL" => Some("https://gateway.example.org/v1".to_owned()),
+                name if name.ends_with("_BASE_URL") => None,
+                _ => Some(SECRET.to_owned()),
+            })
+            .unwrap();
+            assert!(!format!("{set:?}").contains(SECRET));
+            assert!(!set.on_this_computer());
+        }
+        let plain = Endpoint::for_provider(Provider::OpenAi, |name| match name {
+            "OPENAI_BASE_URL" => Some("http://gateway.example.org/v1".to_owned()),
+            _ => Some(SECRET.to_owned()),
+        });
+        let error = plain.unwrap_err();
+        assert_eq!(error, Setup::NotHttps("OPENAI_BASE_URL").into(), "a key is never sent over plain HTTP");
+        assert!(!error.to_string().contains("example.org") && !error.to_string().contains(SECRET));
+        let proxy = Endpoint::for_provider(Provider::OpenAi, |name| match name {
+            "OPENAI_BASE_URL" => Some("https://gateway.example.org/openai/v1/".to_owned()),
+            _ => Some(SECRET.to_owned()),
+        })
+        .unwrap();
+        assert_eq!(proxy.url("/responses"), "https://gateway.example.org/openai/v1/responses");
+        assert!(!proxy.is_default());
+        assert!(endpoint(Provider::Gemini).is_default());
+    }
+
+    #[test]
+    fn a_compatible_server_s_models_are_read_from_its_list() {
+        let listed = json!({"object": "list", "data": [{"id": "qwen3:32b"}, {"id": "llama3.3:70b"}]});
+        let fake = Fake::new(vec![Ok(ok(&listed))]);
+        assert_eq!(discover(&fake, &endpoint(Provider::Compatible)).unwrap(), ["qwen3:32b", "llama3.3:70b"]);
+        assert_eq!(fake.sent()[0].url, "http://localhost:11434/v1/models");
+        let empty = Fake::new(vec![]);
+        let listed = discover(&empty, &endpoint(Provider::OpenAi)).unwrap();
+        assert_eq!(listed[0], "gpt-6.2-sol", "a hosted provider's are the ones listed, and nothing is asked");
+        assert!(empty.sent().is_empty());
     }
 }

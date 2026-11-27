@@ -314,8 +314,17 @@ pub struct Listen {
 }
 
 /// The variables as read, from the process's environment over `.env`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct Environment(HashMap<&'static str, String>);
+
+/// The names that are set, never their values: they include the language model's API keys.
+impl fmt::Debug for Environment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut names: Vec<&str> = self.0.keys().copied().collect();
+        names.sort_unstable();
+        formatter.debug_tuple("Environment").field(&names).finish()
+    }
+}
 
 impl Environment {
     /// The engine's variables: from `.env` in `folder` if there is one, each overridden by the process's
@@ -326,7 +335,8 @@ impl Environment {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Environment::default(),
             Err(error) => return Err(ConfigError::EnvFile { why: error.to_string() }),
         };
-        for variable in VARIABLES {
+        // the language model's keys and addresses too (`model::language::variables`), so that `.env` may set them
+        for variable in VARIABLES.into_iter().chain(crate::model::language::variables()) {
             match std::env::var(variable) {
                 Ok(value) => {
                     read.0.insert(variable, value);
@@ -343,7 +353,9 @@ impl Environment {
     pub fn from_pairs<'a>(pairs: impl IntoIterator<Item = (&'a str, &'a str)>) -> Environment {
         let mut read = Environment::default();
         for (name, value) in pairs {
-            if let Some(variable) = VARIABLES.iter().find(|known| **known == name) {
+            if let Some(variable) =
+                VARIABLES.into_iter().chain(crate::model::language::variables()).find(|known| *known == name)
+            {
                 read.0.insert(variable, value.to_owned());
             }
         }

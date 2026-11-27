@@ -53,6 +53,8 @@ pub struct Engine {
     pub warnings: Vec<String>,
     /// This computer only, or a network: set by the server from how it listens.
     pub mode: Mode,
+    /// The language model's providers, as their variables were read at start ([`super::models`]).
+    pub language: crate::model::language::Providers,
     /// The library, opened when a route first needs it (and tried again after a failure to open).
     library: Mutex<Option<Arc<Library>>>,
 }
@@ -61,7 +63,16 @@ pub type Shared = Arc<Engine>;
 
 impl Engine {
     pub fn new(data: PathBuf, choices: Choices) -> Engine {
-        Engine { job: Job::new(), data, choices, warnings: Vec::new(), mode: Mode::Local, library: Mutex::new(None) }
+        let language = Default::default();
+        Engine {
+            job: Job::new(),
+            data,
+            choices,
+            warnings: Vec::new(),
+            mode: Mode::Local,
+            language,
+            library: Mutex::new(None),
+        }
     }
 
     /// The library in the data folder, opened once and shared by every request.
@@ -256,6 +267,7 @@ pub(super) async fn on_the_side<T: Send + 'static>(
 pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
     let mut table = vec![("/api/status", get(status)), ("/api/settings", get(read_settings).put(change_settings))];
     table.extend(super::reviews::table());
+    table.extend(super::models::table());
     table
 }
 
@@ -266,11 +278,12 @@ pub fn routes() -> Router<Shared> {
 
 /// The settings that belong to the server when the interface reaches it across a network: the same for every
 /// window that connects, and not changed from one. The embedding model is the library's: changing it would
-/// embed every paper again.
+/// embed every paper again. The language model's provider is the server's: its key, its account and the address
+/// papers' text is sent to are the server owner's (the model and effort within it may be chosen from a window).
 pub fn server_owned(mode: Mode) -> &'static [&'static str] {
     match mode {
         Mode::Local => &[],
-        Mode::Network => &["embedding_model"],
+        Mode::Network => &["embedding_model", "describe_provider"],
     }
 }
 
