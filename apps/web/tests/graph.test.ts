@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { Community, GraphData } from "@rp/contracts";
 import { wrapLabel } from "@/components/graph-canvas";
 import { communityLabel, communityTree, groupsAt, treeDepth } from "@/lib/community";
-import { placeLabels, type LabelBox } from "@/lib/labels";
+import { pickMarkedLabels, placeLabels, type LabelBox, type MarkedPlace } from "@/lib/labels";
 import { countKinds, shownPapers } from "@/lib/paper-filter";
 import { layoutGraph } from "@/lib/layout";
 import { hsl, titleCase } from "@/lib/utils";
@@ -188,6 +188,85 @@ test("a lone label goes below and to the right of its point, and above when aske
 	const frame = { width: 1000, height: 700 };
 	assert.deepEqual(placeLabels(frame, [{ x: 100, y: 100, width: 200, height: 50, gap: 10 }]), [{ left: 110, top: 110 }]);
 	assert.deepEqual(placeLabels(frame, [{ x: 100, y: 100, width: 200, height: 50, gap: 10, above: true }]), [{ left: 110, top: 40 }]);
+});
+
+test("many marked papers' labels never cover one another: those with no free place are hidden", () => {
+	const frame = { width: 600, height: 400 };
+	// forty labels around nearly one point: far more than there is room for
+	const boxes: LabelBox[] = Array.from({ length: 40 }, (_, i) => ({
+		x: 300 + (i % 5),
+		y: 200 + (i % 3),
+		width: 180,
+		height: 40,
+		gap: 8,
+		optional: true,
+	}));
+	const places = placeLabels(frame, boxes);
+	const shown = places.map((at, i) => ({ at, i })).filter(({ at }) => !at.hidden);
+	assert.ok(shown.length > 0 && shown.length < boxes.length, "some are shown, not all");
+	for (const a of shown) {
+		assert.ok(a.at.left >= 0 && a.at.top >= 0 && a.at.left + 180 <= frame.width && a.at.top + 40 <= frame.height, "inside the graph");
+		for (const b of shown) if (a.i < b.i) assert.ok(!overlaps(a.at, b.at, boxes, a.i, b.i), `labels ${a.i} and ${b.i} overlap`);
+	}
+});
+
+test("a hidden label takes no room, and a label that is not optional is always shown", () => {
+	const frame = { width: 300, height: 120 };
+	const big = { x: 150, y: 60, width: 280, height: 100, gap: 0 };
+	const places = placeLabels(frame, [big, { ...big, width: 100, height: 30, optional: true }, { ...big, width: 100, height: 30 }]);
+	assert.ok(!places[0].hidden);
+	assert.equal(places[1].hidden, true);
+	assert.ok(!places[2].hidden, "covers something, but must be shown");
+	// a band across the top; a label too tall to go anywhere free; a small one below, where only the tall one
+	// would have been in its way
+	const room = { width: 400, height: 200 };
+	const after = placeLabels(room, [
+		{ x: 200, y: 10, width: 380, height: 80, gap: 0 },
+		{ x: 200, y: 150, width: 380, height: 150, gap: 0, optional: true },
+		{ x: 200, y: 150, width: 100, height: 30, gap: 4, optional: true },
+	]);
+	assert.equal(after[1].hidden, true);
+	assert.deepEqual(after[2], { left: 204, top: 154 }, "shown where the hidden label would have been");
+	const alone = placeLabels(frame, [{ x: 10, y: 10, width: 50, height: 20, gap: 4, optional: true }]);
+	assert.deepEqual(alone, [{ left: 14, top: 14 }]);
+});
+
+test("marked papers are named first, then their linked papers in turn, each once and within the caps", () => {
+	const frame = { width: 1000, height: 800 };
+	const at = (index: number, x = 100, y = 100) => ({ index, x, y });
+	const marked: MarkedPlace[] = [
+		{ ...at(1), linked: [at(10), at(11), at(12), at(2)] }, // 2 is marked itself
+		{ ...at(2), linked: [at(20), at(10), at(21)] }, // 10 is linked to both
+		{ ...at(3, -50, 100), linked: [at(30), at(31, 2000, 100)] }, // 3 is off screen, and so is 31
+	];
+	const all = pickMarkedLabels(frame, marked, new Set(), { marked: 10, linked: 10 });
+	assert.deepEqual(
+		all.marked.map((place) => place.index),
+		[1, 2],
+	);
+	// closest of each first: 10, 20, 30; then 11, (10 taken), (31 off screen); then 12, 21
+	assert.deepEqual(
+		all.linked.map((place) => place.index),
+		[10, 20, 30, 11, 12, 21],
+	);
+	const capped = pickMarkedLabels(frame, marked, new Set(), { marked: 1, linked: 2 });
+	assert.deepEqual(
+		capped.marked.map((place) => place.index),
+		[1],
+	);
+	// only the marked paper that is named names its neighbours
+	assert.deepEqual(
+		capped.linked.map((place) => place.index),
+		[10, 11],
+	);
+	// what is labelled already (the hovered paper and its links) is not named twice
+	const skipped = pickMarkedLabels(frame, marked, new Set([1, 20]), { marked: 10, linked: 10 });
+	assert.deepEqual(
+		skipped.marked.map((place) => place.index),
+		[2],
+	);
+	assert.ok(!skipped.linked.some((place) => place.index === 20 || place.index === 1));
+	assert.deepEqual(pickMarkedLabels(frame, [], new Set(), { marked: 10, linked: 10 }), { marked: [], linked: [] });
 });
 
 test("papers are shown or dimmed by kind, within the focused community", () => {

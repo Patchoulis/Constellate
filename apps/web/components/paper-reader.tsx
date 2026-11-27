@@ -4,7 +4,7 @@ import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { ExternalLink, FileSearch, FileText, Loader2, MessagesSquare, X } from "lucide-react";
 import type { Catalog, CatalogItem, Declarations, Paper, Ratings } from "@rp/contracts";
 import { AcceptanceTag, AiTag, FlagTag, RatingTags } from "@/components/brand";
-import { CommunityDot } from "@/components/community-panel";
+import { CommunityDot, MarkButton } from "@/components/community-panel";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { api } from "@/lib/api";
@@ -22,6 +22,9 @@ export interface Related {
 }
 
 type View = "abstract" | "paper" | "reviews";
+
+/** How wide the reader is, at most: it lies over the right of the graph, which moves a paper into the rest. */
+export const READER_REM = 56;
 
 /** The desktop app can show another site's page inside the window; a browser tab cannot (sites refuse frames). */
 const EMBEDS = typeof navigator !== "undefined" && /Electron/.test(navigator.userAgent);
@@ -295,6 +298,8 @@ export function PaperReader({
 	community,
 	related,
 	catalog,
+	marked,
+	onToggleMark,
 	onRatings,
 	onOpen,
 	onClose,
@@ -303,6 +308,9 @@ export function PaperReader({
 	community?: CommunityNode;
 	related: Related[];
 	catalog: Catalog | undefined;
+	/** has the user marked this paper in this run? */
+	marked: boolean;
+	onToggleMark: () => void;
 	/** this paper's ratings were just read from its reviews page */
 	onRatings?: (id: string, ratings: Ratings) => void;
 	onOpen: (id: string) => void;
@@ -341,10 +349,14 @@ export function PaperReader({
 	}, [onClose]);
 
 	return (
-		<div className="absolute inset-y-0 right-0 z-20 flex w-[min(56rem,100%)] flex-col border-l bg-card shadow-2xl">
+		<div
+			className="absolute inset-y-0 right-0 z-20 flex flex-col border-l bg-card shadow-2xl"
+			style={{ width: `min(${READER_REM}rem, 100%)` }}
+		>
 			<div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
 				{tabs.length > 1 && <Segmented options={tabs} value={view} onChange={setView} />}
 				<span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{found ? found.title : id}</span>
+				<MarkButton marked={marked} onToggle={onToggleMark} />
 				{found?.url && (
 					<Button
 						variant="ghost"

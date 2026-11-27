@@ -1,13 +1,18 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronLeft, Sparkles } from "lucide-react";
-import type { Community, RunResult } from "@rp/contracts";
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronLeft, Sparkles, Star, Trash2, X } from "lucide-react";
+import type { Community, GraphNode, RunResult } from "@rp/contracts";
+import { AcceptanceTag, AiTag } from "@/components/brand";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { communityLabel, type CommunityNode } from "@/lib/community";
-import { hsl } from "@/lib/utils";
+import type { MarksOf } from "@/lib/marks";
+import { cn, hsl } from "@/lib/utils";
 import { count, percent, similarity, SIMILARITY_NOTE } from "@/lib/units";
+
+/** How a user marks a paper, said wherever marking is offered. */
+export const MARK_HINT = "Right-click a paper to mark it";
 
 /** What a list of communities can be ordered by. */
 const SORTS = [
@@ -48,6 +53,104 @@ export function CommunityDot({ hue }: { hue: number }) {
 	);
 }
 
+/** Mark or unmark one paper. Marks are kept per run, in this browser. */
+export function MarkButton({ marked, onToggle, className }: { marked: boolean; onToggle: () => void; className?: string }) {
+	return (
+		<Button
+			variant="ghost"
+			size="icon"
+			aria-pressed={marked}
+			title={
+				marked
+					? "Marked in this run. Click to unmark it."
+					: "Mark this paper: it stays marked in this run, listed under Marked, with its links always shown on the graph."
+			}
+			className={cn(marked && "text-mark hover:text-mark", className)}
+			onClick={onToggle}
+		>
+			<Star fill={marked ? "currentColor" : "none"} />
+		</Button>
+	);
+}
+
+/** A marked paper as the Marked tab lists it. */
+export interface MarkedPaper {
+	node: GraphNode;
+	community?: CommunityNode;
+}
+
+/** The run's marked papers, newest first: open one, unmark one, or unmark them all after saying so twice. */
+function MarkedList({
+	papers,
+	onOpen,
+	onRemove,
+	onClear,
+}: {
+	papers: MarkedPaper[];
+	onOpen: (id: string) => void;
+	onRemove: (id: string) => void;
+	onClear: () => void;
+}) {
+	const [confirming, setConfirming] = useState(false);
+	return (
+		<>
+			<div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
+				{confirming ? (
+					<>
+						<span className="min-w-0 flex-1 text-xs">Unmark all {count(papers.length, "paper")}? This cannot be undone.</span>
+						<Button
+							variant="outline"
+							onClick={() => {
+								onClear();
+								setConfirming(false);
+							}}
+						>
+							Unmark all
+						</Button>
+						<Button variant="ghost" onClick={() => setConfirming(false)}>
+							Keep
+						</Button>
+					</>
+				) : (
+					<>
+						<span className="min-w-0 flex-1 px-1 text-xs text-muted-foreground tabular-nums">
+							{count(papers.length, "paper")} marked in this run, newest first
+						</span>
+						<Button variant="ghost" title="Unmark every paper of this run (asks first)" onClick={() => setConfirming(true)}>
+							<Trash2 />
+							Clear all
+						</Button>
+					</>
+				)}
+			</div>
+			<ul className="min-h-0 flex-1 overflow-y-auto p-2">
+				{papers.map(({ node, community }) => (
+					<li key={node.id} className="flex items-start gap-1">
+						<RowButton className="flex-col gap-1" title="Open it in the reader and show it on the graph" onClick={() => onOpen(node.id)}>
+							<span className="font-sans text-base leading-snug">
+								<MathText>{node.title}</MathText>
+							</span>
+							{community && (
+								<span className="flex w-full min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+									<CommunityDot hue={community.hue} />
+									<span className="truncate">{communityLabel(community.community)}</span>
+								</span>
+							)}
+							<span className="flex flex-wrap items-center gap-1 empty:hidden">
+								<AcceptanceTag state={node.acceptance} small />
+								{node.ai && <AiTag small />}
+							</span>
+						</RowButton>
+						<Button variant="ghost" size="icon" className="mt-1" title="Unmark this paper" onClick={() => onRemove(node.id)}>
+							<X />
+						</Button>
+					</li>
+				))}
+			</ul>
+		</>
+	);
+}
+
 /** A community as one line: dot, title, a figure. */
 function Line({ node, figure, onClick }: { node: CommunityNode; figure: string; onClick: () => void }) {
 	return (
@@ -70,11 +173,13 @@ function Stat({ label, title, children }: { label: string; title?: string; child
 
 function Detail({
 	node,
+	marks,
 	onSelect,
 	onOverview,
 	onOpenPaper,
 }: {
 	node: CommunityNode;
+	marks: MarksOf;
 	onSelect: (node: CommunityNode) => void;
 	onOverview: (node: CommunityNode) => void;
 	onOpenPaper: (id: string) => void;
@@ -141,14 +246,17 @@ function Detail({
 			<section>
 				<Heading className="mb-1.5">Nearest to the mean embedding</Heading>
 				{community.nearest_to_centroid.map((paper) => (
-					<RowButton key={paper.id} className="items-baseline gap-2" onClick={() => onOpenPaper(paper.id)}>
-						<span className="flex-1 font-sans text-base leading-snug">
-							<MathText>{paper.title}</MathText>
-						</span>
-						<span className="shrink-0 text-xs text-muted-foreground tabular-nums" title={SIMILARITY_NOTE}>
-							{similarity(paper.cosine)}
-						</span>
-					</RowButton>
+					<div key={paper.id} className="flex items-start gap-1">
+						<RowButton className="items-baseline gap-2" onClick={() => onOpenPaper(paper.id)}>
+							<span className="flex-1 font-sans text-base leading-snug">
+								<MathText>{paper.title}</MathText>
+							</span>
+							<span className="shrink-0 text-xs text-muted-foreground tabular-nums" title={SIMILARITY_NOTE}>
+								{similarity(paper.cosine)}
+							</span>
+						</RowButton>
+						<MarkButton className="mt-0.5" marked={marks.has(paper.id)} onToggle={() => marks.toggle(paper.id)} />
+					</div>
 				))}
 			</section>
 		</div>
@@ -195,6 +303,9 @@ export function CommunityPanel({
 	onSelect,
 	onOverview,
 	onOpenPaper,
+	marks,
+	markedPapers,
+	onGoToPaper,
 }: {
 	result: RunResult;
 	roots: CommunityNode[];
@@ -202,10 +313,79 @@ export function CommunityPanel({
 	onSelect: (node: CommunityNode | null) => void;
 	onOverview: (node: CommunityNode) => void;
 	onOpenPaper: (id: string) => void;
+	marks: MarksOf;
+	/** the run's marked papers, newest first */
+	markedPapers: MarkedPaper[];
+	/** open a paper and move the graph to it */
+	onGoToPaper: (id: string) => void;
 }) {
 	const [sort, setSort] = useState<Sort>({ by: SORTS[0], descending: true });
+	const [tab, setTab] = useState<"communities" | "marked">("communities");
+	const tabs = [
+		{ value: "communities" as const, label: "Communities", title: "The run's communities and what is in them" },
+		{
+			value: "marked" as const,
+			label: `Marked · ${count(markedPapers.length, "paper")}`,
+			title: "The papers you marked in this run, newest first",
+			icon: <Star />,
+		},
+	];
 	return (
 		<aside className="flex w-88 shrink-0 flex-col border-l bg-card">
+			<div className="flex shrink-0 border-b px-3 py-2">
+				<Segmented className="w-full" options={tabs} value={tab} onChange={setTab} />
+			</div>
+			{tab === "marked" ? (
+				markedPapers.length > 0 ? (
+					<MarkedList papers={markedPapers} onOpen={onGoToPaper} onRemove={marks.remove} onClear={marks.clear} />
+				) : (
+					<p className="p-6 text-center text-xs leading-relaxed text-muted-foreground">
+						No marked papers in this run yet. {MARK_HINT} on the graph, or use the star beside a paper here and in the reader. Marked papers
+						keep their links on the graph and are listed here.
+					</p>
+				)
+			) : (
+				<Communities
+					result={result}
+					roots={roots}
+					selected={selected}
+					sort={sort}
+					marks={marks}
+					onSort={setSort}
+					onSelect={onSelect}
+					onOverview={onOverview}
+					onOpenPaper={onOpenPaper}
+				/>
+			)}
+		</aside>
+	);
+}
+
+/** The Communities tab: the list of communities, or one community in detail. */
+function Communities({
+	result,
+	roots,
+	selected,
+	sort,
+	marks,
+	onSort: setSort,
+	onSelect,
+	onOverview,
+	onOpenPaper,
+}: {
+	result: RunResult;
+	roots: CommunityNode[];
+	selected: CommunityNode | null;
+	/** kept by the panel, so it survives a look at the Marked tab */
+	sort: Sort;
+	marks: MarksOf;
+	onSort: (sort: Sort) => void;
+	onSelect: (node: CommunityNode | null) => void;
+	onOverview: (node: CommunityNode) => void;
+	onOpenPaper: (id: string) => void;
+}) {
+	return (
+		<>
 			<div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
 				{selected ? (
 					<>
@@ -223,7 +403,7 @@ export function CommunityPanel({
 					</>
 				) : (
 					<>
-						<span className="flex-1 px-1 text-sm font-semibold">Communities</span>
+						<span className="flex-1 px-1 text-sm font-semibold">All communities</span>
 						<span className="text-xs text-muted-foreground tabular-nums">
 							{count(roots.length, "community", "communities")} · modularity {result.modularity.toFixed(2)} of 1
 						</span>
@@ -232,7 +412,7 @@ export function CommunityPanel({
 			</div>
 			{selected ? (
 				<div className="min-h-0 flex-1 overflow-y-auto">
-					<Detail node={selected} onSelect={onSelect} onOverview={onOverview} onOpenPaper={onOpenPaper} />
+					<Detail node={selected} marks={marks} onSelect={onSelect} onOverview={onOverview} onOpenPaper={onOpenPaper} />
 				</div>
 			) : (
 				<>
@@ -257,6 +437,6 @@ export function CommunityPanel({
 					</div>
 				</>
 			)}
-		</aside>
+		</>
 	);
 }
