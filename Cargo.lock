@@ -133,6 +133,7 @@ dependencies = [
  "half",
  "ndarray",
  "ort",
+ "rayon",
  "regex",
  "serde",
  "serde_json",
@@ -595,6 +596,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "rawpointer",
+ "rayon",
 ]
 
 [[package]]

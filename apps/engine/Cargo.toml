@@ -13,8 +13,10 @@ workspace = true
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 half = "2"
 # matrix products through matrixmultiply on every core: the similarity matrix is one n x n product
-ndarray = { version = "0.17", features = ["matrixmultiply-threading"] }
+ndarray = { version = "0.17", features = ["matrixmultiply-threading", "rayon"] }
 ort = { version = "=2.0.0-rc.15", features = ["half"] }
+# rows of the similarity graph read on every core (nearest neighbours, sparse products); tokenizers uses it already
+rayon = "1"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
