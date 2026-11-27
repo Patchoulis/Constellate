@@ -58,11 +58,9 @@ pub struct Engine {
     pub warnings: Vec<String>,
     /// This computer only, or a network: set by the server from how it listens.
     pub mode: Mode,
-    /// The language model's providers, as their variables were read at start ([`super::models`]).
+    /// The language model's providers, as their variables were read at start ([`super::models`]): the one place a
+    /// feature's endpoint comes from, in the program and in the tests alike.
     pub providers: crate::model::language::Providers,
-    /// One endpoint to ask whatever the settings say, when there is one: a test's. The program leaves it unset,
-    /// and the provider chosen in the settings is asked ([`Engine::endpoint`]).
-    pub language: Result<Endpoint, Unavailable>,
     /// How the language model's requests reach its provider: the network, or a test's fake (which reaches nothing,
     /// so that no test of a route can ever call a real provider).
     pub transport: Arc<dyn Transport>,
@@ -87,7 +85,6 @@ impl Engine {
             warnings: Vec::new(),
             mode: Mode::Local,
             providers,
-            language: Err(Unavailable::NoKey),
             // in the tests, a transport that reaches nothing: a test that gives a key and starts a job must
             // never call a real provider, even one it did not mean to start
             #[cfg(not(test))]
@@ -117,6 +114,13 @@ impl Engine {
             Ok(None) => {}
             Err(error) => eprintln!("library: the files-based library could not be moved in yet: {error}"),
         }
+        // calls left with their outcome unknown by an earlier run (a crash after the provider billed): told, never
+        // asked again by themselves
+        match library.unsettled().map(|unsettled| unsettled.said()) {
+            Ok(Some(said)) => eprintln!("constellate: {said}"),
+            Ok(None) => {}
+            Err(error) => eprintln!("library: the calls whose outcome is unknown could not be read: {error}"),
+        }
         *opened = Some(Arc::clone(&library));
         Ok(library)
     }
@@ -142,10 +146,19 @@ impl Engine {
     }
 
     fn endpoint_for(&self, provider: Provider) -> Result<Endpoint, Unavailable> {
-        match &self.language {
-            Ok(fixed) => Ok(fixed.clone()),
-            Err(_) => self.providers.endpoint(provider),
-        }
+        self.providers.endpoint(provider)
+    }
+
+    /// For the tests: the Claude API with a made-up `key`, at `base` when one is given (an address where nothing
+    /// listens). Whatever is sent goes through the tests' transport, which reaches nothing.
+    #[cfg(test)]
+    pub fn set_claude_key(&mut self, key: &str, base: Option<&str>) {
+        let (key, base) = (key.to_owned(), base.map(str::to_owned));
+        self.providers = crate::model::language::Providers::from_lookup(|name| match name {
+            crate::model::language::KEY_VARIABLE => Some(key.clone()),
+            crate::model::language::BASE_VARIABLE => base.clone(),
+            _ => None,
+        });
     }
 
     /// The provider, model and effort every feature asks with, and the endpoint it asks at, read together from
@@ -337,6 +350,7 @@ pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
         ("/api/status", get(status)),
         ("/api/job/cancel", post(cancel_job)),
         ("/api/settings", get(read_settings).put(change_settings)),
+        ("/api/usage/unsettled", get(unsettled)),
     ];
     table.extend(super::reviews::table());
     table.extend(super::passages::table());
@@ -398,8 +412,9 @@ struct Status<'a> {
     state: Phase,
     /// What a finished job made ([`Finished`]): a run, a feature's answers, or nothing to open.
     outcome: Option<Finished>,
-    /// The name of the run a finished job made, and nothing else: what the Python backend's `result` is, so that
-    /// an interface that knows only that never takes a feature's job for a run.
+    /// Derived from `outcome`, kept for an interface that knows only the Python backend: the name of the run a
+    /// finished job made, and nothing else, so that such an interface never takes a feature's job for a run. New
+    /// code reads `outcome`.
     result: Option<String>,
     error: Option<String>,
     /// The log's lines from `since` on, and how many it has in all.
@@ -419,6 +434,13 @@ struct Status<'a> {
     api_key_set: bool,
     /// The step of the run being made and how far it has got; none when no run is being made.
     step: Option<crate::pipeline::steps::StepReport>,
+    /// The feature a feature's job is (or was) for, from the moment it starts ([`crate::jobs::About`]): so that
+    /// another window can tell which section a running job belongs to. None for any other job.
+    feature: Option<crate::library::Feature>,
+    /// What that job asks about, as `outcome`'s subject is told.
+    subject: Option<crate::library::Subject>,
+    /// The one item of the subject it asks about, when it is one: a question's id among a run's questions.
+    item: Option<String>,
 }
 
 async fn status(
@@ -435,7 +457,14 @@ async fn status(
         Some(Finished::Run { run }) => Some(run.clone()),
         Some(Finished::Feature { .. } | Finished::Nothing) | None => None,
     };
+    let (feature, subject, item) = match job.about {
+        Some(about) => (Some(about.feature), Some(about.subject), about.item),
+        None => (None, None, None),
+    };
     let told = Status {
+        feature,
+        subject,
+        item,
         id: job.id,
         kind: job.kind,
         state: job.state,
@@ -453,6 +482,36 @@ async fn status(
         step: engine.runs.board.now(),
     };
     Ok(Json(serde_json::to_value(told).map_err(|_| ApiError::Internal)?))
+}
+
+/// `Unsettled` in the contracts: calls asked of the language model whose outcome is unknown (an intent left by a
+/// crash, a connection lost after sending: `library::asking`), told in the ledger's terms. They may have been
+/// billed, at most this much; they are not asked again until the user starts that work again.
+#[derive(Serialize)]
+struct UnsettledView {
+    calls: i64,
+    /// US dollars, at most, of the priced ones.
+    most_usd: f64,
+    /// Those of a model with no known price: `most_usd` leaves them out.
+    unpriced_calls: i64,
+    /// Tokens of every kind, at most, of all of them.
+    most_tokens: i64,
+    /// When the oldest was asked (UTC); null when there is none.
+    since: Option<String>,
+    /// The same in a sentence, with its units; null when there is none.
+    said: Option<String>,
+}
+
+async fn unsettled(State(engine): State<Shared>) -> Result<Json<UnsettledView>, ApiError> {
+    let unsettled = on_the_side(move || Ok(engine.library()?.unsettled()?)).await?;
+    Ok(Json(UnsettledView {
+        calls: unsettled.calls,
+        most_usd: unsettled.most_usd(),
+        unpriced_calls: unsettled.unpriced_calls,
+        most_tokens: unsettled.most_tokens,
+        said: unsettled.said(),
+        since: unsettled.since,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -533,6 +592,36 @@ mod tests {
         // read again once the file can be: the provider it names
         std::fs::write(engine.settings_file(), r#"{"describe_provider": "openai"}"#).unwrap();
         assert_eq!(engine.endpoint().unwrap().provider(), Provider::OpenAi);
+    }
+
+    #[tokio::test]
+    async fn calls_left_with_their_outcome_unknown_are_told_in_the_ledgers_terms_as_the_contract_has_them() {
+        use crate::library::asking::Intent;
+        use crate::library::{AnswerKey, Feature, Slot, Subject};
+        let data = tempfile::tempdir().unwrap();
+        let engine = Arc::new(Engine::new(data.path().to_path_buf(), Choices::default()));
+        let Json(none) = unsettled(State(Arc::clone(&engine))).await.unwrap();
+        let none = serde_json::to_value(none).unwrap();
+        crate::api::contract::assert_fits("Unsettled", &none, &[]);
+        assert_eq!((none["calls"].as_i64(), none["said"].is_null()), (Some(0), true));
+        let slot = Slot {
+            feature: Feature::Answers,
+            key: AnswerKey::new(Feature::Answers, Provider::Anthropic, "claude-opus-5-5", 1, &["p"], "q"),
+            subject: Subject::Run("r1".to_owned()),
+        };
+        let intent = Intent {
+            slot: &slot,
+            provider: "anthropic",
+            model: "claude-opus-5-5",
+            most_tokens: 9_000,
+            most_micros: Some(120_000),
+        };
+        engine.library().unwrap().intend(&intent).unwrap();
+        let Json(left) = unsettled(State(Arc::clone(&engine))).await.unwrap();
+        let left = serde_json::to_value(left).unwrap();
+        crate::api::contract::assert_fits("Unsettled", &left, &[]);
+        assert_eq!((left["calls"].as_i64(), left["most_usd"].as_f64()), (Some(1), Some(0.12)));
+        assert!(left["said"].as_str().unwrap().contains("may have been billed, about 0.1200 US dollars at most"));
     }
 
     #[test]

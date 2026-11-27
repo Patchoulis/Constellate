@@ -90,6 +90,8 @@ export function stateNote(view: AnswerView): string | null {
 			return "The model is being asked…";
 		case "unanswered":
 			return "Not answered: the call failed or was stopped, or the answer was cleared. Asking again costs again.";
+		case "empty":
+			return "The model answered without writing a single statement: there is nothing to show. The passages found are below.";
 	}
 }
 

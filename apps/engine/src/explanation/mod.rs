@@ -462,7 +462,10 @@ pub fn estimate(library: &Library, item: &Item<'_>, chosen: &Chosen) -> Result<B
 /// model's price is known, in tokens when not ([`chosen::budget`] of the worst case shown).
 pub fn budget(estimate: &BatchEstimate) -> Budget {
     // the worst case shown, accepted as shown, is never refused
-    let accepted = estimate.cost.most_usd.map_or(Accepted::Shown, |most| Accepted::Dollars(most.dollars()));
+    let accepted = estimate
+        .cost
+        .most_usd
+        .map_or(Accepted::Tokens(estimate.cost.most_tokens), |most| Accepted::Dollars(most.dollars()));
     chosen::budget(&estimate.cost, accepted, Terms::AsShown).unwrap_or_else(|_| Budget::new(Limit::Tokens(0)))
 }
 

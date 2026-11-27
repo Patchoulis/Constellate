@@ -40,7 +40,7 @@ use super::login::{self, SignIn};
 use crate::model::language::{self, Endpoint, Unavailable};
 
 /// The variables this engine reads; nothing else is taken from the environment or from `.env`.
-pub const VARIABLES: [&str; 18] = [
+pub const VARIABLES: [&str; 19] = [
     BIND,
     PORT,
     TOKEN,
@@ -50,6 +50,7 @@ pub const VARIABLES: [&str; 18] = [
     TLS_KEY,
     ORIGIN,
     HOST,
+    TRUSTED_PROXIES,
     DATA,
     crate::threads::VARIABLE,
     login::OIDC_ISSUER,
@@ -73,6 +74,8 @@ const TLS_CERT: &str = "CONSTELLATE_TLS_CERT";
 const TLS_KEY: &str = "CONSTELLATE_TLS_KEY";
 const ORIGIN: &str = "CONSTELLATE_ORIGIN";
 const HOST: &str = "CONSTELLATE_HOST";
+/// The addresses of the reverse proxies in front of the engine, whose `X-Forwarded-For` is believed.
+pub const TRUSTED_PROXIES: &str = "CONSTELLATE_TRUSTED_PROXIES";
 /// The data folder (settings, library, runs); read by the program, listed here so that `.env` may set it too.
 pub const DATA: &str = "CONSTELLATE_DATA";
 
@@ -141,6 +144,11 @@ pub enum ConfigError {
          set when {BIND} is 0.0.0.0 or ::, so that requests addressed to other names can be refused"
     )]
     NamesNeeded,
+    #[error(
+        "{TRUSTED_PROXIES} must list the IP addresses of the reverse proxies in front of the engine, separated by \
+         commas (such as 10.0.0.5, ::1)"
+    )]
+    NotProxies,
     #[error(transparent)]
     Threads(#[from] crate::threads::ThreadsError),
 }
@@ -330,6 +338,8 @@ pub struct Listen {
     transport: Transport,
     origin: Option<Origin>,
     names: Vec<String>,
+    /// The reverse proxies whose `X-Forwarded-For` says who the client is ([`TRUSTED_PROXIES`]); none by default.
+    proxies: Vec<IpAddr>,
 }
 
 /// The variables as read, from the process's environment over `.env`.
@@ -515,6 +525,14 @@ impl Listen {
                 .collect::<Result<Vec<_>, _>>()?,
             None => Vec::new(),
         };
+        let proxies = match environment.get(TRUSTED_PROXIES) {
+            Some(text) => text
+                .split(',')
+                .map(|address| address.trim().parse::<IpAddr>().map(|ip| ip.to_canonical()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| ConfigError::NotProxies)?,
+            None => Vec::new(),
+        };
         let given_token = environment.get(TOKEN).map(Token::given).transpose()?;
         let certificate = match (environment.get(TLS_CERT), environment.get(TLS_KEY)) {
             (Some(certificate), Some(key)) => Some((PathBuf::from(certificate), PathBuf::from(key))),
@@ -557,7 +575,14 @@ impl Listen {
                 Access::SignIn { sign_in: SignIn::from_environment(environment, origin, cookie)?, programs }
             }
         };
-        Ok(Listen { address: SocketAddr::new(ip, port), access, transport, origin, names })
+        Ok(Listen { address: SocketAddr::new(ip, port), access, transport, origin, names, proxies })
+    }
+
+    /// The reverse proxies whose `X-Forwarded-For` is believed: a request that comes from one of them is counted
+    /// (for the limits on wrong tokens and sign-in attempts) against the client the header names. None unless
+    /// [`TRUSTED_PROXIES`] is set: the header is then never looked at.
+    pub fn trusted_proxies(&self) -> &[IpAddr] {
+        &self.proxies
     }
 
     /// The address to bind; its port is 0 when any free port will do.
@@ -655,6 +680,22 @@ pub(crate) mod tests {
 
     fn listen(pairs: &[(&str, &str)]) -> Result<Listen, ConfigError> {
         Listen::from_environment(&Environment::from_pairs(pairs.iter().copied()))
+    }
+
+    #[test]
+    fn trusted_proxies_are_ip_addresses_and_none_by_default() {
+        assert!(listen(&[]).unwrap().trusted_proxies().is_empty());
+        let set = listen(&[("CONSTELLATE_TRUSTED_PROXIES", "10.0.0.5, ::ffff:10.0.0.6,2001:db8::7")]).unwrap();
+        let expected: Vec<IpAddr> =
+            ["10.0.0.5", "10.0.0.6", "2001:db8::7"].iter().map(|ip| ip.parse().unwrap()).collect();
+        assert_eq!(set.trusted_proxies(), expected.as_slice());
+        for wrong in ["proxy.example.org", "10.0.0.0/8", "10.0.0.5,"] {
+            assert_eq!(
+                listen(&[("CONSTELLATE_TRUSTED_PROXIES", wrong)]).unwrap_err(),
+                ConfigError::NotProxies,
+                "{wrong}"
+            );
+        }
     }
 
     #[test]

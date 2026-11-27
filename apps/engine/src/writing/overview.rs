@@ -809,6 +809,7 @@ mod tests {
         Snapshot {
             id: 1,
             kind: kind.into(),
+            about: None,
             state,
             result: None,
             error: error.map(str::to_owned),

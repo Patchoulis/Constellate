@@ -205,7 +205,10 @@ export interface Status {
 	/** what kind of work it is ("a run", "asking about papers") */
 	kind?: string;
 	state: JobState;
-	/** the name of the run a finished job made, once state is "done"; null for any other job */
+	/**
+	 * the name of the run a finished job made, once state is "done"; null for any other job. Derived from `outcome` by
+	 * the engine and kept for compatibility with the Python backend: read `outcome` where it is there
+	 */
 	result: string | null;
 	/** what a finished job made; absent from the Python backend, whose finished jobs are runs (`result`) */
 	outcome?: JobOutcome | null;
@@ -227,6 +230,15 @@ export interface Status {
 	api_key_set?: boolean;
 	/** the step of the run being made and how far it has got; null when no run is being made (engine only) */
 	step?: RunStep | null;
+	/**
+	 * the feature a feature's job is (or was) for, from the moment it starts, so that any window can tell which section a
+	 * running job belongs to; null for any other job, absent from the Python backend
+	 */
+	feature?: FeatureName | null;
+	/** what that job asks about, as `outcome`'s subject */
+	subject?: FeatureSubject | null;
+	/** the one item of the subject it asks about, when it is one: a question's id among a run's questions */
+	item?: string | null;
 }
 
 /** n of m done, and what it has spent so far on the language model's API, in US dollars (of calls with a price). */
@@ -943,8 +955,8 @@ export interface CritiqueReply {
 	note: number;
 	heading: string;
 	attachment: ReplyAttachment;
-	/** the reply's text from the kept page, cut when `cut` */
-	text: string;
+	/** the reply's text from the kept page, cut when `cut`; null when the page is not kept (its words are not known) */
+	text: string | null;
 	cut: boolean;
 	span: Span;
 }
@@ -1066,9 +1078,18 @@ export type StanceScope = { community: string } | { papers: string[] };
  * `not_verified` and is never counted for or against. `unusable`: the kept answer is not one the question allows.
  */
 export type StancePlaced =
-	| { group: "supports"; evidence: Evidence[] }
-	| { group: "mixed"; /** the model's words for when the answer is yes */ condition: string; evidence: Evidence[] }
-	| { group: "contradicts"; evidence: Evidence[] }
+	| {
+			group: "supports";
+			evidence: Evidence[];
+			/** quotes the model gave that were not found in the paper: left out */ quotes_not_found?: number;
+	  }
+	| {
+			group: "mixed";
+			/** the model's words for when the answer is yes */ condition: string;
+			evidence: Evidence[];
+			quotes_not_found?: number;
+	  }
+	| { group: "contradicts"; evidence: Evidence[]; quotes_not_found?: number }
 	| { group: "not_addressed" }
 	| { group: "not_verified"; quotes_not_found: number }
 	| { group: "unusable" };
@@ -1404,7 +1425,9 @@ export type ClaimTreeState =
 	| { state: "no_text" }
 	| { state: "not_asked" }
 	| { state: "malformed"; why: { why: "duplicate_id" | "cycle"; id: string } | { why: "empty" }; kept_at: string }
-	| { state: "made"; nodes: ClaimNode[]; left_out: ClaimsLeftOut; kept_at: string; model: string };
+	| { state: "made"; nodes: ClaimNode[]; left_out: ClaimsLeftOut; kept_at: string; model: string }
+	/** a tree was written but every node of it was left out (`left_out` says why): nothing stands */
+	| { state: "all_left_out"; left_out: ClaimsLeftOut; kept_at: string; model: string };
 
 /** What a reviewer's point does to the node it is placed on. */
 export type ReviewStance = "supports" | "challenges" | "asks" | "presentation" | "whole_paper";
@@ -1442,7 +1465,8 @@ export interface PointMapping {
 	placed: PointPlacement[];
 	/** always shown */
 	unplaced: UnplacedPoint[];
-	ignored: { unknown_points: number; repeated: number };
+	/** answered but not shown: about no point sent, a point placed again, or past the most read (two per point) */
+	ignored: { unknown_points: number; repeated: number; past_most?: number };
 }
 
 export type PointMappingState =
@@ -1784,8 +1808,8 @@ export interface AnswerCounts {
 	malformed: number;
 }
 
-/** Where a question stands: answered, the papers do not say, too little verified to show, being asked, or not answered. */
-export type AnswerState = "answered" | "not_in_papers" | "unverified" | "asking" | "unanswered";
+/** Where a question stands: answered, the papers do not say, too little verified to show, being asked, not answered, or answered with no statement at all. */
+export type AnswerState = "answered" | "not_in_papers" | "unverified" | "asking" | "unanswered" | "empty";
 
 /** `GET /api/runs/<run>/answers/<id>`: a question and its kept answer, its quotes checked again. */
 export interface AnswerView {
@@ -1973,4 +1997,22 @@ export interface DetectorEstimate {
 export interface DetectorStarted {
 	outcome: "started";
 	job: number;
+}
+
+/**
+ * `GET /api/usage/unsettled` (engine): calls asked of the language model whose outcome is unknown, because the engine
+ * stopped after the provider billed and before the answer was kept, or the connection was lost after sending. They
+ * may have been billed, at most `most_usd` US dollars (of the priced ones) and `most_tokens` tokens; they are not
+ * asked again until the user starts that work again.
+ */
+export interface Unsettled {
+	calls: number;
+	most_usd: number;
+	/** of a model whose price is not known: `most_usd` leaves them out, `most_tokens` counts them */
+	unpriced_calls: number;
+	most_tokens: number;
+	/** when the oldest was asked (UTC), or null when there is none */
+	since: string | null;
+	/** the same in a sentence, with its units; null when there is none */
+	said: string | null;
 }

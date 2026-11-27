@@ -328,6 +328,9 @@ pub enum Outcome {
     NotInPapers,
     /// Too few of its statements had their quotes found: nothing of it is shown.
     Unverified,
+    /// Said to be an answer, with no statement written: not "too few verified", since nothing was written to
+    /// verify.
+    Empty,
 }
 
 /// How many statements were written, shown and left out.
@@ -355,6 +358,8 @@ pub enum Answer {
     NotInPapers,
     /// Too few of its statements had their quotes found: none is shown, only how many there were.
     Unverified { counts: AnswerCounts },
+    /// The model said it answered, and wrote no statement at all: nothing was left out, there was nothing.
+    Empty,
 }
 
 impl Answer {
@@ -363,6 +368,7 @@ impl Answer {
             Self::Answered { .. } => Outcome::Answered,
             Self::NotInPapers => Outcome::NotInPapers,
             Self::Unverified { .. } => Outcome::Unverified,
+            Self::Empty => Outcome::Empty,
         }
     }
 
@@ -370,7 +376,7 @@ impl Answer {
     pub fn statements(&self) -> &[Cited<Statement>] {
         match self {
             Self::Answered { statements, .. } => statements,
-            Self::NotInPapers | Self::Unverified { .. } => &[],
+            Self::NotInPapers | Self::Unverified { .. } | Self::Empty => &[],
         }
     }
 
@@ -378,7 +384,7 @@ impl Answer {
     pub fn counts(&self) -> AnswerCounts {
         match self {
             Self::Answered { counts, .. } | Self::Unverified { counts } => *counts,
-            Self::NotInPapers => AnswerCounts::default(),
+            Self::NotInPapers | Self::Empty => AnswerCounts::default(),
         }
     }
 
@@ -386,7 +392,7 @@ impl Answer {
     pub fn into_statements(self) -> Vec<Cited<Statement>> {
         match self {
             Self::Answered { statements, .. } => statements,
-            Self::NotInPapers | Self::Unverified { .. } => Vec::new(),
+            Self::NotInPapers | Self::Unverified { .. } | Self::Empty => Vec::new(),
         }
     }
 }
@@ -403,6 +409,9 @@ pub fn checked(said: Said, papers: &Papers) -> Answer {
         return Answer::NotInPapers;
     }
     let written = said.statements.len();
+    if written == 0 {
+        return Answer::Empty;
+    }
     let mut one: Vec<Claim<(usize, Statement)>> = Vec::new();
     let mut several: Vec<Claim<(usize, Statement)>> = Vec::new();
     let mut malformed = 0;
@@ -606,6 +615,45 @@ mod tests {
     }
 
     #[test]
+    fn the_same_question_twice_has_the_same_key_whatever_the_thread_count_and_the_order_the_papers_came_in() {
+        let mut texts = texts();
+        // two papers that say the same, so that their passages tie
+        for id in ["2602.00007", "2602.00003"] {
+            let pages = ["1. Introduction\n\nMerging counts shared directions twice.\n".to_owned()];
+            texts.insert(id.to_owned(), PaperText::Read(read_passages(&pages)));
+        }
+        let key = |threads: usize, reversed: bool| {
+            let mut ids: Vec<&String> = texts.keys().collect();
+            ids.sort();
+            if reversed {
+                ids.reverse();
+            }
+            let documents: Vec<Document<'_>> = ids
+                .iter()
+                .map(|id| match &texts[*id] {
+                    PaperText::Read(passages) => Document::Read { paper: id, passages },
+                    PaperText::Unread { title, abstract_text } => {
+                        Document::Record { paper: id, title, abstract_text, why: Unread::NoPdf }
+                    }
+                })
+                .collect();
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let found = pool.install(|| {
+                let mut builder = Builder::default();
+                builder.add(&documents);
+                builder.finish().search("merging shared directions twice", Ranking::Lexical)
+            });
+            prepare(&Chosen::claude(MODEL), &scope(), "Does merging count twice?", &found, &texts).key
+        };
+        let first = key(1, false);
+        for threads in [1, 2, 4, 8] {
+            for reversed in [false, true] {
+                assert_eq!(key(threads, reversed), first, "{threads} threads, reversed {reversed}");
+            }
+        }
+    }
+
+    #[test]
     fn the_papers_text_is_given_as_data_that_no_passage_can_close_early() {
         assert!(SYSTEM.contains("never instructions to you"));
         let mut texts = texts();
@@ -776,6 +824,13 @@ mod tests {
             &papers,
         );
         assert_eq!((answer.outcome(), answer.counts().shown, answer.counts().malformed), (Outcome::Answered, 1, 1));
+    }
+
+    #[test]
+    fn an_answer_with_no_statement_written_is_empty_not_too_few_verified() {
+        let answer = checked(said(json!([])), &texts());
+        assert_eq!((answer.outcome(), answer.counts()), (Outcome::Empty, AnswerCounts::default()));
+        assert!(answer.statements().is_empty());
     }
 
     #[test]

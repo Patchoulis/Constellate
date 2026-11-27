@@ -351,6 +351,28 @@ pub const MIGRATIONS: &[&str] = &[
         read_at  TEXT NOT NULL
     );
     ",
+    // 14: a call about to be sent, so that one paid for and lost in a crash is told (library/asking.rs)
+    r"
+    -- Written before a call to a provider is sent, removed in the transaction that keeps its answer and records
+    -- its cost (or once it is known not to have been billed). A row left behind is a call whose outcome is unknown:
+    -- it may have been billed, `most_micros` (millionths of a US dollar; 0 when unpriced, then `unpriced_calls` is
+    -- 1) or `most_tokens` at most. Rows older than 30 days, or beyond the newest 1,000, are folded into one row of
+    -- feature 'folded', which sums them (`calls` of them) and keeps the oldest `asked_at`.
+    CREATE TABLE asking (
+        feature        TEXT NOT NULL,
+        answer_key     TEXT NOT NULL,
+        subject        TEXT NOT NULL,
+        provider       TEXT NOT NULL,
+        model          TEXT NOT NULL,
+        calls          BIGINT NOT NULL CHECK (calls > 0),
+        unpriced_calls BIGINT NOT NULL CHECK (unpriced_calls >= 0),
+        most_tokens    BIGINT NOT NULL CHECK (most_tokens >= 0),
+        most_micros    BIGINT NOT NULL CHECK (most_micros >= 0),
+        asked_at       TEXT NOT NULL,
+        PRIMARY KEY (feature, answer_key)
+    );
+    CREATE INDEX asking_by_time ON asking (asked_at);
+    ",
 ];
 
 /// Bring `connection` to the last of `migrations`. Refuses a database newer than the list.

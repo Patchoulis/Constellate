@@ -137,6 +137,6 @@ pub(super) fn failure(reply: &Reply, model: &str) -> AskError {
         _ if kind == "overloaded_error" => NoAnswer::Overloaded.into(),
         status if status >= 500 => NoAnswer::ServerError(status).into(),
         // what the request got wrong, in the API's words (it never repeats the key), shortened
-        _ => NoAnswer::Rejected(message.chars().take(300).collect()).into(),
+        _ => NoAnswer::Rejected(message.chars().take(super::RAW_MESSAGE_CHARS).collect()).into(),
     }
 }

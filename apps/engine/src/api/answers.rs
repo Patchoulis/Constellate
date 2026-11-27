@@ -46,7 +46,7 @@ use sha2::{Digest, Sha256};
 use super::reviews::papers_of;
 use super::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::evidence::{Cited, PaperText, Papers};
-use crate::jobs::{Finished, Phase, Tracker};
+use crate::jobs::{About, Finished, Phase, Tracker};
 use crate::library::passages::PDF_FOLDER;
 use crate::library::questions::Asked;
 use crate::library::{AnswerKey, Feature, Library, PaperReading};
@@ -470,7 +470,8 @@ async fn start(
         let line = asking_line(&id);
         let transport = Arc::clone(&engine.transport);
         let subject = prepared.subject.clone();
-        let started = engine.job.start_tracked(JOB, move |tracker| {
+        let about = About { feature: Feature::Answers, subject: subject.clone(), item: Some(id.clone()) };
+        let started = engine.job.start_about(JOB, about, move |tracker| {
             tracker.log(&line);
             let asking =
                 Asking { library: &worker, transport: &*transport, endpoint, recorder: &*worker, in_flight: IN_FLIGHT };
@@ -558,15 +559,21 @@ enum AnswerState {
     Unverified,
     Asking,
     Unanswered,
+    /// Answered with no statement at all.
+    Empty,
 }
 
 impl Standing {
     /// Where question `key` stands: its kept answer checked again (`kept`), or, with none, whether the job
-    /// running now (`running`: its kind and the first line of its log) is the one asking it.
-    fn of(kept: Option<Answer>, running: Option<(&str, Option<&str>)>, key: &str) -> Self {
+    /// running now (`running`: what it was said to be about as it started) is the one asking it. What it is about
+    /// is set before the job runs a line, so a view taken the moment after the question was started sees it
+    /// being asked (a line of its log, written once its work has begun, would not be there yet).
+    fn of(kept: Option<Answer>, running: Option<&About>, key: &str) -> Self {
         match (kept, running) {
             (Some(answer), _) => Self::Kept(answer),
-            (None, Some((kind, first))) if kind == JOB && first == Some(asking_line(key).as_str()) => Self::Asking,
+            (None, Some(about)) if about.feature == Feature::Answers && about.item.as_deref() == Some(key) => {
+                Self::Asking
+            }
             (None, _) => Self::Unanswered,
         }
     }
@@ -577,6 +584,7 @@ impl Standing {
                 Outcome::Answered => AnswerState::Answered,
                 Outcome::NotInPapers => AnswerState::NotInPapers,
                 Outcome::Unverified => AnswerState::Unverified,
+                Outcome::Empty => AnswerState::Empty,
             },
             Self::Asking => AnswerState::Asking,
             Self::Unanswered => AnswerState::Unanswered,
@@ -611,7 +619,7 @@ async fn view(State(engine): State<Shared>, Path((run, id)): Path<(String, Strin
         let kept = kept_answer(&library, &asked)?
             .map(|said| answers::checked(said, &answers::citable(&texts, &papers_in(&asked.passages))));
         let job = engine.job.snapshot(0);
-        let running = (job.state == Phase::Running).then(|| (job.kind.as_str(), job.log.first().map(String::as_str)));
+        let running = job.about.as_ref().filter(|_| job.state == Phase::Running);
         let standing = Standing::of(kept, running, &asked.key);
         let state = standing.state();
         let (statements, counts) = match standing {
@@ -690,7 +698,7 @@ mod tests {
     use super::*;
     use crate::library::papers::tests::paper;
     use crate::library::passages::fixtures::pdf_with;
-    use crate::library::{Known, Slot};
+    use crate::library::{Known, Slot, Subject};
     use crate::settings::Choices;
 
     const AT: &str = "127.0.0.1:8765";
@@ -741,11 +749,7 @@ mod tests {
 
     /// A key, and an address where nothing listens: should anything be sent, it reaches no one.
     fn with_key(mut engine: Engine) -> Engine {
-        engine.language = Environment::from_pairs([
-            ("ANTHROPIC_API_KEY", "test-key-not-real-0123456789"),
-            ("ANTHROPIC_BASE_URL", "http://127.0.0.1:1"),
-        ])
-        .language_endpoint();
+        engine.set_claude_key("test-key-not-real-0123456789", Some("http://127.0.0.1:1"));
         engine
     }
 
@@ -1086,22 +1090,65 @@ mod tests {
     #[test]
     fn a_question_with_a_kept_answer_stands_as_its_answer_checked_whatever_job_runs() {
         let counts = AnswerCounts { written: 2, shown: 0, not_found: 2, malformed: 0 };
-        let unverified = Standing::of(Some(Answer::Unverified { counts }), Some((JOB, Some("x"))), "k");
+        let asking = about(Feature::Answers, "k");
+        let unverified = Standing::of(Some(Answer::Unverified { counts }), Some(&about(Feature::Answers, "x")), "k");
         assert_eq!(unverified.state(), AnswerState::Unverified);
         assert_eq!(Standing::of(Some(Answer::NotInPapers), None, "k").state(), AnswerState::NotInPapers);
-        let line = asking_line("k");
         let answered = Answer::Answered { statements: Vec::new(), counts };
-        assert_eq!(Standing::of(Some(answered), Some((JOB, Some(&line))), "k").state(), AnswerState::Answered);
+        assert_eq!(Standing::of(Some(answered), Some(&asking), "k").state(), AnswerState::Answered);
+    }
+
+    fn about(feature: Feature, item: &str) -> About {
+        About { feature, subject: Subject::Run("r1".to_owned()), item: Some(item.to_owned()) }
     }
 
     #[test]
     fn a_question_without_an_answer_is_being_asked_only_while_its_own_job_runs() {
-        let line = asking_line("k");
-        assert_eq!(Standing::of(None, Some((JOB, Some(&line))), "k"), Standing::Asking);
-        assert_eq!(Standing::of(None, Some((JOB, Some(&asking_line("other")))), "k"), Standing::Unanswered);
-        assert_eq!(Standing::of(None, Some(("a run", Some(&line))), "k"), Standing::Unanswered, "another kind of job");
-        assert_eq!(Standing::of(None, Some((JOB, None)), "k"), Standing::Unanswered);
+        assert_eq!(Standing::of(None, Some(&about(Feature::Answers, "k")), "k"), Standing::Asking);
+        assert_eq!(Standing::of(None, Some(&about(Feature::Answers, "other")), "k"), Standing::Unanswered);
+        let other = about(Feature::Stances, "k");
+        assert_eq!(Standing::of(None, Some(&other), "k"), Standing::Unanswered, "another feature's job");
+        let nothing = About { item: None, ..about(Feature::Answers, "k") };
+        assert_eq!(Standing::of(None, Some(&nothing), "k"), Standing::Unanswered);
         assert_eq!(Standing::of(None, None, "k"), Standing::Unanswered, "no job running: failed, stopped or forgotten");
+    }
+
+    #[tokio::test]
+    async fn a_question_just_started_is_shown_as_being_asked_before_its_job_has_logged_a_line() {
+        let data = data();
+        let engine = engine(&data);
+        let library = engine.library().unwrap();
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let key = "a-question-id".to_owned();
+        let asked = Asked {
+            run: "r1".to_owned(),
+            key: key.clone(),
+            community: None,
+            question: QUESTION.to_owned(),
+            provider: Provider::Anthropic,
+            model: "claude-opus-5-5".to_owned(),
+            passages: Vec::new(),
+            asked_at: String::new(),
+        };
+        library.keep_question(&asked).unwrap();
+        // started as the route starts it: what it is about is set before its work runs at all
+        let about =
+            About { feature: Feature::Answers, subject: Subject::Run("r1".to_owned()), item: Some(key.clone()) };
+        engine
+            .job
+            .start_about(JOB, about, move |_| {
+                wait.recv().ok();
+                Ok(Finished::Nothing)
+            })
+            .unwrap();
+        let router = router(engine);
+        let (status, view) = ask(&router, "GET", &format!("/api/runs/r1/answers/{key}"), None).await;
+        assert_eq!(status, StatusCode::OK, "{view}");
+        assert_eq!(view["state"], "asking");
+        let (_, told) = ask(&router, "GET", "/api/status", None).await;
+        assert_eq!((told["feature"].as_str(), told["item"].as_str()), (Some("answers"), Some(key.as_str())));
+        assert_eq!(told["subject"], json!({"run": "r1"}));
+        go.send(()).unwrap();
     }
 
     #[tokio::test]

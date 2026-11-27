@@ -134,6 +134,19 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - An engine that stops answering no longer leaves an estimate or a section waiting for ever: a request gives up
   after 20 seconds (a minute for one that may read a paper's PDF) and says so, an answer that cannot be read says
   that, and what a closed section or a superseded choice had asked for is called off.
+- A spending limit for the language model can no longer be passed: not when the model answering is a dearer fallback
+  (the "at most" shown now counts it), not when the connection drops after a question was sent, and not after an
+  unexpected failure, which used to leave part of the limit taken until the app was restarted.
+- A question the model was paid to answer is no longer lost without trace if the app closes before the answer is
+  saved: such questions are reported as "may have been billed, at most" so much, and are not asked again by
+  themselves.
+- Redoing a paper's extraction row or a community's citation kinds now forgets only the chosen model's answers, and
+  an extraction run in which no paper was answered is reported as failed rather than finished.
+- Asking where papers stand on a question no longer lists a question that was never asked, and a budget that no
+  longer covers the estimate is refused at once instead of as a failed job.
+- An error message from a model's provider is shown without anything that looks like a key or the request's headers.
+- An answer of the model with no statements, and a claim tree with every claim left out, are no longer shown as if
+  they were something else.
 - A quote a model gives as evidence is no longer accepted when it differs from the paper by a whole word, a number
   or a negation (a quote that leaves out the paper's "not" was found as a close match); only slips inside words
   are still allowed.

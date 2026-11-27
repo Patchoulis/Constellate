@@ -43,6 +43,7 @@ use super::language::{
     Planned, Recorder, Reply, Transport, TransportError, Unavailable,
 };
 use crate::jobs::{Progress, Tracker};
+use crate::library::asking::Intent;
 use crate::library::{AnswerKey, Feature, Kept, Library, LibraryError, Slot};
 use crate::usage::Call;
 
@@ -112,6 +113,10 @@ pub enum Stopped {
     Cancelled,
     #[error(transparent)]
     Unavailable(Unavailable),
+    /// What was about to be asked could not be written down first ([`crate::library::asking`]): nothing is sent
+    /// whose cost could then be lost unseen.
+    #[error("the library could not be written, so nothing more was asked")]
+    Unrecorded,
 }
 
 /// What a batch is asked with.
@@ -371,6 +376,28 @@ impl Recorder for Pending {
     }
 }
 
+/// What is known of whether a question that gave no answer was billed, from how it ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Billed {
+    /// Its calls were paid for and are recorded now.
+    Recorded,
+    /// Nothing of it was billed: refused, not sent, or answered with an error (which the APIs do not bill).
+    No,
+    /// It may have been: sent and then lost, or a panic part way. Its intent stays, told as unknown.
+    Unknown,
+}
+
+/// How a question that gave no answer ended, as far as its cost goes. The answers' paths that are paid for all
+/// record a call (`Client::ask` records every reply it was given), so a question with none recorded was not
+/// billed, unless the request was sent and then lost, or the asking panicked: those are unknown.
+fn billed(asked: &std::thread::Result<Result<Answered<impl Sized>, AskError>>, calls: &[Call]) -> Billed {
+    match asked {
+        Err(_) | Ok(Err(AskError::NoAnswer(NoAnswer::Transport(TransportError::Lost)))) => Billed::Unknown,
+        _ if !calls.is_empty() => Billed::Recorded,
+        _ => Billed::No,
+    }
+}
+
 fn ask_one<T: DeserializeOwned + Serialize>(
     client: &Client<'_>,
     pending: &Pending,
@@ -378,22 +405,32 @@ fn ask_one<T: DeserializeOwned + Serialize>(
     item: &Item<'_>,
     budget: &Budget,
 ) -> Outcome<T> {
+    // written before anything is sent: a crash once the provider has billed and before the answer is kept leaves it
+    let (most_tokens, most_usd) = client.most(&item.ask);
+    let intent = Intent {
+        slot: &item.slot,
+        provider: asking.endpoint.provider().id(),
+        model: item.ask.model,
+        most_tokens,
+        most_micros: most_usd.map(|usd| usd.picodollars().div_ceil(1_000_000)),
+    };
+    if let Err(error) = asking.library.intend(&intent) {
+        eprintln!("library: what was about to be asked could not be written, so it was not asked: {error}");
+        return Outcome::NotStarted(Stopped::Unrecorded);
+    }
     let asked = catch_unwind(AssertUnwindSafe(|| client.ask_json::<T>(&item.ask, budget)));
     let calls = pending.take();
+    let billed = billed(&asked, &calls);
     let outcome = match asked {
         Ok(Ok(answered)) => {
-            // the answer and what it cost, kept together: never a call paid for whose answer is lost
+            // the answer and what it cost, kept together (and the intent cleared with them): never a call paid for
+            // whose answer is lost
             let kept = match serde_json::to_string(&answered.answer) {
                 Ok(content) => {
                     asking.recorder.keep_paid(asking.library, &item.slot, &answered.model, item.prompt, &content, calls)
                 }
-                Err(error) => {
-                    // nothing to keep, but the calls were paid for
-                    for call in calls {
-                        asking.recorder.record(call);
-                    }
-                    Err(error.into())
-                }
+                // nothing to keep, but the calls were paid for
+                Err(error) => asking.recorder.record_paid(asking.library, &item.slot, calls).and(Err(error.into())),
             };
             if let Err(error) = kept {
                 // the answer is still handed back; it is asked for again next time
@@ -410,9 +447,19 @@ fn ask_one<T: DeserializeOwned + Serialize>(
         Ok(Err(AskError::OverBudget(why))) => Outcome::NotStarted(Stopped::OverBudget(why)),
         Err(_) => Outcome::Failed(Failure::Panicked),
     };
-    // no usable answer: what was paid for is recorded all the same
-    for call in calls {
-        asking.recorder.record(call);
+    // no usable answer: what was paid for is recorded all the same, and the intent goes unless it is unknown
+    let settled = match billed {
+        Billed::Recorded => asking.recorder.record_paid(asking.library, &item.slot, calls),
+        Billed::No => asking.library.not_billed(&item.slot).map(drop),
+        Billed::Unknown => {
+            for call in calls {
+                asking.recorder.record(call);
+            }
+            Ok(())
+        }
+    };
+    if let Err(error) = settled {
+        eprintln!("library: what a question for {} cost could not be settled: {error}", item.slot.feature.name());
     }
     outcome
 }
@@ -571,6 +618,7 @@ mod tests {
             self.under_way.fetch_sub(1, Ordering::SeqCst);
             let usage = json!({"input_tokens": self.took.0, "output_tokens": self.took.1});
             Ok(match question.as_str() {
+                "panic" => panic!("the transport broke"),
                 "fail" => error(500, "api_error", "Internal server error"),
                 "unavailable" => error(401, "authentication_error", "invalid x-api-key"),
                 "unknown model" => error(404, "not_found_error", "model: claude-opus-9"),
@@ -731,11 +779,13 @@ mod tests {
         let (questions, papers) = numbered(16);
         let schema = schema();
         let items = items(&questions, &papers, &schema);
-        // each call holds about 1,020 tokens at worst and takes 1,000: three fit in 3,500, a fourth never does
-        let echo = Echo { slow: Some(Duration::from_millis(5)), took: (600, 400), ..Echo::default() };
-        let budget = Budget::new(Limit::Tokens(3_500));
+        // each call holds about 2,030 tokens at worst (the model asked, then a fallback) and takes 2,000: three fit
+        // in 7,000, a fourth never does
+        let echo = Echo { slow: Some(Duration::from_millis(5)), took: (1_000, 1_000), ..Echo::default() };
+        let budget = Budget::new(Limit::Tokens(7_000));
         let outcomes = Run::new().ask(&library, &echo, &items, &budget, 8);
-        assert!(budget.spent().0 <= 3_500, "spent {}", budget.spent().0);
+        assert!(budget.spent().0 <= 7_000, "spent {}", budget.spent().0);
+        assert_eq!(budget.held(), (0, Usd::ZERO), "nothing is held once the batch has ended");
         let answered = outcomes.iter().filter(|outcome| matches!(outcome, Outcome::Answered(_))).count();
         assert_eq!(answered, 3);
         assert!(outcomes.iter().all(|outcome| matches!(
@@ -743,6 +793,24 @@ mod tests {
             Outcome::Answered(_) | Outcome::NotStarted(Stopped::OverBudget(OverBudget::Tokens { .. }))
         )));
         assert_eq!(echo.posts.load(Ordering::SeqCst), 3, "nothing was sent that the budget refused");
+    }
+
+    #[test]
+    fn a_panicking_transport_gives_back_what_its_call_held_and_the_rest_of_the_batch_runs_within_the_budget() {
+        let (_folder, library) = library();
+        let (mut questions, papers) = numbered(5);
+        questions[0] = "panic".to_owned();
+        let schema = schema();
+        let items = items(&questions, &papers, &schema);
+        // one call's worst case (about 2,030 tokens) fits, two do not: had the panicking call kept what it held,
+        // every call after it would be refused
+        let echo = Echo { took: (10, 10), ..Echo::default() };
+        let budget = Budget::new(Limit::Tokens(3_000));
+        let outcomes = Run::new().ask(&library, &echo, &items, &budget, 1);
+        assert_eq!(outcomes[0], Outcome::Failed(Failure::Panicked));
+        assert!(outcomes[1..].iter().all(|outcome| matches!(outcome, Outcome::Answered(_))), "{outcomes:?}");
+        assert_eq!(budget.held(), (0, Usd::ZERO), "nothing is left held");
+        assert_eq!(budget.spent().0, 4 * 20);
     }
 
     #[test]
@@ -1051,5 +1119,145 @@ mod tests {
         run.ask(&library, &Echo::default(), &items, &plenty(), 1);
         let progress = run.progress.lock().unwrap();
         assert_eq!(progress.last().map(|progress| (progress.done, progress.of)), Some((3, 3)));
+    }
+
+    /// A recorder that dies where a crash would: after the provider answered, before the answer is kept.
+    struct Crashing;
+
+    impl Recorder for Crashing {
+        fn record(&self, _call: Call) {}
+
+        fn keep_paid(
+            &self,
+            _library: &Library,
+            _slot: &Slot,
+            _model: &str,
+            _prompt: u32,
+            _content: &str,
+            _calls: Vec<Call>,
+        ) -> Result<(), LibraryError> {
+            panic!("the app was closed");
+        }
+    }
+
+    /// The Claude API answering every question, that looks at the library's intents while each request is under way.
+    struct Watching<'a> {
+        echo: Echo,
+        library: &'a Library,
+        seen: Mutex<Vec<i64>>,
+    }
+
+    impl Transport for Watching<'_> {
+        fn post(
+            &self,
+            url: &str,
+            key: &ApiKey,
+            headers: &[(&str, &str)],
+            body: &[u8],
+            patience: Duration,
+        ) -> Result<Reply, TransportError> {
+            self.seen.lock().unwrap().push(self.library.unsettled().unwrap().calls);
+            self.echo.post(url, key, headers, body, patience)
+        }
+    }
+
+    fn asking<'a>(library: &'a Library, transport: &'a dyn Transport, recorder: &'a dyn Recorder) -> Asking<'a> {
+        Asking { library, transport, endpoint: endpoint(), recorder, in_flight: 1 }
+    }
+
+    #[test]
+    fn a_crash_after_the_provider_answered_leaves_an_intent_that_is_told_on_reopening_and_replaced_when_asked_again() {
+        let folder = tempfile::tempdir().unwrap();
+        let (questions, papers) = numbered(1);
+        let schema = schema();
+        let items = items(&questions, &papers, &schema);
+        let cancel = Cancel::new();
+        let (log, progress) = (|_: &str| {}, |_: Progress| {});
+        {
+            let library = Library::open(folder.path()).unwrap();
+            let echo = Echo { took: (40, 20), ..Echo::default() };
+            let crashed = catch_unwind(AssertUnwindSafe(|| {
+                let tracker = Tracker::new(&log, &progress, &cancel);
+                ask_all::<Said>(asking(&library, &echo, &Crashing), &items, &plenty(), &tracker)
+            }));
+            assert!(crashed.is_err(), "the crash came between the answer and keeping it");
+            assert_eq!(echo.posts.load(Ordering::SeqCst), 1, "the provider was asked, and billed");
+        }
+        // the next start: the call is told as asked with its outcome unknown, at most what it held
+        let library = Library::open(folder.path()).unwrap();
+        let unsettled = library.unsettled().unwrap();
+        assert_eq!(unsettled.calls, 1);
+        assert!(unsettled.most_micros > 0, "{unsettled:?}");
+        assert!(unsettled.said().unwrap().contains("may have been billed"));
+        assert!(library.kept::<Said>(Feature::Answers, &items[0].slot.key).unwrap().is_none());
+        // asked again when the user starts that work again: a new intent, settled with the answer; the one left
+        // behind stays told, since that call may have been billed
+        let watching = Watching { echo: Echo::default(), library: &library, seen: Mutex::new(Vec::new()) };
+        let tracker = Tracker::new(&log, &progress, &cancel);
+        let outcomes = ask_all::<Said>(asking(&library, &watching, &library), &items, &plenty(), &tracker).unwrap();
+        assert!(matches!(outcomes[0], Outcome::Answered(_)));
+        assert_eq!(*watching.seen.lock().unwrap(), [2], "the earlier and the new one, while it was asked");
+        assert_eq!(library.unsettled().unwrap().calls, 1, "the call lost in the crash is still told");
+    }
+
+    #[test]
+    fn every_question_asked_has_its_intent_written_before_it_is_sent_and_none_is_left_after_many_threads() {
+        let (_folder, library) = library();
+        let (mut questions, papers) = numbered(24);
+        questions[5] = "fail".to_owned();
+        questions[9] = "unavailable".to_owned();
+        let schema = schema();
+        let items = items(&questions, &papers, &schema);
+        let watching = Watching {
+            echo: Echo { slow: Some(Duration::from_millis(2)), ..Echo::default() },
+            library: &library,
+            seen: Mutex::new(Vec::new()),
+        };
+        let cancel = Cancel::new();
+        let (log, progress) = (|_: &str| {}, |_: Progress| {});
+        let tracker = Tracker::new(&log, &progress, &cancel);
+        let asking = Asking { in_flight: 8, ..asking(&library, &watching, &library) };
+        ask_all::<Said>(asking, &items, &plenty(), &tracker).unwrap();
+        assert!(watching.seen.lock().unwrap().iter().all(|under_way| *under_way >= 1), "written before sending");
+        assert_eq!(library.unsettled().unwrap().calls, 0, "kept, recorded, or known not billed: none is left");
+    }
+
+    #[test]
+    fn a_request_lost_after_it_was_sent_is_not_sent_again_and_its_intent_stays_as_unknown() {
+        /// Sends nothing for the first question (unreachable), and loses the answer to the second.
+        struct Losing(AtomicUsize);
+        impl Transport for Losing {
+            fn post(
+                &self,
+                _url: &str,
+                _key: &ApiKey,
+                _headers: &[(&str, &str)],
+                body: &[u8],
+                _patience: Duration,
+            ) -> Result<Reply, TransportError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                if String::from_utf8_lossy(body).contains("question 0") {
+                    Err(TransportError::Unreachable)
+                } else {
+                    Err(TransportError::Lost)
+                }
+            }
+            fn wait(&self, _duration: Duration) {}
+        }
+        let (_folder, library) = library();
+        let (questions, papers) = numbered(2);
+        let schema = schema();
+        let items = items(&questions, &papers, &schema);
+        let losing = Losing(AtomicUsize::new(0));
+        let cancel = Cancel::new();
+        let (log, progress) = (|_: &str| {}, |_: Progress| {});
+        let tracker = Tracker::new(&log, &progress, &cancel);
+        let budget = plenty();
+        let outcomes = ask_all::<Said>(asking(&library, &losing, &library), &items, &budget, &tracker).unwrap();
+        assert_eq!(outcomes[1], Outcome::Failed(Failure::NoAnswer(NoAnswer::Transport(TransportError::Lost))));
+        assert_eq!(losing.0.load(Ordering::SeqCst), 3 + 1, "the unreachable one tried three times, the lost one once");
+        assert_eq!(library.unsettled().unwrap().calls, 1, "only the lost one may have been billed");
+        // what the lost one held is counted as spent, so the rest of a batch keeps to the budget; nothing stays held
+        assert!(budget.spent().1 > Usd::ZERO && budget.held() == (0, Usd::ZERO), "{budget:?}");
     }
 }

@@ -252,7 +252,10 @@ pub fn budget(cost: &Estimate, accepted: Accepted, terms: Terms) -> Result<Budge
             let shown = worst.dollars() <= usd + SLACK_USD && worst.picodollars() > own.picodollars();
             Limit::Dollars(if shown { worst } else { own })
         }
-        (None, Accepted::Shown, _) => Limit::Tokens(cost.most_tokens),
+        // as with dollars: a worst case shown must be accepted as shown, by its number; only a budget of one's own
+        // may default to it
+        (None, Accepted::Shown, Terms::AtMost { .. }) => Limit::Tokens(cost.most_tokens),
+        (None, Accepted::Shown, Terms::AsShown) => return Err(Refused::Changed),
         (None, Accepted::Tokens(tokens), Terms::AsShown) if cost.most_tokens <= tokens => {
             Limit::Tokens(cost.most_tokens)
         }
@@ -379,7 +382,12 @@ mod tests {
             Limit::Dollars(dollars(0.25))
         );
         assert_eq!(budget(&priced, Accepted::Dollars(0.2), Terms::AsShown).unwrap_err(), Refused::Changed);
-        assert_eq!(limit(budget(&unpriced, Accepted::Shown, Terms::AsShown).unwrap()), Limit::Tokens(9_000));
+        assert_eq!(
+            budget(&unpriced, Accepted::Shown, Terms::AsShown).unwrap_err(),
+            Refused::Changed,
+            "a worst case in tokens is accepted as shown too, by its number: nothing named grants nothing"
+        );
+        assert_eq!(limit(budget(&unpriced, Accepted::Shown, own).unwrap()), Limit::Tokens(9_000));
         assert_eq!(limit(budget(&unpriced, Accepted::Tokens(9_000), Terms::AsShown).unwrap()), Limit::Tokens(9_000));
         assert_eq!(budget(&unpriced, Accepted::Tokens(8_999), Terms::AsShown).unwrap_err(), Refused::Changed);
         // shown with a price it no longer has, or the other way round: the estimate must be looked at again
