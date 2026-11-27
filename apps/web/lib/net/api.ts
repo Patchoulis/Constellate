@@ -153,7 +153,7 @@ export const api = {
 	) => starting<CritiqueStarted>(`/api/papers/${encodeURIComponent(id)}/critique`, send("POST", { ...shown, ...budget })),
 	/** forget the model's reading of the paper, so that it can be asked again */
 	forgetCritique: (id: string) => call<{ forgotten: number }>(`/api/papers/${encodeURIComponent(id)}/critique`, { method: "DELETE" }),
-	/** where a community's papers (or the marked ones) stand on a question (engine api/stances.rs) */
+	/** where a community's papers (or the marked ones) stand on a question (engine features/stances/routes.rs) */
 	stances: {
 		listing: (name: string, scope: StanceScope) =>
 			"community" in scope

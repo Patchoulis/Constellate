@@ -1,6 +1,6 @@
 /**
- * Citing sentences and the kinds of citation, as they are said and drawn (engine analysis/citation_contexts.rs and
- * analysis/citation_kinds.rs). Pure functions, tested in tests/features/citation_contexts/citation-kinds.test.ts.
+ * Citing sentences and the kinds of citation, as they are said and drawn (engine features/citation_contexts/mod.rs and
+ * features/citation_contexts/kinds.rs). Pure functions, tested in tests/features/citation_contexts/citation-kinds.test.ts.
  *
  * Every figure is a count of citing sentences with what it is out of, never a score; a kind is the model's reading
  * and is only ever shown beside the sentence it is about.

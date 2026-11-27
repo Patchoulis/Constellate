@@ -1,5 +1,5 @@
 /**
- * Where a community's papers stand on a question (engine analysis/stances.rs), as the interface says it: the
+ * Where a community's papers stand on a question (engine features/stances/mod.rs), as the interface says it: the
  * groups and their counts with what they are counts of, broken down by acceptance tier and by year, and the sets
  * of papers each group holds, for the graph. Never one verdict: a placement is the model's reading of one paper,
  * and every paper counts once, whatever its design.

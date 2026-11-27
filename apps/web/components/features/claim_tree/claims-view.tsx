@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * The paper reader's Claims tab (engine analysis/claim_tree): the paper's claims as a tree, each with the paper's
+ * The paper reader's Claims tab (engine features/claim_tree): the paper's claims as a tree, each with the paper's
  * own words, and its reviewers' points placed on them. Reviewers come first; the model's own reading of gaps
  * comes last, collapsed and labelled. Nothing is asked of the model until the user has seen the estimate and
  * clicked.

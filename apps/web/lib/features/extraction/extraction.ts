@@ -1,5 +1,5 @@
 /**
- * The extraction table's logic (engine analysis/extraction.rs): what a cell says in words, sorting and filtering
+ * The extraction table's logic (engine features/extraction/mod.rs): what a cell says in words, sorting and filtering
  * the rows by a column, how many papers state something, the CSV a user saves, and which papers have which value
  * (for colouring the graph). Plain functions, tested in tests/features/extraction/extraction.test.ts; components/features/extraction/extraction-table.tsx
  * draws them.

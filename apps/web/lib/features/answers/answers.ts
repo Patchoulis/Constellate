@@ -1,5 +1,5 @@
 /**
- * Asking a run or a community a question (engine api/answers.rs): what the Ask box shows, as plain functions and
+ * Asking a run or a community a question (engine features/answers/routes.rs): what the Ask box shows, as plain functions and
  * one explicit state machine, so that they are tested (tests/features/answers/answers.test.ts); components/features/answers/ask.tsx draws them.
  */
 import type { AnswerCounts, AnswerEstimate, AnswerSummary, AnswerView, PassageFound, PassagesFound, SearchCoverage } from "@rp/contracts";

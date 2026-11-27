@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * A community's "Agree / disagree" section (engine api/stances.rs): ask a yes/no question of its papers, or start
+ * A community's "Agree / disagree" section (engine features/stances/routes.rs): ask a yes/no question of its papers, or start
  * from a term its papers keep using or a question the model proposed; see what it costs before anything is sent;
  * ask the most central papers first and the rest on a second click; then see the papers placed in groups, each
  * with its own words, the counts with what they are counts of, by acceptance tier and by year. Never one verdict.

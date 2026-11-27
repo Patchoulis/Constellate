@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * The extraction table of a community or of the marked papers (engine analysis/extraction.rs): one row per paper,
+ * The extraction table of a community or of the marked papers (engine features/extraction/mod.rs): one row per paper,
  * one column per question, every value with the paper's own words beside it. It is run on a sample first (the
  * set's most central papers), its estimate shown before, its cost after; then on the rest, with a second click.
  */

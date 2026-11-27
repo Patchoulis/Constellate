@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Citing sentences (engine analysis/citation_contexts.rs): in the reader's Citations tab, for each paper of the
+ * Citing sentences (engine features/citation_contexts/mod.rs): in the reader's Citations tab, for each paper of the
  * library this one cites and each paper citing it, the sentences where it happens, each a link into the citing
  * paper's text, with the sentence before and after, the section, and whether it is cited alone. Beside each, when
  * the model was asked, what kind of citation it is, with the words that show it (components/features/citation_contexts/citation-kinds.tsx asks).

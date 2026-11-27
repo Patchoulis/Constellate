@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * A community's citation kinds (engine analysis/citation_kinds.rs): which papers its papers use as a baseline,
+ * A community's citation kinds (engine features/citation_contexts/kinds.rs): which papers its papers use as a baseline,
  * contrast, take data or benchmarks from, or build on, each figure a count of citing sentences out of all those
  * citing that paper, and each number opening the sentences behind it. The kinds are the model's reading: asked for
  * only after the estimate is shown, on a click, a sample first and the rest on a second click, within a budget.

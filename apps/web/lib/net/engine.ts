@@ -1,6 +1,6 @@
 import type { Settings, SignInSession, Status } from "@rp/contracts";
 
-/** Where the owner signs in, on a server (apps/engine/src/api/login). */
+/** Where the owner signs in, on a server (apps/engine/src/api/guard/login). */
 export const SIGN_IN_PAGE = "/auth/";
 
 /** The header a server reads the session's anti-forgery token from. */

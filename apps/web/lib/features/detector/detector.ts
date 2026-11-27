@@ -48,7 +48,7 @@ export function detectorEstimateLines(estimate: DetectorEstimate, currency?: Cur
 
 /** What the running job is doing: "Writing abstracts: 120 of 600 (USD 0.08 spent so far)". */
 export function trainingLine(kind: "build" | "years", progress: JobProgress | null, currency: Currency, locale?: string): string {
-	// the check by year counts nothing it says (engine detector/training.rs `check_years`)
+	// the check by year counts nothing it says (engine features/detector/training.rs `check_years`)
 	if (kind === "years") return "Scoring a week of arXiv abstracts in each year (arXiv only, no cost)…";
 	if (!progress) return "Training the detector…";
 	const spent = knownMoney(progress.usd > 0 ? progress.usd : null, currency, locale);

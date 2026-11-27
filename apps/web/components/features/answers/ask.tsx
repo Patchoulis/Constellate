@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Ask a run or a community a question (engine api/answers.rs). The passages that match are found first, with no
+ * Ask a run or a community a question (engine features/answers/routes.rs). The passages that match are found first, with no
  * model and at no cost, and shown with their citations; the model is asked only when the user clicks the button
  * that shows what it would cost. Its answer is a list of statements, each followed by the papers' words it rests
  * on; statements whose quotes were not found in the papers are left out and counted.

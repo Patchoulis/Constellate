@@ -17,7 +17,7 @@ import { passageAt } from "@/lib/reader/evidence";
 import { costWords } from "@/lib/cost";
 import { count, tokens } from "@/lib/units";
 
-/** The longest selection looked for, in characters: as the engine's locate route allows (api/passages.rs). */
+/** The longest selection looked for, in characters: as the engine's locate route allows (api/papers/passages.rs). */
 export const LONGEST_SELECTION = 5_000;
 
 /** Said wherever an explanation's statements are shown. */

@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * "Explain this" in the reader's Text tab (engine explanation/): a passage, an equation or a caption explained by
+ * "Explain this" in the reader's Text tab (engine features/explanation/): a passage, an equation or a caption explained by
  * the model, every statement about the paper with the paper's own words beside it and general background marked
  * as such; the paper's own definitions of the symbols and terms it uses (found without a model); and passages of
  * nearby papers about the same thing (found without a model). The cost is shown before anything is sent, and an

@@ -1,7 +1,7 @@
 /**
  * The step of the run being made, in one line for the job view: "Step 3 of 10: embedding 3,120 of 12,487 papers",
  * "Step 2 of 10: downloading the embedding model: 312 of 1,180 MB". Bytes are shown in megabytes of 1,048,576
- * bytes, rounded, as the engine's own log shows them (pipeline/steps.rs `Count`).
+ * bytes, rounded, as the engine's own log shows them (pipeline/steps/mod.rs `Count`).
  */
 import type { RunStep, RunStepName, StepCount } from "@rp/contracts";
 

@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * A paper's Weaknesses section in the reader (engine analysis/critique.rs): what the reviewers raised first, in
+ * A paper's Weaknesses section in the reader (engine features/critique/mod.rs): what the reviewers raised first, in
  * their own words, each point opening on its place in the review; and, apart and only on request, the model's
  * reading of the paper, every statement of it with the paper's words it rests on. There is no score and no verdict
  * anywhere in it.

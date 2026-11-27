@@ -7,7 +7,7 @@ import { AcceptanceTag } from "@/components/brand";
 import { tagText, tagTitle, termsOf } from "@/lib/acceptance";
 import { kindNotes } from "@/lib/graph/paper-filter";
 
-// as the engine sends them (engine sources/acceptance.rs), for decisions seen in the conferences' lists
+// as the engine sends them (engine sources/conferences/acceptance.rs), for decisions seen in the conferences' lists
 const HIGHLIGHT: AcceptanceTerm = {
 	conference: "CVPR 2024",
 	called: "Highlight",

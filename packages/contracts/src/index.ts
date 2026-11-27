@@ -195,7 +195,7 @@ export type JobState = "idle" | "running" | "done" | "failed";
 export type JobOutcome =
 	{ kind: "run"; run: string } | { kind: "feature"; feature: FeatureName; subject: FeatureSubject } | { kind: "nothing" };
 
-/** The features that keep the model's answers (engine library/answers.rs `Feature`). */
+/** The features that keep the model's answers (engine library/money/answers.rs `Feature`). */
 export type FeatureName =
 	"extraction" | "citation_kinds" | "stances" | "answers" | "critique" | "explanation" | "claim_tree" | "describing" | "overview";
 
@@ -257,10 +257,10 @@ export interface JobPapers {
 	of: number;
 }
 
-/** On the user's own computer, or one person's server reached across a network (apps/engine/src/api/config.rs). */
+/** On the user's own computer, or one person's server reached across a network (apps/engine/src/api/guard/config.rs). */
 export type EngineMode = "local" | "network";
 
-/** What `GET /auth/session` says on a server (apps/engine/src/api/login). */
+/** What `GET /auth/session` says on a server (apps/engine/src/api/guard/login). */
 export interface SignInSession {
 	signed_in: boolean;
 	/** the ways in this server offers */
@@ -464,7 +464,7 @@ export interface Paper {
 	reviews: Ratings | null;
 }
 
-/** Reviewers' scores, by field, as the conference names and scales them (engine text/reviews.rs). */
+/** Reviewers' scores, by field, as the conference names and scales them (engine text/reviews/mod.rs). */
 export interface Ratings {
 	/** how many reviews gave scores */
 	reviews: number;
@@ -515,7 +515,7 @@ export interface ReviewScore {
 	meaning: string;
 }
 
-/** One note of a paper's discussion on OpenReview, as read from the page the user opened (engine text/discussion.rs). */
+/** One note of a paper's discussion on OpenReview, as read from the page the user opened (engine text/reviews/discussion.rs). */
 export type ReviewNote = (
 	| { kind: "official_review"; scores: ReviewScore[]; confidence: ReviewScore | null }
 	| { kind: "decision"; decision: string }
@@ -584,7 +584,7 @@ export interface PaperFigures {
 	disagreement: Disagreement | null;
 }
 
-/** `GET /api/papers/<id>/reviews`: a paper's kept discussion and what its scores come to (engine api/reviews.rs). */
+/** `GET /api/papers/<id>/reviews`: a paper's kept discussion and what its scores come to (engine api/papers/reviews.rs). */
 export interface PaperReviews {
 	paper_id: string;
 	/** the address of the page the reader showed */
@@ -677,7 +677,7 @@ export interface ReviewSummary {
 /** How a conference paper was accepted, in tiers that hold across conferences; best first. */
 export type Acceptance = "oral" | "spotlight" | "poster";
 
-/** How the conference itself named a paper's acceptance (engine sources/acceptance.rs, docs/acceptance-tiers.md). */
+/** How the conference itself named a paper's acceptance (engine sources/conferences/acceptance.rs, docs/acceptance-tiers.md). */
 export interface AcceptanceTerm {
 	/** the conference and year: "CVPR 2024" */
 	conference: string;
@@ -699,7 +699,7 @@ export interface Declarations {
 	flags: string[];
 }
 
-/** A statistical estimate, not proof: see the engine's detector/mod.rs. */
+/** A statistical estimate, not proof: see the engine's features/detector/mod.rs. */
 export interface AiVerdict {
 	/** higher = more machine-like */
 	score: number;
@@ -722,7 +722,7 @@ export interface OverviewPoint {
 	evidence?: Evidence[];
 }
 
-/** What a community's papers have in common, written by the language model from them (engine writing/overview.rs). */
+/** What a community's papers have in common, written by the language model from them (engine features/writing/overview.rs). */
 export interface Overview {
 	title: string;
 	/** empty when it was left out: its quotes were not found (`counts.summary_left_out`) */
@@ -816,7 +816,7 @@ export interface UsageEntry {
 }
 
 /**
- * Where something is in a paper (engine text/passages.rs). `page` and `end_page` are the PDF's own page numbers
+ * Where something is in a paper (engine text/pdf/passages.rs). `page` and `end_page` are the PDF's own page numbers
  * from 1 (what `#page=N` opens), not those the paper prints. `start` counts characters into the text of `page`,
  * `end` into the text of `end_page` (the same page unless a quote runs on to the next). Characters are Unicode
  * code points, not UTF-16 units: slice with `Array.from(text)` (lib/reader/evidence.ts `codePoints`), not `slice`.
@@ -900,7 +900,7 @@ export interface ReaderTarget {
 export interface Library {
 	papers: number;
 	embeddings: Record<string, number>;
-	/** whether abstracts get scored in the next run, and why (engine detector/mod.rs `Availability`) */
+	/** whether abstracts get scored in the next run, and why (engine features/detector/mod.rs `Availability`) */
 	ai_detector: { state: DetectorState; why: string };
 	/** what this computer can do: its NVIDIA graphics card, if any, and what that means for embedding */
 	machine: { gpu: string | null; embedding: string };
@@ -927,7 +927,7 @@ export interface Library {
 
 // ---- Weaknesses (critique) ----
 
-/** What a reviewer's point raises, as its section's name says (engine text/review_points.rs). */
+/** What a reviewer's point raises, as its section's name says (engine text/reviews/review_points.rs). */
 export type ReviewConcern = "weakness" | "question" | "limitation";
 
 /** How an authors' reply is attached to a review: named by its own title, or a guess and what it rests on. */
@@ -1084,7 +1084,7 @@ export interface CritiqueForgotten {
 export type StanceScope = { community: string } | { papers: string[] };
 
 /**
- * Where the model placed one paper on a yes/no question (engine analysis/stances.rs). Every placement but
+ * Where the model placed one paper on a yes/no question (engine features/stances/mod.rs). Every placement but
  * `not_addressed` comes with the paper's own words, found in it; a placement whose quotes were not found is
  * `not_verified` and is never counted for or against. `unusable`: the kept answer is not one the question allows.
  */
@@ -1225,7 +1225,7 @@ export interface StanceStarted {
 
 // ---- extraction table ----
 
-/** What kind of answer a column of an extraction table takes (engine analysis/extraction.rs). */
+/** What kind of answer a column of an extraction table takes (engine features/extraction/mod.rs). */
 export type ExtractionAnswerKind = "text" | "yes_no" | "number" | "list";
 
 /** A column of an extraction table: a question every paper is asked. */
@@ -1317,7 +1317,7 @@ export interface ExplanationRequest {
  *  engine refuses when either changed since, so nothing is paid that was not shown. */
 export type ExplanationStart = ExplanationRequest & ShownModel & AcceptedCost;
 
-/** What is asked about a passage, from its kind (engine explanation/mod.rs). */
+/** What is asked about a passage, from its kind (engine features/explanation/mod.rs). */
 export type ExplanationQuestion = "passage" | "equation" | "table" | "figure";
 
 export type ExplanationPart = "explanation" | "symbol" | "reading" | "prerequisite";
@@ -1405,7 +1405,7 @@ export interface RelatedPassages {
 
 // ---- Claim tree ----
 
-/** What evidence a paper offers for a claim (engine analysis/claim_tree/tree.rs). */
+/** What evidence a paper offers for a claim (engine features/claim_tree/tree.rs). */
 export type ClaimEvidenceKind = "experiment" | "table" | "figure" | "theorem" | "ablation" | "citation" | "argument";
 
 /** One node of a paper's claim tree: a central claim, a finding under it, or the evidence the paper offers. Its
@@ -1582,7 +1582,7 @@ export interface ContestedClaims {
 
 // ---- citation contexts and kinds ----
 
-/** The part of a paper a citation is in, normalised from its section's heading (engine analysis/citation_contexts.rs). */
+/** The part of a paper a citation is in, normalised from its section's heading (engine features/citation_contexts/mod.rs). */
 export type CitationSection =
 	| { kind: "abstract" | "introduction" | "related_work" | "background" | "method" | "experiments" | "discussion" | "appendix" }
 	/** a heading none of those words name, as the paper writes it */
@@ -1591,7 +1591,7 @@ export type CitationSection =
 /** Whether the cited work is named alone or in a group ("[3, 7-9]": a grouped citation says less about each work). */
 export type CitationGrouping = { kind: "alone" } | { kind: "grouped"; with: number };
 
-/** What a citation does, as the model reads it (engine analysis/citation_kinds.rs). */
+/** What a citation does, as the model reads it (engine features/citation_contexts/kinds.rs). */
 export type CitationKind = "uses" | "uses_data" | "baseline" | "extends" | "supports" | "contrasts" | "mention";
 
 /** The model's reading of one citing sentence, shown only beside the sentence. A kind other than mention counts
@@ -1714,7 +1714,7 @@ export type ClassifyCitationsRequest = BudgetOf &
 
 // ---- cited answers ----
 
-/** How much of a run's or a community's papers a search covers (engine text/retrieval.rs `Coverage`). */
+/** How much of a run's or a community's papers a search covers (engine features/answers/retrieval.rs `Coverage`). */
 export interface SearchCoverage {
 	papers: number;
 	/** searched in their full text, read from their PDF */
@@ -1839,7 +1839,7 @@ export interface AnswerView {
 	cited_papers: string[];
 }
 
-// ---- names, descriptions and overviews of communities (engine writing/) ----
+// ---- names, descriptions and overviews of communities (engine features/writing/) ----
 
 /** How many points of an overview were written, shown and left out. */
 export interface OverviewCounts {
@@ -1896,7 +1896,7 @@ export interface DescribeStarted {
 
 // ---- Runs: making one, and the paged list (engine pipeline/, runs/index.rs) ----
 
-/** The steps of a run, in order (engine pipeline/steps.rs `Step`). */
+/** The steps of a run, in order (engine pipeline/steps/mod.rs `Step`). */
 export type RunStepName =
 	"gather" | "model" | "embed" | "detect" | "filter" | "similarity" | "communities" | "summarise" | "describe" | "write";
 
@@ -1949,7 +1949,7 @@ export interface RunPage {
 	rows: RunRow[];
 }
 
-// ---- AI-text detector (engine detector/, api/detector.rs) ----
+// ---- AI-text detector (engine features/detector/, features/detector/routes.rs) ----
 
 /** off: switched off; untrained: nothing built, nothing flagged; building: the job is under way; ready: trained by
  * this version; stale: trained by an earlier version of the app (it still scores; training again is free). */
@@ -2010,7 +2010,7 @@ export interface DetectorStarted {
 	job: number;
 }
 
-// ---- Making a run again in place (engine api/runs.rs, pipeline/files.rs `Replaced`) ----
+// ---- Making a run again in place (engine api/runs.rs, pipeline/results/files.rs `Replaced`) ----
 
 /** A setting that decides a run's communities, as the run was made with it and as it is now (`was` is null when
  *  the run did not record it). */
