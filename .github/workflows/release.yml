@@ -18,6 +18,9 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          # the token that may publish is not left on disk while dependencies install and build
+          persist-credentials: false
       - name: The tag, package.json and the changelog agree on the version
         id: version
         env:

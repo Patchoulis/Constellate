@@ -10,7 +10,7 @@
  * One name everywhere means a reader never has to look up what `e`, `err`, `ex` or `problem` is this time.
  */
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, extname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,21 +19,20 @@ const backend = join(root, "apps", "backend");
 const fix = process.argv.includes("--fix");
 const python = process.env.RP_PYTHON || "python";
 
-const SKIP = new Set(["node_modules", ".next", ".turbo", "dist", "data", "__pycache__", ".git", ".pytest_cache"]);
-
-function* sources(folder) {
-	for (const name of readdirSync(folder)) {
-		const path = join(folder, name);
-		if (SKIP.has(name)) continue;
-		if (statSync(path).isDirectory()) yield* sources(path);
-		else if ([".py", ".ts", ".tsx", ".cjs", ".mjs"].includes(extname(name))) yield path;
-	}
+/** The project's own source files: what git tracks or would track, so nobody's virtual environment is read. */
+function sources() {
+	const listed = spawnSync("git", ["ls-files", "--cached", "--others", "--exclude-standard"], { cwd: root, encoding: "utf8" });
+	return listed.stdout
+		.split("\n")
+		.filter((name) => [".py", ".ts", ".tsx", ".cjs", ".mjs"].includes(extname(name)))
+		.map((name) => join(root, name))
+		.filter((path) => existsSync(path));
 }
 
 /** Lines where a caught error has another name than `error`. */
 function misnamedErrors() {
 	const found = [];
-	for (const path of sources(root)) {
+	for (const path of sources()) {
 		const pattern = extname(path) === ".py" ? /\bexcept\b[^:\n]*\bas\s+(\w+)\s*:/ : /\bcatch\s*\(\s*(\w+)\s*\)/;
 		readFileSync(path, "utf8")
 			.split("\n")

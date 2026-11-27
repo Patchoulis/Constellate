@@ -3,6 +3,9 @@ node_modules/
 .next/
 .turbo/
 __pycache__/
+.venv/
+venv/
+.ruff_cache/
 .pytest_cache/
 *.tsbuildinfo
 next-env.d.ts

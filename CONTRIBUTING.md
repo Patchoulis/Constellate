@@ -36,6 +36,13 @@ Pull requests are how concrete changes are made to the code, documentation and d
 Before a large change, it is usually a good idea to open an issue describing it first, to get feedback before the
 work is done. For a larger feature, a draft pull request shows others what is in progress.
 
+Once after cloning, switch the repository's hooks on (they check commit messages and refuse anything shaped
+like a secret):
+
+```sh
+git config core.hooksPath .githooks
+```
+
 Please make sure that this passes before you ask for review; it is exactly what CI runs:
 
 ```sh
