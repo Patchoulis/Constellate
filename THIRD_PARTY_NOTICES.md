@@ -37,3 +37,9 @@ Interface icons come from Lucide (https://lucide.dev, ISC licence), installed as
 The Windows installer includes `uv` (https://github.com/astral-sh/uv), which sets up the app's Python on first
 start. It is distributed unmodified under its own licence, MIT or Apache-2.0 at your option,
 (c) Astral Software Inc.
+
+## In the Windows installer
+
+The installed app also contains the packages its interface runs on (Next.js, React and their dependencies, KaTeX,
+d3, Radix UI, Lucide), Electron and Chromium. Their licence texts are installed with the app, in
+`resources/licenses` and, for Electron and Chromium, next to the program.

@@ -9,6 +9,9 @@ const nextConfig: NextConfig = {
 	transpilePackages: ["@rp/contracts"],
 	// A self-contained server (.next/standalone) that the desktop shell runs as a child process.
 	output: "standalone",
+	// No images are resized by the server, so the image library (and the LGPL code it brings) is not shipped.
+	images: { unoptimized: true },
+	outputFileTracingExcludes: { "*": ["node_modules/sharp/**", "node_modules/@img/**"] },
 	outputFileTracingRoot: path.join(import.meta.dirname, "..", ".."),
 	// The backend owns /api; the window only ever talks to this one origin.
 	// No other site may put this interface in a frame (a page shown in the reader could otherwise try to).

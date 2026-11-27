@@ -298,5 +298,23 @@ def library():
     return jsonify(papers=count, embeddings=models, ai_validation=store.read_json(detect.REPORT))
 
 
+def _stop_with_the_app():
+    """The desktop app holds this process's standard input open for as long as it lives.  When that closes, the
+    app is gone (closed, or crashed without saying goodbye), and a backend left behind would only block the next
+    start: so stop."""
+    import sys
+    import threading
+
+    def wait():
+        try:
+            sys.stdin.read()
+        finally:
+            os._exit(0)
+
+    threading.Thread(target=wait, daemon=True).start()
+
+
 if __name__ == "__main__":
+    if os.environ.get("RP_EXIT_WITH_PARENT"):
+        _stop_with_the_app()
     app.run(host="127.0.0.1", port=int(os.environ.get("RP_PORT", 8765)), debug=False, threaded=True)

@@ -15,7 +15,7 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -58,6 +58,13 @@ function packageTool() {
 	const bin = join(repo, "apps", "desktop", "bin");
 	rmSync(bin, { recursive: true, force: true });
 	cpSync(source, join(bin, process.platform === "win32" ? "uv.exe" : "uv"));
+	// its licences travel with it (after-pack.cjs puts them with the others)
+	const licences = spawnSync(
+		python,
+		["-c", "import importlib.metadata as m; print('\\n'.join(str(f.locate()) for f in m.files('uv') if 'licen' in str(f).lower()))"],
+		{ encoding: "utf8" },
+	);
+	for (const file of licences.stdout.split(/\r?\n/).filter((line) => line && existsSync(line))) cpSync(file, join(bin, basename(file)));
 }
 
 function assemble() {
@@ -78,6 +85,10 @@ if (flags.has("--dist")) {
 	packageTool();
 	// the installer carries the root package's version, the one a release is tagged with
 	const { version } = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
-	run("package", `npx electron-builder --win --x64 --publish never -c.extraMetadata.version=${version}`, join(repo, "apps", "desktop"));
+	run(
+		"package",
+		`npx electron-builder --win --x64 --publish never -c.extraMetadata.version=${version} -c.extraMetadata.name=constellate`,
+		join(repo, "apps", "desktop"),
+	);
 }
 if (flags.has("--run")) run("run", "npx electron .", join(repo, "apps", "desktop"));

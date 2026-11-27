@@ -8,7 +8,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
-const { ensure, state } = require("./setup.cjs");
+const { ensure, state, torchFor, CUDA } = require("./setup.cjs");
 
 const uv = process.env.RP_UV || "uv";
 const available = spawnSync(uv, ["--version"], { windowsHide: true }).status === 0;
@@ -71,4 +71,14 @@ test("a missing package tool is reported, not crashed on", async () => {
 		/package tool is missing/,
 	);
 	fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("which PyTorch a machine gets follows its NVIDIA driver", async () => {
+	assert.equal((await torchFor(async () => null)).index, null); // no card, or no driver
+	assert.equal((await torchFor(async () => "591.44\r\n")).index, CUDA.index);
+	assert.equal((await torchFor(async () => "591.44\n591.44\n")).index, CUDA.index); // two cards
+	const old = await torchFor(async () => "552.12\n");
+	assert.equal(old.index, null);
+	assert.match(old.why, /older than 580/);
+	assert.equal((await torchFor(async () => "nonsense")).index, null);
 });

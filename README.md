@@ -29,10 +29,15 @@ There is nothing else to install.
   their distinguishing terms. To set it: Start, "Edit environment variables for your account", New.
 
 **Uninstall:** Windows Settings, Apps, Installed apps, Constellate, Uninstall. The uninstaller asks whether to also
-remove what the app downloaded and computed (its Python packages and your library of papers, embeddings and
-runs, in `%APPDATA%\Constellate`); answer No to keep them for a later reinstall. The embedding model sits in
-the shared Hugging Face cache (`%USERPROFILE%\.cache\huggingface`), which other programs may use too, so it
-is left alone: delete that folder by hand if nothing else needs it.
+remove what the app downloaded and computed, all of which is in `%APPDATA%\\Constellate`: its own Python and
+packages (several GB) and your library of papers, embeddings and runs. Answer No to keep them for a later
+reinstall. The embedding model sits in the shared Hugging Face cache (`%USERPROFILE%\\.cache\\huggingface`),
+which other programs may use too, so it is left alone: delete that folder by hand if nothing else needs it.
+
+**What it connects to:** the conferences' sites and arXiv (papers), Hugging Face and PyPI (the model and packages,
+once), the Claude API (names and overviews, if you set a key), OpenReview (only pages you open in the reader), and
+frankfurter.dev for the day's exchange rate when your region's currency is not the US dollar. Nothing about you
+or your library is sent anywhere.
 
 **From source** (any platform; needs Node 22+, Python 3.12+ and, for speed, PyTorch with CUDA):
 

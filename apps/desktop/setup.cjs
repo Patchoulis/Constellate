@@ -3,33 +3,65 @@
  * nothing else on the machine.
  *
  * The installer carries `uv` (https://docs.astral.sh/uv/), one program that can fetch a Python and install
- * packages into it. On first start (and again whenever a new version asks for other packages) this:
+ * packages into it. On first start (and again whenever a new version asks for other packages, or the machine
+ * gains or loses a usable NVIDIA graphics card) this:
  *
  *   1. makes a Python environment in the app's own data folder        uv venv --python 3.13
  *   2. installs PyTorch: the CUDA build on a machine with an NVIDIA    uv pip install torch [--index-url ...]
- *      graphics card, otherwise the ordinary one
+ *      graphics card and a recent enough driver, otherwise the ordinary one
  *   3. installs the backend's other packages                           uv pip install -r requirements.txt
  *
- * and leaves a note of what it installed, so the next start goes straight on. It is a small state machine:
- * needed -> installing -> ready, or installing -> failed (the error names the step and keeps uv's last words).
- * Nothing here needs Electron, so it can be run and tested with plain Node.
+ * and leaves a note of what it installed, so the next start goes straight on. Everything uv fetches (the Python
+ * itself, its download cache) is kept under the app's data folder too, and the machine's own Pythons and uv
+ * settings are ignored: the app must keep working when those change, and uninstalling must be able to remove
+ * all of it.
+ *
+ * It is a small state machine: needed -> installing -> ready, or installing -> failed (the error names the step
+ * and keeps uv's last words). Nothing here needs Electron, so it can be run and tested with plain Node.
  */
-const { spawn, spawnSync } = require("node:child_process");
+const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
 const PYTHON = "3.13";
-/** Where PyTorch publishes its build for NVIDIA cards. */
-const CUDA_INDEX = "https://download.pytorch.org/whl/cu130";
+/** Where PyTorch publishes its build for NVIDIA cards, and the oldest driver that build runs on. */
+const CUDA = { index: "https://download.pytorch.org/whl/cu130", driver: 580 };
 
-/** Does this machine have an NVIDIA card with a working driver? (`nvidia-smi` comes with the driver.) */
-function hasNvidia() {
-	try {
-		return spawnSync("nvidia-smi", ["-L"], { windowsHide: true, timeout: 10_000 }).status === 0;
-	} catch (error) {
-		return false;
-	}
+/** Run a program and resolve to what it printed, or null if it is missing, fails or takes too long. */
+function ask(command, args, milliseconds) {
+	return new Promise((resolve) => {
+		let said = "";
+		let child;
+		try {
+			child = spawn(command, args, { windowsHide: true });
+		} catch (error) {
+			return resolve(null);
+		}
+		const timer = setTimeout(() => child.kill(), milliseconds);
+		child.stdout.on("data", (chunk) => (said += chunk));
+		child.once("error", () => resolve(null));
+		child.once("close", (code) => {
+			clearTimeout(timer);
+			resolve(code === 0 ? said : null);
+		});
+	});
+}
+
+/**
+ * Which PyTorch this machine should get: {index, why}. `index` is null for the ordinary build.
+ * `nvidia-smi` comes with NVIDIA's driver and reports its version.
+ */
+async function torchFor(report = () => ask("nvidia-smi", ["--query-gpu=driver_version", "--format=csv,noheader"], 8000)) {
+	const said = await report();
+	const driver = said === null ? null : Number.parseInt(said.trim().split(/\r?\n/)[0], 10);
+	if (driver === null || Number.isNaN(driver)) return { index: null, why: "no NVIDIA graphics card found: embedding will be slow" };
+	if (driver < CUDA.driver)
+		return {
+			index: null,
+			why: `the NVIDIA driver (${driver}) is older than ${CUDA.driver}: update it for GPU speed; until then embedding will be slow`,
+		};
+	return { index: CUDA.index, why: "for your NVIDIA graphics card (about 3 GB)" };
 }
 
 /** The environment's Python, whether or not it exists yet. */
@@ -37,35 +69,65 @@ function pythonIn(folder) {
 	return process.platform === "win32" ? path.join(folder, "Scripts", "python.exe") : path.join(folder, "bin", "python");
 }
 
-/** What a finished setup is recognised by: these exact requirements, this Python, this PyTorch build. */
-function stampOf(requirements, torchIndex) {
-	const wanted = `${PYTHON}\n${torchIndex ?? "default"}\n${fs.readFileSync(requirements, "utf8")}`;
-	return crypto.createHash("sha256").update(wanted).digest("hex").slice(0, 16);
+/** What a finished setup is recognised by: these exact requirements and this Python. */
+function stampOf(requirements) {
+	return crypto
+		.createHash("sha256")
+		.update(`${PYTHON}\n${fs.readFileSync(requirements, "utf8")}`)
+		.digest("hex")
+		.slice(0, 16);
 }
 
+/** The note a finished setup leaves: {stamp, torch: the index its PyTorch came from, or "default"}; null if none. */
+function noteIn(folder) {
+	try {
+		return JSON.parse(fs.readFileSync(path.join(folder, "installed.json"), "utf8"));
+	} catch (error) {
+		return null;
+	}
+}
+
+/** Is the environment's Python still there? (It points at a Python outside itself, named in pyvenv.cfg.) */
+function intact(folder) {
+	try {
+		const home = /^home\s*=\s*(.+)$/m.exec(fs.readFileSync(path.join(folder, "pyvenv.cfg"), "utf8"));
+		return fs.existsSync(pythonIn(folder)) && Boolean(home) && fs.existsSync(home[1].trim());
+	} catch (error) {
+		return false;
+	}
+}
+
+/** "ready" or "needed", for the PyTorch build `torchIndex` (null = the ordinary one). */
 function state({ folder, requirements, torchIndex }) {
-	const note = path.join(folder, "installed.txt");
-	const done = fs.existsSync(note) && fs.readFileSync(note, "utf8").trim() === stampOf(requirements, torchIndex);
-	return done && fs.existsSync(pythonIn(folder)) ? "ready" : "needed";
+	const note = noteIn(folder);
+	const done = note && note.stamp === stampOf(requirements) && note.torch === (torchIndex ?? "default");
+	return done && intact(folder) ? "ready" : "needed";
 }
 
-/** Run one step, passing on what it prints line by line; reject with the step's name and its last lines. */
-function step(title, command, args, log) {
+/**
+ * Run one step, passing on what it prints line by line; reject with the step's name and its last lines.
+ * `started` is told the running process, so that whoever asked can stop it.
+ */
+function step(title, command, args, { log, env, started }) {
 	return new Promise((resolve, reject) => {
 		log(title);
-		const child = spawn(command, args, { windowsHide: true, env: { ...process.env, UV_NO_PROGRESS: "1" } });
+		const child = spawn(command, args, { windowsHide: true, env });
+		started(child);
 		let last = "";
 		const pass = (chunk) => {
 			for (const line of String(chunk).split(/\r?\n/)) {
 				if (!line.trim()) continue;
-				last = (last + "\n" + line).slice(-1500);
+				last = `${last}\n${line}`.slice(-1500);
 				log(`  ${line.trim()}`);
 			}
 		};
 		child.stdout.on("data", pass);
 		child.stderr.on("data", pass);
 		child.once("error", (error) => reject(new Error(`${title} could not start: ${error.message}`)));
-		child.once("exit", (code) => (code === 0 ? resolve() : reject(new Error(`${title} failed (code ${code}).\n${last.trim()}`))));
+		// "close", not "exit": only then has everything the step printed arrived, its error message included
+		child.once("close", (code, signal) =>
+			code === 0 ? resolve() : reject(new Error(`${title} ${signal ? "was stopped" : `failed (code ${code})`}.\n${last.trim()}`)),
+		);
 	});
 }
 
@@ -73,27 +135,44 @@ function step(title, command, args, log) {
  * Make sure the environment in `folder` has what `requirements` lists; resolves to its Python.
  *   uv            path of the uv program
  *   torch         install PyTorch as its own step first (false in tests, which install something small)
- *   log           called with each line of progress
+ *   log           called with each line of progress; must not throw
+ *   started       called with each process this starts, so the caller can stop the one that is running
  */
-async function ensure({ uv, folder, requirements, torch = true, log = () => {} }) {
-	const torchIndex = torch && hasNvidia() ? CUDA_INDEX : null;
+async function ensure({ uv, folder, requirements, torch = true, log = () => {}, started = () => {} }) {
+	const wanted = torch ? await torchFor() : { index: null, why: "" };
 	const python = pythonIn(folder);
-	if (state({ folder, requirements, torchIndex }) === "ready") return python;
+	if (state({ folder, requirements, torchIndex: wanted.index }) === "ready") return python;
 	if (!fs.existsSync(uv)) throw new Error(`The installer's package tool is missing (${uv}). Reinstall Constellate.`);
 
-	fs.mkdirSync(path.dirname(folder), { recursive: true });
-	await step(`Setting up Python ${PYTHON}`, uv, ["venv", "--python", PYTHON, "--allow-existing", folder], log);
-	if (torch) {
-		const from = torchIndex ? ["--index-url", torchIndex] : [];
-		const which = torchIndex
-			? "PyTorch for your NVIDIA graphics card (about 3 GB)"
-			: "PyTorch (no NVIDIA graphics card found: embedding will be slow)";
-		await step(`Installing ${which}`, uv, ["pip", "install", "--python", python, "torch", ...from], log);
+	const home = path.dirname(folder);
+	fs.mkdirSync(home, { recursive: true });
+	// uv keeps to this app: its own Python, its own cache, and no settings from the rest of the machine
+	const env = {
+		...process.env,
+		UV_NO_PROGRESS: "1",
+		UV_NO_CONFIG: "1",
+		UV_PYTHON_PREFERENCE: "only-managed",
+		UV_PYTHON_INSTALL_DIR: path.join(home, "uv", "python"),
+		UV_CACHE_DIR: path.join(home, "uv", "cache"),
+	};
+	const run = (title, args) => step(title, uv, args, { log, env, started });
+	const before = noteIn(folder);
+	try {
+		await run(`Setting up Python ${PYTHON}`, ["venv", "--python", PYTHON, "--allow-existing", folder]);
+		if (torch) {
+			// a PyTorch of the other build already satisfies "torch", so it has to be replaced by name
+			const replace = before && before.torch !== (wanted.index ?? "default") ? ["--reinstall-package", "torch"] : [];
+			const from = wanted.index ? ["--index-url", wanted.index] : [];
+			await run(`Installing PyTorch (${wanted.why})`, ["pip", "install", "--python", python, "torch", ...from, ...replace]);
+		}
+		await run("Installing the other packages", ["pip", "install", "--python", python, "-r", requirements]);
+	} catch (error) {
+		error.message += "\n\nThe first start needs a connection to the internet. Constellate will try again the next time it is opened.";
+		throw error;
 	}
-	await step("Installing the other packages", uv, ["pip", "install", "--python", python, "-r", requirements], log);
-	fs.writeFileSync(path.join(folder, "installed.txt"), stampOf(requirements, torchIndex));
+	fs.writeFileSync(path.join(folder, "installed.json"), JSON.stringify({ stamp: stampOf(requirements), torch: wanted.index ?? "default" }));
 	log("Ready.");
 	return python;
 }
 
-module.exports = { ensure, state, pythonIn, PYTHON };
+module.exports = { ensure, state, torchFor, pythonIn, PYTHON, CUDA };

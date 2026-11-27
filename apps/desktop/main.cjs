@@ -45,6 +45,16 @@ const places = app.isPackaged
 
 let state = "starting";
 const children = [];
+let settingUp = null; // the process setting Python up, while there is one
+
+// One Constellate at a time: a second one would share the first one's backend and lose it when the first closes.
+if (!app.requestSingleInstanceLock()) app.quit();
+app.on("second-instance", () => {
+	const [window] = BrowserWindow.getAllWindows();
+	if (!window) return;
+	if (window.isMinimized()) window.restore();
+	window.focus();
+});
 
 function freePort() {
 	return new Promise((resolve, reject) => {
@@ -70,8 +80,16 @@ function answers(url) {
 
 /** Start a child server and resolve once `url` answers; reject if it exits first or takes too long. */
 async function serve(name, command, args, options, url) {
-	if (await answers(url)) return; // already running (e.g. the backend started by `npm run dev`)
-	const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+	if (await answers(url)) {
+		// From the repository that is the backend `npm run dev` started. The installed app starts its own, and one
+		// that is already there belongs to something else and would refuse this window's requests.
+		if (!app.isPackaged) return;
+		throw new Error(
+			`${name} cannot start: something else is already answering at ${url}. Close it (an earlier Constellate may still be running: end "python.exe" in Task Manager) and open Constellate again.`,
+		);
+	}
+	// stdin stays open as long as this shell lives: the backend watches it and stops when it closes (RP_EXIT_WITH_PARENT)
+	const child = spawn(command, args, { ...options, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
 	children.push(child);
 	let output = "";
 	const keep = (chunk) => (output = (output + chunk).slice(-4000));
@@ -97,6 +115,7 @@ async function backendPython() {
 	const wanted = { uv: places.uv, folder: places.python, requirements: path.join(places.backend, "requirements.txt") };
 	let progress = null; // the window that shows the setup, opened only if there is something to set up
 	const log = (line) => {
+		if (state !== "starting") return; // the user closed the progress window: setup is being stopped
 		if (!progress) {
 			progress = new BrowserWindow({
 				width: 640,
@@ -107,13 +126,22 @@ async function backendPython() {
 				title: `${app.getName()}: first start`,
 			});
 			void progress.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(SETUP_PAGE)}`);
+			// closing the window while it works means "not now": stop the download and quit; the next start resumes
+			progress.once("closed", () => {
+				if (state !== "starting") return;
+				state = "quitting";
+				settingUp?.kill();
+				app.quit();
+			});
 		}
+		if (progress.isDestroyed()) return;
 		const show = `document.getElementById("log").textContent += ${JSON.stringify(`${line}\n`)}; window.scrollTo(0, document.body.scrollHeight);`;
 		progress.webContents.executeJavaScript(show).catch(() => {});
 	};
 	try {
-		return await setup.ensure({ ...wanted, log });
+		return await setup.ensure({ ...wanted, log, started: (child) => (settingUp = child) });
 	} finally {
+		settingUp = null;
 		if (progress && !progress.isDestroyed()) progress.close();
 	}
 }
@@ -122,6 +150,13 @@ const SETUP_PAGE = `<body style="margin:0;padding:20px;background:#141414;color:
 <h1 style="font-size:15px;margin:0 0 6px">Setting up for the first time</h1>
 <p style="margin:0 0 12px;color:#8a8a8a">Constellate is downloading the Python packages it runs on. This happens once and can take several minutes.</p>
 <pre id="log" style="margin:0;white-space:pre-wrap;color:#a3a3a3"></pre></body>`;
+
+/** The environment without API keys: the interface's server shows pages and has no use for them. */
+function withoutKeys(env) {
+	return Object.fromEntries(
+		Object.entries(env).filter(([name]) => !/^(ANTHROPIC|OPENAI|HF|HUGGING)/i.test(name) && !/(KEY|TOKEN|SECRET)$/i.test(name)),
+	);
+}
 
 async function startServers() {
 	if (DEV_URL) return DEV_URL;
@@ -134,7 +169,10 @@ async function startServers() {
 			"The backend (python -m rp.server)",
 			python,
 			["-W", "ignore", "-m", "rp.server"],
-			{ cwd: places.backend, env: { ...process.env, RP_PORT: String(BACKEND_PORT), RP_DATA: places.data, RP_ORIGIN: url } },
+			{
+				cwd: places.backend,
+				env: { ...process.env, RP_PORT: String(BACKEND_PORT), RP_DATA: places.data, RP_ORIGIN: url, RP_EXIT_WITH_PARENT: "1" },
+			},
 			`http://127.0.0.1:${BACKEND_PORT}/api/settings`,
 		),
 		serve(
@@ -143,7 +181,7 @@ async function startServers() {
 			[places.web],
 			{
 				cwd: path.dirname(places.web),
-				env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", PORT: String(port), HOSTNAME: "127.0.0.1" },
+				env: { ...withoutKeys(process.env), ELECTRON_RUN_AS_NODE: "1", PORT: String(port), HOSTNAME: "127.0.0.1" },
 			},
 			url,
 		),
@@ -239,6 +277,7 @@ function refusePermissions() {
 
 function stopServers() {
 	state = "quitting";
+	settingUp?.kill();
 	for (const child of children) child.kill();
 }
 
@@ -249,6 +288,7 @@ app.whenReady().then(async () => {
 		refusePermissions();
 		openWindow(url);
 	} catch (error) {
+		if (state === "quitting") return;
 		state = "failed";
 		dialog.showErrorBox(`${app.getName()} could not start`, error.message);
 		app.quit();
