@@ -101,7 +101,7 @@ test("a price is said with its currency, and one not known is never 0", () => {
 		priceLabel({ kind: "known", input: 2, output: 10, cache_read: 0.1 }, USD, "en-US"),
 		"USD 2.00 in, USD 10.00 out per million tokens",
 	);
-	assert.equal(priceLabel({ kind: "not_known" }, USD), "cost not known");
+	assert.equal(priceLabel({ kind: "not_known" }, USD), null, "no price: nothing is shown");
 	assert.equal(priceLabel({ kind: "this_computer" }, USD), "runs on this computer: no API cost");
 	const compatible = catalog.providers[2];
 	assert.deepEqual(priceOf(compatible, "qwen3:32b"), { kind: "this_computer" });

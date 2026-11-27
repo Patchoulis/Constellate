@@ -103,6 +103,15 @@ export interface Currency {
 }
 
 /**
+ * An amount that may not be known (a model with no price): `money` when it is, null when it is not, so that the
+ * caller shows nothing at all rather than "cost not known", a placeholder or 0. The engine says "not known"
+ * (null); only what is shown leaves it out.
+ */
+export function knownMoney(usd: number | null | undefined, currency: Currency, locale?: string): string | null {
+	return usd === null || usd === undefined || !Number.isFinite(usd) ? null : money(usd, currency, locale);
+}
+
+/**
  * An amount billed in US dollars, in `currency` and always with its code: "USD 1.42", "CAD 2.02", "JPY 213".
  * Amounts under one unit keep four decimals: one call to a small model costs a fraction of a cent.
  */

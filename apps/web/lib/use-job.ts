@@ -10,6 +10,11 @@ import { api } from "@/lib/api";
  *     idle --start--> running --> done | failed --start--> running
  *
  * While the job is running, and only then, the backend is polled for new log lines and the next state.
+ *
+ * A finished job opens a run only when it made one (its `outcome`; a Python backend's finished jobs are all runs,
+ * named in `result`), and only when this page saw it go from running to finished: a job that had finished before
+ * the page asked opens nothing, so that the last run is not opened again at every load. A feature's job is its
+ * component's to follow (lib/use-followed-job.ts).
  */
 export interface Job {
 	state: JobState;
@@ -17,13 +22,23 @@ export interface Job {
 	error: string | null;
 }
 
-type Event =
+export type Event =
 	| { type: "started" }
 	| { type: "reported"; status: Status }
 	// the backend did not answer, or refused to start a run: what the job is doing is unchanged
 	| { type: "unanswered"; error: string };
 
-function reduce(job: Job, event: Event): Job {
+/**
+ * The run to open when `status` follows `before`: the run a job made, when this page saw that job running and now
+ * sees it done; null otherwise (a feature's job, nothing to open, or a job that had finished already).
+ */
+export function finishedRun(before: Job, status: Status): string | null {
+	if (before.state !== "running" || status.state !== "done") return null;
+	if (status.outcome === undefined) return status.result; // the Python backend: every job is a run
+	return status.outcome?.kind === "run" ? status.outcome.run : null;
+}
+
+export function reduce(job: Job, event: Event): Job {
 	switch (event.type) {
 		case "started":
 			return { state: "running", log: [], error: null };
@@ -40,14 +55,18 @@ export function useJob(onDone: (run: string) => void) {
 	const [job, dispatch] = useReducer(reduce, { state: "idle", log: [], error: null });
 	const seen = useRef(0);
 	seen.current = job.log.length;
+	// the job as this page last saw it, for telling a finish it watched from one it only heard of
+	const last = useRef<Job>(job);
+	last.current = job;
 	const done = useRef(onDone);
 	done.current = onDone;
 
 	const report = useCallback(async () => {
 		try {
 			const status = await api.status(seen.current);
+			const run = finishedRun(last.current, status);
 			dispatch({ type: "reported", status });
-			if (status.state === "done" && status.result && status.kind !== "explaining a passage") done.current(status.result);
+			if (run) done.current(run);
 		} catch (error) {
 			dispatch({ type: "unanswered", error: (error as Error).message });
 		}

@@ -107,6 +107,64 @@ export interface ModelCatalog {
 	chosen: { provider: ProviderId; model: string; effort: Effort };
 }
 
+/** Tokens of a call or a batch, by how they are billed (engine usage/prices.rs `Tokens`). */
+export interface BilledTokens {
+	input: number;
+	output: number;
+	cache_read: number;
+	cache_write_5m: number;
+	cache_write_1h: number;
+}
+
+/** How prompt tokens were reckoned before anything was sent: from characters, at a ratio assumed or measured. */
+export interface TokenCounting {
+	kind: "assumed" | "measured";
+	chars_per_token: number;
+}
+
+/**
+ * What asking would cost, before anything is sent (engine model/language `Estimate`): the one shape every
+ * feature's estimate has, whichever provider is chosen. An estimate, always.
+ */
+export interface AskingCost {
+	/** the provider and model that would be asked: the estimate is at that provider's prices */
+	provider: ProviderId;
+	model: string;
+	calls: number;
+	/** likely tokens, by how they are billed */
+	tokens: BilledTokens;
+	/** likely and at most, in US dollars; null when the model's price is not known or it runs on this computer */
+	usd: number | null;
+	most_usd: number | null;
+	/** tokens of every kind at most: the budget a model with no price is held to */
+	most_tokens: number;
+	counting: TokenCounting;
+	/** how the shared text was counted: cached as the provider caches, or in full for every question */
+	caching: ModelCapabilities["caching"];
+	/** a server on this computer: no API fee */
+	on_this_computer: boolean;
+}
+
+/** What a batch would cost (engine model/batch.rs `BatchEstimate`): its items, and what asking those not kept would cost. */
+export interface BatchCost extends AskingCost {
+	items: number;
+	/** kept from before: they cost nothing */
+	kept: number;
+	to_ask: number;
+}
+
+/** What a request accepts of an estimate shown: its most in US dollars, or in tokens for a model with no price. */
+export type AcceptedCost = { accepted_usd: number; accepted_tokens?: never } | { accepted_tokens: number; accepted_usd?: never };
+
+/** A budget of the user's own: in US dollars, or in tokens for a model with no price. */
+export type BudgetOf = { budget_usd: number; budget_tokens?: never } | { budget_tokens: number; budget_usd?: never };
+
+/** The model an estimate was shown for: a request for another one (of another provider) is refused. */
+export interface ShownModel {
+	provider: ProviderId;
+	model: string;
+}
+
 /** A step whose stored results a run can be told to ignore and produce again (rp/pipeline.py REDO). */
 export type RedoStep = "download" | "embeddings" | "descriptions";
 
@@ -122,14 +180,29 @@ export type RunRequest = (
 /** The backend's job state machine (rp/jobs.py). */
 export type JobState = "idle" | "running" | "done" | "failed";
 
+/**
+ * What a finished job made (engine jobs.rs `Finished`): a run to open, a feature's answers about a subject (the
+ * feature's own component shows them), or nothing to open.
+ */
+export type JobOutcome =
+	{ kind: "run"; run: string } | { kind: "feature"; feature: FeatureName; subject: FeatureSubject } | { kind: "nothing" };
+
+/** The features that keep the model's answers (engine library/answers.rs `Feature`). */
+export type FeatureName = "extraction" | "citation_kinds" | "stances" | "answers" | "critique" | "explanation" | "claim_tree";
+
+/** What a feature's answers are about. */
+export type FeatureSubject = { paper: string } | { run: string } | { community: { run: string; community: string } };
+
 export interface Status {
 	/** the job's number (absent from the Python backend): what `api.cancelJob` names */
 	id?: number;
 	/** what kind of work it is ("a run", "asking about papers") */
 	kind?: string;
 	state: JobState;
-	/** name of the finished run, once state is "done" */
+	/** the name of the run a finished job made, once state is "done"; null for any other job */
 	result: string | null;
+	/** what a finished job made; absent from the Python backend, whose finished jobs are runs (`result`) */
+	outcome?: JobOutcome | null;
 	error: string | null;
 	/** log lines after the `since` the request asked for */
 	log: string[];
@@ -142,15 +215,23 @@ export interface Status {
 	server_owned?: (keyof Settings)[];
 	/** how far a job that does many things has got; null for one that does not say */
 	progress?: JobProgress | null;
-	/** whether a key for the Claude API is set (never the key itself); absent from the Python backend */
+	/** how many of its papers a job that counts them has done; null for one that does not */
+	papers?: JobPapers | null;
+	/** whether a key for the chosen provider is set (never the key itself); absent from the Python backend */
 	api_key_set?: boolean;
 }
 
-/** n of m done, and what it has spent so far on the Claude API, in US dollars. */
+/** n of m done, and what it has spent so far on the language model's API, in US dollars (of calls with a price). */
 export interface JobProgress {
 	done: number;
 	of: number;
 	usd: number;
+}
+
+/** Papers done, of how many. */
+export interface JobPapers {
+	done: number;
+	of: number;
 }
 
 /** On the user's own computer, or one person's server reached across a network (apps/engine/src/api/config.rs). */
@@ -909,30 +990,21 @@ export interface CritiqueReading {
 	left_out: CritiqueLeftOut;
 }
 
-/** What one model's calls are likely to cost, before they are made (engine model/language.rs `Estimate`). */
-export interface CritiqueModelEstimate {
-	model: string;
-	calls: number;
-	tokens: { input: number; output: number; cache_read: number; cache_write_5m: number; cache_write_1h: number };
-	usd: number | null;
-	most_usd: number | null;
-	counting: { kind: "assumed" | "measured"; chars_per_token: number };
-}
-
-/** What asking would cost (engine model/batch.rs `BatchEstimate`), in US dollars: an estimate. */
-export interface CritiqueEstimate {
-	items: number;
-	kept: number;
-	to_ask: number;
-	by_model: CritiqueModelEstimate[];
-	usd: number | null;
-	most_usd: number | null;
-}
+/** What asking for a paper's weaknesses would cost: an estimate. */
+export type CritiqueEstimate = BatchCost;
 
 export type CritiqueModelPart =
 	| { state: "no_pdf" }
 	| { state: "unreadable" }
-	| { state: "not_asked"; model: string; estimate: CritiqueEstimate; api_key_set: boolean; points_asked: number; cut: number | null }
+	| {
+			state: "not_asked";
+			provider: ProviderId;
+			model: string;
+			estimate: CritiqueEstimate;
+			api_key_set: boolean;
+			points_asked: number;
+			cut: number | null;
+	  }
 	| { state: "answered"; model: string; kept_at: string; reading: CritiqueReading; points_asked: number; cut: number | null };
 
 /** `GET /api/papers/<id>/critique`: a paper's weaknesses, the reviewers' points first and the model's reading second. */
@@ -987,24 +1059,8 @@ export interface StanceFilter {
 	terms: string[];
 }
 
-/** What a batch of calls would cost, before anything is sent (engine model/batch.rs BatchEstimate): an estimate. */
-export interface StanceCostEstimate {
-	items: number;
-	/** answered before: they cost nothing */
-	kept: number;
-	to_ask: number;
-	by_model: {
-		model: string;
-		calls: number;
-		tokens: { input: number; output: number; cache_read: number; cache_write_5m: number; cache_write_1h: number };
-		usd: number | null;
-		most_usd: number | null;
-		counting: { kind: "assumed" | "measured"; chars_per_token: number };
-	}[];
-	/** in US dollars; null when the model's price is not known */
-	usd: number | null;
-	most_usd: number | null;
-}
+/** What a batch of calls would cost, before anything is sent: an estimate. */
+export type StanceCostEstimate = BatchCost;
 
 export interface StancePartEstimate {
 	papers: number;
@@ -1017,7 +1073,9 @@ export interface StancePartEstimate {
 export interface StancePlan {
 	id: string;
 	question: string;
+	provider: ProviderId;
 	model: string;
+	api_key_set: boolean;
 	filter: StanceFilter;
 	/** the most central papers, asked first */
 	sample: StancePartEstimate;
@@ -1030,6 +1088,7 @@ export interface StanceResult {
 	id: string;
 	question: string;
 	asked_at: string;
+	provider: ProviderId;
 	model: string;
 	filter: StanceFilter;
 	/** papers that would be asked */
@@ -1079,8 +1138,10 @@ export interface StanceListing {
 /** `POST .../stances/proposals/estimate`: what proposing questions would cost. An estimate. */
 export interface StanceProposalPlan {
 	papers: number;
+	provider: ProviderId;
 	model: string;
 	estimate: StanceCostEstimate;
+	api_key_set: boolean;
 }
 
 /** A job started: its number (for `/api/status` and `api.cancelJob`) and the question's id. */
@@ -1143,7 +1204,8 @@ export interface ExtractionRow {
 /** `POST /api/runs/<run>/extraction/table` with `{ scope }`: what is kept, every quote checked again. */
 export interface ExtractionTable {
 	columns: ExtractionColumn[];
-	/** the model whose answers these are */
+	/** the model whose answers these are, and its provider */
+	provider: ProviderId;
 	model: string;
 	/** most central first: the sample's papers come first */
 	rows: ExtractionRow[];
@@ -1160,17 +1222,12 @@ export type ExtractionScope = { community: string } | { papers: string[] };
 export type ExtractionPart = "sample" | "rest";
 
 /** `POST /api/runs/<run>/extraction/estimate`: what asking would cost, before anything is sent. An estimate. */
-export interface ExtractionEstimate {
+export interface ExtractionEstimate extends AskingCost {
 	part: ExtractionPart;
 	papers: number;
 	/** papers with a cell to ask; the others are kept */
 	to_ask: number;
-	model: string;
-	/** US dollars, likely and at most; null when the model's price is not known */
-	usd: number | null;
-	most_usd: number | null;
-	tokens: { input: number; output: number; cache_read: number; cache_write_5m: number; cache_write_1h: number };
-	counting: { kind: "assumed" | "measured"; chars_per_token: number };
+	api_key_set: boolean;
 	/** what it was reckoned from: the papers' own texts, or (for the rest) the sample's */
 	basis: { kind: "texts" } | { kind: "sample_texts"; papers: number; characters: number } | { kind: "typical"; characters: number };
 }
@@ -1185,10 +1242,7 @@ export interface ExplanationRequest {
 
 /** `POST /api/papers/<id>/explanation`: the passage, and the model and worst case the reader was shown; the
  *  engine refuses when either changed since, so nothing is paid that was not shown. */
-export interface ExplanationStart extends ExplanationRequest {
-	model: string;
-	most_usd: number | null;
-}
+export type ExplanationStart = ExplanationRequest & ShownModel & AcceptedCost;
 
 /** What is asked about a passage, from its kind (engine explanation/mod.rs). */
 export type ExplanationQuestion = "passage" | "equation" | "table" | "figure";
@@ -1212,14 +1266,7 @@ export interface Explanation {
 }
 
 /** What explaining would cost: an estimate, from characters at an assumed or measured rate. */
-export interface ExplanationEstimate {
-	/** likely and at most, in US dollars; null when the model's price is not known */
-	usd: number | null;
-	most_usd: number | null;
-	prompt_tokens: number;
-	answer_tokens: number;
-	counting: { kind: "assumed" | "measured"; chars_per_token: number };
-}
+export type ExplanationEstimate = AskingCost;
 
 /** A symbol or a capitalised term the passage uses, and the sentence of the paper that introduces it (found by
  *  a program, no model). */
@@ -1236,8 +1283,10 @@ export type ExplanationPrepared =
 			question: ExplanationQuestion;
 			/** the passage's extracted text may be garbled (equations, tables, figures): only text is sent */
 			garbled: boolean;
-			/** the model that would be asked: the one chosen in the settings */
+			/** the model that would be asked, of its provider: the one chosen in the settings */
+			provider: ProviderId;
 			model: string;
+			api_key_set: boolean;
 			definitions: DefinedTerm[];
 			/** kept from before: shown at no cost */
 			explained: Explanation | null;
@@ -1420,28 +1469,14 @@ export interface ClaimGap {
 	evidence: Evidence[];
 }
 
-/** What a batch of calls is likely to cost, before anything is sent (engine model/batch.rs): an estimate. */
-export interface ClaimsEstimate {
-	items: number;
-	kept: number;
-	to_ask: number;
-	by_model: {
-		model: string;
-		calls: number;
-		tokens: { input: number; output: number; cache_read: number; cache_write_5m: number; cache_write_1h: number };
-		usd: number | null;
-		most_usd: number | null;
-		counting: { kind: "assumed" | "measured"; chars_per_token: number };
-	}[];
-	/** US dollars; null when a model's price is not known */
-	usd: number | null;
-	most_usd: number | null;
-}
+/** What a batch of calls is likely to cost, before anything is sent: an estimate. */
+export type ClaimsEstimate = BatchCost;
 
 /** `GET /api/papers/<id>/claims`: the paper's claim tree with its reviews mapped onto it. */
 export interface ClaimsView {
 	paper_id: string;
-	/** the model chosen in the settings */
+	/** the model chosen in the settings, of its provider */
+	provider: ProviderId;
 	model: string;
 	paper: { state: "read"; passages: number; sent: number } | { state: "no_pdf" } | { state: "unreadable" };
 	tree: ClaimTreeState;
@@ -1455,10 +1490,8 @@ export interface ClaimsView {
 	estimate: ClaimsEstimate | null;
 }
 
-/** `POST /api/papers/<id>/claims`: the most the calls may spend, in US dollars. */
-export interface ClaimsStart {
-	budget_usd: number;
-}
+/** `POST /api/papers/<id>/claims`: the most the calls may spend, and the model the estimate was shown for. */
+export type ClaimsStart = BudgetOf & ShownModel;
 
 /** `GET /api/runs/<run>/communities/<tree path>/claims/contested`: per paper mapped, its contested claims. */
 export interface ContestedClaims {
@@ -1578,43 +1611,25 @@ export type CitationKindsScope = "sample" | "rest";
 /** `GET /api/runs/<name>/citation-kinds/estimate`: what reading a scope's kinds would cost; nothing is sent. */
 export interface CitationKindsEstimate {
 	scope: CitationKindsScope;
+	provider: ProviderId;
 	model: string;
 	sentences: number;
 	/** read already: they cost nothing */
 	kept: number;
 	to_ask: number;
-	estimate: {
-		items: number;
-		kept: number;
-		to_ask: number;
-		by_model: {
-			model: string;
-			calls: number;
-			tokens: { input: number; output: number; cache_read: number; cache_write_5m: number; cache_write_1h: number };
-			usd: number | null;
-			most_usd: number | null;
-			/** how prompt tokens were reckoned: an estimate either way */
-			counting: { kind: "assumed" | "measured"; chars_per_token: number };
-		}[];
-		/** likely cost in US dollars; null when a model's price is not known */
-		usd: number | null;
-		/** if every answer took its most and nothing was read from the cache */
-		most_usd: number | null;
-	};
+	estimate: BatchCost;
 	/** a key is set, so the model can be asked (never the key) */
 	can_ask: boolean;
 }
 
-/** `POST /api/runs/<name>/citation-kinds`. */
-export interface ClassifyCitationsRequest {
-	community?: string | null;
-	scope: CitationKindsScope;
-	/** the most the job may spend, in US dollars */
-	budget_usd: number;
-	/** the model and the sentences to ask of the estimate shown: anything else is refused (estimate again) */
-	model: string;
-	to_ask: number;
-}
+/** `POST /api/runs/<name>/citation-kinds`: the most the job may spend, and the model and the sentences to ask of the
+ *  estimate shown (anything else is refused: estimate again). */
+export type ClassifyCitationsRequest = BudgetOf &
+	ShownModel & {
+		community?: string | null;
+		scope: CitationKindsScope;
+		to_ask: number;
+	};
 
 // ---- cited answers ----
 
@@ -1650,25 +1665,8 @@ export interface SearchIndexing {
 /** `GET /api/runs/<run>/passages/found?q=...&community=<tree path>`: found without any model, at no cost. */
 export type PassagesFound = { state: "ready"; query: string; coverage: SearchCoverage; passages: PassageFound[] } | SearchIndexing;
 
-/** Tokens of a call, by how they are billed (engine usage/prices.rs `Tokens`). */
-export interface AnswerTokens {
-	input: number;
-	output: number;
-	cache_read: number;
-	cache_write_5m: number;
-	cache_write_1h: number;
-}
-
-/** What a call is likely to cost (engine model/language.rs `Estimate`): an estimate either way. */
-export interface AnswerCost {
-	model: string;
-	calls: number;
-	tokens: AnswerTokens;
-	/** US dollars; null when the model's price is not known */
-	usd: number | null;
-	most_usd: number | null;
-	counting: { kind: "assumed" | "measured"; chars_per_token: number };
-}
+/** What a call is likely to cost: an estimate either way. */
+export type AnswerCost = AskingCost;
 
 /** `GET /api/runs/<run>/answers/estimate?q=...&community=...`: what asking would cost. Nothing is sent. */
 export type AnswerEstimate =
@@ -1676,6 +1674,7 @@ export type AnswerEstimate =
 			state: "ready";
 			/** the question's id once asked */
 			id: string;
+			provider: ProviderId;
 			model: string;
 			/** its answer is kept: reopening it costs nothing */
 			kept: boolean;
@@ -1695,16 +1694,14 @@ export type AnswerEstimate =
 	  }
 	| SearchIndexing;
 
-/** `POST /api/runs/<run>/answers`, sent when the user clicks the button showing the estimate. */
-export interface AnswerRequest {
-	question: string;
-	/** a community's tree path; absent or null for the whole run */
-	community?: string | null;
-	/** the model the estimate shown was for: a request for another is refused */
-	model: string;
-	/** the `most_usd` the user was shown; null when the price is not known */
-	accepted_usd: number | null;
-}
+/** `POST /api/runs/<run>/answers`, sent when the user clicks the button showing the estimate: the most it was shown
+ *  to cost (in tokens for a model with no price), for the model it was shown for. */
+export type AnswerRequest = ShownModel &
+	AcceptedCost & {
+		question: string;
+		/** a community's tree path; absent or null for the whole run */
+		community?: string | null;
+	};
 
 /** The question's id, and the job asking it (null when its answer was kept). */
 export interface AnswerStarted {

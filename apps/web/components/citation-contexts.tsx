@@ -7,9 +7,9 @@
  * the model was asked, what kind of citation it is, with the words that show it (components/citation-kinds.tsx asks).
  * Nothing is shown when the engine has no such route (the Python backend).
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { BookOpenText, Loader2, Square } from "lucide-react";
-import type { CitationContextsOf, CitationKind, CitingSentenceShown, PaperCitationContexts, Status } from "@rp/contracts";
+import type { CitationContextsOf, CitationKind, CitingSentenceShown, PaperCitationContexts } from "@rp/contracts";
 import { EvidenceLink } from "@/components/evidence-link";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton } from "@/components/ui/button";
@@ -31,11 +31,11 @@ import {
 } from "@/lib/citation-kinds";
 import { count, money } from "@/lib/units";
 import { ready, useAsync } from "@/lib/use-async";
+import { type FollowedJob, useFollowedJob } from "@/lib/use-followed-job";
 import { cn, hsl } from "@/lib/utils";
 
 const TAG = "inline-flex items-center rounded-sm border px-1.5 py-px font-ui text-xs";
 const SHOWN = 3; // sentences shown per paper before "show all"
-const POLL_MS = 1200;
 export const USD = { code: "USD", rate: 1, date: null };
 
 /** A paper's contexts asked once per paper and run (the reader and the network's picture share them), until a
@@ -176,40 +176,6 @@ function Between({ between, onOpen }: { between: CitationContextsOf; onOpen: (id
 	);
 }
 
-/** A job of the engine followed while it runs: its progress and a stop button. */
-export type FollowedJob =
-	{ state: "idle" } | { state: "running"; id: number; progress: Status["progress"] } | { state: "failed"; error: string };
-
-/** Start a job with `start` and follow it until it ends; `onDone` is called when it finished. */
-export function useFollowedJob(onDone: () => void) {
-	const [job, setJob] = useState<FollowedJob>({ state: "idle" });
-	const start = useCallback(async (begin: () => Promise<{ id: number }>) => {
-		try {
-			const { id } = await begin();
-			setJob({ state: "running", id, progress: null });
-		} catch (error) {
-			setJob({ state: "failed", error: (error as Error).message });
-		}
-	}, []);
-	useEffect(() => {
-		if (job.state !== "running") return;
-		const timer = setTimeout(async () => {
-			try {
-				const status = await api.status(Number.MAX_SAFE_INTEGER);
-				if (status.id !== job.id || status.state === "done") {
-					setJob({ state: "idle" });
-					onDone();
-				} else if (status.state === "failed") setJob({ state: "failed", error: status.error ?? "the job failed" });
-				else setJob({ ...job, progress: status.progress ?? null });
-			} catch (error) {
-				setJob({ state: "failed", error: (error as Error).message });
-			}
-		}, POLL_MS);
-		return () => clearTimeout(timer);
-	}, [job, onDone]);
-	return { job, start };
-}
-
 /** "412 of 739 done, USD 0.21 so far", and a stop button. */
 export function JobStrip({ job, what }: { job: FollowedJob; what: string }) {
 	if (job.state === "failed") return <p className="font-ui text-xs text-destructive">{job.error}</p>;
@@ -279,7 +245,7 @@ export function CitationSentences({ paper, run, onOpen }: { paper: string; run?:
 						variant="outline"
 						className="self-start"
 						title="Reads the reference list and citing sentences of each of the run's papers whose PDF is kept, once. No model is asked: it costs nothing."
-						onClick={() => void start(() => api.readCitationContexts(run))}
+						onClick={() => void start(() => api.readCitationContexts(run).then((begun) => begun.id))}
 					>
 						<BookOpenText />
 						Read the citing sentences of this run&apos;s papers

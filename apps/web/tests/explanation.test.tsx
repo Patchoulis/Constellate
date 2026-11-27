@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Evidence, Explanation, ExplanationEstimate, PaperPassages, PassageAddress, PassageKind } from "@rp/contracts";
 import { Explained } from "@/components/passage-explainer";
+import { askingCost } from "./costs";
 import {
 	LONGEST_SELECTION,
 	askFirst,
@@ -76,13 +77,9 @@ test("the selected words are tidied before they are located, and a selection too
 	assert.equal(placeKey(address(3, 120, 200)), "3:120");
 });
 
-const estimate: ExplanationEstimate = {
-	usd: 0.021,
-	most_usd: 0.087,
-	prompt_tokens: 5200,
-	answer_tokens: 1500,
-	counting: { kind: "assumed", chars_per_token: 3 },
-};
+const estimate: ExplanationEstimate = askingCost(0.021, 0.087, {
+	tokens: { input: 200, output: 1_500, cache_read: 0, cache_write_5m: 5_000, cache_write_1h: 0 },
+});
 
 test("the cost is always asked about, unless the reader chose an amount the worst case stays under", () => {
 	assert.equal(readAskBelow(null), null, "the default: always ask");
@@ -98,7 +95,10 @@ test("the cost is always asked about, unless the reader chose an amount the wors
 test("the estimate is said with its currency and units and as an estimate", () => {
 	const line = costLine(estimate, "en-US");
 	assert.match(line, /^Estimate: about USD 0\.0210, at most USD 0\.0870 \(5\.2k tokens sent, about 1\.5k tokens back\)\.$/);
-	assert.match(costLine({ ...estimate, usd: null, most_usd: null }), /price of this model is not known/);
+	assert.equal(
+		costLine({ ...estimate, usd: null, most_usd: null }),
+		"Estimate: at most 28k tokens (5.2k tokens sent, about 1.5k tokens back).",
+	);
 	assert.match(costNote(estimate), /assumed/);
 });
 

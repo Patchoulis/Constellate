@@ -14,7 +14,9 @@ import type {
 	CitationTally,
 	CitingSentenceShown,
 	PaperCitationContexts,
+	BudgetOf,
 } from "@rp/contracts";
+import { centBudget } from "@/lib/cost";
 import { count } from "@/lib/units";
 
 /** Said wherever a kind is shown. */
@@ -185,21 +187,15 @@ export function moreToRead(coverage: { papers: number; read: number; without_pdf
 
 /**
  * The cap a job is started with: the estimate's worst case (every answer as long as allowed, nothing cached),
- * rounded up to the cent; null when the estimate has no price.
+ * rounded up to the cent; for a model with no price, its worst case in tokens.
  */
-export function budgetFor(estimate: CitationKindsEstimate): number | null {
-	const most = estimate.estimate.most_usd;
-	if (most === null) return null;
-	return Math.max(0.01, Math.ceil(most * 100) / 100);
+export function budgetFor(estimate: CitationKindsEstimate): BudgetOf {
+	return centBudget(estimate.estimate);
 }
 
 /** Tokens an estimate expects per citing sentence asked, all kinds of token together. */
 export function tokensPerSentence(estimate: CitationKindsEstimate): number | null {
 	if (estimate.to_ask === 0) return null;
-	const all = estimate.estimate.by_model.reduce(
-		(sum, model) =>
-			sum + model.tokens.input + model.tokens.output + model.tokens.cache_read + model.tokens.cache_write_5m + model.tokens.cache_write_1h,
-		0,
-	);
-	return Math.round(all / estimate.to_ask);
+	const { input, output, cache_read, cache_write_5m, cache_write_1h } = estimate.estimate.tokens;
+	return Math.round((input + output + cache_read + cache_write_5m + cache_write_1h) / estimate.to_ask);
 }

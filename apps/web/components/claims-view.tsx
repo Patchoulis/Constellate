@@ -6,7 +6,7 @@
  * comes last, collapsed and labelled. Nothing is asked of the model until the user has seen the estimate and
  * clicked; nothing is shown when the engine has no such route (the Python backend).
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, ListTree, Loader2, MessagesSquare, RotateCcw, Square } from "lucide-react";
 import type {
 	ClaimNode,
@@ -18,7 +18,6 @@ import type {
 	PointMapping,
 	PointPlacement,
 	ReviewPoint,
-	Status,
 } from "@rp/contracts";
 import { EvidenceLink, EvidenceLinks } from "@/components/evidence-link";
 import { REVIEWS_NOTE } from "@/components/review-summary";
@@ -45,15 +44,13 @@ import {
 	stanceWords,
 	unplacedWhy,
 } from "@/lib/claim-tree";
+import { budgetWords, shownModel } from "@/lib/cost";
 import { ready, useAsync } from "@/lib/use-async";
-import { count, money, onScale, scaleName, spreadPoints } from "@/lib/units";
+import { useFollowedJob } from "@/lib/use-followed-job";
+import { count, knownMoney, onScale, scaleName, spreadPoints } from "@/lib/units";
 import { cn } from "@/lib/utils";
 
-const POLL_MS = 1200;
-
-/** The asking job, as this view follows it. */
-type Asking =
-	{ state: "idle" } | { state: "starting" } | { state: "running"; job: number; status?: Status } | { state: "failed"; error: string };
+const USD = { code: "USD", rate: 1, date: null };
 
 function Rating({ reviewer }: { reviewer: ClaimReviewer | undefined }) {
 	if (!reviewer?.overall) return null;
@@ -67,75 +64,45 @@ function Rating({ reviewer }: { reviewer: ClaimReviewer | undefined }) {
 
 /** The estimate, the button that starts the work, its progress and its stop button. */
 function Ask({ id, what, estimate, onDone }: { id: string; what: string; estimate: ClaimsEstimate; onDone: () => void }) {
-	const [asking, setAsking] = useState<Asking>({ state: "idle" });
-	const done = useRef(onDone);
-	done.current = onDone;
+	const [starting, setStarting] = useState(false);
+	// what was kept is read again once the job is over, whichever way it ended
+	const { job, start } = useFollowedJob(() => onDone());
 	const budget = budgetFor(estimate);
-	useEffect(() => {
-		if (asking.state !== "running") return;
-		const timer = setTimeout(async () => {
-			try {
-				const status = await api.status(1_000_000);
-				if (status.id !== asking.job || status.state !== "running") {
-					if (status.id === asking.job && status.state === "failed")
-						setAsking({ state: "failed", error: status.error ?? "The work failed." });
-					else setAsking({ state: "idle" });
-					done.current();
-					return;
-				}
-				setAsking({ ...asking, status });
-			} catch (error) {
-				setAsking({ state: "failed", error: (error as Error).message });
-			}
-		}, POLL_MS);
-		return () => clearTimeout(timer);
-	}, [asking]);
-	const start = async () => {
-		if (budget === null) return;
-		setAsking({ state: "starting" });
-		try {
-			const { job } = await api.startClaims(id, { budget_usd: budget });
-			setAsking({ state: "running", job });
-		} catch (error) {
-			setAsking({ state: "failed", error: (error as Error).message });
-		}
+	const begin = async () => {
+		setStarting(true);
+		await start(() => api.startClaims(id, { ...budget, ...shownModel(estimate) }).then(({ job }) => job));
+		setStarting(false);
 	};
-	const progress = asking.state === "running" ? asking.status?.progress : undefined;
+	const progress = job.state === "running" ? job.progress : null;
+	const spent = progress ? knownMoney(progress.usd > 0 ? progress.usd : null, USD) : null;
 	return (
 		<div className="flex flex-col items-start gap-1.5 rounded-md border px-3 py-2 font-ui text-xs">
 			<span className="text-foreground">{what}</span>
 			<span className="text-muted-foreground tabular-nums" title={ESTIMATE_NOTE}>
-				{estimateLine(estimate)}
-				{estimate.by_model[0] && `, with ${estimate.by_model[0].model}`}
+				{estimateLine(estimate)}, with {estimate.model}
 			</span>
-			{asking.state === "running" ? (
+			{job.state === "running" ? (
 				<div className="flex items-center gap-2">
 					<Loader2 className="size-3.5 animate-spin" />
 					<span className="tabular-nums">
-						{progress
-							? `${progress.done} of ${count(progress.of, "call")} done, ${money(progress.usd, { code: "USD", rate: 1, date: null })} so far`
-							: "Asking the model"}
+						{progress ? `${progress.done} of ${count(progress.of, "call")} done${spent ? `, ${spent} so far` : ""}` : "Asking the model"}
 					</span>
-					<Button variant="ghost" size="icon" title="Stop: nothing new is asked" onClick={() => void api.cancelJob(asking.job)}>
+					<Button variant="ghost" size="icon" title="Stop: nothing new is asked" onClick={() => void api.cancelJob(job.id)}>
 						<Square />
 					</Button>
 				</div>
 			) : (
 				<Button
 					variant="outline"
-					disabled={asking.state === "starting" || budget === null || estimate.to_ask === 0}
-					title={
-						budget === null
-							? "The model's price is not known, so no budget can be set."
-							: `At most ${money(budget, { code: "USD", rate: 1, date: null })} is spent.`
-					}
-					onClick={start}
+					disabled={starting || estimate.to_ask === 0}
+					title={`${budgetWords(budget)} is spent.`.replace(/^at most/, "At most")}
+					onClick={() => void begin()}
 				>
-					{asking.state === "starting" ? <Loader2 className="animate-spin" /> : <ListTree />}
+					{starting ? <Loader2 className="animate-spin" /> : <ListTree />}
 					Ask the model
 				</Button>
 			)}
-			{asking.state === "failed" && <span className="text-destructive">{asking.error}</span>}
+			{job.state === "failed" && <span className="text-destructive">{job.error}</span>}
 		</div>
 	);
 }

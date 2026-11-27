@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AnswerEstimate, AnswerSummary, AnswerView, PassageFound, PassagesFound, SearchCoverage } from "@rp/contracts";
+import { askingCost } from "./costs";
 import {
 	cannotAsk,
 	costLine,
@@ -23,6 +24,7 @@ const coverage: SearchCoverage = { papers: 739, full_text: 212, capped: 0, no_pd
 const estimate: Extract<AnswerEstimate, { state: "ready" }> = {
 	state: "ready",
 	id: "a".repeat(64),
+	provider: "anthropic",
 	model: "claude-opus-5-5",
 	kept: false,
 	passages: 38,
@@ -30,14 +32,11 @@ const estimate: Extract<AnswerEstimate, { state: "ready" }> = {
 	coverage,
 	prompt_cap_tokens: 24_000,
 	max_answer_tokens: 4_000,
-	cost: {
+	cost: askingCost(0.1371, 0.2271, {
 		model: "claude-opus-5-5",
-		calls: 1,
 		tokens: { input: 12, output: 1_500, cache_read: 0, cache_write_5m: 20_000, cache_write_1h: 0 },
-		usd: 0.1371,
-		most_usd: 0.2271,
-		counting: { kind: "assumed", chars_per_token: 3 },
-	},
+		most_tokens: 24_012,
+	}),
 	most_usd: 0.2271,
 	most_tokens: 24_012,
 	api_key_set: true,
@@ -80,13 +79,15 @@ test("the cost is shown in dollars before asking, with the tokens and that it is
 	assert.match(costTitle(estimate), /at most 24k tokens/);
 	assert.match(costTitle(estimate), /An estimate/);
 	assert.equal(costLine({ ...estimate, kept: true, cost: null }), "Open the kept answer: no cost");
-	assert.equal(
-		costLine({ ...estimate, cost: { ...estimate.cost!, usd: null }, most_usd: null }),
-		"Ask the model: price of claude-opus-5-5 not known, at most 24k tokens",
-	);
+	// a model with no price: no dollar figure at all, only the tokens it can take
+	const unpriced = { ...estimate, cost: { ...estimate.cost!, usd: null, most_usd: null }, most_usd: null };
+	assert.equal(costLine(unpriced), "Ask the model: at most 24k tokens");
+	assert.doesNotMatch(costLine(unpriced), /USD|not known|price/);
+	const here = { ...unpriced, cost: { ...unpriced.cost, provider: "compatible" as const, on_this_computer: true } };
+	assert.equal(costLine(here), "Ask the model: at most 24k tokens, runs on this computer: no API cost");
 	assert.equal(cannotAsk(estimate), null);
 	assert.match(cannotAsk({ ...estimate, passages: 0 }) ?? "", /nothing to answer it from/);
-	assert.match(cannotAsk({ ...estimate, api_key_set: false }) ?? "", /No API key/);
+	assert.match(cannotAsk({ ...estimate, api_key_set: false }) ?? "", /key is not set/);
 	assert.equal(cannotAsk({ ...estimate, kept: true, api_key_set: false }), null, "a kept answer needs no key");
 });
 

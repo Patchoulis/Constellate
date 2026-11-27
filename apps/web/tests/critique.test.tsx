@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Critique, CritiqueEstimate, CritiqueReviewer, Evidence } from "@rp/contracts";
 import { WeaknessesOf } from "@/components/critique";
+import { batchCost } from "./costs";
 import {
 	absenceLine,
 	attachmentNote,
@@ -53,23 +54,7 @@ const reviewer: CritiqueReviewer = {
 	],
 };
 
-const estimate: CritiqueEstimate = {
-	items: 1,
-	kept: 0,
-	to_ask: 1,
-	by_model: [
-		{
-			model: "some-model",
-			calls: 1,
-			tokens: { input: 900, output: 3500, cache_read: 0, cache_write_5m: 20000, cache_write_1h: 0 },
-			usd: 0.17,
-			most_usd: 0.35,
-			counting: { kind: "assumed", chars_per_token: 3 },
-		},
-	],
-	usd: 0.17,
-	most_usd: 0.35,
-};
+const estimate: CritiqueEstimate = batchCost(0.17, 0.35);
 
 test("a reviewer is named and scored on the venue's scale, and the scale says where it is from", () => {
 	assert.equal(reviewerName(reviewer), "Reviewer Uv78");
@@ -116,8 +101,8 @@ test("an absence is always one to check, with what was searched for", () => {
 
 test("the estimate is said in dollars with the code, as an estimate, and not at all when the price is unknown", () => {
 	assert.equal(estimateLine(estimate, "en-US"), "about USD 0.1700, at most USD 0.3500");
-	assert.equal(estimateLine({ ...estimate, usd: null, most_usd: null }), null);
-	assert.match(estimateTitle(estimate), /An estimate, in US dollars.*assumed.*nothing is sent until you click/);
+	assert.equal(estimateLine({ ...estimate, usd: null, most_usd: null }), "at most 28k tokens", "no price: no dollar figure");
+	assert.match(estimateTitle(estimate), /An estimate.*assumed.*nothing is sent until you click/);
 });
 
 test("the model's reading is apart from the reviewers', hidden until asked for, and the section gives no score or verdict", () => {
@@ -189,7 +174,7 @@ test("a paper with no reviews says how to get them, and one with no PDF says why
 			critique={{
 				paper_id: "2601.00001",
 				reviewers: { state: "none_kept" },
-				model: { state: "not_asked", model: "some-model", estimate, api_key_set: true, points_asked: 0, cut: null },
+				model: { state: "not_asked", provider: "anthropic", model: "some-model", estimate, api_key_set: true, points_asked: 0, cut: null },
 			}}
 			shown={false}
 			onShow={() => {}}

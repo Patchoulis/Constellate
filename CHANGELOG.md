@@ -21,7 +21,7 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Ask a community (in its panel) or the whole run (the "Ask the run" button over the graph) a question: the passages of its papers that talk about it are found first, for free, each linked to the place in the paper; then, after you see what it would cost and click, the model answers in statements each followed by the quotes it rests on. Statements whose quotes are not found in the papers are left out and counted, "the papers do not say" is shown as an answer, and past questions are listed per run, reopened at no cost, asked again or deleted.
 
-- Names, descriptions and overviews can be written by other providers' models than Claude: OpenAI, Google Gemini, OpenRouter, xAI, Mistral, DeepSeek, Groq and a dozen more, or a model on your own computer through Ollama, LM Studio or any OpenAI-compatible server. The model menu at the bottom of the sidebar groups them by provider, says which ones need a key and which variable to set, takes a model id typed in where the provider allows it, and offers the effort where the model has one; the cost line names the provider and model and says "cost not known" rather than 0 when a price is not published, and "no API cost" for a model on your own computer. Settings list every provider, whether its key is set, where it is reached and what it cannot do.
+- Names, descriptions and overviews can be written by other providers' models than Claude: OpenAI, Google Gemini, OpenRouter, xAI, Mistral, DeepSeek, Groq and a dozen more, or a model on your own computer through Ollama, LM Studio or any OpenAI-compatible server. The model menu at the bottom of the sidebar groups them by provider, says which ones need a key and which variable to set, takes a model id typed in where the provider allows it, and offers the effort where the model has one; the cost line names the provider and model, shows no cost at all (never 0) when a price is not published, and says "no API cost" for a model on your own computer. Settings list every provider, whether its key is set, where it is reached and what it cannot do.
 
 - Opening a paper's Reviews tab now keeps the whole discussion (each review by section, rebuttals, the meta-review and the decision), shows the paper's mean, range and confidence-weighted mean on its venue's own scale, and adds a Reviews section to each community: how many of its papers have reviews read, ratings per conference and year, the papers reviewers disagreed on most, and what reviewers most often praise and criticise, each linked to the reviewer's words.
 
@@ -78,6 +78,13 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   milliseconds instead of about 30 with 12,500 papers; the app also opens its window a little sooner.
 
 ### Fixed
+
+- The model features (Weaknesses, Agree / disagree, the Table, Explain, Claims, citation kinds and Ask) now work with whichever provider is chosen, as they do with Claude: the cost shown before asking is that provider's, the request goes to that provider with its own model, a model with no published price (a typed id, a model on your own computer) runs within the tokens shown instead of being refused, no dollar figure is shown for it, answers kept for one provider are not taken for another's, and a job is refused if the provider or model changed since its cost was shown.
+- A finished feature no longer reopens the last run, and the run that finished before the page was opened is no longer opened again at every load.
+- A damaged settings file no longer makes the engine fall back to the Claude API without a word: it says the settings cannot be read. Two windows changing the provider and the model at once can no longer store a model of the wrong provider.
+- Redoing a cited answer asked with an older version of the app now forgets it; redoing an explanation says whether there was one to forget.
+- A model's answer and what it cost are written together, so that a crash can no longer leave a call paid for whose answer is lost.
+- A paper listed twice when reading citing sentences is no longer reported as not in the library the second time.
 
 - Marked papers and panel sizes are kept between launches: the interface is served on the same port each time.
 - The new engine now serves the reader's Text tab and finds the words a citation quotes; each paper's PDF is read

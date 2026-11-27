@@ -37,6 +37,7 @@ import {
 	toCsv,
 	valueText,
 } from "@/lib/extraction";
+import { budgetOf, costWords, shownModel } from "@/lib/cost";
 import { ready, useAsync } from "@/lib/use-async";
 import { count, money, tokens } from "@/lib/units";
 import { cn } from "@/lib/utils";
@@ -65,13 +66,6 @@ const POLL_MS = 1200;
 
 /** "about USD 1.80 for 10 papers, at most USD 4.20 (an estimate)", with how it was reckoned on hover. */
 function EstimateLine({ estimate }: { estimate: ExtractionEstimate }) {
-	if (estimate.usd === null || estimate.most_usd === null) {
-		return (
-			<p className="text-xs text-warning">
-				The price of {estimate.model} is not known, so its cost cannot be shown before asking: choose another model in the settings.
-			</p>
-		);
-	}
 	const basis =
 		estimate.basis.kind === "texts"
 			? "from these papers' own texts"
@@ -86,13 +80,18 @@ function EstimateLine({ estimate }: { estimate: ExtractionEstimate }) {
 		estimate.tokens.cache_write_1h;
 	const title =
 		`An estimate, reckoned ${basis}, at ${estimate.counting.chars_per_token} characters a token (${estimate.counting.kind}: it errs high); about ${tokens(all)}. ` +
-		`"At most" is if every answer took its longest. Billed by the model's provider in US dollars.`;
+		`"At most" is if every answer took its longest; the run is held to it.`;
+	const words = costWords({ ...estimate, most_usd: estimate.most_usd === null ? null : ceiling(estimate.most_usd) });
 	return (
 		<p className="text-xs text-muted-foreground tabular-nums" title={title}>
-			About {usd(estimate.usd)} for {count(estimate.to_ask, "paper")} with {estimate.model}, at most {usd(ceiling(estimate.most_usd))} (an
-			estimate)
+			For {count(estimate.to_ask, "paper")} with {estimate.model}: {words} (an estimate)
 		</p>
 	);
+}
+
+/** What a run has spent, in US dollars, when it has a dollar figure: nothing for a model with no price. */
+function spent(amount: number): string | null {
+	return amount > 0 ? usd(amount) : null;
 }
 
 /** One cell: its value with the evidence for it, or what stands in for a value. */
@@ -502,9 +501,10 @@ function Opened({
 	}, [asking]);
 
 	const begin = (part: ExtractionPart, estimate: ExtractionEstimate) => {
-		if (estimate.most_usd === null) return;
 		setAsking({ step: "starting", part });
-		api.runExtraction(run, scope, part, ceiling(estimate.most_usd)).then(
+		// the most shown, rounded up to the cent; in tokens for a model with no price
+		const budget = budgetOf(estimate, estimate.most_usd === null ? undefined : ceiling(estimate.most_usd));
+		api.runExtraction(run, scope, part, budget, shownModel(estimate)).then(
 			({ id }) => setAsking({ step: "running", part, job: id, done: 0, of: estimate.to_ask, usd: 0 }),
 			(error: Error) => setAsking({ step: "finished", part, usd: 0, error: error.message }),
 		);
@@ -529,7 +529,8 @@ function Opened({
 			{asking.step === "running" ? (
 				<div className="flex items-center gap-2 text-xs tabular-nums">
 					<span className="flex-1">
-						Asking the model: {asking.done} of {count(asking.of, "paper")}, {usd(asking.usd)} so far
+						Asking the model: {asking.done} of {count(asking.of, "paper")}
+						{spent(asking.usd) && `, ${spent(asking.usd)} so far`}
 					</span>
 					<Button
 						variant="outline"
@@ -545,23 +546,23 @@ function Opened({
 					{asking.step === "finished" && (
 						<p className={cn("text-xs tabular-nums", asking.error ? "text-warning" : "text-foreground")}>
 							{asking.error
-								? `The run stopped: ${asking.error}. ${usd(asking.usd)} was spent; what was answered is kept.`
-								: `${asking.part === "sample" ? "The sample" : asking.part === "rest" ? "The rest" : "The run"} cost ${usd(asking.usd)} (as billed at the engine's prices).`}
+								? `The run stopped: ${asking.error}.${spent(asking.usd) ? ` ${spent(asking.usd)} was spent;` : ""} What was answered is kept.`
+								: `${asking.part === "sample" ? "The sample" : asking.part === "rest" ? "The rest" : "The run"} is done${spent(asking.usd) ? `: it cost ${spent(asking.usd)} (as billed at the engine's prices)` : ""}.`}
 						</p>
 					)}
 					{sampleEstimate && sampleEstimate.to_ask > 0 && (
 						<div className="flex flex-col gap-1">
 							<EstimateLine estimate={sampleEstimate} />
-							<Button disabled={busy || sampleEstimate.most_usd === null} onClick={() => begin("sample", sampleEstimate)}>
+							<Button disabled={busy || !sampleEstimate.api_key_set} onClick={() => begin("sample", sampleEstimate)}>
 								Run on the sample: {count(sampleEstimate.to_ask, "paper")}
 							</Button>
 						</div>
 					)}
-					{offerRest && restEstimate && restEstimate.to_ask > 0 && restEstimate.usd !== null && (
+					{offerRest && restEstimate && restEstimate.to_ask > 0 && (
 						<div className="flex flex-col gap-1">
 							<EstimateLine estimate={restEstimate} />
-							<Button variant="outline" disabled={busy} onClick={() => begin("rest", restEstimate)}>
-								Run on the remaining {count(restEstimate.to_ask, "paper")} (about {usd(restEstimate.usd)}, estimate)
+							<Button variant="outline" disabled={busy || !restEstimate.api_key_set} onClick={() => begin("rest", restEstimate)}>
+								Run on the remaining {count(restEstimate.to_ask, "paper")}
 							</Button>
 						</div>
 					)}

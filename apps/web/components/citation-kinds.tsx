@@ -9,8 +9,8 @@
  */
 import { useCallback, useState } from "react";
 import { BookOpenText, RotateCcw, Sparkles } from "lucide-react";
-import type { CitationKind, CitationKindsEstimate, CitationKindsScope, RankedCitation } from "@rp/contracts";
-import { JobStrip, SentenceRow, USD, contextsOf, forgetAsked, useFollowedJob } from "@/components/citation-contexts";
+import type { BudgetOf, CitationKind, CitationKindsEstimate, CitationKindsScope, RankedCitation } from "@rp/contracts";
+import { JobStrip, SentenceRow, contextsOf, forgetAsked } from "@/components/citation-contexts";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton } from "@/components/ui/button";
 import { api } from "@/lib/api";
@@ -24,8 +24,10 @@ import {
 	tallyLine,
 	tokensPerSentence,
 } from "@/lib/citation-kinds";
-import { count, money, tokens } from "@/lib/units";
+import { budgetWords, costTitle, costWords, shownModel } from "@/lib/cost";
+import { count, tokens } from "@/lib/units";
 import { ready, useAsync } from "@/lib/use-async";
+import { useFollowedJob } from "@/lib/use-followed-job";
 
 /** The sentences behind one count: the community's citing sentences of `paper` read as `kinds`. */
 function Behind({ run, treePath, paper, kinds }: { run: string; treePath: string; paper: string; kinds: CitationKind[] }) {
@@ -99,7 +101,7 @@ function Asking({
 	busy,
 }: {
 	estimate: CitationKindsEstimate;
-	onStart: (estimate: CitationKindsEstimate, budget: number) => void;
+	onStart: (estimate: CitationKindsEstimate, budget: BudgetOf) => void;
 	busy: boolean;
 }) {
 	const cap = budgetFor(estimate);
@@ -113,29 +115,23 @@ function Asking({
 		);
 	return (
 		<div className="flex flex-col items-start gap-1.5 rounded-lg border p-3 font-ui text-xs text-muted-foreground">
-			<p
-				title={`An estimate: prompt tokens are reckoned from characters (${estimate.estimate.by_model[0]?.counting.chars_per_token ?? 3} per token), so it errs high. The most is if every answer were as long as allowed.`}
-			>
+			<p title={costTitle(estimate.estimate)}>
 				Reading {what}: {count(estimate.to_ask, "citing sentence")} to ask the model ({estimate.model}) about
 				{estimate.kept > 0 && `, ${estimate.kept.toLocaleString()} read before`}, in {count(estimate.estimate.to_ask, "call")}
-				{perSentence !== null && `, about ${tokens(perSentence)} per sentence`}. Estimated cost:{" "}
-				{estimate.estimate.usd === null ? "unknown (the model's price is not known)" : `about ${money(estimate.estimate.usd, USD)}`}
-				{estimate.estimate.most_usd !== null && `, at most ${money(estimate.estimate.most_usd, USD)}`}. This is an estimate.
+				{perSentence !== null && `, about ${tokens(perSentence)} per sentence`}: {costWords(estimate.estimate)}. This is an estimate.
 			</p>
 			{estimate.can_ask ? (
-				cap !== null && (
-					<Button
-						variant="outline"
-						disabled={busy}
-						onClick={() => onStart(estimate, cap)}
-						title="Starts a job you can follow and stop; it never spends more than the cap"
-					>
-						<Sparkles />
-						{estimate.scope === "sample" ? "Read a sample" : "Read the rest"}, at most {money(cap, USD)}
-					</Button>
-				)
+				<Button
+					variant="outline"
+					disabled={busy}
+					onClick={() => onStart(estimate, cap)}
+					title="Starts a job you can follow and stop; it never spends more than the cap"
+				>
+					<Sparkles />
+					{estimate.scope === "sample" ? "Read a sample" : "Read the rest"}, {budgetWords(cap)}
+				</Button>
 			) : (
-				<p>The model cannot be asked: no key for it is set in the engine&apos;s environment.</p>
+				<p>The model cannot be asked: the chosen provider&apos;s key is not set in the engine&apos;s environment.</p>
 			)}
 		</div>
 	);
@@ -181,7 +177,7 @@ export function CommunityCitationKinds({
 					variant="outline"
 					className="self-start"
 					title="Reads the reference list and citing sentences of each of the run's papers whose PDF is kept, once. No model is asked: it costs nothing."
-					onClick={() => void start(() => api.readCitationContexts(run))}
+					onClick={() => void start(() => api.readCitationContexts(run).then((begun) => begun.id))}
 				>
 					<BookOpenText />
 					Read the citing sentences of this run&apos;s papers
@@ -203,13 +199,15 @@ export function CommunityCitationKinds({
 					busy={running}
 					onStart={(chosen, budget) =>
 						void start(() =>
-							api.classifyCitations(run, {
-								community: treePath,
-								scope: chosen.scope,
-								budget_usd: budget,
-								model: chosen.model,
-								to_ask: chosen.to_ask,
-							}),
+							api
+								.classifyCitations(run, {
+									community: treePath,
+									scope: chosen.scope,
+									...budget,
+									...shownModel(chosen),
+									to_ask: chosen.to_ask,
+								})
+								.then((begun) => begun.id),
 						)
 					}
 				/>

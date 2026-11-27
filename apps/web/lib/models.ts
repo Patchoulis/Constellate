@@ -136,15 +136,15 @@ export function priceOf(provider: ModelProvider | undefined, id: string): ModelP
 }
 
 /**
- * A price in words, every number with its currency: "USD 2.00 in, USD 10.00 out per million tokens"; "cost not
- * known" (never 0) when it is not; "runs on this computer: no API cost" for a server here.
+ * A price in words, every number with its currency: "USD 2.00 in, USD 10.00 out per million tokens"; null (nothing
+ * is shown: no "not known", no 0) when it is not; "runs on this computer: no API cost" for a server here.
  */
-export function priceLabel(price: ModelPrice, currency: Currency, locale?: string): string {
+export function priceLabel(price: ModelPrice, currency: Currency, locale?: string): string | null {
 	switch (price.kind) {
 		case "known":
 			return `${money(price.input, currency, locale)} in, ${money(price.output, currency, locale)} out per million tokens`;
 		case "not_known":
-			return "cost not known";
+			return null; // no price: nothing is shown, never "not known" or 0
 		case "this_computer":
 			return "runs on this computer: no API cost";
 	}

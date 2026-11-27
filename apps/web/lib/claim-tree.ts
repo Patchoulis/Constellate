@@ -4,6 +4,7 @@
  * so that they are tested (tests/claim-tree.test.ts).
  */
 import type {
+	BudgetOf,
 	ClaimNode,
 	ClaimNodeReviews,
 	ClaimsEstimate,
@@ -16,7 +17,8 @@ import type {
 	UnplacedPoint,
 } from "@rp/contracts";
 import { codePoints } from "@/lib/evidence";
-import { count, money, onScale, scaleName } from "@/lib/units";
+import { centBudget, costWords } from "@/lib/cost";
+import { count, onScale, scaleName } from "@/lib/units";
 
 /** Said wherever the model's reading is shown. */
 export const MODEL_NOTE = "The model's reading of the paper, in its words; the quotes beside it are the paper's own, found in it.";
@@ -171,24 +173,21 @@ export function leftOutLine(left: ClaimsLeftOut): string | null {
 	return `${count(total, "statement")} left out: ${shown.map(([amount, why]) => (shown.length > 1 ? `${why} (${amount})` : why)).join("; ")}`;
 }
 
-const USD = { code: "USD", rate: 1, date: null };
-
-/** "about USD 0.0412, at most USD 0.3120, for 2 calls": an estimate, and it says so where it is shown. */
+/** "about USD 0.0412, at most USD 0.3120, for 2 calls": an estimate, and it says so where it is shown. For a model
+ *  with no price, only the tokens it can take: no dollar figure at all. */
 export function estimateLine(estimate: ClaimsEstimate): string {
 	if (estimate.to_ask === 0) return "Nothing to ask: every answer is kept.";
-	const calls = count(estimate.to_ask, "call");
-	if (estimate.usd === null) return `${calls} to a model whose price is not known: the cost cannot be estimated.`;
-	const most = estimate.most_usd === null ? "" : `, at most ${money(estimate.most_usd, USD)}`;
-	return `About ${money(estimate.usd, USD)}${most}, for ${calls} (an estimate)`;
+	const words = costWords(estimate);
+	return `${words.charAt(0).toUpperCase()}${words.slice(1)}, for ${count(estimate.to_ask, "call")} (an estimate)`;
 }
 
 export const ESTIMATE_NOTE =
 	"Estimated from the paper's length, not counted: tokens are reckoned at three characters each, which errs high. The budget sent with the request is the estimate's most, rounded up to the cent: nothing past it is spent.";
 
-/** The most the calls may spend: the estimate's worst case, rounded up to the cent. Null when it cannot be priced. */
-export function budgetFor(estimate: ClaimsEstimate): number | null {
-	if (estimate.most_usd === null) return null;
-	return Math.min(10, Math.max(0.01, Math.ceil(estimate.most_usd * 100) / 100));
+/** The most the calls may spend: the estimate's worst case, rounded up to the cent (never past the engine's USD 10);
+ *  for a model with no price, its worst case in tokens. */
+export function budgetFor(estimate: ClaimsEstimate): BudgetOf {
+	return centBudget(estimate, 10);
 }
 
 /** The points placed on `node` (null: the root), in the page's order, with their placements. */
