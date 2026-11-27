@@ -157,6 +157,22 @@ pub fn update_json(
     update_json_with(path, STALE, change)
 }
 
+/// [`update_json`] for a change that may be refused: `change` sees the object as stored under the lock, and the
+/// file is written only when it accepts (it is left as it was otherwise). What `change` answers is handed back.
+pub fn try_update_json<T, E>(
+    path: &Path,
+    change: impl FnOnce(&mut Map<String, Value>) -> Result<T, E>,
+) -> Result<Result<T, E>, StoreError> {
+    let _within = UPDATES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _between = BetweenProcesses::hold(path, STALE)?;
+    let mut content: Map<String, Value> = read_json(path)?.unwrap_or_default();
+    let answer = change(&mut content);
+    if answer.is_ok() {
+        write_json(path, &content)?;
+    }
+    Ok(answer)
+}
+
 fn update_json_with(
     path: &Path,
     stale: Duration,

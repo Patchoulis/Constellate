@@ -212,24 +212,67 @@ impl Settings {
 /// The settings kept in `file`; the defaults when there is no such file.
 pub fn load(file: &Path, choices: &Choices) -> Result<Settings, StoreError> {
     let stored: Map<String, Value> = store::read_json(file)?.unwrap_or_default();
-    Ok(Settings::from_stored(&stored, choices))
+    let (settings, mismatch) = Settings::from_stored_checked(&stored, choices);
+    if let Some(mismatch) = mismatch {
+        // told where the engine tells what is wrong with its files: the model used is the one the settings show
+        eprintln!("settings: {mismatch}");
+    }
+    Ok(settings)
 }
 
 /// Change some settings in `file` and answer them all. A bad value changes nothing at all.
+///
+/// The change is checked against the settings as stored when the file is locked, and written in the same step:
+/// two windows changing the provider and the model at once cannot store a model of one provider with the other
+/// (each change is checked against what the other wrote). The settings that choose the model are always written
+/// together, so that what is stored is a pair that was checked together.
 pub fn save(file: &Path, changes: &Map<String, Value>, choices: &Choices) -> Result<Settings, SettingsError> {
-    // Checked before the file is locked, so that a bad value is refused without touching it; each value is
-    // checked on its own, so the check does not depend on what another writer changes meanwhile.
-    let changed = serde_json::to_value(load(file, choices)?.apply(changes, choices)?).unwrap_or_default();
-    // a provider changed alone changes its model too (to the provider's first): that is kept with it
-    let model = changes.contains_key("describe_provider").then(|| "describe_model".to_owned());
-    store::update_json(file, |stored| {
-        for key in changes.keys().chain(model.as_ref()) {
-            if let Some(value) = changed.get(key) {
-                stored.insert(key.clone(), value.clone());
+    let saved = store::try_update_json(file, |stored| {
+        let next = Settings::from_stored(stored, choices).apply(changes, choices)?;
+        let changed = serde_json::to_value(&next).unwrap_or_default();
+        let touches_model = changes.keys().any(|key| MODEL_KEYS.contains(&key.as_str()));
+        let model_keys = MODEL_KEYS.iter().filter(|_| touches_model).map(|key| (*key).to_owned());
+        for key in changes.keys().cloned().chain(model_keys) {
+            if let Some(value) = changed.get(&key) {
+                stored.insert(key, value.clone());
             }
         }
+        Ok::<Settings, Invalid>(next)
     })?;
+    saved?;
     Ok(load(file, choices)?)
+}
+
+/// Settings stored that do not go together: what was used instead is said, never chosen silently.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("the stored model {stored} is not one of {provider}'s ({why}): {used} is used instead until another is chosen")]
+pub struct Mismatch {
+    pub provider: &'static str,
+    pub stored: String,
+    pub used: String,
+    pub why: String,
+}
+
+impl Settings {
+    /// [`Settings::from_stored`], and what of the stored model did not belong with the stored provider, if any.
+    pub fn from_stored_checked(stored: &Map<String, Value>, choices: &Choices) -> (Settings, Option<Mismatch>) {
+        let settings = Settings::from_stored(stored, choices);
+        let together: Map<String, Value> = stored
+            .iter()
+            .filter(|(key, _)| ["describe_provider", "describe_model"].contains(&key.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let mismatch = match Settings::default().apply(&together, choices) {
+            Err(why) if stored.contains_key("describe_model") => Some(Mismatch {
+                provider: settings.describe_provider.about().label,
+                stored: stored.get("describe_model").and_then(Value::as_str).unwrap_or("").to_owned(),
+                used: settings.describe_model.clone(),
+                why: why.to_string(),
+            }),
+            _ => None,
+        };
+        (settings, mismatch)
+    }
 }
 
 /// The settings that choose the language model, checked together.
@@ -517,6 +560,48 @@ mod tests {
         // a stored file that names no provider keeps the default one, the Claude API
         let stored = Settings::from_stored(&changes(json!({"describe_provider": "OpenAI"})), &choices());
         assert_eq!(stored.describe_provider, Provider::Anthropic);
+    }
+
+    #[test]
+    fn two_windows_changing_the_provider_and_the_model_at_once_never_store_a_pair_that_does_not_go_together() {
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("settings.json");
+        let file = &file;
+        std::thread::scope(|scope| {
+            // one window switches the provider alone, back and forth; the other picks an OpenAI model alone,
+            // which is a choice only while OpenAI is the provider
+            scope.spawn(move || {
+                for round in 0..150 {
+                    let provider = if round % 2 == 0 { "anthropic" } else { "openai" };
+                    save(file, &changes(json!({"describe_provider": provider})), &choices()).unwrap();
+                }
+            });
+            scope.spawn(move || {
+                for _ in 0..150 {
+                    // refused when the provider is the Claude API's, as checked under the lock
+                    let _ = save(file, &changes(json!({"describe_model": "gpt-6.2-astra"})), &choices());
+                }
+            });
+            scope.spawn(move || {
+                for _ in 0..300 {
+                    let stored: Map<String, Value> = store::read_json(file).unwrap().unwrap_or_default();
+                    let (_, mismatch) = Settings::from_stored_checked(&stored, &choices());
+                    assert_eq!(mismatch, None, "{stored:?}");
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn a_stored_model_that_is_not_its_providers_is_said_not_swapped_silently() {
+        let stored = changes(json!({"describe_provider": "anthropic", "describe_model": "gpt-6.2-astra"}));
+        let (settings, mismatch) = Settings::from_stored_checked(&stored, &choices());
+        assert_eq!(settings.describe_model, "claude-opus-5-5");
+        let mismatch = mismatch.unwrap();
+        assert_eq!((mismatch.stored.as_str(), mismatch.used.as_str()), ("gpt-6.2-astra", "claude-opus-5-5"));
+        assert!(mismatch.to_string().contains("is used instead"), "{mismatch}");
+        let fine = changes(json!({"describe_provider": "openai", "describe_model": "gpt-6.2-astra"}));
+        assert_eq!(Settings::from_stored_checked(&fine, &choices()).1, None);
     }
 
     #[test]
