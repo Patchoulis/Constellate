@@ -19,7 +19,12 @@ const nextConfig: NextConfig = {
 		return [{ source: "/:path*", headers: [{ key: "Content-Security-Policy", value: "frame-ancestors 'self'" }] }];
 	},
 	async rewrites() {
-		return [{ source: "/api/:path*", destination: `${BACKEND}/api/:path*` }];
+		return [
+			{ source: "/api/:path*", destination: `${BACKEND}/api/:path*` },
+			// a server's sign-in (apps/engine/src/api/login); the Python backend has none and answers 404
+			{ source: "/auth", destination: `${BACKEND}/auth/` },
+			{ source: "/auth/:path*", destination: `${BACKEND}/auth/:path*` },
+		];
 	},
 };
 

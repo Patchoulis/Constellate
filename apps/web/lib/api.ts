@@ -13,14 +13,27 @@ import type {
 	Status,
 	Usage,
 } from "@rp/contracts";
+import { changesSomething, csrfOf, signInRedirect, withCsrf } from "@/lib/engine";
+
+/** On a server, the session's token that every change carries, asked for once; null on the user's own computer. */
+let csrf: Promise<string | null> | null = null;
+const sessionToken = () =>
+	(csrf ??= fetch("/auth/session", { cache: "no-store" })
+		.then((response) => (response.ok ? response.json() : null))
+		.then(csrfOf, () => null));
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
 	let response: Response;
 	try {
-		response = await fetch(path, { cache: "no-store", ...init });
+		const token = changesSomething(init?.method) ? await sessionToken() : null;
+		response = await fetch(path, { cache: "no-store", ...withCsrf(init, token) });
 	} catch {
 		throw new Error("The backend is not reachable. Start it with: npm run dev");
 	}
+	// a server whose session ended (or was never started): sign in again; a refused token is asked for anew
+	if (response.status === 401 || response.status === 403) csrf = null;
+	const signIn = signInRedirect(response.status, response.headers.get("WWW-Authenticate"), window.location.pathname);
+	if (signIn) window.location.assign(signIn);
 	const body = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(body.error ?? `The backend answered ${response.status}`);
 	return body as T;

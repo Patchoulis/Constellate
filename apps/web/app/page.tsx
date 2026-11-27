@@ -6,6 +6,7 @@ import { SettingsDialog } from "@/components/settings-dialog";
 import { Sidebar } from "@/components/sidebar";
 import { ActivityLog, Notice, Workspace } from "@/components/workspace";
 import { api } from "@/lib/api";
+import { serverOwned } from "@/lib/engine";
 import { ready, useAsync } from "@/lib/use-async";
 import { useJob } from "@/lib/use-job";
 
@@ -22,6 +23,8 @@ export default function Home() {
 	const runs = useAsync(api.runs, []);
 	const library = useAsync(api.library, []);
 	const catalog = useAsync(api.catalog, []);
+	// what kind of engine this window talks to: a server decides some settings itself
+	const engine = useAsync(() => api.status(0), []);
 	const { settings, change } = useSettings();
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [chosen, setChosen] = useState<string | null>(null);
@@ -79,6 +82,7 @@ export default function Home() {
 				validation={ready(library)?.ai_validation}
 				detector={ready(library)?.ai_detector}
 				machine={ready(library)?.machine}
+				serverOwned={serverOwned(ready(engine))}
 				onOpenChange={setSettingsOpen}
 				onChange={(changes) => void change(changes).then(library.reload)} // what the library reports depends on some settings
 				onReadDeclarations={
