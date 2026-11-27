@@ -4,7 +4,8 @@
 //! |--------------|------------------------------------------------------------------------------------|
 //! | [`config`]   | how the engine listens, from the environment: this computer only, or a network     |
 //! | [`connections`] | how many connections there may be, and how long one may stay silent             |
-//! | [`security`] | the checks every request passes (address, origin, token) and the headers it gets   |
+//! | [`security`] | the checks every request passes (address, origin, token or session) and its headers |
+//! | [`login`]    | across a network: the owner's sign-in, with Google or a password, and sessions     |
 //! | [`routes`]   | the routes, the state they share and how errors are told                           |
 //!
 //! [`Server`] puts them together: bound to its address, it says once where it is ([`Server::startup_line`]) and
@@ -12,6 +13,7 @@
 
 pub mod config;
 pub mod connections;
+pub mod login;
 pub mod routes;
 pub mod security;
 
@@ -27,10 +29,12 @@ use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use hyper_util::rt::{TokioExecutor, TokioTimer};
 use hyper_util::server::conn::auto::Builder;
 
-use config::{Listen, TokenSource, Transport};
+use config::{Listen, Transport};
 use connections::Seats;
+use login::oidc::{self, Provider};
+use login::password::{Hashing, PasswordError, SetupCode};
 use routes::{Engine, Shared};
-use security::Guard;
+use security::{Admission, Guard};
 
 /// How long a client may take to send a request's headers before its connection is closed.
 const HEADERS_PATIENCE: Duration = Duration::from_secs(10);
@@ -48,10 +52,13 @@ pub struct Server {
     app: Router,
     /// How long a connection may stay silent ([`connections::QUIET`]; shorter in tests).
     quiet: Duration,
+    /// The code to set the owner's first password with, until it is printed.
+    setup: Option<SetupCode>,
 }
 
 impl Server {
-    /// Bind to the address `listen` says, and put `routes` behind the security layer.
+    /// Bind to the address `listen` says, and put `routes` behind the security layer (and, across a network,
+    /// the owner's sign-in).
     pub fn bind(listen: Listen, engine: Engine, routes: Router<Shared>) -> io::Result<Server> {
         let listener = TcpListener::bind(listen.address())?;
         Server::on(listener, listen, engine, routes)
@@ -61,14 +68,37 @@ impl Server {
     pub(crate) fn on(
         listener: TcpListener,
         listen: Listen,
-        mut engine: Engine,
+        engine: Engine,
         routes: Router<Shared>,
     ) -> io::Result<Server> {
+        Server::with(listener, listen, engine, routes, Arc::new(oidc::Http::default()), Hashing::strong)
+    }
+
+    /// [`Server::on`] with the provider reached through `provider` and passwords hashed as `hashing` says.
+    pub(crate) fn with(
+        listener: TcpListener,
+        listen: Listen,
+        engine: Engine,
+        routes: Router<Shared>,
+        provider: Arc<dyn Provider>,
+        hashing: impl FnOnce() -> Result<Hashing, PasswordError>,
+    ) -> io::Result<Server> {
         let bound = listener.local_addr()?;
-        engine.warnings = listen.warnings();
-        let engine = Arc::new(engine);
-        let app = routes::secured(routes, Arc::clone(&engine), Guard::new(&listen, bound));
-        Ok(Server { listener, bound, listen, engine, app, quiet: connections::QUIET })
+        let (app, engine, setup) = application(&listen, bound, engine, routes, provider, hashing)?;
+        Ok(Server { listener, bound, listen, engine, app, quiet: connections::QUIET, setup })
+    }
+
+    /// Tell whoever runs the server, on standard error, the code to set the owner's first password with, if
+    /// there is one to set. The code is not kept: this is the one place it is ever shown.
+    pub fn announce_setup_code(&mut self) {
+        let Some(code) = self.setup.take() else { return };
+        let page = self
+            .listen
+            .origin()
+            .map_or_else(|| "the sign-in page".to_owned(), |origin| format!("{}/auth/", origin.as_str()));
+        eprintln!("constellate: no password is set for the owner yet. Within 15 minutes, open {page} and enter");
+        eprintln!("constellate: this setup code: {}", code.expose());
+        eprintln!("constellate: it works once; restart the engine for a new one.");
     }
 
     /// The address and port served at (the port is the real one when any free port was asked for).
@@ -97,8 +127,8 @@ impl Server {
             "address": self.bound.ip().to_string(),
             "port": self.bound.port(),
         });
-        if self.listen.token_source() == TokenSource::Generated {
-            line["token"] = self.listen.token().expose().into();
+        if let Some(token) = self.listen.generated_token() {
+            line["token"] = token.expose().into();
         }
         line.to_string()
     }
@@ -128,6 +158,29 @@ impl Server {
             }
         }
     }
+}
+
+/// Everything that answers requests for `listen`, bound at `bound`: `routes`, and across a network the
+/// sign-in's, behind the checks of [`security`]. Answers the setup code of the owner's password, if one is due.
+pub(crate) fn application(
+    listen: &Listen,
+    bound: SocketAddr,
+    mut engine: Engine,
+    routes: Router<Shared>,
+    provider: Arc<dyn Provider>,
+    hashing: impl FnOnce() -> Result<Hashing, PasswordError>,
+) -> io::Result<(Router, Shared, Option<SetupCode>)> {
+    engine.warnings = listen.warnings();
+    engine.mode = listen.mode();
+    let (admission, setup) =
+        Admission::new(listen, &engine.data, provider, hashing).map_err(|error| io::Error::other(error.to_string()))?;
+    let routes = match admission.login() {
+        Some(login) => routes.merge(login::routes(login)),
+        None => routes,
+    };
+    let engine = Arc::new(engine);
+    let app = routes::secured(routes, Arc::clone(&engine), Guard::new(listen, bound, admission));
+    Ok((app, engine, setup))
 }
 
 /// Limits on how slowly and how much a client may send once it is known which HTTP it speaks.
@@ -177,14 +230,37 @@ mod tests {
         Listen::from_environment(&Environment::from_pairs(pairs.iter().copied())).unwrap()
     }
 
+    /// The router as served for `listen` at `at`, with `engine`, a provider nobody reaches and quick hashing.
+    pub(crate) fn served(listen: &Listen, at: &str, engine: Engine) -> (Router, Option<SetupCode>) {
+        let provider = Arc::new(login::oidc::tests::Fake::new(&[]));
+        let (router, _, code) =
+            application(listen, at.parse().unwrap(), engine, routes(), provider, || Ok(Hashing::light())).unwrap();
+        (router, code)
+    }
+
     /// The secured router as served at [`AT`], with a data folder of its own.
     fn app(pairs: &[(&str, &str)]) -> (Router, tempfile::TempDir) {
         let data = tempfile::tempdir().unwrap();
-        let listen = listen(pairs);
-        let mut engine = Engine::new(data.path().to_path_buf(), choices());
-        engine.warnings = listen.warnings();
-        let router = routes::secured(routes(), Arc::new(engine), Guard::new(&listen, AT.parse().unwrap()));
+        let (router, _) = served(&listen(pairs), AT, Engine::new(data.path().to_path_buf(), choices()));
         (router, data)
+    }
+
+    /// Across a network, with a password to sign in with and the token allowed for programs.
+    const NETWORK: [(&str, &str); 5] = [
+        ("CONSTELLATE_BIND", "192.0.2.7"),
+        ("CONSTELLATE_TOKEN", STRONG),
+        ("CONSTELLATE_ALLOW_TOKEN", "true"),
+        ("CONSTELLATE_USE_HTTPS", "false"),
+        ("CONSTELLATE_ALLOW_PASSWORD", "true"),
+    ];
+
+    fn network(extra: &[(&'static str, &'static str)]) -> Vec<(&'static str, &'static str)> {
+        NETWORK
+            .iter()
+            .copied()
+            .chain([("CONSTELLATE_ORIGIN", "https://papers.test")])
+            .chain(extra.iter().copied())
+            .collect()
     }
 
     fn local() -> (Router, tempfile::TempDir) {
@@ -364,13 +440,8 @@ mod tests {
     #[tokio::test]
     async fn the_status_has_the_log_from_a_line_on_and_the_warnings() {
         let data = tempfile::tempdir().unwrap();
-        let listen = listen(&[
-            ("CONSTELLATE_BIND", "192.0.2.7"),
-            ("CONSTELLATE_TOKEN", STRONG),
-            ("CONSTELLATE_USE_HTTPS", "false"),
-        ]);
-        let mut engine = Engine::new(data.path().to_path_buf(), choices());
-        engine.warnings = listen.warnings();
+        let listen = listen(&network(&[]));
+        let engine = Engine::new(data.path().to_path_buf(), choices());
         let (release, wait) = std::sync::mpsc::channel::<()>();
         engine
             .job
@@ -382,7 +453,7 @@ mod tests {
             })
             .unwrap();
         let at = "192.0.2.7:8765";
-        let router = routes::secured(routes(), Arc::new(engine), Guard::new(&listen, at.parse().unwrap()));
+        let (router, _) = served(&listen, at, engine);
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let told = loop {
             let request = Request::get("/api/status?since=1")
@@ -397,6 +468,10 @@ mod tests {
         release.send(()).unwrap();
         assert_eq!((told["state"].clone(), told["log"].clone()), (json!("running"), json!(["[2/2] embed"])));
         assert!(told["warnings"][0].as_str().unwrap().contains("HTTPS is off"));
+        assert_eq!(
+            (told["mode"].clone(), told["server_owned"].clone()),
+            (json!("network"), json!(["embedding_model"]))
+        );
         let bad = Request::get("/api/status?since=many")
             .header(header::HOST, at)
             .header(header::AUTHORIZATION, format!("Bearer {STRONG}"));
@@ -406,17 +481,9 @@ mod tests {
     #[tokio::test]
     async fn across_a_network_an_address_that_keeps_guessing_is_made_to_wait_and_others_are_not() {
         let data = tempfile::tempdir().unwrap();
-        let listen = listen(&[
-            ("CONSTELLATE_BIND", "192.0.2.7"),
-            ("CONSTELLATE_TOKEN", STRONG),
-            ("CONSTELLATE_USE_HTTPS", "false"),
-        ]);
+        let listen = listen(&network(&[]));
         let at = "192.0.2.7:8765";
-        let router = routes::secured(
-            routes(),
-            Arc::new(Engine::new(data.path().to_path_buf(), choices())),
-            Guard::new(&listen, at.parse().unwrap()),
-        );
+        let (router, _) = served(&listen, at, Engine::new(data.path().to_path_buf(), choices()));
         let from = |remote: &str, token: &str| {
             let mut request = Request::get("/api/status")
                 .header(header::HOST, at)
@@ -512,12 +579,19 @@ mod tests {
             ("CONSTELLATE_BIND", "0.0.0.0"),
             ("CONSTELLATE_HOST", "localhost"),
             ("CONSTELLATE_TOKEN", STRONG),
+            ("CONSTELLATE_ALLOW_TOKEN", "true"),
+            ("CONSTELLATE_ALLOW_PASSWORD", "true"),
+            ("CONSTELLATE_ORIGIN", "https://localhost"),
             ("CONSTELLATE_TLS_CERT", certificate.to_str().unwrap()),
             ("CONSTELLATE_TLS_KEY", key.to_str().unwrap()),
         ]);
         assert_eq!(listen.mode(), config::Mode::Network);
         let socket = TcpListener::bind("127.0.0.1:0").unwrap();
-        let server = Server::on(socket, listen, Engine::new(folder.path().join("data"), choices()), routes()).unwrap();
+        let mut server =
+            Server::on(socket, listen, Engine::new(folder.path().join("data"), choices()), routes()).unwrap();
+        assert!(server.setup.is_some(), "no password yet: a setup code is due");
+        server.announce_setup_code();
+        assert!(server.setup.is_none(), "the code is not kept once it is shown");
         let line: Value = serde_json::from_str(&server.startup_line()).unwrap();
         assert_eq!((line["scheme"].clone(), line.get("token")), (json!("https"), None)); // a given token is never repeated
         let (bound, stop, running) = serve(server);

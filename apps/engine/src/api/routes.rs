@@ -1,12 +1,15 @@
 //! What the interface can ask, and how the engine's errors are told to it.
 //!
 //! ```text
-//! GET /api/status?since=N   the job (jobs.rs) with its log from line N on, and the warnings about how it listens
+//! GET /api/status?since=N   the job (jobs.rs) with its log from line N on, the warnings about how it listens,
+//!                           the mode (local or network) and the settings the server owns
 //! GET /api/settings         the settings
 //! PUT /api/settings         change some of them: a JSON object of the ones to change
 //! ```
 //!
-//! A route is a function of the shared [`Engine`]; adding one is a line in [`routes`] (or a `Router<Shared>` of
+//! Across a network the owner's sign-in routes are served too (`/auth/...`, [`super::login`]).
+//!
+//! A route is a function of the shared [`Engine`]; adding one is a line in [`table`] (or a `Router<Shared>` of
 //! its own given to [`secured`]). Whatever is added passes the security layer like everything else: it is
 //! applied around the whole router, unknown paths included.
 
@@ -19,13 +22,14 @@ use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{DefaultBodyLimit, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{MethodRouter, get};
 use axum::{Json, middleware};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 
+use super::config::Mode;
 use super::security::{self, Guard, LARGEST_BODY};
 use crate::jobs::{Busy, Job, Snapshot};
 use crate::settings::{self, Choices, Settings, SettingsError};
@@ -44,13 +48,15 @@ pub struct Engine {
     pub choices: Choices,
     /// What is unsafe about how the engine listens ([`super::config::Listen::warnings`]), for the interface.
     pub warnings: Vec<String>,
+    /// This computer only, or a network: set by the server from how it listens.
+    pub mode: Mode,
 }
 
 pub type Shared = Arc<Engine>;
 
 impl Engine {
     pub fn new(data: PathBuf, choices: Choices) -> Engine {
-        Engine { job: Job::new(), data, choices, warnings: Vec::new() }
+        Engine { job: Job::new(), data, choices, warnings: Vec::new(), mode: Mode::Local }
     }
 
     pub fn settings_file(&self) -> PathBuf {
@@ -75,9 +81,21 @@ pub enum ApiError {
     /// The same answer for a missing token and a wrong one.
     #[error("this request needs the engine's token")]
     Unauthorized,
+    /// Across a network, a request without the owner's session (or an allowed token).
+    #[error("sign in first, at /auth/")]
+    SignInNeeded,
+    /// The same answer for a wrong password, a wrong setup code, and a way of signing in that is not offered.
+    #[error("sign-in was refused")]
+    SignInRefused,
     #[error("{0}")]
     Forbidden(&'static str),
-    #[error("too many requests with a wrong token: try again later")]
+    /// A setting the server decides ([`server_owned`]).
+    #[error(
+        "{0} is decided by the server this window is connected to: it is the same for every window, and \
+         changing it would embed the whole library again. It is set in the server's own settings"
+    )]
+    ServerOwned(&'static str),
+    #[error("too many attempts: try again later")]
     TooManyAttempts,
     /// The engine's own files could not be read or written. What exactly went wrong (with the file's path) goes
     /// to the engine's error output, not to whoever asked.
@@ -94,8 +112,8 @@ impl ApiError {
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::Busy(_) => StatusCode::CONFLICT,
             ApiError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
-            ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
-            ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
+            ApiError::Unauthorized | ApiError::SignInNeeded | ApiError::SignInRefused => StatusCode::UNAUTHORIZED,
+            ApiError::Forbidden(_) | ApiError::ServerOwned(_) => StatusCode::FORBIDDEN,
             ApiError::TooManyAttempts => StatusCode::TOO_MANY_REQUESTS,
             ApiError::Files | ApiError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -110,6 +128,13 @@ impl IntoResponse for ApiError {
         match self {
             ApiError::Unauthorized => {
                 headers.insert(header::WWW_AUTHENTICATE, header::HeaderValue::from_static("Bearer"));
+            }
+            // RFC 9110 asks a 401 to name a scheme; a session is no registered one, so the realm says where
+            ApiError::SignInNeeded | ApiError::SignInRefused => {
+                headers.insert(
+                    header::WWW_AUTHENTICATE,
+                    header::HeaderValue::from_static("Session realm=\"constellate\", sign_in=\"/auth/\""),
+                );
             }
             ApiError::TooManyAttempts => {
                 headers.insert(header::RETRY_AFTER, header::HeaderValue::from(security::STRIKE_WINDOW.as_secs()));
@@ -194,9 +219,25 @@ async fn on_the_side<T: Send + 'static>(
     tokio::task::spawn_blocking(work).await.map_err(|_| ApiError::Internal)?
 }
 
+/// Every route the engine has, by path. A test walks this list to see that each one is refused to whoever has
+/// not signed in, so a route is added here and nowhere else.
+pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
+    vec![("/api/status", get(status)), ("/api/settings", get(read_settings).put(change_settings))]
+}
+
 /// The routes the engine has, without the security layer: [`secured`] adds it.
 pub fn routes() -> Router<Shared> {
-    Router::new().route("/api/status", get(status)).route("/api/settings", get(read_settings).put(change_settings))
+    table().into_iter().fold(Router::new(), |router, (path, route)| router.route(path, route))
+}
+
+/// The settings that belong to the server when the interface reaches it across a network: the same for every
+/// window that connects, and not changed from one. The embedding model is the library's: changing it would
+/// embed every paper again.
+pub fn server_owned(mode: Mode) -> &'static [&'static str] {
+    match mode {
+        Mode::Local => &[],
+        Mode::Network => &["embedding_model"],
+    }
 }
 
 /// `routes` behind the security layer, with the engine they share: the one way a router is served.
@@ -221,6 +262,10 @@ struct Status<'a> {
     #[serde(flatten)]
     job: Snapshot<String>,
     warnings: &'a [String],
+    /// `local` or `network`: what kind of engine the interface is talking to.
+    mode: &'static str,
+    /// The settings the interface may not change ([`server_owned`]).
+    server_owned: &'static [&'static str],
 }
 
 async fn status(
@@ -228,7 +273,16 @@ async fn status(
     since: Result<Query<Since>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let Query(Since { since }) = since?;
-    let told = Status { job: engine.job.snapshot(since.unwrap_or(0)), warnings: &engine.warnings };
+    let mode = match engine.mode {
+        Mode::Local => "local",
+        Mode::Network => "network",
+    };
+    let told = Status {
+        job: engine.job.snapshot(since.unwrap_or(0)),
+        warnings: &engine.warnings,
+        mode,
+        server_owned: server_owned(engine.mode),
+    };
     Ok(Json(serde_json::to_value(told).map_err(|_| ApiError::Internal)?))
 }
 
@@ -246,7 +300,21 @@ async fn change_settings(
         Value::Object(changes) => changes,
         _ => return Err(ApiError::Invalid("the request body must be a JSON object".to_owned())),
     };
-    let saved = on_the_side(move || Ok(settings::save(&engine.settings_file(), &changes, &engine.choices)?)).await?;
+    let saved = on_the_side(move || {
+        let owned = server_owned(engine.mode);
+        if owned.iter().any(|key| changes.contains_key(*key)) {
+            // sent unchanged (an interface that sends every setting) is fine; changed is not
+            let current = serde_json::to_value(settings::load(&engine.settings_file(), &engine.choices)?)
+                .map_err(|_| ApiError::Internal)?;
+            if let Some(key) =
+                owned.iter().find(|key| changes.get(**key).is_some_and(|value| Some(value) != current.get(**key)))
+            {
+                return Err(ApiError::ServerOwned(key));
+            }
+        }
+        Ok(settings::save(&engine.settings_file(), &changes, &engine.choices)?)
+    })
+    .await?;
     Ok(Json(saved))
 }
 

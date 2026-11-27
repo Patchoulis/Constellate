@@ -32,8 +32,15 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Security
 
 - The new engine answers only the app itself: every request must carry a secret token and be addressed to the
-  engine, and pages of other sites are refused. Run on another machine than the app, it requires HTTPS and a token
-  of its own, and warns loudly if HTTPS is turned off.
+  engine, and pages of other sites are refused. Run on another machine than the app, it requires HTTPS, and warns
+  loudly if HTTPS is turned off.
+- The engine can run as your own server, used from elsewhere through a browser, and then only you get in: you sign
+  in with Google (or any OpenID Connect provider) as the one account the server is set up for, or with a password
+  that is set once with a code the server prints when it first starts and kept only as a strong hash. Every page and
+  request of the server needs that sign-in; sessions end after two hours without use or twelve hours in all, and
+  you can sign out on every device at once. Requests from other sites are refused, sign-in attempts are limited, and
+  everything secret is read from the environment or `.env` only. When the window is connected to such a server, the
+  embedding model is the server's to decide and is no longer offered in Settings.
 
 ## [0.1.0] - 2026-11-26
 

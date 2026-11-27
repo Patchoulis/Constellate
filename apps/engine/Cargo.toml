@@ -14,10 +14,18 @@ workspace = true
 # system OpenSSL (Linux) nor the build tools aws-lc needs are required.
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }
 axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
+# the owner's password, kept only as an Argon2id hash (src/api/login/password.rs)
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "password-hash"] }
+# PKCE, state and session ids are written in base64url (RFC 7636, RFC 4648 section 5)
+base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 getrandom = "0.3"
 half = "2"
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+# the ID token of a sign-in with Google (OpenID Connect): its signature checked against the provider's published
+# keys (JWKS), and its claims. The pure-Rust backend, so that no C build tools are needed (aws-lc-rs would be).
+# 10.x: later versions need a newer Rust than the workspace's rust-version.
+jsonwebtoken = { version = "10.3", default-features = false, features = ["rust_crypto"] }
 # matrix products through matrixmultiply on every core: the similarity matrix is one n x n product
 ndarray = { version = "0.17", features = ["matrixmultiply-threading"] }
 ort = { version = "=2.0.0-rc.15", features = ["half"] }
@@ -55,8 +63,11 @@ ort = { version = "=2.0.0-rc.15", features = ["directml"] }
 ort = { version = "=2.0.0-rc.15", features = ["webgpu"] }
 
 [dev-dependencies]
+# the test's own OpenID provider signs ID tokens with RSA keys made at test time (no key is kept in the repository)
+rand = "0.8"
 # a self-signed certificate made at test time: no certificate or key is ever kept in the repository
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "crypto"] }
+rsa = "0.9"
 tempfile = "3"
 tokio = { version = "1", features = ["io-util"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
