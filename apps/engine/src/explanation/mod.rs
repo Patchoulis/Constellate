@@ -38,11 +38,12 @@ use crate::model::batch::{self, Asking, BatchEstimate, Failure, Item, Outcome, S
 use crate::model::chosen::{self, Accepted, Chosen, Terms};
 use crate::model::language::{Ask, Budget, Form, Limit};
 use crate::text::passages::{Address, Kind, Passages};
+use crate::text::{data_section, first_chars};
 use definitions::Definition;
 
 /// The version of the prompt and of the answer's shape: raise it when either changes, and kept explanations are
 /// asked for again.
-pub const PROMPT: u32 = 1;
+pub const PROMPT: u32 = 2;
 /// Characters of the section around the passage sent with it: about 4,000 tokens at three characters a token.
 pub const CONTEXT_CHARS: usize = 12_000;
 /// Characters of the abstract sent.
@@ -287,7 +288,8 @@ pub fn schema() -> Value {
 }
 
 /// The instructions, the same for every explanation, whatever the model.
-pub const SYSTEM: &str = "You explain one passage of a research paper to a reader who knows science but not this \
+pub const SYSTEM: &str = concat!(
+    "You explain one passage of a research paper to a reader who knows science but not this \
 paper's field. Answer only with the JSON asked for: a list of statements, each one or two plain sentences, in the \
 order a reader should read them.
 
@@ -301,7 +303,11 @@ as background, and never present background as the paper's.
 
 Write mathematics in LaTeX between dollar signs, for example $\\alpha_t$. The field \"symbol\" is empty except in \
 statements of part \"symbol\". The paper's text was extracted from its PDF, so equations and tables may be \
-garbled in it: when you cannot read something, say so in a statement instead of guessing.";
+garbled in it: when you cannot read something, say so in a statement instead of guessing.
+
+",
+    crate::text::data_rule!()
+);
 
 /// One explanation's prompt: the paper's part (title, abstract, the section around the passage) and the question.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -343,9 +349,8 @@ fn context(passages: &Passages, index: usize) -> Vec<usize> {
     (before..=after).collect()
 }
 
-fn first_chars(text: &str, most: usize) -> &str {
-    text.char_indices().nth(most).map_or(text, |(end, _)| &text[..end])
-}
+/// How the passage to explain is marked among those around it (inside a data section, so no `>>>` in it).
+const MARK: &str = "[[THE PASSAGE TO EXPLAIN]]";
 
 /// The prompt that explains passage `index` of `paper` (its title and abstract given), with the definitions found.
 pub fn prompt(
@@ -365,19 +370,23 @@ pub fn prompt(
     };
     // the paper's part only: the same for every passage of the paper, so that a provider's cache of it serves the
     // next passage explained; what depends on the passage (its section, the mark) is the question's
-    let shared =
-        format!("Paper id: {paper}\nTitle: {title}\nAbstract: {}\n", first_chars(abstract_text, ABSTRACT_CHARS));
+    let shared = data_section(
+        "PAPER",
+        &format!("Paper id: {paper}\nTitle: {title}\nAbstract: {}\n", first_chars(abstract_text, ABSTRACT_CHARS)),
+    );
     let mut asked = format!(
         "The section \"{section}\" around the passage, as extracted from the PDF (page numbers in brackets; the \
-         passage itself is marked):\n"
+         passage itself is marked {MARK}):\n"
     );
+    let mut around = String::new();
     for at in context(passages, index) {
         let passage = &passages.passages[at];
-        let marked = if at == index { " >>> THE PASSAGE TO EXPLAIN >>>" } else { "" };
-        asked.push_str(&format!("\n[p. {}]{marked} {}\n", passage.address.page, passage.text));
+        let marked = if at == index { format!(" {MARK}") } else { String::new() };
+        around.push_str(&format!("\n[p. {}]{marked} {}\n", passage.address.page, passage.text));
     }
+    asked.push_str(&data_section("SECTION", &around));
     asked.push_str(&format!(
-        "\nThe passage to explain is a {} on page {} of paper {paper}:\n\n{}\n\n{}",
+        "\nThe passage to explain is a {} on page {} of paper {paper}:\n\n{}\n{}",
         match target.kind {
             Kind::Equation => "displayed equation",
             Kind::TableCaption => "table caption",
@@ -387,7 +396,7 @@ pub fn prompt(
             Kind::Text | Kind::Title | Kind::Heading => "paragraph",
         },
         target.address.page,
-        target.text,
+        data_section("PASSAGE", &target.text),
         question.task(),
     ));
     if Question::garbled(target.kind) {
@@ -398,12 +407,15 @@ pub fn prompt(
             "\n\nWhere the paper introduces the symbols and terms the passage uses (found by a program; \
                         quote them when you use them):",
         );
+        let mut defined = String::new();
         for definition in found {
-            asked.push_str(&format!(
-                "\n- {} (p. {}): {}",
+            defined.push_str(&format!(
+                "- {} (p. {}): {}\n",
                 definition.term.text, definition.address.page, definition.sentence
             ));
         }
+        asked.push('\n');
+        asked.push_str(&data_section("DEFINITIONS", &defined));
     }
     Prompt { shared, question: asked }
 }
@@ -585,10 +597,16 @@ update.\n\nTable 1. Accuracy of merged models on eight vision tasks, with and wi
         let equation = index_of(&passages, "∆W =");
         let found = definitions::definitions(&passages, equation);
         let prompt = prompt(PAPER, "Spectral Merging", "We study merging.", &passages, equation, &found);
-        assert_eq!(prompt.shared, "Paper id: 2601.00001\nTitle: Spectral Merging\nAbstract: We study merging.\n");
+        assert_eq!(
+            prompt.shared,
+            "<<<BEGIN PAPER>>>\nPaper id: 2601.00001\nTitle: Spectral Merging\nAbstract: We study merging.\n<<<END PAPER>>>\n"
+        );
+        assert!(SYSTEM.ends_with(crate::text::data_rule!()), "the system prompt says the sections are data");
+        assert!(prompt.question.contains("<<<BEGIN SECTION>>>\n") && prompt.question.contains("<<<BEGIN PASSAGE>>>\n"));
+        assert!(prompt.question.contains("<<<BEGIN DEFINITIONS>>>\n- α (p. 1)"));
         assert!(prompt.question.starts_with("The section \"2. Method\" around the passage"));
         assert!(prompt.question.contains("[p. 2] The merged update is the sum of the task updates"));
-        assert!(prompt.question.contains("[p. 2] >>> THE PASSAGE TO EXPLAIN >>> ∆W = α ∑ i ∆Wi (1)"));
+        assert!(prompt.question.contains("[p. 2] [[THE PASSAGE TO EXPLAIN]] ∆W = α ∑ i ∆Wi (1)"));
         assert!(prompt.question.contains("[p. 2] where ∆Wi is the update of task i."));
         assert!(!prompt.question.contains("[p. 1]"), "another section is not sent");
         assert!(
