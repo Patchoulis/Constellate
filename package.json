@@ -1,0 +1,23 @@
+{
+	"name": "constellate",
+	"version": "0.1.0",
+	"private": true,
+	"packageManager": "npm@11.20.0",
+	"workspaces": [
+		"apps/*",
+		"packages/*"
+	],
+	"scripts": {
+		"build": "node scripts/build.mjs",
+		"app": "node scripts/build.mjs --run",
+		"dist": "node scripts/build.mjs --dist",
+		"dev": "turbo run dev",
+		"typecheck": "turbo run typecheck",
+		"pipeline": "npm run pipeline --workspace @rp/backend --",
+		"test": "turbo run test"
+	},
+	"devDependencies": {
+		"@resvg/resvg-js": "^2.6.2",
+		"turbo": "^2.5.0"
+	}
+}

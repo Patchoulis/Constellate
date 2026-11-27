@@ -1,0 +1,25 @@
+appId: app.constellate.desktop
+productName: Constellate
+directories:
+  output: ../../dist
+# Only the shell goes into the app itself; it needs nothing but Electron and Node built-ins.
+files:
+  - "!**/*"
+  - main.cjs
+  - icon.png
+  - package.json
+# The two servers ride along as plain folders (scripts/build.mjs prepares the web one).
+extraResources:
+  - from: ../web/.next/standalone
+    to: web
+  - from: ../backend
+    to: backend
+    filter:
+      - "rp/**/*.py"
+      - requirements.txt
+win:
+  target: nsis
+  icon: icon.png
+nsis:
+  oneClick: true
+  perMachine: false

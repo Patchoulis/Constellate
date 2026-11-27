@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Constellate's icon. The orbit paths are the "universe" icon of Tabler Icons (https://tabler.io/icons),
+       MIT licence, (c) Pawel Kuna; recoloured and placed on a tile. See THIRD_PARTY_NOTICES.md. -->
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#7c5cff" stop-opacity="0.55"/>
+      <stop offset="0.6" stop-color="#3b82f6" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#141414" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="#141414"/>
+  <circle cx="128" cy="128" r="112" fill="url(#glow)"/>
+  <g transform="translate(32 32) scale(8)" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke="#c4b5fd" d="M7.027 11.477a5 5 0 1 0 5.496 -4.45a4.951 4.951 0 0 0 -3.088 .681"/>
+    <path stroke="#93c5fd" d="M5.636 5.636a9 9 0 1 0 3.555 -2.188"/>
+    <path stroke="#5eead4" fill="#5eead4" d="M17 5a1 1 0 1 0 2 0a1 1 0 1 0 -2 0"/>
+    <path stroke="#fde68a" fill="#fde68a" d="M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0"/>
+    <path stroke="#f9a8d4" fill="#f9a8d4" d="M8 16a1 1 0 1 0 2 0a1 1 0 1 0 -2 0"/>
+  </g>
+</svg>

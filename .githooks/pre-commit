@@ -1,0 +1,17 @@
+#!/bin/sh
+# Refuse a commit that adds something shaped like a secret, or a file that must never be committed.
+# Enabled by: git config core.hooksPath .githooks
+forbidden=$(git diff --cached --name-only --diff-filter=AM | grep -E '(^|/)(\.env(\..*)?|.*\.pem|.*\.key|settings\.local\.json)$|^data/')
+if [ -n "$forbidden" ]; then
+	echo "pre-commit: these files must not be committed:" >&2
+	echo "$forbidden" >&2
+	exit 1
+fi
+pattern='sk-ant-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|hf_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+found=$(git diff --cached -U0 --diff-filter=AM | grep -E '^\+' | grep -En -- "$pattern" | cut -c1-60)
+if [ -n "$found" ]; then
+	echo "pre-commit: something shaped like a secret is staged (shown cut short):" >&2
+	echo "$found" >&2
+	echo "Remove it, and revoke the key if it was real." >&2
+	exit 1
+fi

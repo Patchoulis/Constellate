@@ -1,0 +1,43 @@
+name: Release
+
+# Pushing a tag vX.Y.Z publishes a GitHub release whose notes are that version's section of CHANGELOG.md.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish the release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag, package.json and the changelog agree on the version
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          declared="$(node -p "require('./package.json').version")"
+          if [ "$version" != "$declared" ]; then
+            echo "::error::the tag says $version but package.json says $declared"
+            exit 1
+          fi
+          # the lines between this version's heading and the next one
+          awk -v version="$version" '
+            /^## \[/ { printing = (index($0, "## [" version "]") == 1); next }
+            /^\[[^]]+\]: / { next }
+            printing { print }
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no entries under [$version]"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" --title "Constellate ${{ steps.version.outputs.version }}" --notes-file notes.md --verify-tag

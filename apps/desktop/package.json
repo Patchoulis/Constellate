@@ -1,0 +1,17 @@
+{
+	"name": "@rp/desktop",
+	"productName": "Constellate",
+	"version": "0.1.0",
+	"private": true,
+	"description": "arXiv and conference papers, embedded and split into communities by Fiedler vectors.",
+	"author": "Constellate",
+	"main": "main.cjs",
+	"scripts": {
+		"start": "electron .",
+		"dist": "electron-builder --win --x64"
+	},
+	"devDependencies": {
+		"electron": "^44.9.3",
+		"electron-builder": "26.16.1"
+	}
+}

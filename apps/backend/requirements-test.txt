@@ -1,0 +1,10 @@
+# What the tests need: everything in requirements.txt except the model libraries (torch, transformers), which no
+# test loads.  CI installs this.
+numpy
+scipy
+scikit-learn
+requests
+flask
+anthropic
+pypdf
+pytest
