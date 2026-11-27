@@ -212,7 +212,8 @@ fn build(library: &Library, ids: &[String], progress: &crate::text::retrieval::P
     Ok(builder.finish())
 }
 
-/// The texts of the papers `hits` are from, as the library has them now (kept: no PDF is read again).
+/// The texts of the papers `hits` are from, as the library has them now: what was read is not read again, but a
+/// PDF kept since and never read is read now (so this runs on a thread of its own, never a rayon worker).
 fn texts_of(library: &Library, hits: &[Hit]) -> Result<Papers, ApiError> {
     let mut ids: Vec<&str> = hits.iter().map(|hit| hit.paper.as_str()).collect();
     ids.sort_unstable();
