@@ -66,6 +66,9 @@ pub struct Engine {
     /// How the language model's requests reach its provider: the network, or a test's fake (which reaches nothing,
     /// so that no test of a route can ever call a real provider).
     pub transport: Arc<dyn Transport>,
+    /// Papers' PDFs on demand: fetched once, politely, when a paper's is not kept ([`crate::papers::pdf`]). A test
+    /// gives it a fake fetcher, so that no test reaches the network.
+    pub pdfs: crate::papers::pdf::Pdfs,
     /// The library, opened when a route first needs it (and tried again after a failure to open).
     library: Mutex<Option<Arc<Library>>>,
 }
@@ -84,6 +87,7 @@ impl Engine {
             providers,
             language: Err(Unavailable::NoKey),
             transport: Arc::new(Https::default()),
+            pdfs: crate::papers::pdf::Pdfs::default(),
             library: Mutex::new(None),
         }
     }

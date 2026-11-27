@@ -261,6 +261,19 @@ pub const MIGRATIONS: &[&str] = &[
     -- markers left are rows of nothing.
     DELETE FROM kept_answers WHERE feature = 'explanation' AND content = '{"redone":true}';
     "#,
+    // 10 (a paper's PDF on demand, papers/): where each conference's proceedings keep their PDFs, and which PDF
+    // a paper's declarations were read from
+    r"
+    -- A conference's index of PDFs for one year (sources/proceedings.rs IndexState, as JSON), by 'slug-year'.
+    CREATE TABLE proceedings_indexes (
+        conference TEXT PRIMARY KEY,
+        state      TEXT NOT NULL,
+        changed_at TEXT NOT NULL
+    );
+    -- The SHA-256 of the PDF a reading of declarations came from; NULL for one moved in from the Python backend,
+    -- which read the same publisher's PDF and did not keep it.
+    ALTER TABLE declarations ADD COLUMN pdf_hash TEXT;
+    ",
 ];
 
 /// Bring `connection` to the last of `migrations`. Refuses a database newer than the list.

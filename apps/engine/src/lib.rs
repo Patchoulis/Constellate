@@ -12,6 +12,7 @@
 //! | [`jobs`]    | the one background job at a time, as an explicit state machine                  |
 //! | [`machine`] | what this computer can run the embedding model on, in words for Settings       |
 //! | [`model`]   | the embedding model on any graphics card or the processor; a language model over its provider's API |
+//! | [`papers`]  | one paper's PDF, fetched when it is not kept, and what its authors declare in it |
 //! | [`runs`]    | many runs: the list without loading any, a cache by use, warm-up at start      |
 //! | [`usage`]   | what calls to the language model cost, from prices built into the engine       |
 //! | [`selection`] | which papers a run is about: conferences, or a date range                     |
@@ -31,6 +32,7 @@ pub mod jobs;
 pub mod library;
 pub mod machine;
 pub mod model;
+pub mod papers;
 pub mod runs;
 pub mod selection;
 pub mod settings;
