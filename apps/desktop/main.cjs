@@ -24,6 +24,7 @@ const http = require("node:http");
 const path = require("node:path");
 const { Lifecycle } = require("./lifecycle.cjs");
 const { interfacePort } = require("./port.cjs");
+const { READER, readable, refused } = require("./reader.cjs");
 const setup = require("./setup.cjs");
 
 const BACKEND_PORT = 8765; // the web build forwards /api here (apps/web/next.config.ts)
@@ -252,9 +253,9 @@ function openWindow(url) {
 		};
 		guest.on("will-navigate", stay);
 		guest.on("will-redirect", stay);
-		// A frame inside a shown page must not load this app's own interface or API.
+		// A frame inside a shown page must not load this app's own interface or API (nor a file, nor plain http).
 		guest.on("will-frame-navigate", (event) => {
-			if (!event.isMainFrame && local(event.url)) event.preventDefault();
+			if (!event.isMainFrame && refused(event.url)) event.preventDefault();
 		});
 		guest.setWindowOpenHandler(({ url: target }) => {
 			if (/^https:\/\//.test(target)) void shell.openExternal(target);
@@ -269,40 +270,16 @@ function openWindow(url) {
 	void window.loadURL(url);
 }
 
-/** The embedded reader's storage partition, and the sites it may show: where papers and their reviews live. */
-const READER = "reader";
-const READER_SITES = [
-	"openreview.net",
-	"arxiv.org",
-	"proceedings.neurips.cc",
-	"proceedings.mlr.press",
-	"openaccess.thecvf.com",
-	"aclanthology.org",
-];
-
-function readable(address) {
-	try {
-		const { protocol, hostname } = new URL(address);
-		return protocol === "https:" && READER_SITES.some((site) => hostname === site || hostname.endsWith(`.${site}`));
-	} catch {
-		return false;
-	}
-}
-
-function local(address) {
-	try {
-		return ["127.0.0.1", "localhost", "[::1]", "::1"].includes(new URL(address).hostname);
-	} catch {
-		return false;
-	}
-}
-
 /** Nothing in this app needs the camera, the microphone, the location...: every permission request is refused. */
 function refusePermissions() {
 	for (const each of [session.defaultSession, session.fromPartition(READER)]) {
 		each.setPermissionRequestHandler((_contents, _permission, answer) => answer(false));
 		each.setPermissionCheckHandler(() => false);
 	}
+	// Navigation rules stop frames, not a script's fetch(), an image or a form a page sends: every request a page in
+	// the reader makes is checked here, so that none reaches this app's interface, its API or the engine on this
+	// computer, nor a file (reader.cjs).
+	session.fromPartition(READER).webRequest.onBeforeRequest((details, answer) => answer({ cancel: refused(details.url) }));
 }
 
 /** Stop everything this shell started. Whatever state it was in, nothing new starts after this. */
