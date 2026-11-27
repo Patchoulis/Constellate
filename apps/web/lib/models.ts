@@ -5,6 +5,7 @@
  * Claude models is all there is to choose from.
  */
 import type { CatalogItem, Effort, ModelCatalog, ModelEntry, ModelPrice, ModelProvider, ProviderId, Settings } from "@rp/contracts";
+import { isMissingRoute } from "@/lib/missing-route";
 import { money, type Currency } from "@/lib/units";
 
 /** Where the choice came from: the engine, which knows every provider, or an older backend, which knows Claude only. */
@@ -45,11 +46,6 @@ export function olderBackend(models: CatalogItem[], chosen: string | undefined):
 	};
 	const model = chosen ?? models[0]?.name ?? "";
 	return { source: "older_backend", catalog: { providers: [anthropic], chosen: { provider: "anthropic", model, effort: "medium" } } };
-}
-
-/** Does this error say the backend has no such route (and so is the older one)? */
-export function isMissingRoute(error: unknown): boolean {
-	return error instanceof Error && /not found|answered 404/i.test(error.message);
 }
 
 /** The engine's catalog, or null from a backend that has no `GET /api/models`. */

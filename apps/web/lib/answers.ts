@@ -99,9 +99,7 @@ export function splitPassages(passages: PassageFound[]): { cited: PassageFound[]
 }
 
 /** Does this error say the engine has no such route (the Python backend)? Then the Ask box is not shown. */
-export function missingRoute(error: string): boolean {
-	return /not found|answered 404/i.test(error);
-}
+export { isMissingRoute as missingRoute } from "@/lib/missing-route";
 
 /** The questions asked of one scope: the whole run's (community null), or one community's. */
 export function historyOf(questions: AnswerSummary[], community: string | null): AnswerSummary[] {

@@ -25,12 +25,12 @@ import {
 	historyOf,
 	indexingLine,
 	leftOutLine,
-	missingRoute,
 	MODEL_NOTE,
 	reduceAsk,
 	splitPassages,
 	stateNote,
 } from "@/lib/answers";
+import { isMissingRoute as missingRoute } from "@/lib/missing-route";
 import { ready, useAsync } from "@/lib/use-async";
 import { useResizable } from "@/lib/use-resizable";
 import { count } from "@/lib/units";

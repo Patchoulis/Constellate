@@ -11,12 +11,12 @@ import {
 	effortsOf,
 	engineCatalog,
 	groupsOf,
-	isMissingRoute,
 	isPlainId,
 	olderBackend,
 	priceLabel,
 	priceOf,
 } from "@/lib/models";
+import { isMissingRoute } from "@/lib/missing-route";
 
 const USD = { code: "USD", rate: 1, date: null };
 
@@ -142,6 +142,6 @@ test("a backend without the models route falls back to today's list of Claude mo
 	assert.deepEqual(effortsOf(chosenOf(older.catalog, undefined)), [], "no effort the older backend does not know");
 	assert.equal(choosableOf(await engineCatalog(() => Promise.resolve(catalog)), [], undefined).source, "engine");
 	await assert.rejects(engineCatalog(() => Promise.reject(new Error("The backend is not reachable"))));
-	assert.ok(isMissingRoute(new Error("not found")) && !isMissingRoute("not found"));
+	assert.ok(isMissingRoute(new Error("not found")) && isMissingRoute("not found") && !isMissingRoute(undefined));
 	assert.equal(olderBackend([], "claude-sonnet-5-5").catalog.chosen.model, "claude-sonnet-5-5");
 });
