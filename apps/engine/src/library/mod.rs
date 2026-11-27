@@ -74,6 +74,7 @@
 
 pub mod answers;
 pub mod embeddings;
+pub mod extraction;
 pub mod import;
 pub mod ledger;
 pub mod papers;

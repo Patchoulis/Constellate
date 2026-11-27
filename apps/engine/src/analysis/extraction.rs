@@ -1,0 +1,1222 @@
+//! An extraction table: for each paper of a set (a community, a sub-community, the marked papers), one answer
+//! per column ("Which datasets?", "What compute?"), each with the paper's own words that support it.
+//!
+//! # What is asked, and what is kept
+//!
+//! One call per paper covers every column it has no answer for yet: the paper's text is the shared part of the
+//! prompt (cached), the columns come after it. The answer is the model's raw reading, [`Said`], one [`SaidCell`]
+//! per column, each with the quotes it rests on. It is kept twice:
+//!
+//! * whole, under the call's key, by [`crate::model::batch::ask_all`] as it arrives, so that a stopped run loses
+//!   nothing and the same call is never paid for twice;
+//! * cell by cell, under each column's own key ([`cell_key`]: the model, the paper, and the column's question and
+//!   kind), so that a column added later asks only for that column, a column whose question changes asks only
+//!   for it again, and renaming or reordering columns asks nothing.
+//!
+//! # What is shown
+//!
+//! A kept cell is checked again every time the table is read ([`checked_rows`]), as `docs/evidence.md` asks:
+//!
+//! | the model said                      | shown as                                                         |
+//! |-------------------------------------|------------------------------------------------------------------|
+//! | not stated                          | [`Cell::NotStated`]: a first-class answer, with no quote needed   |
+//! | a value, a quote found in the paper | [`Cell::Stated`], with the [`Evidence`]                           |
+//! | a value, no quote found             | [`Cell::NotVerified`]: left out, never the value                  |
+//! | a number not inside its found quotes | [`Cell::NotVerified`] too: the number is the one thing to check   |
+//! | something that does not fit the column | [`Cell::Malformed`]                                            |
+//!
+//! # The sample
+//!
+//! A table is first run on a sample, as Elicit recommends: the [`SAMPLE`] papers most central to the set on the
+//! graph ([`by_centrality`]: the sum of the similarities of their links to the set's other papers), so that the
+//! user sees what it gives and what it cost before paying for the rest.
+
+use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value as Json, json};
+
+use crate::evidence::{self, Claim, Evidence, PaperText, Papers, Quote, Rules};
+use crate::jobs::Tracker;
+use crate::library::{AnswerKey, Feature, Library, LibraryError, PaperReading, Slot, Subject};
+use crate::model::batch::{self, Asking, BatchEstimate, Item, Outcome};
+use crate::model::language::{Ask, Budget, Counting, Effort, Estimate, Form, Planned, estimate};
+
+/// The version of the prompt and of the answer's shape: raised when either changes, so kept answers are asked
+/// again rather than read as what they are not.
+pub const PROMPT: u32 = 1;
+/// Papers a table is first tried on.
+pub const SAMPLE: usize = 10;
+/// Columns a table may have.
+pub const MOST_COLUMNS: usize = 20;
+/// Papers one table may have: a large community, well within what the library reads at once.
+pub const MOST_PAPERS: usize = 1_000;
+/// The longest question a column may ask, in characters.
+pub const LONGEST_QUESTION: usize = 400;
+/// The longest label of a column, in characters.
+pub const LONGEST_LABEL: usize = 60;
+/// The longest id of a column.
+pub const LONGEST_ID: usize = 40;
+/// The most of a paper's text sent, in characters (about 67,000 tokens): a long paper's appendix is cut short
+/// rather than letting one paper cost as much as ten.
+pub const LONGEST_TEXT: usize = 200_000;
+/// The quotes of one cell looked for; more are ignored.
+const MOST_QUOTES: usize = 3;
+/// The longest text answer kept, in characters: a cell is a phrase or a sentence.
+const LONGEST_ANSWER: usize = 1_000;
+/// The items of a list answer kept.
+const MOST_ITEMS: usize = 30;
+/// The one place the purpose of these calls is named, as the ledger shows it.
+const PURPOSE: &str = "extraction table";
+
+/// What kind of answer a column takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnswerKind {
+    /// A phrase or a sentence.
+    Text,
+    /// Yes or no (or not stated, as every column may be).
+    YesNo,
+    /// A number as the paper writes it, with its unit and what it is measured on.
+    Number,
+    /// Names: datasets, baselines, metrics.
+    List,
+}
+
+/// A column of the table: a question every paper is asked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Column {
+    /// Stable within a run's table: what the model answers each cell with.
+    pub id: String,
+    /// The header shown.
+    pub label: String,
+    pub question: String,
+    pub kind: AnswerKind,
+}
+
+impl Column {
+    fn new(id: &str, label: &str, question: &str, kind: AnswerKind) -> Self {
+        Self { id: id.to_owned(), label: label.to_owned(), question: question.to_owned(), kind }
+    }
+
+    /// What a cell's answer depends on: the question and its kind (not the label, not the id, not the place).
+    fn asked(&self) -> String {
+        json!({"question": self.question, "kind": self.kind}).to_string()
+    }
+}
+
+/// The columns a table starts with, suited to machine-learning papers.
+pub fn default_columns() -> Vec<Column> {
+    use AnswerKind::{List, Number, Text};
+    vec![
+        Column::new("task", "Task", "What task or problem does the paper address?", Text),
+        Column::new("method", "Method", "What is the paper's method, in one line?", Text),
+        Column::new("datasets", "Datasets", "On which datasets is the method evaluated?", List),
+        Column::new(
+            "headline",
+            "Headline result",
+            "What is the paper's headline result: the main number, its unit or metric, and the dataset it is on?",
+            Number,
+        ),
+        Column::new("baselines", "Baselines", "Which methods or models is it compared against?", List),
+        Column::new(
+            "compute",
+            "Compute",
+            "What compute does it report using: the hardware, and how many hours or days?",
+            Text,
+        ),
+        Column::new(
+            "release",
+            "Code and data",
+            "Are code or data released? Give the address exactly as the paper writes it.",
+            Text,
+        ),
+        Column::new("limitations", "Limitations", "What limitations do the authors state?", Text),
+    ]
+}
+
+/// Why a list of columns was refused.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidColumns {
+    #[error("a table needs at least one column")]
+    None,
+    #[error("a table has at most {MOST_COLUMNS} columns")]
+    TooMany,
+    #[error("a column's id is 1 to {LONGEST_ID} lower-case letters, digits, '_' or '-'")]
+    Id,
+    #[error("two columns have the id {0}")]
+    Repeated(String),
+    #[error("a column's label is 1 to {LONGEST_LABEL} characters")]
+    Label,
+    #[error("a column's question is 1 to {LONGEST_QUESTION} characters, on one line")]
+    Question,
+}
+
+/// Columns as a user may save them.
+pub fn check_columns(columns: &[Column]) -> Result<(), InvalidColumns> {
+    if columns.is_empty() {
+        return Err(InvalidColumns::None);
+    }
+    if columns.len() > MOST_COLUMNS {
+        return Err(InvalidColumns::TooMany);
+    }
+    let within = |text: &str, most: usize| {
+        let length = text.chars().count();
+        text.trim() == text && length > 0 && length <= most && !text.chars().any(char::is_control)
+    };
+    for (index, column) in columns.iter().enumerate() {
+        let id_chars = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-';
+        if !within(&column.id, LONGEST_ID) || !column.id.chars().all(id_chars) {
+            return Err(InvalidColumns::Id);
+        }
+        if columns[..index].iter().any(|before| before.id == column.id) {
+            return Err(InvalidColumns::Repeated(column.id.clone()));
+        }
+        if !within(&column.label, LONGEST_LABEL) {
+            return Err(InvalidColumns::Label);
+        }
+        if !within(&column.question, LONGEST_QUESTION) {
+            return Err(InvalidColumns::Question);
+        }
+    }
+    Ok(())
+}
+
+/// The model's answer for one paper: one cell per column asked.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Said {
+    pub cells: Vec<SaidCell>,
+}
+
+/// One cell as the model wrote it, before anything in it is believed. Every field may be missing or empty: what
+/// a column of its kind needs is checked when it is read ([`value_of`]), so that one odd cell spoils only itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SaidCell {
+    pub column: String,
+    /// `stated` or `not_stated`.
+    pub status: String,
+    pub text: String,
+    /// `yes`, `no` or empty.
+    pub yes_no: String,
+    /// The number as the paper writes it.
+    pub number: String,
+    pub unit: String,
+    /// What the number is of: the metric and the dataset.
+    pub context: String,
+    pub items: Vec<String>,
+    /// Copied word for word from the paper, the model says.
+    pub quotes: Vec<String>,
+}
+
+/// Yes or no.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum YesNo {
+    Yes,
+    No,
+}
+
+/// A stated answer, of its column's kind.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Value {
+    Text {
+        text: String,
+    },
+    YesNo {
+        answer: YesNo,
+    },
+    /// `written` is the number as the paper writes it, and is inside one of the cell's found quotes; `value` is
+    /// it read as a number, for sorting.
+    Number {
+        written: String,
+        value: f64,
+        unit: String,
+        context: String,
+    },
+    List {
+        items: Vec<String>,
+    },
+}
+
+/// Why a cell's answer does not fit its column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, thiserror::Error)]
+#[serde(rename_all = "snake_case")]
+pub enum Malformed {
+    #[error("the answer is neither stated nor not stated")]
+    Status,
+    #[error("the answer is stated but empty")]
+    Empty,
+    #[error("the answer is not yes or no")]
+    NotYesNo,
+    #[error("the answer is not a number")]
+    NotANumber,
+    #[error("the answer is too long for a cell")]
+    TooLong,
+}
+
+/// Why a stated answer is not shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unverified {
+    /// None of its quotes was found in the paper.
+    QuotesNotFound,
+    /// Its quotes were found, but the number is in none of them.
+    NumberNotInQuote,
+}
+
+/// One cell of the table, as shown.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Cell {
+    /// The paper says this, here: every piece of evidence was found in it.
+    Stated { value: Value, evidence: Vec<Evidence> },
+    /// The model found nothing in the paper that answers the column.
+    NotStated,
+    /// Answered, but not shown: see why.
+    NotVerified { why: Unverified },
+    /// The answer did not fit the column.
+    Malformed { why: Malformed },
+    /// Not asked yet (or its answer never came).
+    NotAsked,
+}
+
+/// The model's cell read as its column's kind: `None` for "not stated".
+pub fn value_of(column: &Column, said: &SaidCell) -> Result<Option<Value>, Malformed> {
+    match said.status.trim() {
+        "not_stated" => return Ok(None),
+        "stated" => {}
+        _ => return Err(Malformed::Status),
+    }
+    let text = |text: &str| -> Result<String, Malformed> {
+        let text = text.trim();
+        match text.chars().count() {
+            0 => Err(Malformed::Empty),
+            length if length > LONGEST_ANSWER => Err(Malformed::TooLong),
+            _ => Ok(text.to_owned()),
+        }
+    };
+    Ok(Some(match column.kind {
+        AnswerKind::Text => Value::Text { text: text(&said.text)? },
+        AnswerKind::YesNo => Value::YesNo {
+            answer: match said.yes_no.trim() {
+                "yes" => YesNo::Yes,
+                "no" => YesNo::No,
+                _ => return Err(Malformed::NotYesNo),
+            },
+        },
+        AnswerKind::Number => {
+            let written = said.number.trim();
+            let digits = digits_of(written).ok_or(Malformed::NotANumber)?;
+            let value: f64 = digits.parse().map_err(|_| Malformed::NotANumber)?;
+            let negative = written.starts_with(['-', '\u{2212}']);
+            let clip = |text: &str| text.trim().chars().take(LONGEST_ANSWER).collect::<String>();
+            Value::Number {
+                written: written.to_owned(),
+                value: if negative { -value } else { value },
+                unit: clip(&said.unit),
+                context: clip(&said.context),
+            }
+        }
+        AnswerKind::List => {
+            let items: Vec<String> = said.items.iter().filter_map(|item| text(item).ok()).take(MOST_ITEMS).collect();
+            if items.is_empty() {
+                return Err(Malformed::Empty);
+            }
+            Value::List { items }
+        }
+    }))
+}
+
+/// Characters that keep a number in one piece: thousands separators and the thin spaces papers set them with.
+fn joins_digits(c: char) -> bool {
+    matches!(c, ',' | '\u{2009}' | '\u{202f}' | '\u{a0}')
+}
+
+/// A number's digits and decimal point, its sign, separators and surrounding signs set aside: "1,024" is
+/// "1024", "-0.5" is "0.5". `None` when it is not one number.
+fn digits_of(number: &str) -> Option<String> {
+    let bare = number.trim().trim_start_matches(['-', '\u{2212}', '+', '~', '\u{2248}']).trim();
+    let digits: String = bare.chars().filter(|c| !joins_digits(*c)).collect();
+    let well_formed = digits.chars().next().is_some_and(|c| c.is_ascii_digit())
+        && digits.chars().last().is_some_and(|c| c.is_ascii_digit())
+        && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+        && digits.matches('.').count() <= 1;
+    well_formed.then_some(digits)
+}
+
+/// Is the number `written` one of the numbers in `text`? Compared as digits ([`digits_of`]), so "1,024" in the
+/// paper is the model's "1024"; "84.3" is not "84.30", nor inside "184.3".
+pub fn number_in(text: &str, written: &str) -> bool {
+    let Some(wanted) = digits_of(written) else { return false };
+    let mut run = String::new();
+    let mut found = false;
+    for c in text.chars().chain([' ']) {
+        if c.is_ascii_digit() || c == '.' || joins_digits(c) {
+            run.push(c);
+        } else if !run.is_empty() {
+            let piece = run.trim_matches(|c: char| c == '.' || joins_digits(c));
+            found |= digits_of(piece).is_some_and(|digits| digits == wanted);
+            run.clear();
+        }
+    }
+    found
+}
+
+/// The key one cell's answer is kept under: what it depends on is the model, the paper, and the column's
+/// question and kind.
+pub fn cell_key(model: &str, paper: &str, column: &Column) -> AnswerKey {
+    AnswerKey::new(Feature::Extraction, model, PROMPT, &[paper], &format!("cell {}", column.asked()))
+}
+
+fn cell_slot(model: &str, paper: &str, column: &Column) -> Slot {
+    Slot {
+        feature: Feature::Extraction,
+        key: cell_key(model, paper, column),
+        subject: Subject::Paper(paper.to_owned()),
+    }
+}
+
+/// The instructions, the same for every paper and every table so that they are cached with the paper's text.
+/// They say nothing of any one vendor's features: the answer's form is also given as a JSON schema.
+pub const SYSTEM: &str = "\
+You fill in one row of a table about a research paper, using only the paper's text that is given.
+
+For each column you are asked, answer the column's question about this paper, with the column's id.
+
+Rules:
+- Answer from the paper's text only, never from what you know from elsewhere.
+- When the paper does not say, the answer is status \"not_stated\". That is a correct and expected answer: give it \
+rather than a guess, an inference, or something said about other work the paper cites. A \"not_stated\" answer needs \
+no quotes.
+- A \"stated\" answer must come with one to three quotes that show it, each copied word for word from the paper's \
+text: a full clause or sentence of at least eight words, not pieced together, not paraphrased, without the page \
+markers. A stated answer whose quotes are not in the paper is thrown away.
+- A number is written exactly as it appears in one of your quotes (its digits and decimal point, not rounded or \
+converted), with its unit or metric in \"unit\" and what it is measured on (the metric and the dataset) in \"context\".
+- Fill only the fields the column's kind uses; leave the others empty (\"\" or []):
+  - kind \"text\": \"text\", a phrase or one sentence;
+  - kind \"yes_no\": \"yes_no\", \"yes\" or \"no\";
+  - kind \"number\": \"number\", \"unit\" and \"context\";
+  - kind \"list\": \"items\", each name as the paper writes it.
+
+Answer with JSON only, in the form given: {\"cells\": [...]}, one cell per column asked.";
+
+/// The schema of [`Said`], for [`Form::Json`]: every field required, so that a strict structured-output mode
+/// accepts it; what each kind needs is checked after parsing.
+pub fn schema() -> Json {
+    let text = json!({"type": "string"});
+    let texts = json!({"type": "array", "items": {"type": "string"}});
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["cells"],
+        "properties": {"cells": {"type": "array", "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["column", "status", "text", "yes_no", "number", "unit", "context", "items", "quotes"],
+            "properties": {
+                "column": text,
+                "status": {"type": "string", "enum": ["stated", "not_stated"]},
+                "text": text,
+                "yes_no": {"type": "string", "enum": ["yes", "no", ""]},
+                "number": text,
+                "unit": text,
+                "context": text,
+                "items": texts,
+                "quotes": texts,
+            },
+        }}},
+    })
+}
+
+/// The paper's text as it is sent: every passage with its page, up to [`LONGEST_TEXT`] characters; for a paper
+/// whose PDF was not read, its title and abstract, said to be only that. `None` for a paper not in the library.
+pub fn prompt_text(reading: &PaperReading) -> Option<String> {
+    let record = |title: &str, abstract_text: &str| {
+        format!(
+            "Only the title and abstract of this paper are available, not its full text.\n\nTitle: {title}\n\nAbstract: \
+             {abstract_text}\n"
+        )
+    };
+    match reading {
+        PaperReading::Read(passages) => {
+            let mut text = String::new();
+            let mut length = 0;
+            for passage in &passages.passages {
+                let line = format!("[p. {}] {}\n", passage.address.page, passage.text);
+                length += line.chars().count();
+                if length > LONGEST_TEXT {
+                    text.push_str("[The rest of the paper is not included.]\n");
+                    break;
+                }
+                text.push_str(&line);
+            }
+            Some(text)
+        }
+        PaperReading::NoPdf { title, abstract_text } | PaperReading::Unreadable { title, abstract_text, .. } => {
+            Some(record(title, abstract_text))
+        }
+        PaperReading::NotInLibrary => None,
+    }
+}
+
+/// What comes after the paper's text: the columns to fill, in their order.
+fn question(columns: &[&Column]) -> String {
+    let asked: Vec<Json> = columns
+        .iter()
+        .map(|column| json!({"id": column.id, "question": column.question, "kind": column.kind}))
+        .collect();
+    format!("Fill in these columns for the paper above, one cell for each, with its id:\n{}", Json::Array(asked))
+}
+
+/// The most an answer may take for `columns` columns, thinking included, and what it likely takes.
+fn answer_tokens(columns: usize) -> (u32, u32) {
+    let columns = u32::try_from(columns).unwrap_or(u32::MAX);
+    let most = 1_000u32.saturating_add(columns.saturating_mul(400)).min(12_000);
+    let likely = 200u32.saturating_add(columns.saturating_mul(150));
+    (most, likely)
+}
+
+/// One paper's call: the columns it has no answer for.
+struct PaperAsk {
+    paper: String,
+    text: String,
+    columns: Vec<Column>,
+    question: String,
+    slot: Slot,
+}
+
+/// The calls a table needs, made from what is kept: a paper with every column answered is not asked.
+pub struct Plan {
+    model: String,
+    schema: Json,
+    asks: Vec<PaperAsk>,
+}
+
+impl Plan {
+    /// The calls `columns` need for `papers` (each with what the library read of it), with `model`.
+    pub fn new(
+        library: &Library,
+        model: &str,
+        columns: &[Column],
+        papers: &[(&str, &PaperReading)],
+    ) -> Result<Self, LibraryError> {
+        let mut asks = Vec::new();
+        for (paper, reading) in papers {
+            let Some(text) = prompt_text(reading) else { continue };
+            let mut missing = Vec::new();
+            for column in columns {
+                if library.kept::<SaidCell>(Feature::Extraction, &cell_key(model, paper, column))?.is_none() {
+                    missing.push(column);
+                }
+            }
+            if missing.is_empty() {
+                continue;
+            }
+            let question = question(&missing);
+            let slot = Slot {
+                feature: Feature::Extraction,
+                key: AnswerKey::new(Feature::Extraction, model, PROMPT, &[paper], &format!("row {question}")),
+                subject: Subject::Paper((*paper).to_owned()),
+            };
+            let columns = missing.into_iter().cloned().collect();
+            asks.push(PaperAsk { paper: (*paper).to_owned(), text, columns, question, slot });
+        }
+        Ok(Self { model: model.to_owned(), schema: schema(), asks })
+    }
+
+    /// Papers with something to ask.
+    pub fn papers(&self) -> usize {
+        self.asks.len()
+    }
+
+    /// The calls, for [`batch::ask_all`] and [`batch::estimate_batch`].
+    pub fn items(&self) -> Vec<Item<'_>> {
+        self.asks
+            .iter()
+            .map(|ask| {
+                let (max_tokens, likely_tokens) = answer_tokens(ask.columns.len());
+                Item {
+                    slot: ask.slot.clone(),
+                    prompt: PROMPT,
+                    ask: Ask {
+                        purpose: PURPOSE,
+                        model: &self.model,
+                        system: SYSTEM,
+                        shared: Some(&ask.text),
+                        question: &ask.question,
+                        form: Form::Json(&self.schema),
+                        effort: Effort::Low,
+                        max_tokens,
+                    },
+                    likely_tokens,
+                }
+            })
+            .collect()
+    }
+
+    /// What asking would cost (nothing is sent).
+    pub fn estimate(&self, library: &Library) -> Result<BatchEstimate, LibraryError> {
+        batch::estimate_batch::<Said>(library, &self.items(), Counting::ASSUMED)
+    }
+}
+
+/// What papers whose texts have not been read would cost, from how long their texts are taken to be
+/// (`characters`, one per paper to ask: an estimate from other papers' texts, or a paper's own abstract), asked
+/// every one of `columns`.
+pub fn extrapolate(model: &str, columns: &[Column], characters: &[u64]) -> Estimate {
+    let all: Vec<&Column> = columns.iter().collect();
+    let question_chars = u64::try_from(question(&all).chars().count()).unwrap_or(u64::MAX);
+    let system = u64::try_from(SYSTEM.chars().count()).unwrap_or(u64::MAX);
+    let (max_tokens, answer_tokens) = answer_tokens(columns.len());
+    let plans: Vec<Planned> = characters
+        .iter()
+        .map(|chars| Planned {
+            shared_chars: system.saturating_add(*chars),
+            question_chars,
+            questions: 1,
+            answer_tokens,
+            max_tokens,
+        })
+        .collect();
+    estimate(model, &plans, Counting::ASSUMED)
+}
+
+/// What came of a run.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Ran {
+    /// Papers that had something to ask.
+    pub papers: usize,
+    pub answered: usize,
+    /// Answered before, so not paid for again.
+    pub kept: usize,
+    /// Asked, with no usable answer: asked again next time.
+    pub failed: usize,
+    /// Not asked: the budget was reached, the run was stopped, or the API could not be used.
+    pub not_started: usize,
+    /// Why the run stopped early, if it did.
+    pub stopped: Option<String>,
+}
+
+/// Ask the model for what `plan` needs, within `budget`, and keep every cell as its own answer.
+pub fn run(asking: Asking<'_>, plan: &Plan, budget: &Budget, tracker: &Tracker<'_>) -> Result<Ran, LibraryError> {
+    let library = asking.library;
+    let items = plan.items();
+    let outcomes = batch::ask_all::<Said>(asking, &items, budget, tracker)?;
+    let mut ran = Ran { papers: plan.asks.len(), ..Ran::default() };
+    for (ask, outcome) in plan.asks.iter().zip(outcomes) {
+        let (said, model) = match outcome {
+            Outcome::Kept(kept) => {
+                ran.kept += 1;
+                (kept.answer, kept.model)
+            }
+            Outcome::Answered(answered) => {
+                ran.answered += 1;
+                (answered.answer, answered.model)
+            }
+            Outcome::Failed(why) => {
+                ran.failed += 1;
+                tracker.log(&format!("{}: no usable answer: {why}", ask.paper));
+                continue;
+            }
+            Outcome::NotStarted(why) => {
+                ran.not_started += 1;
+                ran.stopped.get_or_insert_with(|| why.to_string());
+                continue;
+            }
+        };
+        for column in &ask.columns {
+            // a column the answer left out is not kept: it is asked again next time
+            if let Some(cell) = said.cells.iter().find(|cell| cell.column.trim() == column.id) {
+                library.keep(&cell_slot(&plan.model, &ask.paper, column), &model, PROMPT, cell)?;
+            }
+        }
+    }
+    Ok(ran)
+}
+
+/// For each paper, each column's kept answer, if it has one (read from the library: one thread).
+pub fn kept_cells(
+    library: &Library,
+    model: &str,
+    columns: &[Column],
+    papers: &[&str],
+) -> Result<Vec<Vec<Option<SaidCell>>>, LibraryError> {
+    papers
+        .iter()
+        .map(|paper| {
+            columns
+                .iter()
+                .map(|column| {
+                    Ok(library
+                        .kept::<SaidCell>(Feature::Extraction, &cell_key(model, paper, column))?
+                        .map(|kept| kept.answer))
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// One paper's cells, its kept answers checked against its text.
+fn checked(paper: &str, columns: &[Column], kept: &[Option<SaidCell>], text: Option<PaperText>) -> Vec<Cell> {
+    let Some(text) = text else { return vec![Cell::NotAsked; columns.len()] };
+    let mut cells = vec![Cell::NotAsked; columns.len()];
+    let mut values: Vec<Option<Value>> = vec![None; columns.len()];
+    let mut claims: Vec<Claim<usize>> = Vec::new();
+    for (index, (column, said)) in columns.iter().zip(kept).enumerate() {
+        let Some(said) = said else { continue };
+        match value_of(column, said) {
+            Err(why) => cells[index] = Cell::Malformed { why },
+            Ok(None) => cells[index] = Cell::NotStated,
+            Ok(Some(value)) => {
+                // not found unless check finds it
+                cells[index] = Cell::NotVerified { why: Unverified::QuotesNotFound };
+                values[index] = Some(value);
+                let quotes = said.quotes.iter().take(MOST_QUOTES);
+                let quotes = quotes.map(|quote| Quote { paper: paper.to_owned(), quote: quote.clone() }).collect();
+                claims.push(Claim { statement: index, quotes });
+            }
+        }
+    }
+    let papers = Papers::from([(paper.to_owned(), text)]);
+    for cited in evidence::check(claims, &papers, Rules::ONE_PAPER).cited {
+        let index = cited.statement;
+        let Some(value) = values[index].take() else { continue };
+        let shown = match &value {
+            Value::Number { written, .. } => cited.evidence.iter().any(|found| number_in(found.quote(), written)),
+            Value::Text { .. } | Value::YesNo { .. } | Value::List { .. } => true,
+        };
+        cells[index] = if shown {
+            Cell::Stated { value, evidence: cited.evidence }
+        } else {
+            Cell::NotVerified { why: Unverified::NumberNotInQuote }
+        };
+    }
+    cells
+}
+
+/// Every paper's cells, checked on every core. `kept` and `texts` are by paper, in `papers`' order; a paper's
+/// text is needed only when it has a kept answer. The same whatever the number of threads.
+pub fn checked_rows(
+    papers: &[&str],
+    columns: &[Column],
+    kept: Vec<Vec<Option<SaidCell>>>,
+    texts: Vec<Option<PaperText>>,
+) -> Vec<Vec<Cell>> {
+    papers
+        .par_iter()
+        .zip(kept.into_par_iter())
+        .zip(texts.into_par_iter())
+        .map(|((paper, kept), text)| checked(paper, columns, &kept, text))
+        .collect()
+}
+
+/// The order a set's papers are tried in: most central first, by the sum of the similarities of their links
+/// to the set's other papers (`links` as the run's graph has them: node, node, similarity; `nodes` the graph's
+/// ids). Ties by id, so the order is the same every time. The first [`SAMPLE`] are the sample.
+pub fn by_centrality(papers: &[String], nodes: &[String], links: &[(usize, usize, f64)]) -> Vec<String> {
+    let index_of: std::collections::HashMap<&str, usize> =
+        nodes.iter().enumerate().map(|(index, id)| (id.as_str(), index)).collect();
+    let mut in_set = vec![false; nodes.len()];
+    for paper in papers {
+        if let Some(&index) = index_of.get(paper.as_str()) {
+            in_set[index] = true;
+        }
+    }
+    let mut weight = vec![0.0f64; nodes.len()];
+    for &(a, b, similarity) in links {
+        if a != b && in_set.get(a) == Some(&true) && in_set.get(b) == Some(&true) && similarity.is_finite() {
+            weight[a] += similarity;
+            weight[b] += similarity;
+        }
+    }
+    let weight_of = |paper: &String| index_of.get(paper.as_str()).map_or(0.0, |&index| weight[index]);
+    let mut ordered: Vec<String> = papers.to_vec();
+    ordered.sort_unstable();
+    ordered.dedup();
+    ordered.sort_by(|a, b| weight_of(b).total_cmp(&weight_of(a)).then_with(|| a.cmp(b)));
+    ordered
+}
+
+/// How many cells of a table are not shown as values, by why: what the interface says was left out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct LeftOut {
+    pub quotes_not_found: usize,
+    pub number_not_in_quote: usize,
+    pub malformed: usize,
+}
+
+impl LeftOut {
+    pub fn of(rows: &[Vec<Cell>]) -> Self {
+        let mut left = Self::default();
+        for cell in rows.iter().flatten() {
+            match cell {
+                Cell::NotVerified { why: Unverified::QuotesNotFound } => left.quotes_not_found += 1,
+                Cell::NotVerified { why: Unverified::NumberNotInQuote } => left.number_not_in_quote += 1,
+                Cell::Malformed { .. } => left.malformed += 1,
+                Cell::Stated { .. } | Cell::NotStated | Cell::NotAsked => {}
+            }
+        }
+        left
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::jobs::{Cancel, Progress};
+    use crate::library::Known;
+    use crate::library::papers::tests::paper;
+    use crate::library::passages::fixtures::pdf_with;
+    use crate::model::language::fake::{message, ok};
+    use crate::model::language::{ApiKey, Endpoint, KEY_VARIABLE, Limit, Reply, Transport, TransportError};
+    use crate::text::passages::read_passages;
+    use crate::usage::{Call, Usd};
+
+    const MODEL: &str = "claude-opus-5-5";
+
+    /// What each test paper's PDF says.
+    const P1: [&str; 4] = [
+        "Introduction",
+        "We study image classification with sparse mixtures of experts in every layer.",
+        "We evaluate on ImageNet and report a top-1 accuracy of 84.3 percent on its validation set.",
+        "All models were trained on 8 A100 GPUs for three days in total.",
+    ];
+    const P2: [&str; 3] = [
+        "Introduction",
+        "We address machine translation between English and German with a small model.",
+        "Our model reaches 29.1 BLEU on the WMT14 test set, above every baseline we compare with.",
+    ];
+
+    fn columns() -> Vec<Column> {
+        let all = default_columns();
+        ["task", "datasets", "headline", "compute"]
+            .iter()
+            .map(|id| all.iter().find(|column| column.id == *id).unwrap().clone())
+            .collect()
+    }
+
+    fn cell(column: &str, status: &str) -> SaidCell {
+        SaidCell { column: column.to_owned(), status: status.to_owned(), ..SaidCell::default() }
+    }
+
+    fn stated(column: &str, quotes: &[&str]) -> SaidCell {
+        SaidCell { quotes: quotes.iter().map(|quote| (*quote).to_owned()).collect(), ..cell(column, "stated") }
+    }
+
+    /// The model's answers for p1: right, with one fabricated quote and one number not in its quote.
+    fn p1_said() -> Said {
+        Said {
+            cells: vec![
+                SaidCell {
+                    text: "Image classification with sparse mixtures of experts".to_owned(),
+                    ..stated("task", &["We study image classification with sparse mixtures of experts in every layer."])
+                },
+                SaidCell {
+                    items: vec!["ImageNet".to_owned()],
+                    ..stated("datasets", &["We evaluate on ImageNet and report a top-1 accuracy"])
+                },
+                SaidCell {
+                    number: "84.3".to_owned(),
+                    unit: "% top-1 accuracy".to_owned(),
+                    context: "ImageNet validation".to_owned(),
+                    ..stated("headline", &["report a top-1 accuracy of 84.3 percent on its validation set"])
+                },
+                SaidCell {
+                    text: "8 A100 GPUs, three days".to_owned(),
+                    // fabricated: the paper says nothing of the sort
+                    ..stated("compute", &["training took 512 TPU v4 chips for two weeks in all"])
+                },
+            ],
+        }
+    }
+
+    /// The model's answers for p2: a number that is not the one in its quote, a quote from p1 (the wrong
+    /// paper), and an honest "not stated".
+    fn p2_said() -> Said {
+        Said {
+            cells: vec![
+                SaidCell {
+                    text: "English to German translation".to_owned(),
+                    // these words are p1's, not p2's
+                    ..stated("task", &["We study image classification with sparse mixtures of experts in every layer."])
+                },
+                SaidCell {
+                    items: vec!["WMT14".to_owned()],
+                    ..stated("datasets", &["Our model reaches 29.1 BLEU on the WMT14 test set"])
+                },
+                SaidCell {
+                    number: "29.4".to_owned(),
+                    unit: "BLEU".to_owned(),
+                    context: "WMT14".to_owned(),
+                    ..stated("headline", &["Our model reaches 29.1 BLEU on the WMT14 test set"])
+                },
+                cell("compute", "not_stated"),
+            ],
+        }
+    }
+
+    /// The model as these tests need it: it answers by the paper whose text it is given (told by a phrase of it)
+    /// and keeps every request. Never the network.
+    #[derive(Default)]
+    struct Model {
+        answers: Vec<(&'static str, String)>,
+        sent: Mutex<Vec<Json>>,
+    }
+
+    impl Model {
+        fn new(answers: Vec<(&'static str, String)>) -> Self {
+            Self { answers, sent: Mutex::new(Vec::new()) }
+        }
+
+        fn sent(&self) -> Vec<Json> {
+            self.sent.lock().unwrap().clone()
+        }
+    }
+
+    impl Transport for Model {
+        fn post(
+            &self,
+            _url: &str,
+            _key: &ApiKey,
+            _headers: &[(&str, &str)],
+            body: &[u8],
+            _patience: Duration,
+        ) -> Result<Reply, TransportError> {
+            let body: Json = serde_json::from_slice(body).unwrap();
+            self.sent.lock().unwrap().push(body.clone());
+            let shared = body["messages"][0]["content"][0]["text"].as_str().unwrap();
+            let text = self
+                .answers
+                .iter()
+                .find(|(marker, _)| shared.contains(marker))
+                .map_or_else(|| "{\"cells\": []}".to_owned(), |(_, answer)| answer.clone());
+            let usage = json!({"input_tokens": 50, "output_tokens": 300, "cache_creation_input_tokens": 900});
+            Ok(ok(&message(MODEL, &text, "end_turn", usage)))
+        }
+
+        fn wait(&self, _duration: Duration) {}
+    }
+
+    fn endpoint() -> Endpoint {
+        Endpoint::from_lookup(|name| (name == KEY_VARIABLE).then(|| "test-key-not-real".to_owned())).unwrap()
+    }
+
+    /// A library with p1 and p2 (PDFs), p3 (no PDF).
+    fn library() -> (tempfile::TempDir, Library) {
+        let folder = tempfile::tempdir().unwrap();
+        let library = Library::open(folder.path()).unwrap();
+        library.add_papers(&[paper("p1"), paper("p2"), paper("p3")], None, Known::Keep).unwrap();
+        library.keep_pdf("p1", &pdf_with(&P1)).unwrap();
+        library.keep_pdf("p2", &pdf_with(&P2)).unwrap();
+        (folder, library)
+    }
+
+    const PAPERS: [&str; 3] = ["p1", "p2", "p3"];
+
+    fn plan(library: &Library, columns: &[Column]) -> (Plan, Vec<PaperReading>) {
+        let readings = library.paper_texts(&PAPERS).unwrap();
+        let pairs: Vec<(&str, &PaperReading)> = PAPERS.iter().copied().zip(&readings).collect();
+        (Plan::new(library, MODEL, columns, &pairs).unwrap(), readings)
+    }
+
+    fn ask(library: &Library, model: &Model, plan: &Plan, budget: &Budget) -> Ran {
+        let calls: Mutex<Vec<Call>> = Mutex::new(Vec::new());
+        let (log, progress, cancel) = (|_: &str| {}, |_: Progress| {}, Cancel::new());
+        let tracker = Tracker::new(&log, &progress, &cancel);
+        let asking = Asking { library, transport: model, endpoint: endpoint(), recorder: &calls, in_flight: 2 };
+        run(asking, plan, budget, &tracker).unwrap()
+    }
+
+    fn plenty() -> Budget {
+        Budget::new(Limit::Dollars(Usd::from_picodollars(10_000_000_000_000)))
+    }
+
+    fn table(library: &Library, columns: &[Column]) -> Vec<Vec<Cell>> {
+        let kept = kept_cells(library, MODEL, columns, &PAPERS).unwrap();
+        let texts = library.paper_texts(&PAPERS).unwrap().into_iter().map(PaperReading::into_text).collect();
+        checked_rows(&PAPERS, columns, kept, texts)
+    }
+
+    fn model() -> Model {
+        let not_stated = Said {
+            cells: ["task", "datasets", "headline", "compute"].iter().map(|id| cell(id, "not_stated")).collect(),
+        };
+        Model::new(vec![
+            ("sparse mixtures of experts", serde_json::to_string(&p1_said()).unwrap()),
+            ("machine translation", serde_json::to_string(&p2_said()).unwrap()),
+            ("abstract of p3", serde_json::to_string(&not_stated).unwrap()),
+        ])
+    }
+
+    #[test]
+    fn the_prompt_sends_the_papers_text_first_and_the_columns_after_it_with_the_schema() {
+        let (_folder, library) = library();
+        let columns = columns();
+        let (plan, _) = plan(&library, &columns);
+        let model = model();
+        ask(&library, &model, &plan, &plenty());
+        let sent = model.sent();
+        assert_eq!(sent.len(), 3, "one call per paper, every column in it");
+        let first = sent.iter().find(|body| body.to_string().contains("sparse mixtures")).unwrap();
+        assert_eq!(first["model"], MODEL);
+        assert_eq!(first["system"][0]["text"], SYSTEM);
+        assert!(SYSTEM.contains("not_stated") && !SYSTEM.contains("Claude"), "abstaining is easy; no vendor named");
+        let content = first["messages"][0]["content"].as_array().unwrap();
+        let shared = content[0]["text"].as_str().unwrap();
+        assert!(shared.starts_with("[p. 1] ") && shared.contains("We study image classification"), "{shared}");
+        assert_eq!(content[0]["cache_control"]["type"], "ephemeral", "the paper's text is the cached prefix");
+        let question = content[1]["text"].as_str().unwrap();
+        assert!(question.contains(r#""id":"headline""#) && question.contains(r#""kind":"number""#), "{question}");
+        let ids: Vec<usize> = ["\"task\"", "\"datasets\"", "\"headline\"", "\"compute\""]
+            .iter()
+            .map(|id| question.find(id).unwrap())
+            .collect();
+        assert!(ids.windows(2).all(|pair| pair[0] < pair[1]), "the columns in their order");
+        assert_eq!(first["output_config"]["format"]["schema"], schema());
+        let required = &schema()["properties"]["cells"]["items"]["required"];
+        assert_eq!(required.as_array().unwrap().len(), 9);
+        // the paper with no PDF is asked from its title and abstract, and told so
+        let abstract_only = sent.iter().find(|body| body.to_string().contains("abstract of p3")).unwrap();
+        let shared = abstract_only["messages"][0]["content"][0]["text"].as_str().unwrap();
+        assert!(shared.starts_with("Only the title and abstract"));
+    }
+
+    #[test]
+    fn found_quotes_make_values_and_everything_else_is_left_out_or_said_not_stated() {
+        let (_folder, library) = library();
+        let columns = columns();
+        let (plan, _) = plan(&library, &columns);
+        let ran = ask(&library, &model(), &plan, &plenty());
+        assert_eq!((ran.papers, ran.answered, ran.failed), (3, 3, 0));
+        let rows = table(&library, &columns);
+
+        // p1: task, datasets and the number are shown with the paper's words; the fabricated compute quote is not
+        let Cell::Stated { value: Value::Text { text }, evidence } = &rows[0][0] else { panic!("{:?}", rows[0][0]) };
+        assert_eq!(text, "Image classification with sparse mixtures of experts");
+        assert_eq!(evidence[0].paper(), "p1");
+        assert!(evidence[0].address().is_some());
+        assert!(matches!(&rows[0][1], Cell::Stated { value: Value::List { items }, .. } if items == &["ImageNet"]));
+        let Cell::Stated { value: Value::Number { written, value, unit, .. }, .. } = &rows[0][2] else { panic!() };
+        assert_eq!((written.as_str(), *value, unit.as_str()), ("84.3", 84.3, "% top-1 accuracy"));
+        assert_eq!(rows[0][3], Cell::NotVerified { why: Unverified::QuotesNotFound });
+
+        // p2: a quote from the wrong paper is not evidence; a number not in its quote is not shown
+        assert_eq!(rows[1][0], Cell::NotVerified { why: Unverified::QuotesNotFound });
+        assert!(matches!(&rows[1][1], Cell::Stated { .. }));
+        assert_eq!(rows[1][2], Cell::NotVerified { why: Unverified::NumberNotInQuote });
+        assert_eq!(rows[1][3], Cell::NotStated);
+
+        // p3, no PDF: asked from its abstract, honestly not stated
+        assert!(rows[2].iter().all(|cell| *cell == Cell::NotStated));
+        assert_eq!(LeftOut::of(&rows), LeftOut { quotes_not_found: 2, number_not_in_quote: 1, malformed: 0 });
+
+        // and a value is never sent without its evidence
+        let told = serde_json::to_value(&rows[1]).unwrap();
+        assert_eq!(told[0], json!({"kind": "not_verified", "why": "quotes_not_found"}));
+        assert_eq!(told[3], json!({"kind": "not_stated"}));
+    }
+
+    #[test]
+    fn kept_answers_are_not_asked_again_and_a_new_column_asks_only_for_itself() {
+        let (_folder, library) = library();
+        let columns = columns();
+        let (plan_once, _) = plan(&library, &columns);
+        let model = model();
+        ask(&library, &model, &plan_once, &plenty());
+        assert_eq!(model.sent().len(), 3);
+
+        let (again, _) = plan(&library, &columns);
+        assert_eq!(again.papers(), 0, "every cell kept: nothing to ask");
+        assert_eq!(again.estimate(&library).unwrap().to_ask, 0);
+
+        // renaming and reordering columns asks nothing
+        let mut moved = columns.clone();
+        moved.reverse();
+        moved[0].label = "Hardware".to_owned();
+        assert_eq!(plan(&library, &moved).0.papers(), 0);
+
+        // a column added: only it is asked, over the same text (the cached prefix)
+        let mut more = columns.clone();
+        more.push(Column::new(
+            "ood",
+            "Out of distribution",
+            "Does it evaluate on out-of-distribution data?",
+            AnswerKind::YesNo,
+        ));
+        let (added, _) = plan(&library, &more);
+        assert_eq!(added.papers(), 3);
+        let items = added.items();
+        assert!(
+            items.iter().all(|item| item.ask.question.contains("\"ood\"") && !item.ask.question.contains("\"task\""))
+        );
+        let before = model.sent();
+        let same_text = |body: &Json| body["messages"][0]["content"][0]["text"].clone();
+        ask(&library, &model, &added, &plenty());
+        let after = model.sent();
+        assert_eq!(after.len(), 6);
+        assert!(after[3..].iter().all(|body| before.iter().any(|old| same_text(old) == same_text(body))));
+
+        // a column whose question changes is asked again; the others are not
+        let mut changed = columns.clone();
+        changed[3].question = "What hardware was used for training?".to_owned();
+        let (changed, _) = plan(&library, &changed);
+        assert_eq!(changed.items().len(), 3);
+        assert!(
+            changed
+                .items()
+                .iter()
+                .all(|item| item.ask.question.contains("\"compute\"") && !item.ask.question.contains("\"datasets\""))
+        );
+
+        // a redo forgets one paper's cells: only it is asked again
+        library.forget(Feature::Extraction, &[Subject::Paper("p2".to_owned())]).unwrap();
+        let (redo, _) = plan(&library, &columns);
+        assert_eq!(redo.asks.iter().map(|ask| ask.paper.as_str()).collect::<Vec<_>>(), ["p2"]);
+    }
+
+    #[test]
+    fn the_estimate_sends_nothing() {
+        let (_folder, library) = library();
+        let columns = columns();
+        let (plan, _) = plan(&library, &columns);
+        let estimate = plan.estimate(&library).unwrap();
+        assert_eq!((estimate.items, estimate.to_ask), (3, 3));
+        assert!(estimate.usd.unwrap() > Usd::ZERO && estimate.usd <= estimate.most_usd);
+        let extrapolated = extrapolate(MODEL, &columns, &[90_000, 90_000, 1_500]);
+        assert_eq!(extrapolated.calls, 3);
+        assert!(extrapolated.usd.unwrap() > estimate.usd.unwrap(), "two long papers cost more than these short ones");
+        assert_eq!(library.spending().unwrap().total.calls, 0, "nothing was recorded: nothing was sent");
+    }
+
+    #[test]
+    fn a_malformed_answer_fails_its_paper_alone_and_an_odd_cell_spoils_only_itself() {
+        let (_folder, library) = library();
+        let columns = columns();
+        let (plan, _) = plan(&library, &columns);
+        let mut odd = p2_said();
+        odd.cells[1].status = "maybe".to_owned();
+        odd.cells[2].number = "about thirty".to_owned();
+        let model = Model::new(vec![
+            ("sparse mixtures of experts", "this is not JSON at all".to_owned()),
+            ("machine translation", serde_json::to_string(&odd).unwrap()),
+        ]);
+        let ran = ask(&library, &model, &plan, &plenty());
+        assert_eq!((ran.answered, ran.failed), (2, 1));
+        let rows = table(&library, &columns);
+        assert!(rows[0].iter().all(|cell| *cell == Cell::NotAsked), "p1 failed: asked again next time");
+        assert_eq!(rows[1][1], Cell::Malformed { why: Malformed::Status });
+        assert_eq!(rows[1][2], Cell::Malformed { why: Malformed::NotANumber });
+        // p3's answer had no cells: none kept, asked again next time
+        assert!(rows[2].iter().all(|cell| *cell == Cell::NotAsked));
+        let (next, _) = super::tests::plan(&library, &columns);
+        assert_eq!(next.asks.iter().map(|ask| ask.paper.as_str()).collect::<Vec<_>>(), ["p1", "p3"]);
+    }
+
+    #[test]
+    fn the_budget_stops_a_run_before_anything_past_it_is_sent() {
+        let (_folder, library) = library();
+        let columns = columns();
+        let (plan, _) = plan(&library, &columns);
+        let model = model();
+        let ran = ask(&library, &model, &plan, &Budget::new(Limit::Dollars(Usd::from_picodollars(1_000))));
+        assert_eq!((ran.answered, ran.not_started), (0, 3));
+        assert!(ran.stopped.unwrap().contains("budget"));
+        assert!(model.sent().is_empty());
+    }
+
+    #[test]
+    fn the_table_is_the_same_whatever_the_number_of_threads() {
+        let columns = columns();
+        let papers: Vec<String> = (0..24).map(|n| format!("q{n}")).collect();
+        let ids: Vec<&str> = papers.iter().map(String::as_str).collect();
+        let text = |n: usize| {
+            PaperText::Read(read_passages(&[format!(
+                "Introduction\n\nWe study task number {n} and evaluate on the dataset called Set{n} with care.\n\nWe \
+                 report an accuracy of {n}.5 points on Set{n} in the main table.\n"
+            )]))
+        };
+        let kept = |n: usize| {
+            vec![
+                Some(SaidCell {
+                    text: format!("task {n}"),
+                    ..stated("task", &[&format!("We study task number {n} and evaluate")])
+                }),
+                Some(SaidCell {
+                    items: vec![format!("Set{n}")],
+                    ..stated("datasets", &["a quote that is in no paper at all, made up"])
+                }),
+                Some(SaidCell {
+                    number: format!("{n}.5"),
+                    ..stated("headline", &[&format!("We report an accuracy of {n}.5 points on Set{n}")])
+                }),
+                if n % 3 == 0 { Some(cell("compute", "not_stated")) } else { None },
+            ]
+        };
+        let once = |threads: usize| {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            pool.install(|| {
+                let rows =
+                    checked_rows(&ids, &columns, (0..24).map(kept).collect(), (0..24).map(|n| Some(text(n))).collect());
+                serde_json::to_string(&rows).unwrap()
+            })
+        };
+        let one = once(1);
+        assert_eq!(one, once(4));
+        assert_eq!(one, once(7));
+        assert!(one.contains("\"written\":\"23.5\""));
+    }
+
+    #[test]
+    fn a_number_counts_only_when_it_is_one_of_the_numbers_of_the_quote() {
+        assert!(number_in("a top-1 accuracy of 84.3% on ImageNet", "84.3"));
+        assert!(number_in("trained on 1,024 GPUs", "1024"));
+        assert!(number_in("trained on 1024 GPUs.", "1,024"));
+        assert!(number_in("a loss of -0.5 at the end", "-0.5"));
+        assert!(!number_in("a top-1 accuracy of 184.3%", "84.3"));
+        assert!(!number_in("84.30 points", "84.3"));
+        assert!(!number_in("84 and 3", "84.3"));
+        assert!(!number_in("anything", "eighty"));
+        assert_eq!(digits_of("1.2.3"), None);
+        let column = &columns()[2];
+        let number =
+            |written: &str| value_of(column, &SaidCell { number: written.to_owned(), ..cell("headline", "stated") });
+        assert!(matches!(number("\u{2212}3.5"), Ok(Some(Value::Number { value, .. })) if value == -3.5));
+        assert_eq!(number("n/a"), Err(Malformed::NotANumber));
+    }
+
+    #[test]
+    fn columns_are_checked_before_they_are_kept() {
+        assert_eq!(check_columns(&default_columns()), Ok(()));
+        assert_eq!(check_columns(&[]), Err(InvalidColumns::None));
+        let mut many = default_columns();
+        while many.len() <= MOST_COLUMNS {
+            let id = format!("c{}", many.len());
+            many.push(Column::new(&id, "x", "y?", AnswerKind::Text));
+        }
+        assert_eq!(check_columns(&many), Err(InvalidColumns::TooMany));
+        let one = |id: &str, label: &str, question: &str| vec![Column::new(id, label, question, AnswerKind::Text)];
+        assert_eq!(check_columns(&one("Bad Id", "x", "y?")), Err(InvalidColumns::Id));
+        assert_eq!(check_columns(&one("ok", "", "y?")), Err(InvalidColumns::Label));
+        assert_eq!(check_columns(&one("ok", "x", &"y".repeat(LONGEST_QUESTION + 1))), Err(InvalidColumns::Question));
+        assert_eq!(check_columns(&one("ok", "x", "line\nbreak")), Err(InvalidColumns::Question));
+        let twice = [default_columns()[0].clone(), default_columns()[0].clone()];
+        assert_eq!(check_columns(&twice), Err(InvalidColumns::Repeated("task".to_owned())));
+    }
+
+    #[test]
+    fn the_sample_is_the_most_central_papers_ties_by_id() {
+        let nodes: Vec<String> = ["a", "b", "c", "d", "e"].iter().map(|id| (*id).to_owned()).collect();
+        // d is linked to the most; e is outside the set, so its link to a does not count
+        let links = [(0, 3, 0.9), (1, 3, 0.8), (2, 3, 0.7), (0, 1, 0.5), (0, 4, 5.0)];
+        let set: Vec<String> = ["c", "b", "a", "d", "zz"].iter().map(|id| (*id).to_owned()).collect();
+        let ordered = by_centrality(&set, &nodes, &links);
+        assert_eq!(ordered, ["d", "a", "b", "c", "zz"]);
+        assert_eq!(by_centrality(&set, &nodes, &links), ordered, "the same every time");
+    }
+}
