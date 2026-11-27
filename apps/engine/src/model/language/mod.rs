@@ -381,6 +381,9 @@ pub enum TransportError {
     Unreachable,
     #[error("the language model's API took too long to answer")]
     TimedOut,
+    /// Not sent: the work was asked to stop while the request waited for its turn (after a rate limit).
+    #[error("asking was stopped")]
+    Cancelled,
 }
 
 /// The one way this reaches the network. An implementation sends `key` as the `x-api-key` header and nowhere
@@ -1122,6 +1125,7 @@ fn retry_after(error: &AskError, reply_says: Option<&str>, attempt: u32) -> Opti
             let wait = retry_after.unwrap_or(backoff);
             (wait <= LONGEST_WAIT).then_some(wait)
         }
+        AskError::NoAnswer(NoAnswer::Transport(TransportError::Cancelled)) => None,
         AskError::NoAnswer(NoAnswer::Overloaded | NoAnswer::ServerError(_) | NoAnswer::Transport(_)) => Some(backoff),
         _ => None,
     }
