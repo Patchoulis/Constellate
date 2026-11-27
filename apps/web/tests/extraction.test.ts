@@ -120,6 +120,9 @@ test("a column filters by stating it, by not stating it, or by a value, whatever
 test("coverage counts the papers that state a column, of those asked, with its unit", () => {
 	assert.equal(coverage(rows, 0, "Headline result"), "3 of 4 papers state headline result (1 paper not asked yet)");
 	assert.equal(coverage(rows, 1, "Datasets"), "3 of 5 papers state datasets");
+	// nothing asked yet: not "0 of 0 papers state datasets"
+	const unasked = rows.map((row) => ({ ...row, cells: row.cells.map(() => ({ kind: "not_asked" as const })) }));
+	assert.equal(coverage(unasked, 1, "Datasets"), `No paper asked about datasets yet (${unasked.length} papers not asked)`);
 });
 
 test("the CSV has every cell's value, quotes and pages, and nothing a spreadsheet would run", () => {

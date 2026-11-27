@@ -6,6 +6,7 @@ import { SettingsDialog } from "@/components/settings-dialog";
 import { Sidebar } from "@/components/sidebar";
 import { ActivityLog, Notice, Workspace } from "@/components/workspace";
 import { api } from "@/lib/api";
+import { ChosenModelContext, chosenModelOf } from "@/lib/chosen-model";
 import { serverOwned } from "@/lib/engine";
 import { forgetMarks } from "@/lib/marks";
 import { choosableOf, engineCatalog } from "@/lib/models";
@@ -83,8 +84,8 @@ export default function Home() {
 				error={
 					job.error ??
 					failed ??
-					// until that setting is saved; also behind the open settings dialog, which has no place for it yet
-					(refused ? `Not saved: ${refused.error}` : null) ??
+					// until that setting is saved; while the settings dialog is open it says so beside the setting instead
+					(refused && !settingsOpen ? `Not saved: ${refused.error}` : null) ??
 					(runs.status === "failed" ? runs.error : null)
 				}
 				onSelect={setChosen}
@@ -108,9 +109,12 @@ export default function Home() {
 				onOpenSettings={() => setSettingsOpen(true)}
 			/>
 			{current ? (
-				<Workspace key={`${current}#${finishedRuns}`} name={current} catalog={ready(catalog)} model={settings?.describe_model}>
-					{log}
-				</Workspace>
+				// every estimate on screen is for the model chosen now (lib/chosen-model.ts)
+				<ChosenModelContext value={chosenModelOf(settings)}>
+					<Workspace key={`${current}#${finishedRuns}`} name={current} catalog={ready(catalog)} model={settings?.describe_model}>
+						{log}
+					</Workspace>
+				</ChosenModelContext>
 			) : (
 				<main className="relative min-w-0 flex-1">
 					<Notice>
@@ -130,6 +134,7 @@ export default function Home() {
 				choosable={choosable}
 				onOpenChange={setSettingsOpen}
 				onChange={(changes) => void change(changes).then(library.reload)} // what the library reports depends on some settings
+				refused={refused}
 				onReadDeclarations={
 					current && !running
 						? () => {

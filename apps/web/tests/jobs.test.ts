@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Status } from "@rp/contracts";
-import { type Job, finishedRun, reduce } from "@/lib/use-job";
+import { type Job, finishedRun, isFeatureJob, reduce } from "@/lib/use-job";
 import { started, step } from "@/lib/use-followed-job";
 
 const status = (state: Status["state"], more: Partial<Status> = {}): Status => ({
@@ -40,16 +40,42 @@ test("a feature's finished job, or one that made nothing, opens no run", () => {
 	assert.equal(finishedRun(running, status("done", { result: "iclr2026" })), "iclr2026");
 });
 
-test("a followed job adds only the new log lines, and ends with what it made or why it failed", () => {
+test("a feature's failure is not said as the run's, a run's is", () => {
+	const extraction = status("failed", { kind: "the extraction table", error: "the budget was reached" });
+	assert.equal(reduce(idle, { type: "reported", status: extraction }).error, null);
+	assert.equal(reduce(running, { type: "reported", status: extraction }).error, null);
+	assert.equal(reduce(running, { type: "reported", status: status("failed", { error: "only 3 papers" }) }).error, "only 3 papers");
+	// the Python backend names no kind: its jobs are runs
+	assert.equal(reduce(running, { type: "reported", status: status("failed", { kind: undefined, error: "no" }) }).error, "no");
+	assert.ok(isFeatureJob({ kind: "a run", outcome: { kind: "feature", feature: "critique", subject: { paper: "p" } } }));
+	assert.ok(!isFeatureJob({ kind: "a run", outcome: null }));
+});
+
+test("a followed job keeps the job's log and how far it got, and ends with what it made or why it failed", () => {
 	const job = started(7);
 	assert.equal(job.state, "running");
 	if (job.state !== "running") return;
-	const on = step(job, status("running", { log: ["one"], progress: { done: 1, of: 3, usd: 0 }, papers: { done: 2, of: 9 } }));
-	assert.deepEqual(on.state === "running" && [on.log, on.progress, on.papers], [["one"], { done: 1, of: 3, usd: 0 }, { done: 2, of: 9 }]);
+	const progress = { done: 1, of: 3, usd: 0 };
+	const on = step(job, status("running", { log: ["one"], progress, papers: { done: 2, of: 9 } }));
+	assert.deepEqual(on.state === "running" && [on.log, on.progress, on.papers], [["one"], progress, { done: 2, of: 9 }]);
 	if (on.state !== "running") return;
 	const outcome = { kind: "feature" as const, feature: "explanation" as const, subject: { paper: "p" } };
-	assert.deepEqual(step(on, status("done", { log: ["two"], outcome })), { state: "done", id: 7, outcome, log: ["one", "two"] });
-	assert.deepEqual(step(on, status("failed", { error: "budget" })), { state: "failed", id: 7, error: "budget", log: ["one"] });
+	assert.deepEqual(step(on, status("done", { log: ["one", "two"], outcome })), {
+		state: "done",
+		id: 7,
+		about: null,
+		outcome,
+		progress,
+		log: ["one", "two"],
+	});
+	assert.deepEqual(step(on, status("failed", { error: "budget", log: ["one"] })), {
+		state: "failed",
+		id: 7,
+		about: null,
+		error: "budget",
+		progress,
+		log: ["one"],
+	});
 	// another job has started since: ours is over, with nothing known of what it made
-	assert.deepEqual(step(on, status("running", { id: 8 })), { state: "done", id: 7, outcome: null, log: ["one"] });
+	assert.deepEqual(step(on, status("running", { id: 8 })), { state: "done", id: 7, about: null, outcome: null, progress, log: ["one"] });
 });

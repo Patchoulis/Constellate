@@ -7,7 +7,7 @@
  * only after the estimate is shown, on a click, a sample first and the rest on a second click, within a budget.
  * Nothing is shown when the engine has no such route (the Python backend).
  */
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import { BookOpenText, RotateCcw, Sparkles } from "lucide-react";
 import type { BudgetOf, CitationKind, CitationKindsEstimate, CitationKindsScope, RankedCitation } from "@rp/contracts";
 import { JobStrip, SentenceRow, contextsOf, forgetAsked } from "@/components/citation-contexts";
@@ -27,7 +27,8 @@ import {
 import { budgetWords, costTitle, costWords, shownModel } from "@/lib/cost";
 import { count, tokens } from "@/lib/units";
 import { ready, useAsync } from "@/lib/use-async";
-import { useFollowedJob } from "@/lib/use-followed-job";
+import { choiceKey, currentEstimate, useChosenModel } from "@/lib/chosen-model";
+import { elsewhereLine, useFollowedJob, type FollowedJob } from "@/lib/use-followed-job";
 
 /** The sentences behind one count: the community's citing sentences of `paper` read as `kinds`. */
 function Behind({ run, treePath, paper, kinds }: { run: string; treePath: string; paper: string; kinds: CitationKind[] }) {
@@ -147,23 +148,34 @@ export function CommunityCitationKinds({
 	treePath: string;
 	onOpenPaper: (id: string) => void;
 }) {
-	const [version, setVersion] = useState(0);
-	const summary = ready(useAsync(() => api.citationKinds(run, treePath), [run, treePath, version]));
-	const reload = useCallback(() => {
-		forgetAsked();
-		setVersion((value) => value + 1);
-	}, []);
-	const { job, start } = useFollowedJob(reload);
+	const chosen = useChosenModel();
+	const loaded = useAsync(() => api.citationKinds(run, treePath), [run, treePath], { keep: false });
+	const summary = ready(loaded);
 	const sampleRead = summary ? summary.sample.length > 0 && summary.tally.not_classified < summary.tally.sentences : false;
 	const scope: CitationKindsScope = sampleRead ? "rest" : "sample";
-	const estimate = ready(
-		useAsync(summary ? () => api.citationKindsEstimate(run, scope, treePath) : null, [run, treePath, scope, version, !!summary]),
+	// what asking would cost this community's scope with the model chosen now: never another's, nor an old figure
+	const estimated = useAsync(
+		summary ? () => api.citationKindsEstimate(run, scope, treePath) : null,
+		[run, treePath, scope, choiceKey(chosen), !!summary],
+		{ keep: false },
 	);
+	const estimate = currentEstimate(estimated, chosen);
+	const reload = () => {
+		forgetAsked();
+		loaded.reload();
+		estimated.reload();
+	};
+	// reading the citing sentences (free) is the run's job; asking for the kinds is this community's
+	const reading = useFollowedJob(reload, `citation-contexts:${run}`);
+	const { job, elsewhere, start } = useFollowedJob(reload, `citation-kinds:${run}:${treePath}`);
 	const [forgetting, setForgetting] = useState(false);
+	const [forgetError, setForgetError] = useState<string | null>(null);
 	if (!summary) return null;
 	const coverage = { papers: summary.papers, read: summary.papers_read, without_pdf: summary.without_pdf };
 	const lists = { run, treePath, titles: summary.titles, onOpenPaper };
-	const running = job.state === "running";
+	const active = (one: FollowedJob) => one.state === "running" || one.state === "starting";
+	const running = active(job) || active(reading.job);
+	const other = running ? null : (elsewhere ?? reading.elsewhere);
 	return (
 		<section className="flex flex-col gap-3 px-4 pb-4">
 			<Heading>Citation kinds</Heading>
@@ -176,8 +188,9 @@ export function CommunityCitationKinds({
 				<Button
 					variant="outline"
 					className="self-start"
+					disabled={other !== null}
 					title="Reads the reference list and citing sentences of each of the run's papers whose PDF is kept, once. No model is asked: it costs nothing."
-					onClick={() => void start(() => api.readCitationContexts(run).then((begun) => begun.id))}
+					onClick={() => void reading.start(() => api.readCitationContexts(run).then((begun) => begun.id))}
 				>
 					<BookOpenText />
 					Read the citing sentences of this run&apos;s papers
@@ -193,10 +206,14 @@ export function CommunityCitationKinds({
 			<Ranked title="Methods used or extended" ranked={summary.used} kinds={["uses", "extends"]} {...lists} />
 			<Ranked title="Most contrasted" ranked={summary.contrasts} kinds={["contrasts"]} {...lists} />
 			<Ranked title="Most supported" ranked={summary.supports} kinds={["supports"]} {...lists} />
+			{summary.tally.sentences > 0 && !estimate && estimated.status !== "failed" && estimated.status !== "idle" && (
+				<p className="font-ui text-xs text-muted-foreground">Working out the cost…</p>
+			)}
+			{estimated.status === "failed" && <p className="font-ui text-xs text-warning">{estimated.error}</p>}
 			{estimate && summary.tally.sentences > 0 && (
 				<Asking
 					estimate={estimate}
-					busy={running}
+					busy={running || other !== null}
 					onStart={(chosen, budget) =>
 						void start(() =>
 							api
@@ -212,7 +229,10 @@ export function CommunityCitationKinds({
 					}
 				/>
 			)}
-			<JobStrip job={job} what="Reading" />
+			<JobStrip job={reading.job} what="Reading citing sentences" noun="paper" />
+			<JobStrip job={job} what="Reading the kinds" noun="call" />
+			{other && <p className="font-ui text-xs text-muted-foreground">{elsewhereLine(other)}</p>}
+			{forgetError && <p className="font-ui text-xs text-destructive">{forgetError}</p>}
 			{summary.tally.not_classified < summary.tally.sentences && !running && (
 				<div className="flex items-center gap-2 font-ui text-xs text-muted-foreground">
 					{forgetting ? (
@@ -225,7 +245,8 @@ export function CommunityCitationKinds({
 								variant="outline"
 								onClick={() => {
 									setForgetting(false);
-									void api.forgetCitationKinds(run, treePath).then(reload);
+									setForgetError(null);
+									void api.forgetCitationKinds(run, treePath).then(reload, (error: Error) => setForgetError(error.message));
 								}}
 							>
 								Forget them

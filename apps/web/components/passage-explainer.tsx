@@ -31,10 +31,11 @@ import {
 	searchedLine,
 	symbolSource,
 } from "@/lib/explanation";
+import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
 import { accepting, shownModel } from "@/lib/cost";
 import { money } from "@/lib/units";
 import { ready, useAsync } from "@/lib/use-async";
-import { useFollowedJob } from "@/lib/use-followed-job";
+import { elsewhereLine, useFollowedJob } from "@/lib/use-followed-job";
 import { cn } from "@/lib/utils";
 
 export type ExplainMode = "explain" | "related";
@@ -218,29 +219,37 @@ function ExplainView({
 	onExplained: () => void;
 	askedOnce: AskedOnce;
 }) {
-	const prepared = useAsync(() => api.prepareExplanation(paper, passage.address), [paper, passage.address.page, passage.address.start]);
+	const chosen = useChosenModel();
+	// read again when the model chosen changes: the estimate, and the explanation kept, are that model's
+	const prepared = useAsync(
+		() => api.prepareExplanation(paper, passage.address),
+		[paper, passage.address.page, passage.address.start, choiceKey(chosen)],
+	);
 	const found = ready(prepared);
-	const [starting, setStarting] = useState(false);
 	const [failure, setFailure] = useState<string | null>(null);
-	// follow the job until it is over (asking only for what is new); then what was kept is read
+	// follow the job until it is over (also when the panel was closed and opened again); then what was kept is read
 	const reload = useRef(prepared.reload);
 	reload.current = prepared.reload;
 	const explained = useRef(onExplained);
 	explained.current = onExplained;
-	const { job, start: follow } = useFollowedJob((ended) => {
-		if (ended.state !== "done") return;
+	const key = placeKey(passage.address);
+	const {
+		job,
+		elsewhere,
+		start: follow,
+	} = useFollowedJob((ended) => {
 		reload.current();
-		explained.current();
-	});
+		if (ended.state === "done") explained.current();
+	}, `explanation:${paper}:${key}`);
 	const asking: Asking =
 		job.state === "running"
 			? { state: "running", job: job.id, progress: job.progress, unanswered: job.unanswered }
-			: starting
+			: job.state === "starting"
 				? { state: "starting" }
 				: failure !== null
 					? { state: "failed", error: failure }
 					: job.state === "failed"
-						? { state: "failed", error: job.error }
+						? { state: "failed", error: job.id === null ? `Not asked: ${job.error}` : job.error }
 						: { state: "idle" };
 	const [askBelow, setAskBelow] = useState<number | null>(null);
 	// what decides asking without a confirmation is the setting as it was when the panel opened: changing it
@@ -250,32 +259,38 @@ function ExplainView({
 		autoBelow.current = storedAskBelow();
 		setAskBelow(autoBelow.current);
 	}, []);
-	const key = placeKey(passage.address);
 
-	const start = async () => {
-		if (found?.state !== "ready" || !found.estimate) return;
-		const estimate = found.estimate;
+	// the estimate that may be accepted: answered for this passage and the model chosen now, not one being asked again
+	const estimate =
+		found?.state === "ready" && found.estimate && prepared.status === "ready" && isFor(found, chosen) ? found.estimate : null;
+	const start = () => {
+		if (found?.state !== "ready" || !estimate) return;
 		askedOnce.add(key);
-		setStarting(true);
 		setFailure(null);
 		// the model and the worst case shown go with the request: the engine refuses if either changed
-		await follow(async () => {
+		void follow(async () => {
 			const started = await api.explain(paper, passage.address, shownModel(found), accepting(estimate));
 			if (started.started && started.job !== null) return started.job;
 			prepared.reload();
 			return null;
 		});
-		setStarting(false);
 	};
 
-	const estimate = found?.state === "ready" ? found.estimate : null;
+	// Asked without a confirmation only for the passage the reader just chose to explain, and only on the first
+	// estimate it gets: an estimate answered later (another model chosen, the panel's data read again) never asks
+	// unseen; the reader clicks.
+	const firstEstimate = useRef(true);
 	useEffect(() => {
+		if (prepared.status !== "ready" || !found || found.state !== "ready") return;
+		const first = firstEstimate.current;
+		firstEstimate.current = false;
 		const below = autoBelow.current;
-		if (!estimate || below === undefined || askedOnce.has(key) || asking.state !== "idle" || askFirst(estimate, below)) return;
-		void start();
-		// start is a fresh closure every render; only a new estimate can lead to asking unconfirmed
+		if (!first || !estimate || !found.api_key_set || below === undefined || askedOnce.has(key) || asking.state !== "idle") return;
+		if (askFirst(estimate, below)) return;
+		start();
+		// start is a fresh closure every render; only the first answer can lead to asking unconfirmed
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [estimate]);
+	}, [prepared.status, found]);
 
 	if (prepared.status === "failed") return <p className="text-sm text-destructive">{prepared.error}</p>;
 	if (!found) return <p className="text-sm text-muted-foreground">Looking at the passage…</p>;
@@ -299,6 +314,12 @@ function ExplainView({
 				<Explained
 					explained={found.explained}
 					onRedo={async () => {
+						if (
+							!window.confirm(
+								"Set this explanation aside and ask again?\n\nThe kept explanation is forgotten, and asking again costs again. The cost is shown before anything is sent.",
+							)
+						)
+							return;
 						try {
 							await api.redoExplanation(paper, passage.address);
 							askedOnce.add(key); // a redo asks again only on a click
@@ -309,18 +330,31 @@ function ExplainView({
 					}}
 				/>
 			)}
-			{found.estimate && asking.state !== "running" && (
+			{found.estimate && !estimate && asking.state !== "running" && (
+				<p className="font-ui text-xs text-muted-foreground">Working out the cost for the model chosen now…</p>
+			)}
+			{estimate && asking.state !== "running" && (
 				<div className="flex flex-col gap-1.5 rounded-md border p-2">
-					<p className="font-ui text-xs" title={costNote(found.estimate)}>
-						{costLine(found.estimate)} Asked of the model chosen in the settings ({found.model}).
+					<p className="font-ui text-xs" title={costNote(estimate)}>
+						{costLine(estimate)} Asked of the model chosen in the settings ({found.model}).
 					</p>
 					<div className="flex flex-wrap items-center gap-3">
-						<Button className="h-7 text-xs" disabled={asking.state === "starting"} onClick={() => void start()}>
+						<Button
+							className="h-7 text-xs"
+							disabled={asking.state === "starting" || elsewhere !== null || !found.api_key_set}
+							onClick={start}
+						>
 							{asking.state === "starting" ? <Loader2 className="animate-spin" /> : <Sparkles />}
 							Explain
 						</Button>
 						<AskBelow value={askBelow} onChange={setAskBelow} />
 					</div>
+					{elsewhere && <p className="font-ui text-xs text-muted-foreground">{elsewhereLine(elsewhere)}</p>}
+					{!found.api_key_set && (
+						<p className="font-ui text-xs text-muted-foreground">
+							The chosen provider&apos;s key is not set (Settings, Language model, names the variable), so the model cannot be asked.
+						</p>
+					)}
 				</div>
 			)}
 			{asking.state === "running" && (

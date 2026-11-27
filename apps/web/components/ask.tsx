@@ -25,16 +25,19 @@ import {
 	historyOf,
 	indexingLine,
 	leftOutLine,
-	missingRoute,
 	MODEL_NOTE,
 	reduceAsk,
 	splitPassages,
 	stateNote,
 } from "@/lib/answers";
+import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
+import { isMissingRoute as missingRoute } from "@/lib/missing-route";
 import { ready, useAsync } from "@/lib/use-async";
+import { elsewhereLine, useFollowedJob } from "@/lib/use-followed-job";
 import { useResizable } from "@/lib/use-resizable";
 import { count } from "@/lib/units";
 
+/** How often the search is asked again while the papers are indexed (no model, no cost). */
 const POLL_MS = 1500;
 
 /** One passage: the paper's words there, and its citation (which opens the reader at the place). */
@@ -134,15 +137,13 @@ export function AskBox({
 }) {
 	const [state, dispatch] = useReducer(reduceAsk, { kind: "idle" });
 	const [text, setText] = useState("");
-	const [jobError, setJobError] = useState<string | null>(null);
-	const [posting, setPosting] = useState(false);
-	const [version, setVersion] = useState(0);
-	const asked = useAsync(() => api.questions(run), [run, version]);
+	const asked = useAsync(() => api.questions(run), [run], { keep: false });
 	const history = useMemo(() => historyOf(ready(asked) ?? [], community), [asked, community]);
+	const chosen = useChosenModel();
+	const choice = choiceKey(chosen);
 
 	const find = useCallback(
 		(question: string) => {
-			setJobError(null);
 			dispatch({ type: "asked", question });
 			Promise.all([api.passagesFound(run, question, community), api.answerEstimate(run, question, community)]).then(
 				([found, estimate]) => dispatch({ type: "searched", found, estimate }),
@@ -152,39 +153,14 @@ export function AskBox({
 		[run, community],
 	);
 
-	// while the papers are being indexed, the search is asked again
-	useEffect(() => {
-		if (state.kind !== "indexing") return;
-		const timer = setTimeout(() => find(state.question), POLL_MS);
-		return () => clearTimeout(timer);
-	}, [state, find]);
-
-	// while the model is being asked, the answer is looked at until it is there (or the job ended without one)
-	// (also when an answer opened from the history is still being asked)
-	useEffect(() => {
-		const waiting = state.kind === "asking" ? state.id : state.kind === "answer" && state.view.state === "asking" ? state.view.id : null;
-		if (waiting === null) return;
-		const job = state.kind === "asking" ? state.job : null;
-		const timer = setInterval(() => {
-			api.answer(run, waiting).then(
-				(view) => {
-					dispatch({ type: "viewed", view });
-					if (view.state !== "asking") setVersion((value) => value + 1);
-					if (view.state === "unanswered" && job !== null)
-						api.status(Number.MAX_SAFE_INTEGER).then(
-							(status) => setJobError(status.id === job ? status.error : null),
-							() => {},
-						);
-				},
-				(error: Error) => dispatch({ type: "failed", error: error.message }),
-			);
-		}, POLL_MS);
-		return () => clearInterval(timer);
-	}, [state, run]);
+	/** A question asked before, put back in the box and found again. */
+	const again = (question: string) => {
+		setText(question);
+		find(question);
+	};
 
 	const open = useCallback(
 		(id: string) => {
-			setJobError(null);
 			dispatch({ type: "opened", id });
 			api.answer(run, id).then(
 				(view) => dispatch({ type: "viewed", view }),
@@ -194,24 +170,66 @@ export function AskBox({
 		[run],
 	);
 
+	// The model is asked as the engine's one job, followed by the page's one poller (also when the box was closed
+	// and opened again meanwhile); when it ends, its answer, or what stopped it, is shown.
+	const { job, elsewhere, start } = useFollowedJob(
+		(ended) => {
+			asked.reload();
+			if (ended.about) open(ended.about);
+		},
+		`answers:${run}:${community ?? ""}`,
+	);
+
+	// while the papers are being indexed, the search is asked again
+	useEffect(() => {
+		if (state.kind !== "indexing") return;
+		const timer = setTimeout(() => find(state.question), POLL_MS);
+		return () => clearTimeout(timer);
+	}, [state, find]);
+
+	// another model chosen while a cost is shown: the cost of asking that one is worked out, the old one goes
+	const shown = state.kind === "found" ? state.question : null;
+	useEffect(() => {
+		if (shown !== null) find(shown);
+		// only a new choice asks again; `shown` and `find` are read as they are then
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [choice]);
+
+	// an answer opened while another window asks it: looked at again once that job is over, not polled
+	const waiting = state.kind === "answer" && state.view.state === "asking" ? state.view.id : null;
+	useEffect(() => {
+		if (waiting !== null && elsewhere === null && job.state !== "running") open(waiting);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [elsewhere]);
+
 	if (asked.status === "failed" && missingRoute(asked.error)) return null; // an engine without these routes
 	const askModel = () => {
-		if (state.kind !== "found" || posting) return;
-		const estimate = state.estimate;
-		setPosting(true); // one click, one request
-		api
-			.askQuestion(run, { question: state.question, community, ...shownModel(estimate), ...accepting(estimate) })
-			.then(
-				(started) => {
-					setVersion((value) => value + 1);
-					if (started.job === null) open(started.id);
-					else dispatch({ type: "started", id: started.id, job: started.job });
-				},
-				(error: Error) => dispatch({ type: "failed", error: error.message }),
-			)
-			.finally(() => setPosting(false));
+		if (state.kind !== "found") return;
+		const { question, estimate } = state;
+		// one click, one request: a second click while it is sent or runs does nothing
+		void start(async () => {
+			const started = await api.askQuestion(run, { question, community, ...shownModel(estimate), ...accepting(estimate) });
+			asked.reload();
+			if (started.job === null) {
+				open(started.id); // kept: nothing was asked
+				return null;
+			}
+			dispatch({ type: "started", id: started.id, job: started.job });
+			return { id: started.job, about: started.id };
+		});
 	};
-	const busy = state.kind === "searching" || state.kind === "opening" || state.kind === "asking";
+	const running = job.state === "starting" || job.state === "running";
+	const busy = state.kind === "searching" || state.kind === "opening" || running;
+	// the cost shown is for the question in the box and the model chosen now, or it is not accepted
+	const stale =
+		state.kind === "found" && (text.trim() !== state.question || !isFor(state.estimate, chosen))
+			? text.trim() !== state.question
+				? "The question was changed: press Find to see what asking it would cost."
+				: "Working out the cost for the model chosen now…"
+			: null;
+	// why the last ask did not answer: beside the cost it was refused at, or beside the answer it left unanswered
+	const refused = job.state === "failed" && job.id === null && state.kind === "found" ? `Not asked: ${job.error}` : null;
+	const jobError = job.state === "failed" && state.kind === "answer" && state.view.id === job.about ? job.error : null;
 
 	return (
 		<div className="flex flex-col gap-3">
@@ -263,12 +281,16 @@ export function AskBox({
 					)}
 					{cannotAsk(state.estimate) ? (
 						<p className="text-xs text-muted-foreground">{cannotAsk(state.estimate)}</p>
+					) : stale ? (
+						<p className="text-xs text-muted-foreground">{stale}</p>
 					) : (
-						<Button className="self-start" title={costTitle(state.estimate)} disabled={posting} onClick={askModel}>
+						<Button className="self-start" title={costTitle(state.estimate)} disabled={running || elsewhere !== null} onClick={askModel}>
 							<MessageCircleQuestion />
 							{costLine(state.estimate)}
 						</Button>
 					)}
+					{elsewhere && <p className="text-xs text-muted-foreground">{elsewhereLine(elsewhere)}</p>}
+					{refused && <p className="text-xs text-destructive">{refused}</p>}
 					<p className="text-xs text-muted-foreground">
 						The model is asked to answer only from these passages and to quote them; statements whose quotes are not found in the papers are
 						left out. The answer is kept: opening it again costs nothing.
@@ -276,11 +298,17 @@ export function AskBox({
 				</div>
 			)}
 
-			{state.kind === "asking" && (
+			{job.state === "running" && (
 				<div className="flex items-center gap-2 text-sm text-muted-foreground">
 					<Loader2 className="size-3.5 animate-spin" />
 					The model is being asked: one call.
-					<Button variant="ghost" size="icon" title="Stop: nothing more is sent" onClick={() => void api.cancelJob(state.job)}>
+					{job.unanswered && ` (${job.unanswered}: looking again.)`}
+					<Button
+						variant="ghost"
+						size="icon"
+						title="Stop: nothing more is sent"
+						onClick={() => void api.cancelJob(job.id).catch(() => undefined)}
+					>
 						<Square />
 					</Button>
 				</div>
@@ -291,7 +319,7 @@ export function AskBox({
 					<Answer view={state.view} onCitedPapers={onCitedPapers} />
 					{jobError && <p className="text-sm text-destructive">{jobError}</p>}
 					{state.view.state === "unanswered" && (
-						<Button variant="outline" className="self-start" onClick={() => find(state.view.question)}>
+						<Button variant="outline" className="self-start" onClick={() => again(state.view.question)}>
 							<RotateCcw />
 							Show the cost of asking again
 						</Button>
@@ -310,7 +338,7 @@ export function AskBox({
 								<RowButton
 									className="flex-1 flex-col gap-0.5"
 									title={question.answered ? "Open the kept answer: no cost" : "Not answered: open to see the cost of asking"}
-									onClick={() => (question.answered ? open(question.id) : find(question.question))}
+									onClick={() => (question.answered ? open(question.id) : again(question.question))}
 								>
 									<span className="font-sans text-sm text-foreground">{question.question}</span>
 									<span className="text-xs text-muted-foreground">
@@ -320,12 +348,17 @@ export function AskBox({
 								<Button
 									variant="ghost"
 									size="icon"
-									title="Ask again: the kept answer is cleared, and the cost is shown before anything is sent"
+									disabled={running}
+									title="Ask again: the kept answer is cleared (it asks first), and the cost is shown before anything is sent"
 									onClick={() =>
+										(!question.answered ||
+											window.confirm(
+												`Clear the kept answer to “${question.question}”?\n\nIt cannot be undone, and asking the model again costs again. The cost is shown before anything is sent.`,
+											)) &&
 										api.redoAnswer(run, question.id).then(
 											() => {
-												setVersion((value) => value + 1);
-												find(question.question);
+												asked.reload();
+												again(question.question);
 											},
 											(error: Error) => dispatch({ type: "failed", error: error.message }),
 										)
@@ -336,11 +369,15 @@ export function AskBox({
 								<Button
 									variant="ghost"
 									size="icon"
-									title="Delete this question and its answer"
+									disabled={running}
+									title="Delete this question and its answer (it asks first)"
 									onClick={() =>
+										window.confirm(
+											`Delete the question “${question.question}”${question.answered ? " and its kept answer" : ""}?\n\nIt cannot be undone.`,
+										) &&
 										api.forgetQuestion(run, question.id).then(
 											() => {
-												setVersion((value) => value + 1);
+												asked.reload();
 												if (state.kind === "answer" && state.view.id === question.id) dispatch({ type: "reset" });
 											},
 											(error: Error) => dispatch({ type: "failed", error: error.message }),

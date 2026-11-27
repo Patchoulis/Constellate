@@ -171,4 +171,7 @@ test("the Ask box is hidden only when the engine has no such route", () => {
 	assert.equal(missingRoute("not found"), true);
 	assert.equal(missingRoute("The backend answered 404"), true);
 	assert.equal(missingRoute("The backend is not reachable. Start it with: npm run dev"), false);
+	// a route that exists and failed: said, not taken for an older backend and hidden
+	assert.equal(missingRoute("the run demo was not found"), false);
+	assert.equal(missingRoute("the quote was not found in the paper"), false);
 });

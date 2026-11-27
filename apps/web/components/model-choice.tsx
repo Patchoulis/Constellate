@@ -12,6 +12,7 @@ import {
 	chosenOf,
 	effortSent,
 	effortsOf,
+	endpointIds,
 	groupsOf,
 	isPlainId,
 	priceLabel,
@@ -19,17 +20,40 @@ import {
 	type Choosable,
 	type ModelGroup,
 } from "@/lib/models";
-import type { Currency } from "@/lib/units";
+import { count, type Currency } from "@/lib/units";
 import { MENU, ROW, Trigger } from "@/components/ui/picker";
 import { cn } from "@/lib/utils";
 
 type Picked = Pick<Settings, "describe_provider" | "describe_model" | "describe_effort">;
 
+/** How long the server's list of models is waited for. */
+const LISTING_MS = 10_000;
+
+/** Asking the server which models it has: one state at a time. */
+type Listing =
+	{ state: "idle" } | { state: "asking" } | { state: "listed"; ids: string[]; dropped: number } | { state: "failed"; why: string };
+
+/** The server's models, or why there are none: a server that is down, slow, or answers something else. */
+async function listEndpoint(): Promise<Listing> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const slow = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => reject(new Error(`The server did not answer within ${LISTING_MS / 1000} seconds.`)), LISTING_MS);
+	});
+	try {
+		const found = endpointIds(await Promise.race([api.endpointModels(), slow]));
+		if (!found) return { state: "failed", why: "The server's answer is not a list of models." };
+		return { state: "listed", ...found };
+	} catch (error) {
+		return { state: "failed", why: (error as Error).message };
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 /** A model id the provider does not list, typed in; for a server, the ids it says it has can be listed first. */
 function Typed({ group, onPick }: { group: ModelGroup; onPick: (id: string) => void }) {
 	const [draft, setDraft] = useState("");
-	const [listed, setListed] = useState<string[] | null>(null);
-	const [problem, setProblem] = useState<string | null>(null);
+	const [listing, setListing] = useState<Listing>({ state: "idle" });
 	const plain = isPlainId(draft.trim());
 	const use = () => plain && onPick(draft.trim());
 	return (
@@ -46,27 +70,39 @@ function Typed({ group, onPick }: { group: ModelGroup; onPick: (id: string) => v
 					Use
 				</button>
 			</div>
+			{draft.trim() && !plain && (
+				<span className="text-xs text-warning">
+					A model id is letters, digits and . _ / : - only, at most 200 characters, and not a path.
+				</span>
+			)}
 			{group.provider.id === "compatible" && (
 				<button
 					type="button"
-					className="self-start text-xs text-muted-foreground underline"
-					onClick={() =>
-						api.endpointModels().then(
-							(found) => (setListed(found.models), setProblem(null)),
-							(error: Error) => setProblem(error.message),
-						)
-					}
+					className="self-start text-xs text-muted-foreground underline disabled:no-underline disabled:opacity-50"
+					disabled={listing.state === "asking"}
+					onClick={() => {
+						setListing({ state: "asking" });
+						void listEndpoint().then(setListing);
+					}}
 				>
-					List the server&apos;s models
+					{listing.state === "asking" ? "Asking the server…" : "List the server's models"}
 				</button>
 			)}
-			{problem && <span className="text-xs text-warning">{problem}</span>}
-			{listed?.map((id) => (
-				<button key={id} type="button" className="truncate text-left text-sm hover:underline" onClick={() => onPick(id)}>
-					{id}
-				</button>
-			))}
-			{listed?.length === 0 && <span className="text-xs text-muted-foreground">The server lists no models.</span>}
+			{listing.state === "failed" && <span className="text-xs text-warning">{listing.why}</span>}
+			{listing.state === "listed" &&
+				listing.ids.map((id) => (
+					<button key={id} type="button" className="truncate text-left text-sm hover:underline" onClick={() => onPick(id)}>
+						{id}
+					</button>
+				))}
+			{listing.state === "listed" && listing.ids.length === 0 && (
+				<span className="text-xs text-muted-foreground">The server lists no models it can be asked by.</span>
+			)}
+			{listing.state === "listed" && listing.dropped > 0 && (
+				<span className="text-xs text-muted-foreground">
+					{count(listing.dropped, "entry", "entries")} of its list left out: not a model id that can be used.
+				</span>
+			)}
 		</div>
 	);
 }

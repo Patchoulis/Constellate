@@ -11,12 +11,13 @@ import {
 	effortsOf,
 	engineCatalog,
 	groupsOf,
-	isMissingRoute,
 	isPlainId,
 	olderBackend,
 	priceLabel,
 	priceOf,
+	endpointIds,
 } from "@/lib/models";
+import { isMissingRoute } from "@/lib/missing-route";
 
 const USD = { code: "USD", rate: 1, date: null };
 
@@ -142,6 +143,17 @@ test("a backend without the models route falls back to today's list of Claude mo
 	assert.deepEqual(effortsOf(chosenOf(older.catalog, undefined)), [], "no effort the older backend does not know");
 	assert.equal(choosableOf(await engineCatalog(() => Promise.resolve(catalog)), [], undefined).source, "engine");
 	await assert.rejects(engineCatalog(() => Promise.reject(new Error("The backend is not reachable"))));
-	assert.ok(isMissingRoute(new Error("not found")) && !isMissingRoute("not found"));
+	assert.ok(isMissingRoute(new Error("not found")) && isMissingRoute("not found") && !isMissingRoute(undefined));
 	assert.equal(olderBackend([], "claude-sonnet-5-5").catalog.chosen.model, "claude-sonnet-5-5");
+});
+
+test("a server's list of models keeps only the ids that can be used, and says how many it left out", () => {
+	assert.deepEqual(endpointIds({ models: ["qwen3:32b", "llama4:8b", "../../etc", 42, "qwen3:32b"] }), {
+		ids: ["qwen3:32b", "llama4:8b"],
+		dropped: 3,
+	});
+	assert.deepEqual(endpointIds({ models: [] }), { ids: [], dropped: 0 });
+	assert.equal(endpointIds({ data: [{ id: "x" }] }), null, "an answer that is not a list of models");
+	assert.equal(endpointIds("<html>"), null);
+	assert.equal(endpointIds(null), null);
 });

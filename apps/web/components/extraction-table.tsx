@@ -6,7 +6,7 @@
  * set's most central papers), its estimate shown before, its cost after; then on the rest, with a second click.
  * Nothing is shown when the engine has no such route (the Python backend).
  */
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Download, Plus, RotateCcw, Square, X } from "lucide-react";
 import type {
 	ExtractionCell,
@@ -37,10 +37,11 @@ import {
 	toCsv,
 	valueText,
 } from "@/lib/extraction";
+import { choiceKey, currentEstimate, useChosenModel } from "@/lib/chosen-model";
 import { budgetOf, costWords, shownModel } from "@/lib/cost";
 import { ready, useAsync } from "@/lib/use-async";
+import { elsewhereLine, notAskedLine, useFollowedJob } from "@/lib/use-followed-job";
 import { count, money, tokens } from "@/lib/units";
-import { cn } from "@/lib/utils";
 
 const USD = { code: "USD", rate: 1, date: null };
 const usd = (amount: number) => money(amount, USD);
@@ -50,19 +51,6 @@ const ceiling = (amount: number) => Math.ceil(amount * 100) / 100;
 
 const readNote = (model: string) =>
 	`Read from the paper by the model (${model}): its reading, not the paper's statement. The quotes beside it are the paper's own words, found in it; a value whose quotes were not found is never shown.`;
-
-/** How a run of the table stands: one state at a time. */
-type Asking =
-	| { step: "idle" }
-	| { step: "starting"; part: ExtractionPart }
-	/** `part` is null for a run found under way when the table was opened */
-	| { step: "running"; part: ExtractionPart | null; job: number; done: number; of: number; usd: number }
-	| { step: "finished"; part: ExtractionPart | null; usd: number; error: string | null };
-
-/** The kind of job the engine gives a run of the table (engine api/extraction.rs). */
-const JOB_KIND = "the extraction table";
-
-const POLL_MS = 1200;
 
 /** "about USD 1.80 for 10 papers, at most USD 4.20 (an estimate)", with how it was reckoned on hover. */
 function EstimateLine({ estimate }: { estimate: ExtractionEstimate }) {
@@ -188,6 +176,7 @@ function ColumnsEditor({ run, given, onSaved }: { run: string; given: Extraction
 			<div className="flex flex-col gap-1 border-t pt-2">
 				<input
 					className="h-7 rounded-md border bg-transparent px-2"
+					aria-label="The new column's question"
 					placeholder="A question for every paper: Does it evaluate on out-of-distribution data?"
 					value={question}
 					maxLength={400}
@@ -196,12 +185,14 @@ function ColumnsEditor({ run, given, onSaved }: { run: string; given: Extraction
 				<div className="flex gap-1">
 					<input
 						className="h-7 min-w-0 flex-1 rounded-md border bg-transparent px-2"
+						aria-label="The new column's header"
 						placeholder="Its header (short)"
 						value={label}
 						maxLength={60}
 						onChange={(event) => setLabel(event.target.value)}
 					/>
 					<select
+						aria-label="What kind of answer the new column takes"
 						className="h-7 rounded-md border bg-card px-1"
 						value={kind}
 						onChange={(event) => setKind(event.target.value as ExtractionColumn["kind"])}
@@ -279,6 +270,7 @@ function Grid({
 			<div className="flex flex-wrap items-center gap-1.5 text-xs">
 				<span className="text-muted-foreground">Filter</span>
 				<select
+					aria-label="Filter by the column"
 					className="h-7 rounded-md border bg-card px-1"
 					value={filter?.column ?? ""}
 					onChange={(event) => setFilter(event.target.value === "" ? null : { column: Number(event.target.value), key: "stated" })}
@@ -292,6 +284,7 @@ function Grid({
 				</select>
 				{filter && (
 					<select
+						aria-label="Keep the papers whose cell is"
 						className="h-7 max-w-40 rounded-md border bg-card px-1"
 						value={filter.key}
 						onChange={(event) => setFilter({ ...filter, key: event.target.value })}
@@ -324,7 +317,11 @@ function Grid({
 								{count(shown.length, "paper")}
 							</th>
 							{columns.map((column, index) => (
-								<th key={column.id} className="w-48 border-b p-2 text-left align-top font-normal">
+								<th
+									key={column.id}
+									className="w-48 border-b p-2 text-left align-top font-normal"
+									aria-sort={sort?.column === index ? (sort.descending ? "descending" : "ascending") : "none"}
+								>
 									<button
 										type="button"
 										className="flex items-center gap-1 text-left text-foreground hover:underline"
@@ -444,77 +441,46 @@ function Opened({
 	onOpenPaper: (id: string) => void;
 }) {
 	const where = JSON.stringify(scope);
-	// raised after a run, a redo or new columns: the table and the estimates are read again
-	const [version, setVersion] = useState(0);
-	const again = () => setVersion((value) => value + 1);
-	const table = useAsync(() => api.extractionTable(run, scope), [run, where, version]);
-	const sample = useAsync(() => api.extractionEstimate(run, scope, "sample"), [run, where, version]);
+	const chosen = useChosenModel();
+	const choice = choiceKey(chosen);
+	// the table and the estimates are of this run and scope (and the estimates of the model chosen now): another's
+	// are never shown for them; after a run, a redo or new columns they are read again
+	const table = useAsync(() => api.extractionTable(run, scope), [run, where], { keep: false });
+	const sample = useAsync(() => api.extractionEstimate(run, scope, "sample"), [run, where, choice], { keep: false });
 	const sampleDone = ready(sample)?.to_ask === 0;
 	const tried = ready(table)?.rows.some((row) => row.sample && row.cells.some((cell) => cell.kind !== "not_asked")) ?? false;
 	const offerRest = sampleDone || tried;
-	const rest = useAsync(offerRest ? () => api.extractionEstimate(run, scope, "rest") : null, [run, where, version, offerRest]);
-	const [asking, setAsking] = useState<Asking>({ step: "idle" });
+	const rest = useAsync(offerRest ? () => api.extractionEstimate(run, scope, "rest") : null, [run, where, choice, offerRest], {
+		keep: false,
+	});
+	const again = () => {
+		table.reload();
+		sample.reload();
+		rest.reload();
+	};
+	// a run of this table is followed until it ends, also when the section was closed and opened again meanwhile
+	const { job, elsewhere, start } = useFollowedJob(again, `extraction:${run}:${where}`);
 	const [editing, setEditing] = useState(false);
 
-	// A run of the table already under way when this is opened (the section was closed, or another community
-	// looked at meanwhile) is followed again rather than offered anew.
-	useEffect(() => {
-		api.status(Number.MAX_SAFE_INTEGER).then(
-			(status) => {
-				if (status.state !== "running" || status.kind !== JOB_KIND || status.id === undefined) return;
-				const progress = status.progress;
-				const job = status.id;
-				setAsking((now) =>
-					now.step === "idle"
-						? { step: "running", part: null, job, done: progress?.done ?? 0, of: progress?.of ?? 0, usd: progress?.usd ?? 0 }
-						: now,
-				);
-			},
-			() => {},
-		);
-	}, []);
-
-	// While a run is under way, and only then, its progress is asked for; when it ends, the table is read again.
-	useEffect(() => {
-		if (asking.step !== "running") return;
-		const timer = setTimeout(() => {
-			api.status(Number.MAX_SAFE_INTEGER).then(
-				(status) => {
-					const ours = status.id === asking.job;
-					if (ours && status.state === "running") {
-						const progress = status.progress;
-						setAsking({ ...asking, done: progress?.done ?? asking.done, of: progress?.of ?? asking.of, usd: progress?.usd ?? asking.usd });
-						return;
-					}
-					setAsking({
-						step: "finished",
-						part: asking.part,
-						usd: ours ? (status.progress?.usd ?? asking.usd) : asking.usd,
-						error: ours ? status.error : null,
-					});
-					again();
-				},
-				() => setAsking({ ...asking }), // not answered: asked again at the next turn
-			);
-		}, POLL_MS);
-		return () => clearTimeout(timer);
-	}, [asking]);
-
-	const begin = (part: ExtractionPart, estimate: ExtractionEstimate) => {
-		setAsking({ step: "starting", part });
-		// the most shown, rounded up to the cent; in tokens for a model with no price
-		const budget = budgetOf(estimate, estimate.most_usd === null ? undefined : ceiling(estimate.most_usd));
-		api.runExtraction(run, scope, part, budget, shownModel(estimate)).then(
-			({ id }) => setAsking({ step: "running", part, job: id, done: 0, of: estimate.to_ask, usd: 0 }),
-			(error: Error) => setAsking({ step: "finished", part, usd: 0, error: error.message }),
-		);
-	};
+	const begin = (part: ExtractionPart, estimate: ExtractionEstimate) =>
+		void start(async () => {
+			// the most shown, rounded up to the cent; in tokens for a model with no price
+			const budget = budgetOf(estimate, estimate.most_usd === null ? undefined : ceiling(estimate.most_usd));
+			const { id } = await api.runExtraction(run, scope, part, budget, shownModel(estimate));
+			return { id, about: part };
+		});
 
 	const shownTable = ready(table);
-	const sampleEstimate = ready(sample);
-	const restEstimate = ready(rest);
-	const busy = asking.step === "starting" || asking.step === "running";
+	// an estimate is shown, and can be accepted, only once it is answered for what would be asked now
+	const sampleEstimate = currentEstimate(sample, chosen);
+	const restEstimate = currentEstimate(rest, chosen);
+	const busy = job.state === "starting" || job.state === "running" || elsewhere !== null;
 	const sampleSize = shownTable?.sample ?? 0;
+	const reckoning = [sample, ...(offerRest ? [rest] : [])].some((one) => one.status === "loading" || one.status === "reloading");
+	const estimateError = [sample, rest].find((one) => one.status === "failed");
+	const noKey = [sampleEstimate, restEstimate].some((one) => one && one.to_ask > 0 && !one.api_key_set);
+	const usd = job.state === "running" || job.state === "done" || job.state === "failed" ? (job.progress?.usd ?? 0) : 0;
+	const partName = (about: string | null) => (about === "sample" ? "The sample" : about === "rest" ? "The rest" : "The run");
 
 	const note = shownTable && leftOutNote(shownTable);
 	return (
@@ -526,16 +492,17 @@ function Opened({
 			</p>
 			{table.status === "failed" && <p className="text-xs text-warning">{table.error}</p>}
 
-			{asking.step === "running" ? (
+			{job.state === "running" ? (
 				<div className="flex items-center gap-2 text-xs tabular-nums">
 					<span className="flex-1">
-						Asking the model: {asking.done} of {count(asking.of, "paper")}
-						{spent(asking.usd) && `, ${spent(asking.usd)} so far`}
+						Asking the model: {job.progress ? `${job.progress.done} of ${count(job.progress.of, "paper")}` : "starting"}
+						{spent(usd) && `, ${spent(usd)} so far`}
+						{job.unanswered && ` (${job.unanswered}: looking again.)`}
 					</span>
 					<Button
 						variant="outline"
 						title="Stop: nothing new is asked, what is under way finishes and is kept"
-						onClick={() => void api.cancelJob(asking.job)}
+						onClick={() => void api.cancelJob(job.id).catch(() => undefined)}
 					>
 						<Square />
 						Stop
@@ -543,11 +510,25 @@ function Opened({
 				</div>
 			) : (
 				<>
-					{asking.step === "finished" && (
-						<p className={cn("text-xs tabular-nums", asking.error ? "text-warning" : "text-foreground")}>
-							{asking.error
-								? `The run stopped: ${asking.error}.${spent(asking.usd) ? ` ${spent(asking.usd)} was spent;` : ""} What was answered is kept.`
-								: `${asking.part === "sample" ? "The sample" : asking.part === "rest" ? "The rest" : "The run"} is done${spent(asking.usd) ? `: it cost ${spent(asking.usd)} (as billed at the engine's prices)` : ""}.`}
+					{job.state === "done" && (
+						<p className="text-xs text-foreground tabular-nums">
+							{`${partName(job.about)} is done${spent(usd) ? `: it cost ${spent(usd)} (as billed at the engine's prices)` : ""}.`}{" "}
+							{notAskedLine(job, "paper")}
+						</p>
+					)}
+					{job.state === "failed" && (
+						<p className="text-xs text-warning tabular-nums">
+							{job.id === null
+								? `Not started: ${job.error}`
+								: `The run stopped: ${job.error}.${spent(usd) ? ` ${spent(usd)} was spent.` : ""} What was answered is kept. ${notAskedLine(job, "paper") ?? ""}`}
+						</p>
+					)}
+					{elsewhere && <p className="text-xs text-muted-foreground">{elsewhereLine(elsewhere)}</p>}
+					{reckoning && <p className="text-xs text-muted-foreground">Working out the cost…</p>}
+					{estimateError?.status === "failed" && <p className="text-xs text-warning">{estimateError.error}</p>}
+					{noKey && (
+						<p className="text-xs text-muted-foreground">
+							The chosen provider&apos;s key is not set (Settings, Language model, names the variable), so the model cannot be asked.
 						</p>
 					)}
 					{sampleEstimate && sampleEstimate.to_ask > 0 && (

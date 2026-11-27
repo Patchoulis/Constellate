@@ -138,6 +138,7 @@ export function coverage(rows: ExtractionRow[], column: number, label: string): 
 	const asked = rows.filter((row) => row.cells[column].kind !== "not_asked");
 	const stated = asked.filter((row) => row.cells[column].kind === "stated").length;
 	const waiting = rows.length - asked.length;
+	if (asked.length === 0) return `No paper asked about ${label.toLowerCase()} yet (${count(waiting, "paper")} not asked)`;
 	return `${stated} of ${count(asked.length, "paper")} state ${label.toLowerCase()}${waiting > 0 ? ` (${count(waiting, "paper")} not asked yet)` : ""}`;
 }
 
