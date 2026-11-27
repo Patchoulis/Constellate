@@ -19,6 +19,13 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fetched, the reader says why. The Citations tab can now read a paper's reference list.
 - The reader's PDF of a paper and every other PDF are read in a separate process: a damaged or hostile PDF is
   marked unreadable and can no longer stop the app.
+- The graph can be coloured by a group of papers: an extraction table's column (its most common values, each in
+  a colour), where papers stand on a question, or the papers a cited answer cites. A legend says what each colour
+  is and how many papers it holds, every other paper is dimmed, and one click colours the graph by its
+  communities again.
+- The Marked tab asks where the marked papers stand on a question, as a community's section does.
+- The sidebar lists the runs a page at a time and searches their titles as you type, so that a library with
+  hundreds of runs stays quick to use; the open run is always in sight.
 - The paper reader has a Text tab showing the paper's text section by section, and citations open it at the exact
   place they quote, with the words highlighted; quotes a model gives as evidence are only shown once they have been
   found in the paper they are attributed to.
