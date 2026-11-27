@@ -1,5 +1,5 @@
-//! The text of a paper's PDF, page by page, in reading order: what passages ([`super::passages`]), reference
-//! lists ([`super::references`]) and citing sentences are read from.
+//! The text of a paper's PDF, page by page, in reading order: what passages ([`crate::text::pdf::passages`]), reference
+//! lists ([`crate::text::pdf::references`]) and citing sentences are read from.
 //!
 //! The text comes from `pdf-extract`, which is pure Rust: it builds on Windows and Linux with no system library,
 //! which `pdfium` (a native library per platform) and `poppler` (a system package) do not. Its reading order is
@@ -41,6 +41,9 @@
 //!
 //! Until the program says where it is ([`read_in_children`]), a PDF is read in this process, as before: that is
 //! for tests and examples, which have no such program. The engine's `main` always says it.
+
+pub mod passages;
+pub mod references;
 
 use std::io::{self, Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};

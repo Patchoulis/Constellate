@@ -28,7 +28,7 @@ use crate::analysis::reviews::{PaperFigures, ReviewSummary, Reviewed, paper_figu
 use crate::api::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::library::core::store::read_json;
 use crate::library::{Keeping, KeptReviews, Library, Ratings};
-use crate::text::discussion::{Discussion, read_discussion};
+use crate::text::reviews::discussion::{Discussion, read_discussion};
 use crate::text::reviews::{MAX_TEXT, forum, read_ratings};
 
 /// The routes of this module, for [`crate::api::routes::table`].
@@ -267,7 +267,7 @@ mod tests {
     use crate::library::Known;
     use crate::library::papers::tests::paper;
     use crate::settings::Choices;
-    use crate::text::discussion::fixtures::{ICLR_2024, NEURIPS_2023};
+    use crate::text::reviews::discussion::fixtures::{ICLR_2024, NEURIPS_2023};
 
     const AT: &str = "127.0.0.1:8765";
     const FORUM: &str = "https://openreview.net/forum?id=abc123XYZ";

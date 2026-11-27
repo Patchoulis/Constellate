@@ -41,7 +41,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use super::discussion::{Basis, Discussion, Kind, Reply, Section, Span};
-use super::{CharIndex, pattern};
+use crate::text::{CharIndex, pattern};
 
 /// A review's sections, at most, read for points: a form has a dozen.
 const MOST_SECTIONS: usize = 40;

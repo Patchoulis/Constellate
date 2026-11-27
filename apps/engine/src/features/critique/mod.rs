@@ -4,7 +4,7 @@
 //! # The reviewers' part
 //!
 //! Needs no model. Every review's Weaknesses, Questions and Limitations, split into points
-//! ([`crate::text::review_points`]), shown per reviewer with the rating and confidence the reviewer gave (each on
+//! ([`crate::text::reviews::review_points`]), shown per reviewer with the rating and confidence the reviewer gave (each on
 //! its venue's scale), each point with its place in the kept page, and the authors' replies attached to the review
 //! with how they were attached (named by the reply's title, or guessed). Whether a reply settles a point is not
 //! said: nothing here can know it.
@@ -57,10 +57,10 @@ use crate::model::batch::{self, Asking, BatchEstimate, Item, Outcome};
 use crate::model::chosen::Chosen;
 use crate::model::language::{Ask, Budget, Form};
 use crate::text::data_section;
-use crate::text::discussion::{Discussion, Kind, Score, Span};
-use crate::text::passages::{Address, Kind as PassageKind, Passages, chars_of};
-use crate::text::review_points::{Attachment, Concern, review_points};
+use crate::text::pdf::passages::{Address, Kind as PassageKind, Passages, chars_of};
 use crate::text::reviews::Field;
+use crate::text::reviews::discussion::{Discussion, Kind, Score, Span};
+use crate::text::reviews::review_points::{Attachment, Concern, review_points};
 
 use crate::analysis::reviews::{Scale, scale, venue_of};
 
@@ -807,7 +807,10 @@ pub enum ReviewersPart {
 }
 
 /// The overall score a review gave (rating, overall recommendation...), and its confidence, on their scales.
-fn scores_of(kind: &Kind, venue: Option<&crate::text::discussion::Venue>) -> (Option<ScoreGiven>, Option<ScoreGiven>) {
+fn scores_of(
+    kind: &Kind,
+    venue: Option<&crate::text::reviews::discussion::Venue>,
+) -> (Option<ScoreGiven>, Option<ScoreGiven>) {
     let given = |score: &Score| ScoreGiven {
         field: score.field,
         value: score.value,
@@ -919,9 +922,9 @@ pub(crate) mod tests {
     use crate::library::papers::tests::paper;
     use crate::model::language::fake::{Fake, error, message, ok};
     use crate::model::language::{Endpoint, KEY_VARIABLE, Limit};
-    use crate::text::discussion::fixtures::{ICLR_2024, NEURIPS_2023};
-    use crate::text::discussion::read_discussion;
-    use crate::text::passages::read_passages;
+    use crate::text::pdf::passages::read_passages;
+    use crate::text::reviews::discussion::fixtures::{ICLR_2024, NEURIPS_2023};
+    use crate::text::reviews::discussion::read_discussion;
     use crate::usage::{Call, Usd};
 
     /// A made-up paper: every word of it invented for these tests.

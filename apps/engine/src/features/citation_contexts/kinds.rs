@@ -34,7 +34,7 @@ use crate::library::{AnswerKey, Feature, Library, LibraryError, Slot, Subject};
 use crate::model::batch::{self, Asking, Item, Outcome};
 use crate::model::chosen::Chosen;
 use crate::model::language::{Ask, Budget, Form};
-use crate::text::passages::{Address, Match, Passages, letters_in, locate_in};
+use crate::text::pdf::passages::{Address, Match, Passages, letters_in, locate_in};
 
 /// The version of the prompt and the answer's shape. Raise it when either changes: kept readings are asked again.
 pub const PROMPT: u32 = 1;
@@ -622,7 +622,7 @@ mod tests {
     use crate::model::batch::estimate_batch;
     use crate::model::language::fake::{Fake, message, ok};
     use crate::model::language::{Endpoint, KEY_VARIABLE, Limit};
-    use crate::text::passages::Marker;
+    use crate::text::pdf::passages::Marker;
     use crate::usage::{Call as Spent, Usd};
 
     const MODEL: &str = "claude-opus-5-5";
@@ -972,7 +972,7 @@ baseline.\nAfter: It wins.\n"
     #[test]
     fn a_kind_is_shown_as_justified_only_when_the_page_says_its_words_at_their_place() {
         let pages = vec!["We compare against TIES merging [4] as our main baseline.".to_owned()];
-        let passages = crate::text::passages::read_passages(&pages);
+        let passages = crate::text::pdf::passages::read_passages(&pages);
         let mut context =
             context("We compare against TIES merging [4] as our main baseline.", "We evaluate on five tasks.", 100);
         context.before = None;

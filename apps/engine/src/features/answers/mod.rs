@@ -519,7 +519,7 @@ mod tests {
     use crate::jobs::Cancel;
     use crate::model::language::fake::{Fake, message, ok};
     use crate::model::language::{Endpoint, KEY_VARIABLE, Limit};
-    use crate::text::passages::read_passages;
+    use crate::text::pdf::passages::read_passages;
     use crate::usage::{Call, Usd};
 
     const MODEL: &str = "claude-opus-5-5";

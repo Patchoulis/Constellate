@@ -22,9 +22,9 @@ use sha2::{Digest, Sha256};
 use crate::analysis::citations::{LibraryPaper, Link, Linker};
 use crate::features::citation_contexts::{CONTEXTS, PaperContexts, contexts_of};
 use crate::library::{Library, LibraryError, PaperReading, json_column, now, placeholders};
-use crate::text::passages::{Passages, READER};
+use crate::text::pdf::passages::{Passages, READER};
 use crate::text::pdf::pdf_pages;
-use crate::text::references::read_reference_list;
+use crate::text::pdf::references::read_reference_list;
 
 /// Papers read in one round: their passages are held in memory meanwhile.
 const AT_ONCE: usize = 200;

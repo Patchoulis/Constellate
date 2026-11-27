@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rayon::prelude::*;
 
-use crate::text::passages::{Address, Kind, Passages, chars_of, sentence_spans};
+use crate::text::pdf::passages::{Address, Kind, Passages, chars_of, sentence_spans};
 use crate::text::words::{is_stop_word, singular, split};
 
 /// The most results told, over all papers.
@@ -259,7 +259,7 @@ fn place_of(candidate: &Candidate<'_>, index: usize, weights: &BTreeMap<String, 
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::text::passages::read_passages;
+    use crate::text::pdf::passages::read_passages;
 
     fn read(text: &str) -> Passages {
         read_passages(&[text.to_owned()])

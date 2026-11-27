@@ -18,8 +18,8 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::Serialize;
 
-use crate::text::discussion::{Discussion, Kind, Note, Section, Span};
-use crate::text::passages::{letters_in, sentence_spans};
+use crate::text::pdf::passages::{letters_in, sentence_spans};
+use crate::text::reviews::discussion::{Discussion, Kind, Note, Section, Span};
 
 /// Points kept of one paper's reviews: more is not one paper's discussion, and would not fit one question.
 pub const MAX_POINTS: usize = 150;
@@ -278,8 +278,8 @@ pub fn review_points(discussion: &Discussion) -> ReviewPoints {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::text::discussion::fixtures::{ICLR_2021, ICML_2025, NEURIPS_2023, NEURIPS_2025};
-    use crate::text::discussion::read_discussion;
+    use crate::text::reviews::discussion::fixtures::{ICLR_2021, ICML_2025, NEURIPS_2023, NEURIPS_2025};
+    use crate::text::reviews::discussion::read_discussion;
 
     fn at(page: &str, span: Span) -> String {
         page.chars().skip(span.start).take(span.end - span.start).collect()

@@ -45,8 +45,8 @@ use crate::library::{AnswerKey, Feature, Library, PaperReading, Subject};
 use crate::model::batch::{Asking, BatchEstimate, IN_FLIGHT, estimate_batch};
 use crate::model::chosen::{Accepted, Chosen, Refused, Terms, budget};
 use crate::model::language::Provider;
-use crate::text::passages::Passages;
-use crate::text::references::Citing;
+use crate::text::pdf::passages::Passages;
+use crate::text::pdf::references::Citing;
 use crate::usage::Usd;
 
 /// Papers citing one paper whose sentences are sent: the rest are counted.

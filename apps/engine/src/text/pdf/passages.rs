@@ -1,7 +1,7 @@
 //! A paper's text made addressable: pages, and on each page its sections, paragraphs and sentences, so that
 //! anything said about a paper can point at the place in it that says so, and a click on that pointer lands there.
 //!
-//! The text comes from the PDF page by page ([`super::pdf::pdf_pages`]), in the order the page draws it, which
+//! The text comes from the PDF page by page ([`crate::text::pdf::pdf_pages`]), in the order the page draws it, which
 //! for the two-column templates of the conferences read here is column by column with a blank line between
 //! paragraphs. What a PDF does to that text, and what is done about it:
 //!
@@ -35,11 +35,11 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
 
-use super::declarations::{DANGLING, FURNITURE, RUNNING};
-use super::pattern;
 use super::references::{
     APPENDIX_HEADING, Citing, END_HEADING, REFERENCES_HEADING, Reference, ReferenceList, accents_composed,
 };
+use crate::text::declarations::{DANGLING, FURNITURE, RUNNING};
+use crate::text::pattern;
 
 /// The version of this reader. Raise it when what it reads changes: addresses are only stable for one version.
 pub const READER: u32 = 1;
@@ -625,11 +625,11 @@ pub fn sentence_spans(text: &str) -> Vec<(usize, usize)> {
 
 /// A paper's passages, from its PDF: what `GET /api/papers/<id>/passages` answers (kept by paper id and
 /// [`READER`], since reading a PDF takes a moment and its addresses must not change under stored evidence).
-pub fn passages_of_pdf(bytes: &[u8]) -> Result<Passages, super::pdf::Unreadable> {
-    super::pdf::pdf_pages(bytes).map(|pages| read_passages(&pages))
+pub fn passages_of_pdf(bytes: &[u8]) -> Result<Passages, crate::text::pdf::Unreadable> {
+    crate::text::pdf::pdf_pages(bytes).map(|pages| read_passages(&pages))
 }
 
-/// Read a paper's passages from the text of its pages, as [`super::pdf::pdf_pages`] gives it.
+/// Read a paper's passages from the text of its pages, as [`crate::text::pdf::pdf_pages`] gives it.
 pub fn read_passages(pages: &[String]) -> Passages {
     let lines: Vec<Vec<&str>> = pages.iter().map(|page| page.lines().collect()).collect();
     let running = running_lines(&lines);

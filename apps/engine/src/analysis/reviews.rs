@@ -38,8 +38,8 @@ use rayon::prelude::*;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::text::discussion::{Discussion, Kind, Section, Signer, Span, Venue};
 use crate::text::reviews::Field;
+use crate::text::reviews::discussion::{Discussion, Kind, Section, Signer, Span, Venue};
 use crate::text::{CharIndex, first_chars, floor_boundary, squash};
 
 /// Papers listed among the most and least agreed-upon, and the highest rated.
@@ -803,8 +803,10 @@ pub fn summarise(papers: usize, reviewed: &[Reviewed<'_>]) -> ReviewSummary {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::text::discussion::fixtures::{ICLR_2024, ICML_2025, NEURIPS_2023, NEURIPS_2025, synthetic_page};
-    use crate::text::discussion::read_discussion;
+    use crate::text::reviews::discussion::fixtures::{
+        ICLR_2024, ICML_2025, NEURIPS_2023, NEURIPS_2025, synthetic_page,
+    };
+    use crate::text::reviews::discussion::read_discussion;
 
     fn figures(page: &str) -> PaperFigures {
         let discussion = read_discussion(page).unwrap();

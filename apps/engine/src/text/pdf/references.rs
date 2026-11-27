@@ -1,6 +1,6 @@
 //! The works a paper cites, read from its reference list: what a citation network is built from.
 //!
-//! The text comes out of a PDF ([`super::pdf`]), so it is the reference list as it was laid out on the page: entries
+//! The text comes out of a PDF ([`crate::text::pdf`]), so it is the reference list as it was laid out on the page: entries
 //! wrap over several lines, words are hyphenated at line ends, addresses break in the middle, and a page break drops
 //! a page number and the running header into the middle of an entry. Reading it is three steps:
 //!
@@ -33,7 +33,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
-use super::{first_chars, pattern, squash};
+use crate::text::{first_chars, pattern, squash};
 
 /// More than this is not one paper's reference list (the longest surveys list a few hundred).
 pub const MAX_REFERENCES: usize = 600;

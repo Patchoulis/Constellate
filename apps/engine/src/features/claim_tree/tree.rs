@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::evidence::{self, Claim, Evidence, PaperText, Papers, Quote, Rules};
 use crate::text::first_chars;
-use crate::text::passages::{Kind as PassageKind, Passages};
+use crate::text::pdf::passages::{Kind as PassageKind, Passages};
 
 /// The paper's central claims, at most.
 pub const MAX_CLAIMS: usize = 5;
@@ -533,7 +533,7 @@ fn place_of(paper_id: &str, passages: &Passages, label: &Label) -> Option<Eviden
 #[allow(clippy::unwrap_used)]
 pub(crate) mod tests {
     use super::*;
-    use crate::text::passages::read_passages;
+    use crate::text::pdf::passages::read_passages;
 
     /// A made-up paper: every word of it invented for these tests.
     pub(crate) const PAPER: &str = "Sparse Routing Without Tears\n\n1. Introduction\n\nWe show that a routing rule with a learned temperature matches dense experts at a fraction of the compute.\n\nOur first contribution is a routing rule that keeps every expert busy during training.\n\n2. Method\n\nTheorem 1. The routing rule converges to a balanced assignment under mild conditions.\n\n3. Experiments\n\nOn the language modelling benchmark the rule reaches the perplexity of the dense model with a third of the compute.\n\nTable 2: Perplexity and compute of the routing rule and the baselines on the language modelling benchmark.\n\nRemoving the temperature raises the perplexity by four points, which isolates its effect.\n";

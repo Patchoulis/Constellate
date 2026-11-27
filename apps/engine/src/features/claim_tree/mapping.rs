@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 
 use super::points::{Point, PointKind};
 use super::tree::{NodeKind, Tree};
-use crate::text::discussion::Span;
-use crate::text::passages::{Match, letters_in, locate_in};
+use crate::text::pdf::passages::{Match, letters_in, locate_in};
+use crate::text::reviews::discussion::Span;
 
 /// The words given for a placement must have this many letters and digits, or be the whole point.
 pub const LEAST_BECAUSE: usize = 10;

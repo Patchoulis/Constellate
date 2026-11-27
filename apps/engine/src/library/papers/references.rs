@@ -1,4 +1,4 @@
-//! Each paper's reference list ([`crate::text::references`]), read once from its PDF and kept, with what arXiv
+//! Each paper's reference list ([`crate::text::pdf::references`]), read once from its PDF and kept, with what arXiv
 //! said about the entries that were looked up there ([`crate::sources::citations`]): what the citation network
 //! around a paper is built from ([`crate::analysis::citations::network`]).
 //!
@@ -23,10 +23,10 @@ use sha2::{Digest, Sha256};
 use crate::analysis::citations::Linker;
 use crate::library::{Library, LibraryError, now};
 use crate::sources::citations::{Answer, Ask, Get, LookupError, ask_for, read_answer, send, url_for};
+use crate::text::pdf::references::{Citing, Confidence, Reference, ReferenceList, read_reference_list};
 use crate::text::pdf::{Unreadable, pdf_pages};
-use crate::text::references::{Citing, Confidence, Reference, ReferenceList, read_reference_list};
 
-/// The version of what is kept: raised when [`crate::text::references`] reads lists differently, so that the
+/// The version of what is kept: raised when [`crate::text::pdf::references`] reads lists differently, so that the
 /// lists kept by an older reader are read again.
 pub const READER: u32 = 1;
 

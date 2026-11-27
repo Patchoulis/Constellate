@@ -2,7 +2,7 @@
 //! meta-review, the decision, a rebuttal, a comment), who signed it, each review's sections as the conference's
 //! form names them, its scores, and which review a reply answers.
 //!
-//! As for the scores ([`super::reviews`]), nothing here fetches anything. OpenReview serves a bot challenge to
+//! As for the scores ([`crate::text::reviews`]), nothing here fetches anything. OpenReview serves a bot challenge to
 //! programs, and Constellate does not work around it: the interface hands over the text of the page the user
 //! opened in the reader, and only that text is read.
 //!
@@ -34,8 +34,8 @@
 //! # Positions
 //!
 //! Every note and every section keeps its [`Span`] in the page text as it was handed over (cut to
-//! [`super::reviews::MAX_TEXT`] characters), counted in characters (Unicode scalar values, as everywhere in
-//! [`super`]), not bytes. A section's `text` is exactly that stretch of the page, unchanged, so that something
+//! [`crate::text::reviews::MAX_TEXT`] characters), counted in characters (Unicode scalar values, as everywhere in
+//! [`crate::text`]), not bytes. A section's `text` is exactly that stretch of the page, unchanged, so that something
 //! shown later (a point mapped onto a paper's claims) can point back at the reviewer's own words.
 //!
 //! # Replies
@@ -52,8 +52,8 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use super::reviews::{Field, MAX_TEXT, NOT_WHOLE, scores};
-use super::{CharIndex, first_chars, floor_boundary, pattern, squash};
+use crate::text::reviews::{Field, MAX_TEXT, NOT_WHOLE, scores};
+use crate::text::{CharIndex, first_chars, floor_boundary, pattern, squash};
 
 /// The version of this reader. Raise it when what is read changes: a page kept from an older version is read
 /// again ([`crate::library::Library::read_stored_pages_again`]).

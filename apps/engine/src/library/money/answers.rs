@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 
 use crate::library::{Library, LibraryError, now};
 use crate::model::language::{Provider, price_key};
-use crate::text::passages::READER;
+use crate::text::pdf::passages::READER;
 
 /// The features that keep answers. A variant's name is what is stored ([`Feature::name`]): it never changes once
 /// released, or the answers kept under it are lost.

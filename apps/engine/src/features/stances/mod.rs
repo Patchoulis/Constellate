@@ -38,7 +38,7 @@ use crate::library::{AnswerKey, Feature, PaperReading, Slot, Subject};
 use crate::model::batch::Item;
 use crate::model::chosen::Chosen;
 use crate::model::language::{Ask, Form};
-use crate::text::passages::{Kind, Match, Part, Passages};
+use crate::text::pdf::passages::{Kind, Match, Part, Passages};
 use crate::text::words;
 use crate::text::{data_section, first_chars};
 
@@ -803,7 +803,7 @@ mod tests {
     use crate::model::batch::{self, Asking, Outcome};
     use crate::model::language::fake::{Fake, message, ok};
     use crate::model::language::{Budget, Endpoint, KEY_VARIABLE, Limit};
-    use crate::text::passages::read_passages;
+    use crate::text::pdf::passages::read_passages;
     use crate::usage::{Call, Usd};
 
     const MODEL: &str = "claude-opus-5-5";

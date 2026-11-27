@@ -1,5 +1,5 @@
 //! A paper's reviews page as the user's reader showed it, and the notes read from it
-//! ([`crate::text::discussion`]).
+//! ([`crate::text::reviews::discussion`]).
 //!
 //! Both are kept: the page's text, so that a newer reader ([`PARSER`] raised) reads it again without the user
 //! opening the page again, and so that the character positions of a reading keep pointing at the reviewers'
@@ -17,7 +17,7 @@ use serde::Serialize;
 
 use super::readings::{put_ratings, ratings_of};
 use crate::library::{Library, LibraryError, Ratings, now, placeholders, text_hash};
-use crate::text::discussion::{Discussion, PARSER, read_discussion};
+use crate::text::reviews::discussion::{Discussion, PARSER, read_discussion};
 use crate::threads::{self, Outcome, Progress};
 
 /// Papers asked about in one statement: well under SQLite's limit on bound values.
@@ -284,7 +284,7 @@ mod tests {
     use super::*;
     use crate::library::Known;
     use crate::library::papers::tests::paper;
-    use crate::text::discussion::fixtures::{ICLR_2024, NEURIPS_2023, synthetic_page};
+    use crate::text::reviews::discussion::fixtures::{ICLR_2024, NEURIPS_2023, synthetic_page};
     use crate::text::reviews::read_ratings;
 
     const ADDRESS: &str = "https://openreview.net/forum?id=abc123XYZ";

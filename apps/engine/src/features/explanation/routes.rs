@@ -41,7 +41,7 @@ use crate::library::{Feature, Library, PaperReading, Subject};
 use crate::model::batch::Asking;
 use crate::model::chosen::{Accepted, Chosen, Terms, budget};
 use crate::model::language::{Estimate, Provider};
-use crate::text::passages::{Address, Kind, Passages};
+use crate::text::pdf::passages::{Address, Kind, Passages};
 
 /// The longest section heading taken in an address: a heading is a line, not a page.
 const LONGEST_SECTION: usize = 1_000;

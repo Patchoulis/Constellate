@@ -17,7 +17,7 @@ use serde::Deserialize;
 
 use crate::api::routes::{ApiError, Shared, on_the_side};
 use crate::library::PaperReading;
-use crate::text::passages::{LocateAnswer, Passages};
+use crate::text::pdf::passages::{LocateAnswer, Passages};
 
 /// The longest quote looked for, in characters: a paragraph or two. A quote is the paper's words, not the paper.
 pub const LONGEST_QUOTE: usize = 5_000;
@@ -139,7 +139,7 @@ mod tests {
         let (router, _data) = engine();
         let (status, told) = ask(&router, "GET", "/api/papers/2601.00001/passages", None).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(told["reader"], crate::text::passages::READER);
+        assert_eq!(told["reader"], crate::text::pdf::passages::READER);
         assert_eq!(told["pages"][0]["number"], 1);
         let passage = &told["passages"]
             .as_array()

@@ -29,8 +29,8 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::analysis::citations::{Link, Linker};
-use crate::text::passages::{Address, Kind, Marker, Part, Passages, chars_of, citing_sentences};
-use crate::text::references::{Citing, Reference, ReferenceList};
+use crate::text::pdf::passages::{Address, Kind, Marker, Part, Passages, chars_of, citing_sentences};
+use crate::text::pdf::references::{Citing, Reference, ReferenceList};
 
 /// The version of what is read here. Raise it when a context is read differently: kept contexts are read again.
 pub const CONTEXTS: u32 = 1;
@@ -302,7 +302,7 @@ fn parenthesis_around(sentence: &str, written: &str) -> Option<(usize, usize)> {
 /// Whether each reference is cited alone or with others in each sentence that cites it. A numbered marker lists
 /// its works ("[3, 7-9]" is one marker for four); an author-year citation is grouped with the others inside the
 /// same parenthesis.
-fn groupings(cited: &[crate::text::passages::Cited]) -> HashMap<(usize, Address), Grouping> {
+fn groupings(cited: &[crate::text::pdf::passages::Cited]) -> HashMap<(usize, Address), Grouping> {
     let mut at: HashMap<&Address, Vec<(usize, &str, Marker, &str)>> = HashMap::new();
     for one in cited {
         for sentence in &one.sentences {
@@ -385,8 +385,8 @@ pub fn contexts_of(passages: &Passages, list: &ReferenceList, linker: &Linker, o
 pub(crate) mod tests {
     use super::*;
     use crate::analysis::citations::LibraryPaper;
-    use crate::text::passages::read_passages;
-    use crate::text::references::read_reference_list;
+    use crate::text::pdf::passages::read_passages;
+    use crate::text::pdf::references::read_reference_list;
 
     pub(crate) fn library_paper(id: &str, title: &str, year: u16) -> LibraryPaper {
         LibraryPaper {

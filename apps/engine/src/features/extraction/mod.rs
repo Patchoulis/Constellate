@@ -918,7 +918,7 @@ mod tests {
     use crate::library::papers::tests::paper;
     use crate::model::language::fake::{message, ok};
     use crate::model::language::{ApiKey, Endpoint, KEY_VARIABLE, Limit, Reply, Transport, TransportError};
-    use crate::text::passages::read_passages;
+    use crate::text::pdf::passages::read_passages;
     use crate::usage::{Call, Usd};
 
     const MODEL: &str = "claude-opus-5-5";

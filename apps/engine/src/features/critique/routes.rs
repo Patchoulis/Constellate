@@ -302,8 +302,8 @@ mod tests {
     use crate::library::{Known, Ratings};
     use crate::model::chosen::Chosen;
     use crate::settings::Choices;
-    use crate::text::discussion::fixtures::ICLR_2024;
-    use crate::text::discussion::read_discussion;
+    use crate::text::reviews::discussion::fixtures::ICLR_2024;
+    use crate::text::reviews::discussion::read_discussion;
     use crate::text::reviews::read_ratings;
 
     const AT: &str = "127.0.0.1:8765";

@@ -2,7 +2,7 @@
 //! communities cite and are cited.
 //!
 //! Everything here is worked out from the reference lists of the papers whose PDFs Constellate has read
-//! ([`crate::text::references`]), and from nothing else. It is not the whole literature: a paper's *references*
+//! ([`crate::text::pdf::references`]), and from nothing else. It is not the whole literature: a paper's *references*
 //! are complete once its own PDF is read, but the papers that *cite* it are only those among the read ones. The
 //! interface says so wherever it shows these figures.
 //!
@@ -29,7 +29,7 @@ use chrono::NaiveDate;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::text::references::{Confidence, Reference, title_key, title_words};
+use crate::text::pdf::references::{Confidence, Reference, title_key, title_words};
 
 /// The share of their words two titles must have in common to be taken for the same title.
 pub const SIMILAR_TITLES: f64 = 0.9;

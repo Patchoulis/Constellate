@@ -17,11 +17,7 @@
 //! a statement is cut after 1,500 characters whatever script it is written in.
 
 pub mod declarations;
-pub mod discussion;
-pub mod passages;
 pub mod pdf;
-pub mod references;
-pub mod review_points;
 pub mod reviews;
 pub mod words;
 

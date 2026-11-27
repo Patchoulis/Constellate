@@ -38,7 +38,7 @@ use crate::library::{Feature, Library, LibraryError, Slot, Subject};
 use crate::model::batch::{self, Asking, BatchEstimate, Failure, Item, Outcome, Stopped};
 use crate::model::chosen::{self, Accepted, Chosen, Terms};
 use crate::model::language::{Ask, Budget, Form, Limit};
-use crate::text::passages::{Address, Kind, Passages};
+use crate::text::pdf::passages::{Address, Kind, Passages};
 use crate::text::{data_section, first_chars};
 use definitions::Definition;
 
@@ -511,7 +511,7 @@ pub(crate) mod tests {
     use crate::library::papers::tests::paper as record;
     use crate::model::language::fake::{Fake, error, message, ok};
     use crate::model::language::{Effort, Endpoint, KEY_VARIABLE, NoAnswer, Provider, Unavailable};
-    use crate::text::passages::read_passages;
+    use crate::text::pdf::passages::read_passages;
     use crate::usage::Call;
 
     pub(crate) const PAPER: &str = "2601.00001";

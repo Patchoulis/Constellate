@@ -1,5 +1,5 @@
 //! A paper's text as every feature that asks about papers starts from it: its PDF read once into passages
-//! ([`crate::text::passages`]), kept, and handed out by paper id.
+//! ([`crate::text::pdf::passages`]), kept, and handed out by paper id.
 //!
 //! # Where a paper's PDF is
 //!
@@ -42,8 +42,8 @@ use sha2::{Digest, Sha256};
 use crate::evidence::{PaperText, Papers};
 use crate::library::core::store;
 use crate::library::{Library, LibraryError, Paper, now, placeholders};
-use crate::text::passages::{Passages, READER, passages_of_pdf};
 use crate::text::pdf::Unreadable;
+use crate::text::pdf::passages::{Passages, READER, passages_of_pdf};
 
 /// The folder inside the library's folder that holds the papers' PDFs.
 pub const PDF_FOLDER: &str = "pdfs";
@@ -509,7 +509,7 @@ mod tests {
     use super::*;
     use crate::library::Known;
     use crate::library::papers::tests::paper;
-    use crate::text::passages::read_passages;
+    use crate::text::pdf::passages::read_passages;
 
     fn library_with(ids: &[&str]) -> (tempfile::TempDir, Library) {
         let folder = tempfile::tempdir().unwrap();

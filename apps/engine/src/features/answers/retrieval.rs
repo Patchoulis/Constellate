@@ -5,7 +5,7 @@
 //!
 //! # What is indexed
 //!
-//! One unit per paragraph-like passage of every paper whose PDF has been read ([`crate::text::passages`]): running
+//! One unit per paragraph-like passage of every paper whose PDF has been read ([`crate::text::pdf::passages`]): running
 //! text, figure and table captions, the title. Headings, equations, footnotes and fragments are left out (they
 //! match words without saying anything), and so is the NeurIPS checklist. A paper whose PDF is not kept, or could
 //! not be read, is one unit: its title and abstract. [`Coverage`] says how many of each there are, so that the
@@ -51,7 +51,7 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::text::passages::{Kind, Part, Passages};
+use crate::text::pdf::passages::{Kind, Part, Passages};
 use crate::text::words::{is_stop_word, singular, split};
 
 /// BM25's term-frequency saturation.
@@ -719,7 +719,7 @@ mod tests {
     use std::sync::Barrier;
 
     use super::*;
-    use crate::text::passages::read_passages;
+    use crate::text::pdf::passages::read_passages;
 
     type Paper = (String, Option<Passages>, (String, String));
 

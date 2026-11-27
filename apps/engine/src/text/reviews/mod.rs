@@ -20,14 +20,17 @@
 //! A page with scores but no review headings (another site's layout) is read as a whole, and says so
 //! (`exact: false`).
 
+pub mod discussion;
+pub mod review_points;
+
 use std::collections::{BTreeMap, HashSet};
 use std::sync::LazyLock;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use super::discussion::{Kind, read_discussion};
 use super::{char_len_at, first_chars, pattern, squash};
+use crate::text::reviews::discussion::{Kind, read_discussion};
 
 /// Characters of page text read; the interface refuses more before it gets here.
 pub const MAX_TEXT: usize = 2_000_000;
@@ -511,7 +514,7 @@ Rating: 8: accept, good paper
 
     #[test]
     fn the_scores_and_the_thread_agree_on_every_page_on_what_a_review_is_and_what_it_scored() {
-        use crate::text::discussion::fixtures::{
+        use crate::text::reviews::discussion::fixtures::{
             ICLR_2021, ICLR_2024, ICML_2024, ICML_2025, NEURIPS_2023, NEURIPS_2025,
         };
         let pages = [NEURIPS, ICLR, NEURIPS_2023, NEURIPS_2025, ICLR_2021, ICLR_2024, ICML_2024, ICML_2025];
@@ -540,7 +543,7 @@ Rating: 8: accept, good paper
 
     #[test]
     fn an_older_pages_reviews_signed_by_anonymous_reviewers_are_told_apart() {
-        use crate::text::discussion::fixtures::ICLR_2021;
+        use crate::text::reviews::discussion::fixtures::ICLR_2021;
         let read = read_ratings(ICLR_2021).unwrap();
         assert_eq!((read.reviews, read.exact), (2, true));
         assert_eq!(read.ratings[&Field::Rating].values, [5, 7]);

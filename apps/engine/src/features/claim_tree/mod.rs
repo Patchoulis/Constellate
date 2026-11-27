@@ -39,9 +39,9 @@ use crate::library::{AnswerKey, Feature, KeptReviews, Library, LibraryError, Pap
 use crate::model::batch::BatchEstimate;
 use crate::model::chosen::Chosen;
 use crate::model::language::Provider;
-use crate::text::discussion::{Basis, Discussion, Kind, Reply, Section, Signer};
-use crate::text::passages::Passages;
+use crate::text::pdf::passages::Passages;
 use crate::text::reviews::Field;
+use crate::text::reviews::discussion::{Basis, Discussion, Kind, Reply, Section, Signer};
 
 /// What the paper's text is, for the tree: the JSON's `paper`, read from [`Claims`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

@@ -21,7 +21,7 @@
 use std::time::Duration;
 
 use crate::analysis::citations::{Link, LinkedReference, Linker, same_title};
-use crate::text::references::{Confidence, Reference, title_words};
+use crate::text::pdf::references::{Confidence, Reference, title_words};
 
 /// arXiv asks for no more than one request every three seconds.
 pub const PAUSE: Duration = Duration::from_secs(3);

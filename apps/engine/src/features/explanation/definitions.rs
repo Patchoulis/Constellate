@@ -21,7 +21,7 @@
 
 use serde::Serialize;
 
-use crate::text::passages::{Address, Kind, Passage, Passages, chars_of};
+use crate::text::pdf::passages::{Address, Kind, Passage, Passages, chars_of};
 
 /// Terms of one passage looked up: an equation has a handful of symbols, a paragraph a few acronyms.
 pub const MOST_TERMS: usize = 24;
@@ -256,7 +256,7 @@ pub fn definitions(passages: &Passages, index: usize) -> Vec<Definition> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::text::passages::read_passages;
+    use crate::text::pdf::passages::read_passages;
 
     /// Two pages of a paper: an abstract that introduces an acronym, a method section that introduces symbols
     /// in several ways, a displayed equation and the "where" paragraph under it.
