@@ -18,6 +18,7 @@ import {
 	stateNote,
 	type AskState,
 } from "@/lib/answers";
+import { RequestError } from "@/lib/request";
 
 const coverage: SearchCoverage = { papers: 739, full_text: 212, capped: 0, no_pdf: 520, unreadable: 7, missing: 0 };
 
@@ -168,10 +169,16 @@ test("the Ask box sends nothing to the model until it is started, and waits for 
 });
 
 test("the Ask box is hidden only when the engine has no such route", () => {
-	assert.equal(missingRoute("not found"), true);
-	assert.equal(missingRoute("The backend answered 404"), true);
-	assert.equal(missingRoute("The backend is not reachable. Start it with: npm run dev"), false);
+	const refused = (status: number, error: string | null) => new RequestError({ kind: "refused", status, error });
+	assert.equal(missingRoute(refused(404, "not found")), true);
+	assert.equal(missingRoute(refused(404, null)), true, "a 404 with no error of the backend's own");
+	assert.equal(missingRoute({ kind: "refused", status: 404, error: "not found" }), true, "the problem a failed useAsync keeps");
+	assert.equal(missingRoute(new RequestError({ kind: "unreachable" })), false);
+	assert.equal(missingRoute(new RequestError({ kind: "timeout", seconds: 20 })), false);
 	// a route that exists and failed: said, not taken for an older backend and hidden
-	assert.equal(missingRoute("the run demo was not found"), false);
-	assert.equal(missingRoute("the quote was not found in the paper"), false);
+	assert.equal(missingRoute(refused(404, "the run demo was not found")), false);
+	assert.equal(missingRoute(refused(404, "the quote was not found in the paper")), false);
+	assert.equal(missingRoute(refused(500, "not found")), false, "the words alone, with another status");
+	assert.equal(missingRoute(new Error("not found")), false, "words alone, not a request's answer");
+	assert.equal(missingRoute("not found"), false);
 });

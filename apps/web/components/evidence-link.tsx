@@ -4,6 +4,7 @@ import { createContext, useContext } from "react";
 import { Crosshair } from "lucide-react";
 import type { Evidence, ReaderTarget } from "@rp/contracts";
 import { api } from "@/lib/api";
+import { withSignal } from "@/lib/request";
 import { evidenceTitle, readerTarget, shortLabel } from "@/lib/evidence";
 import { ready, useAsync } from "@/lib/use-async";
 import { cn } from "@/lib/utils";
@@ -28,7 +29,8 @@ const labels = new Map<string, Promise<string>>();
 function labelOf(paper: string): Promise<string> {
 	let label = labels.get(paper);
 	if (!label) {
-		label = api.paper(paper).then(shortLabel, () => {
+		// shared by every citation of the paper: not called off when the one that asked first goes away
+		label = withSignal(null, () => api.paper(paper)).then(shortLabel, () => {
 			labels.delete(paper); // shown by its id this time; asked again by the next citation of it
 			return paper;
 		});

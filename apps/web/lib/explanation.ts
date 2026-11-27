@@ -98,6 +98,32 @@ export function askFirst(estimate: ExplanationEstimate, askBelow: number | null)
 	return estimate.most_usd > askBelow;
 }
 
+/** Everything that decides whether a passage's explanation is asked for without a click. */
+export interface Unconfirmed {
+	/** the reader's "do not ask below" amount, as it was when the panel opened; null: off (the default) */
+	askBelow: number | null;
+	/** the estimate the panel shows, when it is the one for this passage and the model chosen now (null otherwise) */
+	current: ExplanationEstimate | null;
+	/** is this the first answer the panel got for the passage? a later one (another model, read again) never asks */
+	first: boolean;
+	keySet: boolean;
+	/** was this passage already asked about, redone or stopped while the paper is open? */
+	askedBefore: boolean;
+	/** is nothing being asked for it (no job starting or running, no failure shown)? */
+	idle: boolean;
+}
+
+/**
+ * May the explanation be asked for with no click? Only when the reader turned it on and chose the amount, the
+ * estimate is the current one and has a known price whose most is within that amount, and it is the passage's
+ * first estimate with nothing asked for it yet. Any doubt is a "no": the reader clicks.
+ */
+export function asksUnconfirmed(asking: Unconfirmed): boolean {
+	const { askBelow, current, first, keySet, askedBefore, idle } = asking;
+	if (askBelow === null || current === null || !first || !keySet || askedBefore || !idle) return false;
+	return !askFirst(current, askBelow);
+}
+
 const USD = { code: "USD", rate: 1, date: null };
 
 /** What explaining would cost, with its currency, said to be an estimate; for a model with no price, only its

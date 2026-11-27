@@ -56,15 +56,29 @@ const BROWSER: Frames = {
 	now: () => performance.now(),
 };
 
+export type Size = { width: number; height: number };
+
+/** Where a glide goes: a view, or how to work it out for a picture of a given size (fitting a box, centring a
+ *  paper), so that the destination can be worked out again when the picture changes size on the way. */
+export type Aim = View | ((size: Size) => View);
+
+const viewOf = (aim: Aim, size: Size): View => (typeof aim === "function" ? aim(size) : aim);
+
 /**
  * One camera, one glide at a time.
  *
  * Asking for a new glide while one is running ends the running one where it is: it shows nothing more and its
  * `arrived` is never called. The new one starts from the view given to it, which is the view the camera has at
  * that instant, so the picture never jumps back or ahead: it just changes course.
+ *
+ * The picture changing size on the way (`resized`) ends the glide at once at its destination worked out for the
+ * new size: the view it was aiming at was worked out for a size that no longer is, and gliding on to it would end
+ * off its mark.
  */
 export class Glide {
 	private frame = 0;
+	/** the glide under way: where it goes, how a view is shown, and what to do on arriving */
+	private under: { aim: Aim; show: (view: View) => void; arrived?: () => void } | null = null;
 
 	constructor(private frames: Frames = BROWSER) {}
 
@@ -76,24 +90,38 @@ export class Glide {
 	stop() {
 		if (this.frame) this.frames.cancel(this.frame);
 		this.frame = 0;
+		this.under = null;
 	}
 
-	/** Glide from `from` (where the camera is now) to `to`, showing each view on the way; `arrived` is called once,
-	 *  at `to`, unless another glide or `stop` comes first. */
-	go(from: View, to: View, size: { width: number; height: number }, show: (view: View) => void, arrived?: () => void) {
+	/** Glide from `from` (where the camera is now) to `aim`, showing each view on the way; `arrived` is called once,
+	 *  at the destination, unless another glide or `stop` comes first. */
+	go(from: View, aim: Aim, size: Size, show: (view: View) => void, arrived?: () => void) {
 		this.stop();
+		const to = viewOf(aim, size);
 		const started = this.frames.now();
+		const under = { aim, show, arrived };
+		this.under = under;
 		const step = () => {
 			const progress = (this.frames.now() - started) / GLIDE_MS;
-			if (progress >= 1) {
-				this.frame = 0;
-				show(to);
-				arrived?.();
-				return;
-			}
+			if (progress >= 1) return this.arrive(under, to);
 			show(viewBetween(from, to, size, progress));
 			this.frame = this.frames.request(step);
 		};
 		this.frame = this.frames.request(step);
+	}
+
+	/** The picture is now `size`: a glide under way ends at once at its destination for that size. */
+	resized(size: Size) {
+		const under = this.under;
+		if (!under) return;
+		if (this.frame) this.frames.cancel(this.frame);
+		this.arrive(under, viewOf(under.aim, size));
+	}
+
+	private arrive(under: NonNullable<Glide["under"]>, to: View) {
+		this.frame = 0;
+		this.under = null;
+		under.show(to);
+		under.arrived?.();
 	}
 }

@@ -28,6 +28,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { JobOutcome, JobPapers, JobProgress, Status } from "@rp/contracts";
 import { api } from "@/lib/api";
+import { withSignal } from "@/lib/request";
 import { count } from "@/lib/units";
 
 export type FollowedJob =
@@ -132,6 +133,12 @@ export interface Poller {
 	watch: (listener: (look: Look) => void) => () => void;
 	/** one look now, or the last one when it is newer than a poll's interval */
 	probe: () => Promise<Look>;
+	/**
+	 * A job was just started: what was seen before is another job's. The log is asked for from its first line, and
+	 * a look already under way (asked before the start) is asked again rather than told, so that nobody takes the
+	 * last job's end for the new one's.
+	 */
+	restart: () => void;
 }
 
 /** A poller asking `status(since)`; `now` and `wait` are the clock (the tests' own). */
@@ -149,14 +156,17 @@ export function createPoller(
 	let asking: Promise<Look> | null = null;
 	let cancel: (() => void) | null = null;
 	let failures = 0;
+	/** bumped by `restart`: a look asked under an older one is not told */
+	let generation = 0;
 
-	const ask = async (): Promise<Look> => {
+	const ask = async (asked: number): Promise<Look> => {
 		try {
-			let told = await status(known.log.length);
+			const before = known;
+			let told = await status(before.log.length);
 			// another job since the last look: its log from its first line
-			if (told.id !== known.id && known.log.length > 0) told = await status(0);
-			const log = told.id === known.id ? [...known.log, ...told.log] : told.log;
-			known = { id: told.id, log };
+			if (told.id !== before.id && before.log.length > 0) told = await status(0);
+			const log = told.id === before.id ? [...before.log, ...told.log] : told.log;
+			if (asked === generation) known = { id: told.id, log }; // else a restart came: this look is not kept
 			failures = 0;
 			return { seen: { ...told, log } };
 		} catch (error) {
@@ -170,8 +180,10 @@ export function createPoller(
 		if (listeners.size > 0 && asking === null) cancel = wait(() => void look(), pollDelay(failures));
 	};
 	const look = (): Promise<Look> => {
-		asking ??= ask().then((answer) => {
+		const asked = generation;
+		asking ??= ask(asked).then((answer) => {
 			asking = null;
+			if (asked !== generation) return look(); // asked before a job was started: asked again
 			last = { at: now(), look: answer };
 			for (const listener of [...listeners]) listener(answer);
 			schedule();
@@ -195,10 +207,18 @@ export function createPoller(
 			if (last && "seen" in last.look && now() - last.at < POLL_MS) return Promise.resolve(last.look);
 			return look();
 		},
+		restart() {
+			generation += 1;
+			known = { id: undefined, log: [] };
+			failures = 0; // the engine just started the job: it answers, and its first look is not put off
+			last = null;
+		},
 	};
 }
 
-const poller = createPoller((since) => api.status(since));
+/** The one poller of `/api/status` of this window: every feature's section and the run's job (lib/use-job.ts)
+ *  look through it. Shared by all of them: never called off by one. */
+export const poller = createPoller((since) => withSignal(null, () => api.status(since)));
 
 /** The jobs this window started, by what they are about (a paper's weaknesses, a community's table…). */
 const startedFor = new Map<string, { id: number; about: string | null }>();
@@ -275,6 +295,8 @@ export function useFollowedJob(onEnd?: (job: Ended) => void, subject?: string) {
 			if (!transition({ kind: "start" })) return;
 			try {
 				const begun = await begin();
+				// a look asked before the job began would tell the last job's end as this one's
+				if (begun !== null) poller.restart();
 				if (begun === null) transition({ kind: "not_started" });
 				else if (typeof begun === "number") transition({ kind: "started", id: begun });
 				else transition({ kind: "started", id: begun.id, about: begun.about });

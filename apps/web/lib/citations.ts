@@ -7,6 +7,7 @@
  * Constellate has read cite it; within a year, the most cited sit nearest the middle line.
  */
 import type { CitationLink, CitationNeighbour, CitationNetwork, Community, ReferenceConfidence } from "@rp/contracts";
+import { safeLink } from "@/lib/links";
 import { count } from "@/lib/units";
 
 export type Side = "seed" | "prior" | "derivative";
@@ -159,9 +160,10 @@ export function authorLine(work: CitationNeighbour): string {
 	return more > 0 ? `${work.authors.join(", ")} and ${more} more` : work.authors.join(", ");
 }
 
-/** Where a work that is not in the library is read: its own address, else a search for its title. */
+/** Where a work that is not in the library is read: its own address when it is https (it was read from a PDF), else
+ *  a search for its title. */
 export function outsideLink(work: CitationNeighbour): string {
-	return work.url ?? `https://scholar.google.com/scholar?q=${encodeURIComponent(work.title)}`;
+	return safeLink(work.url)?.href ?? `https://scholar.google.com/scholar?q=${encodeURIComponent(work.title)}`;
 }
 
 /** What a work was found to be, as a tag and what the tag means. */

@@ -83,6 +83,18 @@ test("sections, groups and coverage are said in words with their units", () => {
 	assert.equal(moreToRead({ papers: 739, read: 259, without_pdf: 480 }), false);
 });
 
+test("papers whose PDF cannot be read are not waiting to be read, and are said", () => {
+	// 739 papers: 480 without a PDF, 7 with one that cannot be read, the other 252 read
+	const coverage = { papers: 739, read: 252, without_pdf: 480, unreadable: 7 };
+	assert.equal(moreToRead(coverage), false, "nothing left that reading again would read");
+	assert.equal(moreToRead({ ...coverage, read: 251 }), true);
+	assert.equal(
+		coverageLine(coverage),
+		"Citing sentences read for 252 of 739 papers of this run: 480 have no PDF kept, 7 have one that cannot be read",
+	);
+	assert.equal(moreToRead({ papers: 10, read: 9, without_pdf: 1 }), false, "an older engine that does not count them");
+});
+
 test("the network's lines take the main justified kind of the citations they stand for", () => {
 	assert.equal(mainKind(tally({ kinds: { uses: 1, baseline: 3 } })), "baseline");
 	assert.equal(mainKind(tally({ kinds: { uses: 2, baseline: 2 } })), "baseline", "a tie goes to the first listed");

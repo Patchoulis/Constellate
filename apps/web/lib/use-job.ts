@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { JobState, RunRequest, Status } from "@rp/contracts";
 import { api } from "@/lib/api";
-import { pollDelay } from "@/lib/use-followed-job";
+import { poller, type Look } from "@/lib/use-followed-job";
 
 /**
  * The pipeline job as the browser sees it. It mirrors the backend's state machine (rp/jobs.py):
@@ -70,69 +70,67 @@ export function reduce(job: Job, event: Event): Job {
 			const status = event.status;
 			// a feature's failure is said by its own section, not under "New run" as if a run had failed
 			const said = isFeatureJob(status) ? null : status.error;
-			return { state: status.state, log: [...job.log, ...status.log], error: said };
+			// the poller's look carries the job's whole log (lib/use-followed-job.ts `createPoller`)
+			return { state: status.state, log: status.log, error: said };
 		}
 		case "unanswered":
-			return { ...job, error: event.error }; // a new object: while running, the next poll is still scheduled
+			return { ...job, error: event.error };
 	}
 }
 
+/**
+ * The run's job, looked at through the window's one poller of `/api/status` (lib/use-followed-job.ts `poller`),
+ * which the features' sections share: the engine is asked once however many of them look, and an engine that does
+ * not answer is asked less and less often (the poller's backoff).
+ */
 export function useJob(onDone: (run: string) => void) {
 	const [job, dispatch] = useReducer(reduce, { state: "idle", log: [], error: null });
-	const seen = useRef(0);
-	seen.current = job.log.length;
 	// the job as this page last saw it, for telling a finish it watched from one it only heard of
 	const last = useRef<Job>(job);
 	last.current = job;
 	const done = useRef(onDone);
 	done.current = onDone;
 
-	// looks in a row the backend did not answer: the next one waits longer (lib/use-followed-job.ts `pollDelay`)
-	const misses = useRef(0);
-
-	const report = useCallback(async () => {
-		try {
-			const status = await api.status(seen.current);
-			misses.current = 0;
-			const run = finishedRun(last.current, status);
-			dispatch({ type: "reported", status });
-			if (run) done.current(run);
-		} catch (error) {
-			misses.current += 1;
-			dispatch({ type: "unanswered", error: (error as Error).message });
-		}
+	const listen = useCallback((look: Look) => {
+		if (!("seen" in look)) return dispatch({ type: "unanswered", error: look.unanswered });
+		const run = finishedRun(last.current, look.seen);
+		dispatch({ type: "reported", status: look.seen });
+		if (run) done.current(run);
 	}, []);
 
 	// Pick up a job that was already running when the page opened.
 	useEffect(() => {
-		void report();
-	}, [report]);
+		let gone = false;
+		void poller.probe().then((look) => gone || listen(look));
+		return () => {
+			gone = true;
+		};
+	}, [listen]);
 
-	// One timer per report while running; any other state schedules nothing.
-	useEffect(() => {
-		if (job.state !== "running") return;
-		const timer = setTimeout(report, pollDelay(misses.current));
-		return () => clearTimeout(timer);
-	}, [job, report]);
+	// Looked at while running; any other state asks nothing.
+	const running = job.state === "running";
+	useEffect(() => (running ? poller.watch(listen) : undefined), [running, listen]);
 
 	const start = useCallback(
 		async (request: RunRequest) => {
 			try {
 				await api.start(request);
+				poller.restart(); // a look asked before would tell the last job's end as this one's
 				dispatch({ type: "started" });
 			} catch (error) {
 				dispatch({ type: "unanswered", error: (error as Error).message });
-				void report(); // "already running" is a refusal too: show what the backend is really doing
+				void poller.probe().then(listen); // "already running" is a refusal too: show what the backend is really doing
 			}
 		},
-		[report],
+		[listen],
 	);
 
 	/** A job was started some other way (not through `start`): begin showing it. */
 	const follow = useCallback(() => {
+		poller.restart();
 		dispatch({ type: "started" });
-		void report();
-	}, [report]);
+		void poller.probe().then(listen);
+	}, [listen]);
 
 	return { job, start, follow };
 }
