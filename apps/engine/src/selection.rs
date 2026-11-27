@@ -232,6 +232,34 @@ mod tests {
         assert_eq!(reordered.name(), name);
         let other = conferences(&["NeurIPS 2025", "ICML 2026", "ICLR 2026", "CVPR 2026", "MLSys 2026"]);
         assert_ne!(other.name(), name);
+        // the Python's case: twelve conferences, one fewer is another name, and each fits a folder's name
+        let twelve: Vec<String> = (0..12).map(|index| format!("Conf{index} 2026")).collect();
+        let named = |venues: &[String]| Selection::parse(venues, None, None, &[], false).unwrap().name();
+        assert!(named(&twelve).len() < 80, "{}", named(&twelve));
+        assert_eq!(named(&twelve), named(&twelve));
+        assert_ne!(named(&twelve), named(&twelve[..11]));
+    }
+
+    #[test]
+    fn a_selection_is_read_back_from_what_it_stores() {
+        let back = |selection: &Selection| {
+            let stored = selection.to_json();
+            let list = |key: &str| -> Vec<String> {
+                stored[key].as_array().unwrap().iter().map(|item| item.as_str().unwrap().to_owned()).collect()
+            };
+            Selection::parse(
+                &list("venues"),
+                stored["start"].as_str(),
+                stored["end"].as_str(),
+                &list("categories"),
+                stored["include_workshops"].as_bool().unwrap(),
+            )
+            .unwrap()
+        };
+        let dates = Selection::parse(&[], Some("2026-01-01"), Some("2026-01-07"), &all(&["cs.LG"]), false).unwrap();
+        assert_eq!(back(&dates), dates);
+        let venues = Selection::parse(&all(&["NeurIPS 2025", "ICML 2026"]), None, None, &[], true).unwrap();
+        assert_eq!(back(&venues), venues);
     }
 
     #[test]
