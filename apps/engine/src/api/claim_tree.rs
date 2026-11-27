@@ -475,6 +475,53 @@ mod tests {
         assert!(done.error.unwrap().starts_with("The claim tree: no usable answer"));
     }
 
+    /// Keep, in the engine's library under `data`, the tree and the mapping of the model the settings choose, as a
+    /// job would have.
+    fn keep_both(data: &std::path::Path) {
+        use crate::analysis::claim_tree::asking::{MAPPING_PROMPT, TREE_PROMPT, checked_tree, mapping_key, tree_key};
+        use crate::analysis::claim_tree::mapping::{self, SaidMapping};
+        use crate::analysis::claim_tree::points::review_points;
+        use crate::analysis::claim_tree::tree::SaidTree;
+        use crate::library::Slot;
+        use crate::model::chosen::Chosen;
+
+        let library = Library::open(&data.join("library")).unwrap();
+        let model = "claude-opus-5-5";
+        let chosen = Chosen::claude(model);
+        let slot = |key| Slot { feature: Feature::ClaimTree, key, subject: Subject::Paper(PAPER.to_owned()) };
+        let said: SaidTree = serde_json::from_value(tree_answer()).unwrap();
+        library.keep(&slot(tree_key(&chosen, PAPER)), model, TREE_PROMPT, &said).unwrap();
+        let Some(PaperReading::Read(passages)) = library.paper_texts(&[PAPER]).unwrap().pop() else { panic!() };
+        let tree = checked_tree(&said, PAPER, &passages).unwrap();
+        let points = review_points(&library.reviews(PAPER).unwrap().unwrap().discussion).points;
+        let question = mapping::question(&tree, &points);
+        let said: SaidMapping = serde_json::from_value(mapping_answer()).unwrap();
+        library.keep(&slot(mapping_key(&chosen, PAPER, &question)), model, MAPPING_PROMPT, &said).unwrap();
+    }
+
+    #[tokio::test]
+    async fn every_answer_of_the_claims_routes_fits_its_type_in_the_contracts() {
+        use super::super::contract::assert_fits;
+
+        let (engine, data) = engine(false);
+        let router = router(engine);
+        let path = format!("/api/papers/{PAPER}/claims");
+        let (_, not_asked) = ask(&router, "GET", &path, None).await;
+        assert_eq!(not_asked["tree"]["state"], "not_asked");
+        assert_fits("ClaimsView", &not_asked, &[]);
+        let (_, no_pdf) = ask(&router, "GET", "/api/papers/2601.00002/claims", None).await;
+        assert_eq!(no_pdf["tree"]["state"], "no_text");
+        assert_fits("ClaimsView", &no_pdf, &[]);
+        keep_both(data.path());
+        let (_, made) = ask(&router, "GET", &path, None).await;
+        assert_eq!((made["tree"]["state"].clone(), made["mapping"]["state"].clone()), (json!("made"), json!("made")));
+        assert!(made["node_reviews"].as_array().is_some_and(|nodes| nodes.len() > 1), "{made}");
+        assert_fits("ClaimsView", &made, &[]);
+        let (_, contested) = ask(&router, "GET", "/api/runs/r1/communities/c0/claims/contested", None).await;
+        assert_eq!(contested["papers_mapped"], 1, "{contested}");
+        assert_fits("ContestedClaims", &contested, &[]);
+    }
+
     #[tokio::test]
     async fn a_community_says_how_many_claims_of_each_mapped_paper_were_contested() {
         let (engine, _data) = engine(false);
