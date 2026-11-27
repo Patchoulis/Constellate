@@ -43,6 +43,7 @@ use super::language::{
 };
 use crate::jobs::{Progress, Tracker};
 use crate::library::{AnswerKey, Feature, Kept, Library, LibraryError, Slot};
+use crate::usage::Call;
 
 /// Calls under way at once when a feature has no reason to choose otherwise: enough to finish 739 papers in
 /// minutes, few enough to stay under the API's rate limits for most accounts.
@@ -232,7 +233,9 @@ where
     report(*locked(&done));
 
     let paced = Paced { inner: asking.transport, gate: Mutex::new(Gate::default()) };
-    let client = Client::new(&paced, asking.endpoint, asking.recorder);
+    // the calls each thread's item took are held until its answer is kept with them, in one transaction
+    let pending = Pending::default();
+    let client = Client::new(&paced, asking.endpoint.clone(), &pending);
     // the first reason to stop is the one told
     let stop: Mutex<Option<Stopped>> = Mutex::new(None);
     let stopped = || {
@@ -255,7 +258,7 @@ where
                         if stopped().is_some() {
                             return; // the rest are told as not started
                         }
-                        let call = || ask_one(&client, asking.library, &items[index], budget);
+                        let call = || ask_one(&client, &pending, &asking, &items[index], budget);
                         let Some(outcome) = flight.ask(&stopped, call) else { return };
                         if let Some(why) = halts(&outcome) {
                             locked(&stop).get_or_insert(why);
@@ -341,25 +344,58 @@ impl Flight {
     }
 }
 
+/// The calls made on each thread and not yet written: a thread asks its items one after the other, so what it holds
+/// is what its item under way took (every attempt of it).
+#[derive(Default)]
+struct Pending {
+    calls: Mutex<HashMap<thread::ThreadId, Vec<Call>>>,
+}
+
+impl Pending {
+    /// What this thread's item took, taken out.
+    fn take(&self) -> Vec<Call> {
+        locked(&self.calls).remove(&thread::current().id()).unwrap_or_default()
+    }
+}
+
+impl Recorder for Pending {
+    fn record(&self, call: Call) {
+        locked(&self.calls).entry(thread::current().id()).or_default().push(call);
+    }
+}
+
 fn ask_one<T: DeserializeOwned + Serialize>(
     client: &Client<'_>,
-    library: &Library,
+    pending: &Pending,
+    asking: &Asking<'_>,
     item: &Item<'_>,
     budget: &Budget,
 ) -> Outcome<T> {
-    match catch_unwind(AssertUnwindSafe(|| client.ask_json::<T>(&item.ask, budget))) {
+    let asked = catch_unwind(AssertUnwindSafe(|| client.ask_json::<T>(&item.ask, budget)));
+    let calls = pending.take();
+    let outcome = match asked {
         Ok(Ok(answered)) => {
-            if let Err(error) = library.keep(&item.slot, &answered.model, item.prompt, &answered.answer) {
+            // the answer and what it cost, kept together: never a call paid for whose answer is lost
+            let content = serde_json::to_string(&answered.answer).map_err(LibraryError::from);
+            let kept = content.and_then(|content| {
+                asking.recorder.keep_paid(asking.library, &item.slot, &answered.model, item.prompt, &content, calls)
+            });
+            if let Err(error) = kept {
                 // the answer is still handed back; it is asked for again next time
                 eprintln!("library: an answer for {} could not be kept: {error}", item.slot.feature.name());
             }
-            Outcome::Answered(answered)
+            return Outcome::Answered(answered);
         }
         Ok(Err(AskError::NoAnswer(why))) => Outcome::Failed(Failure::NoAnswer(why)),
         Ok(Err(AskError::Unavailable(why))) => Outcome::Failed(Failure::Unavailable(why)),
         Ok(Err(AskError::OverBudget(why))) => Outcome::NotStarted(Stopped::OverBudget(why)),
         Err(_) => Outcome::Failed(Failure::Panicked),
+    };
+    // no usable answer: what was paid for is recorded all the same
+    for call in calls {
+        asking.recorder.record(call);
     }
+    outcome
 }
 
 /// When the requests of a batch may go: held back by a wait one of them was told to make, then let go
@@ -815,6 +851,30 @@ mod tests {
         let prompted = at(Provider::Meta, "muse-spark-1.3");
         let held = at(Provider::Groq, "openai/gpt-oss-120b");
         assert!(prompted.tokens.input > held.tokens.input, "the schema written into the question is counted");
+    }
+
+    #[test]
+    fn every_answer_is_kept_with_what_it_cost_and_a_failed_call_is_recorded_alone() {
+        let (_folder, library) = library();
+        let (mut questions, papers) = numbered(4);
+        questions[3] = "fail".to_owned();
+        let schema = schema();
+        let items = items(&questions, &papers, &schema);
+        let echo = Echo { took: (40, 20), ..Echo::default() };
+        let cancel = Cancel::new();
+        let (log, progress) = (|_: &str| {}, |_: Progress| {});
+        let tracker = Tracker::new(&log, &progress, &cancel);
+        let asking =
+            Asking { library: &library, transport: &echo, endpoint: endpoint(), recorder: &library, in_flight: 2 };
+        let outcomes = ask_all::<Said>(asking, &items, &plenty(), &tracker).unwrap();
+        assert_eq!(outcomes.iter().filter(|outcome| matches!(outcome, Outcome::Answered(_))).count(), 3);
+        for item in &items[..3] {
+            assert!(library.kept::<Said>(Feature::Answers, &item.slot.key).unwrap().is_some());
+        }
+        // three answers and their calls; the failing one was tried three times, each answered with an error the
+        // API does not bill: nothing of it reaches the ledger as tokens
+        let spending = library.spending().unwrap();
+        assert_eq!(spending.total.calls, 3, "one row per answered call, written with its answer");
     }
 
     #[test]

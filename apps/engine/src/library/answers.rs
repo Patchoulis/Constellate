@@ -232,25 +232,27 @@ impl Library {
     /// was kept there).
     pub fn keep<T: Serialize>(&self, slot: &Slot, model: &str, prompt: u32, answer: &T) -> Result<(), LibraryError> {
         let content = serde_json::to_string(answer)?;
+        self.write(|transaction| put_answer(transaction, slot, model, prompt, &content))
+    }
+
+    /// Keep an answer the model was just paid for (`content`, its JSON) and record in the ledger the `calls` that
+    /// paid for it, in one transaction: a crash can leave neither a call paid for whose answer is lost (and paid
+    /// for again) nor an answer kept whose cost is missing from the ledger. Nothing is held while the model is
+    /// asked: this is written once the answer is in.
+    pub fn keep_paid(
+        &self,
+        slot: &Slot,
+        model: &str,
+        prompt: u32,
+        content: &str,
+        calls: &[super::ledger::Call<'_>],
+    ) -> Result<(), LibraryError> {
         self.write(|transaction| {
-            transaction
-                .prepare_cached(
-                    "INSERT INTO kept_answers (feature, answer_key, subject, model, prompt, reader, content, kept_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                     ON CONFLICT (feature, answer_key) DO UPDATE SET
-                         subject = excluded.subject, model = excluded.model, prompt = excluded.prompt,
-                         reader = excluded.reader, content = excluded.content, kept_at = excluded.kept_at",
-                )?
-                .execute(params![
-                    slot.feature.name(),
-                    slot.key.as_str(),
-                    slot.subject.stored(),
-                    model,
-                    prompt,
-                    READER,
-                    content,
-                    now()
-                ])?;
+            put_answer(transaction, slot, model, prompt, content)?;
+            let at = now();
+            for call in calls {
+                super::ledger::put_calls(transaction, &at, call, 1)?;
+            }
             Ok(())
         })
     }
@@ -275,6 +277,35 @@ impl Library {
             Ok(forgotten)
         })
     }
+}
+
+/// An answer kept in `slot`, replacing what was kept there, in a transaction of the caller's.
+fn put_answer(
+    connection: &rusqlite::Connection,
+    slot: &Slot,
+    model: &str,
+    prompt: u32,
+    content: &str,
+) -> Result<(), LibraryError> {
+    connection
+        .prepare_cached(
+            "INSERT INTO kept_answers (feature, answer_key, subject, model, prompt, reader, content, kept_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT (feature, answer_key) DO UPDATE SET
+                 subject = excluded.subject, model = excluded.model, prompt = excluded.prompt,
+                 reader = excluded.reader, content = excluded.content, kept_at = excluded.kept_at",
+        )?
+        .execute(params![
+            slot.feature.name(),
+            slot.key.as_str(),
+            slot.subject.stored(),
+            model,
+            prompt,
+            READER,
+            content,
+            now()
+        ])?;
+    Ok(())
 }
 
 /// [`Library::forget_key`] in a transaction of the caller's, the key as stored (hex): how many rows went.
@@ -391,6 +422,33 @@ mod tests {
             keys[0].as_str(),
             key_before_providers(Feature::Critique, "deepseek:deepseek-v4-pro", 1, &["p"], "q")
         );
+    }
+
+    #[test]
+    fn an_answer_paid_for_is_kept_with_its_cost_or_neither_is_written() {
+        let folder = tempfile::tempdir().unwrap();
+        let library = Library::open(folder.path()).unwrap();
+        let first = slot(Feature::Critique, Subject::Paper("p".to_owned()), "q");
+        let call = |model| super::super::ledger::Call {
+            model,
+            purpose: "a paper's weaknesses",
+            input_tokens: 100,
+            output_tokens: 20,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            price_micros: Some(30),
+        };
+        let content = serde_json::to_string(&claims("x")).unwrap();
+        library
+            .keep_paid(&first, "claude-opus-5-5", 1, &content, &[call("claude-opus-5-5"), call("claude-sonnet-5-5")])
+            .unwrap();
+        assert!(library.kept::<Vec<Claim<Cell>>>(Feature::Critique, &first.key).unwrap().is_some());
+        assert_eq!(library.spending().unwrap().total.calls, 2, "both attempts are in the ledger");
+        // the ledger cannot be written: the answer is not kept either, so no answer stands without its cost
+        library.write(|transaction| Ok(transaction.execute_batch("DROP TABLE spending")?)).unwrap();
+        let other = slot(Feature::Critique, Subject::Paper("p".to_owned()), "another question");
+        assert!(library.keep_paid(&other, "claude-opus-5-5", 1, &content, &[call("claude-opus-5-5")]).is_err());
+        assert_eq!(library.kept::<Vec<Claim<Cell>>>(Feature::Critique, &other.key).unwrap(), None);
     }
 
     #[test]

@@ -515,6 +515,38 @@ fn reply_of(mut response: ureq::http::Response<ureq::Body>) -> Result<Reply, Tra
 /// Where each call is recorded for the ledger.
 pub trait Recorder: Send + Sync {
     fn record(&self, call: Call);
+
+    /// Keep an answer just paid for in `library` and record the `calls` that paid for it. The library's own ledger
+    /// does both in one transaction ([`Library::keep_paid`]); any other recorder keeps, then records.
+    fn keep_paid(
+        &self,
+        library: &Library,
+        slot: &crate::library::Slot,
+        model: &str,
+        prompt: u32,
+        content: &str,
+        calls: Vec<Call>,
+    ) -> Result<(), crate::library::LibraryError> {
+        let kept = library.keep_paid(slot, model, prompt, content, &[]);
+        for call in calls {
+            self.record(call);
+        }
+        kept
+    }
+}
+
+/// A call as the library's ledger keeps it: whole millionths of a dollar, counts that fit its columns.
+fn ledger_call(call: &Call) -> crate::library::ledger::Call<'_> {
+    let signed = |count: u64| i64::try_from(count).unwrap_or(i64::MAX);
+    crate::library::ledger::Call {
+        model: &call.model,
+        purpose: &call.purpose,
+        input_tokens: signed(call.tokens.input),
+        output_tokens: signed(call.tokens.output),
+        cache_read_tokens: signed(call.tokens.cache_read),
+        cache_write_tokens: signed(call.tokens.cache_written()),
+        price_micros: call.cost().map(|cost| signed(cost.picodollars().div_ceil(1_000_000))),
+    }
 }
 
 /// The calls of a session, in memory.
@@ -528,21 +560,30 @@ impl Recorder for Mutex<Vec<Call>> {
 /// standard error (never with its prompt) rather than lost silently.
 impl Recorder for Library {
     fn record(&self, call: Call) {
-        let signed = |count: u64| i64::try_from(count).unwrap_or(i64::MAX);
-        // the ledger keeps whole millionths of a dollar
-        let micros = call.cost().map(|cost| signed(cost.picodollars().div_ceil(1_000_000)));
-        let kept = self.record_call(&crate::library::ledger::Call {
-            model: &call.model,
-            purpose: &call.purpose,
-            input_tokens: signed(call.tokens.input),
-            output_tokens: signed(call.tokens.output),
-            cache_read_tokens: signed(call.tokens.cache_read),
-            cache_write_tokens: signed(call.tokens.cache_written()),
-            price_micros: micros,
-        });
-        if let Err(error) = kept {
+        if let Err(error) = self.record_call(&ledger_call(&call)) {
             eprintln!("constellate: a call to {} for {} could not be recorded: {error}", call.model, call.purpose);
         }
+    }
+
+    /// The answer and its cost in one transaction of this library, which is the one the answer is kept in.
+    fn keep_paid(
+        &self,
+        _library: &Library,
+        slot: &crate::library::Slot,
+        model: &str,
+        prompt: u32,
+        content: &str,
+        calls: Vec<Call>,
+    ) -> Result<(), crate::library::LibraryError> {
+        let ledger: Vec<_> = calls.iter().map(ledger_call).collect();
+        let kept = self.keep_paid(slot, model, prompt, content, &ledger);
+        if kept.is_err() {
+            // the answer could not be kept: its cost is still recorded, as a call paid for either way
+            for call in calls {
+                self.record(call);
+            }
+        }
+        kept
     }
 }
 
