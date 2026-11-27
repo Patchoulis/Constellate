@@ -75,8 +75,9 @@ jobs:
         run: |
           set -o pipefail
           if ! cargo test --quiet --locked 2>&1 | tee test.log; then
-            grep -E -A6 '^(---- .* ----|error(\[E[0-9]+\])?:|failures:$)' test.log | grep -v '^--$' | head -70 |
-              while IFS= read -r line; do echo "::error title=cargo test::${line}"; done
+            # one annotation holding the failure's lines (GitHub shows only a few annotations per step)
+            said=$(grep -E -A14 '^(---- .* ----|error(\[E[0-9]+\])?:)' test.log | grep -v '^--$' | head -60 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=cargo test::${said}"
             exit 1
           fi
       - run: npm ci
