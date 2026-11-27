@@ -5,6 +5,15 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `npm run setup` (or `make setup`) gets a fresh clone ready to work on in one command.
+
+### Changed
+
+- The backend is being rewritten in Rust (`apps/server`), organised by subject; the Python backend stays until the
+  Rust one does everything it does.
+
 ## [0.1.0] - 2026-11-26
 
 The first release.

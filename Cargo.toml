@@ -1,0 +1,23 @@
+# The Rust side of Constellate: the backend that gathers, embeds and clusters papers and serves the interface.
+[workspace]
+members = ["apps/server"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# warnings are errors in CI (`npm run pr` runs clippy with -D warnings); these are the extra ones asked for
+unwrap_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

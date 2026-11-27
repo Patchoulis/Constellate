@@ -1,8 +1,8 @@
 /**
  * Everything a pull request must pass, in one command:  npm run pr      (npm run pr -- --fix  also formats)
  *
- *   format   prettier (TypeScript, JSON, Markdown, YAML) and ruff format (Python)
- *   lint     ruff check, and the naming rule below
+ *   format   cargo fmt (Rust), prettier (TypeScript, JSON, Markdown, YAML) and ruff format (Python)
+ *   lint     clippy with warnings denied (Rust), ruff check (Python), and the naming rule below
  *   types    tsc
  *   tests    pytest, the interface's tests, and the desktop app's first-start setup
  *
@@ -11,6 +11,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, extname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -45,6 +46,7 @@ function misnamedErrors() {
 }
 
 const steps = [
+	["format (cargo fmt)", () => run("cargo", ["fmt", "--all", ...(fix ? [] : ["--check"])], root)],
 	["format (prettier)", () => run("npx", ["prettier", fix ? "--write" : "--check", "--log-level", "warn", "."], root)],
 	["format (ruff)", () => run(python, ["-m", "ruff", "format", ...(fix ? [] : ["--check"]), "."], backend)],
 	["lint (ruff)", () => run(python, ["-m", "ruff", "check", ...(fix ? ["--fix"] : []), "."], backend)],
@@ -56,15 +58,19 @@ const steps = [
 			return found.length === 0;
 		},
 	],
+	["lint (clippy)", () => run("cargo", ["clippy", "--all-targets", "--quiet", "--", "-D", "warnings"], root)],
 	["types", () => run("npx", ["turbo", "run", "typecheck"], root)],
+	["tests (rust)", () => run("cargo", ["test", "--quiet"], root)],
 	["tests (backend)", () => run(python, ["-W", "ignore", "-m", "pytest", "-q"], backend)],
 	["tests (interface)", () => run("npx", ["turbo", "run", "test", "--filter=@rp/web"], root)],
 	["tests (desktop)", () => run("node", ["--test", "setup.test.cjs", "lifecycle.test.cjs"], join(root, "apps", "desktop"))],
 ];
 
+const env = { ...process.env, PATH: `${join(homedir(), ".cargo", "bin")}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}` };
+
 function run(command, args, cwd) {
 	// through the shell (npx is a .cmd on Windows); every argument here is written in this file, none comes from outside
-	return spawnSync([command, ...args].join(" "), { cwd, stdio: "inherit", shell: true }).status === 0;
+	return spawnSync([command, ...args].join(" "), { cwd, env, stdio: "inherit", shell: true }).status === 0;
 }
 
 const only = process.argv.find((arg) => arg.startsWith("--only="))?.slice(7);

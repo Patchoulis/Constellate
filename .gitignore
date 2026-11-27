@@ -10,6 +10,7 @@ venv/
 *.tsbuildinfo
 next-env.d.ts
 dist/
+target/
 apps/desktop/icon.png
 apps/desktop/bin/
 
