@@ -400,6 +400,23 @@ async fn the_embedding_model_belongs_to_the_server_and_is_refused_from_the_inter
     let (status, told, _) =
         answer(&served.router, put(json!({ "embedding_model": "Qwen/Qwen3-Embedding-0.6B", "max_links": 5 }))).await;
     assert_eq!((status, told["max_links"].clone()), (StatusCode::OK, json!(5)));
+    // nor any other way of changing what the server owns: with other keys, as null, in another case, the
+    // provider instead of the model
+    for sneaked in [
+        json!({ "max_links": 6, "embedding_model": "BAAI/bge-large-en-v1.5" }),
+        json!({ "embedding_model": null }),
+        json!({ "embedding_model": "qwen/qwen3-embedding-0.6b" }),
+        json!({ "describe_provider": "openai" }),
+        json!({ "describe_provider": "Anthropic" }),
+        json!({ "describe_provider": null, "describe_model": "claude-opus-5-5" }),
+    ] {
+        let (status, _, _) = answer(&served.router, put(sneaked.clone())).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{sneaked}");
+    }
+    // a key spelled differently is no setting at all: ignored, and nothing changes
+    let (status, told, _) = answer(&served.router, put(json!({ "Embedding_Model": "BAAI/bge-large-en-v1.5" }))).await;
+    assert_eq!((status, told["embedding_model"].clone()), (StatusCode::OK, json!("Qwen/Qwen3-Embedding-0.6B")));
+    assert_eq!((told["describe_provider"].clone(), told["max_links"].clone()), (json!("anthropic"), json!(5)));
     let (_, told, _) =
         answer(&served.router, with_cookie(asked("GET", "/api/status"), &cookie).body(Body::empty()).unwrap()).await;
     let owned = json!(["embedding_model", "describe_provider"]);
