@@ -11,7 +11,7 @@
 //!   answer is checked here either way.
 //! - **Usage**: `prompt_tokens` includes what was read from the cache (`prompt_tokens_details.cached_tokens`, or
 //!   DeepSeek's `prompt_cache_hit_tokens`) and written to it (`cache_write_tokens`, where reported). A server that
-//!   reports no usage at all is estimated from characters by the client.
+//!   reports no usage at all is counted by the client at the worst case the request allows.
 //! - **Errors** come in several shapes (`{"error": {"message", "code"}}`, `{"error": "..."}`, `{"message"}`,
 //!   `{"detail"}`, MiniMax's `base_resp`); what they mean is decided by the status first.
 

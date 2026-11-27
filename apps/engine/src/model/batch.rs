@@ -571,6 +571,7 @@ mod tests {
             self.under_way.fetch_sub(1, Ordering::SeqCst);
             let usage = json!({"input_tokens": self.took.0, "output_tokens": self.took.1});
             Ok(match question.as_str() {
+                "panic" => panic!("the transport broke"),
                 "fail" => error(500, "api_error", "Internal server error"),
                 "unavailable" => error(401, "authentication_error", "invalid x-api-key"),
                 "unknown model" => error(404, "not_found_error", "model: claude-opus-9"),
@@ -731,11 +732,13 @@ mod tests {
         let (questions, papers) = numbered(16);
         let schema = schema();
         let items = items(&questions, &papers, &schema);
-        // each call holds about 1,020 tokens at worst and takes 1,000: three fit in 3,500, a fourth never does
-        let echo = Echo { slow: Some(Duration::from_millis(5)), took: (600, 400), ..Echo::default() };
-        let budget = Budget::new(Limit::Tokens(3_500));
+        // each call holds about 2,030 tokens at worst (the model asked, then a fallback) and takes 2,000: three fit
+        // in 7,000, a fourth never does
+        let echo = Echo { slow: Some(Duration::from_millis(5)), took: (1_000, 1_000), ..Echo::default() };
+        let budget = Budget::new(Limit::Tokens(7_000));
         let outcomes = Run::new().ask(&library, &echo, &items, &budget, 8);
-        assert!(budget.spent().0 <= 3_500, "spent {}", budget.spent().0);
+        assert!(budget.spent().0 <= 7_000, "spent {}", budget.spent().0);
+        assert_eq!(budget.held(), (0, Usd::ZERO), "nothing is held once the batch has ended");
         let answered = outcomes.iter().filter(|outcome| matches!(outcome, Outcome::Answered(_))).count();
         assert_eq!(answered, 3);
         assert!(outcomes.iter().all(|outcome| matches!(
@@ -743,6 +746,24 @@ mod tests {
             Outcome::Answered(_) | Outcome::NotStarted(Stopped::OverBudget(OverBudget::Tokens { .. }))
         )));
         assert_eq!(echo.posts.load(Ordering::SeqCst), 3, "nothing was sent that the budget refused");
+    }
+
+    #[test]
+    fn a_panicking_transport_gives_back_what_its_call_held_and_the_rest_of_the_batch_runs_within_the_budget() {
+        let (_folder, library) = library();
+        let (mut questions, papers) = numbered(5);
+        questions[0] = "panic".to_owned();
+        let schema = schema();
+        let items = items(&questions, &papers, &schema);
+        // one call's worst case (about 2,030 tokens) fits, two do not: had the panicking call kept what it held,
+        // every call after it would be refused
+        let echo = Echo { took: (10, 10), ..Echo::default() };
+        let budget = Budget::new(Limit::Tokens(3_000));
+        let outcomes = Run::new().ask(&library, &echo, &items, &budget, 1);
+        assert_eq!(outcomes[0], Outcome::Failed(Failure::Panicked));
+        assert!(outcomes[1..].iter().all(|outcome| matches!(outcome, Outcome::Answered(_))), "{outcomes:?}");
+        assert_eq!(budget.held(), (0, Usd::ZERO), "nothing is left held");
+        assert_eq!(budget.spent().0, 4 * 20);
     }
 
     #[test]

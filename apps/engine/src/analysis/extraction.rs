@@ -1293,10 +1293,10 @@ mod tests {
         let (plan, _) = plan(&library, &columns);
         // room for one paper's worst case, not for all three: an estimate that was too low
         let most = plan.estimate(&library).unwrap().cost.most_tokens;
-        let budget = Budget::new(Limit::Tokens(most / 2));
+        let budget = Budget::new(Limit::Tokens(most / 3 + 500));
         let model = model();
         let ran = ask(&library, &model, &plan, &budget);
-        assert!(budget.spent().0 <= most / 2, "the budget is never passed");
+        assert!(budget.spent().0 <= most / 3 + 500, "the budget is never passed");
         assert!(ran.answered >= 1 && ran.not_started >= 1, "{ran:?}");
         assert_eq!(ran.answered + ran.kept + ran.failed + ran.not_started, ran.papers);
         assert!(ran.stopped.as_deref().is_some_and(|why| why.contains("allowed")), "{ran:?}");
