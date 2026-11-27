@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import type { Catalog, Ratings, ReaderTarget } from "@rp/contracts";
+import { RunAsk } from "@/components/ask";
 import { CommunityPanel } from "@/components/community-panel";
 import { EvidenceProvider, type EvidenceActions } from "@/components/evidence-link";
 import { GraphView } from "@/components/graph-view";
@@ -131,6 +132,7 @@ export function Workspace({ name, catalog, children }: { name: string; catalog: 
 					onMarkPaper={marks.toggle}
 				/>
 				{children}
+				<RunAsk run={name} papers={graph.nodes.length} />
 				{overview && (
 					<OverviewPanel
 						key={overview.community.tree_path}

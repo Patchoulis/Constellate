@@ -111,4 +111,27 @@ export const api = {
 	/** read this paper's reference list from its PDF (slow the first time: the PDF is fetched); answers its network */
 	readReferences: (id: string, inRun?: string) =>
 		call<CitationNetwork>(`/api/papers/${id}/references${inRun ? `?run=${encodeURIComponent(inRun)}` : ""}`, { method: "POST" }),
+	// ---- cited answers (the types imported where they are used, so that this file's imports stay as they are) ----
+	/** the passages of a run's papers (or one community's) that match `query` best: no model, no cost */
+	passagesFound: (name: string, query: string, community?: string | null) =>
+		call<import("@rp/contracts").PassagesFound>(
+			`${run(name)}/passages/found?${new URLSearchParams({ q: query, ...(community ? { community } : {}) })}`,
+		),
+	/** what asking the model `question` would cost; nothing is sent */
+	answerEstimate: (name: string, question: string, community?: string | null) =>
+		call<import("@rp/contracts").AnswerEstimate>(
+			`${run(name)}/answers/estimate?${new URLSearchParams({ q: question, ...(community ? { community } : {}) })}`,
+		),
+	/** ask it, accepting the most it can cost as it was shown: starts a job (none when the answer is kept) */
+	askQuestion: (name: string, request: import("@rp/contracts").AnswerRequest) =>
+		call<import("@rp/contracts").AnswerStarted>(`${run(name)}/answers`, send("POST", request)),
+	/** the questions asked of a run and its communities, the latest first */
+	questions: (name: string) => call<import("@rp/contracts").AnswerSummary[]>(`${run(name)}/answers`),
+	/** one question and its kept answer, its quotes checked again */
+	answer: (name: string, id: string) => call<import("@rp/contracts").AnswerView>(`${run(name)}/answers/${encodeURIComponent(id)}`),
+	/** forget a question and its answer */
+	forgetQuestion: (name: string, id: string) => call<{ ok: true }>(`${run(name)}/answers/${encodeURIComponent(id)}`, { method: "DELETE" }),
+	/** forget its answer only, so that it is asked again (at the cost shown again) */
+	redoAnswer: (name: string, id: string) =>
+		call<{ ok: true; forgotten: boolean }>(`${run(name)}/answers/${encodeURIComponent(id)}/redo`, { method: "POST" }),
 };

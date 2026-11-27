@@ -7,6 +7,8 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Ask a community (in its panel) or the whole run (the "Ask the run" button over the graph) a question: the passages of its papers that talk about it are found first, for free, each linked to the place in the paper; then, after you see what it would cost and click, the model answers in statements each followed by the quotes it rests on. Statements whose quotes are not found in the papers are left out and counted, "the papers do not say" is shown as an answer, and past questions are listed per run, reopened at no cost, asked again or deleted.
+
 - Opening a paper's Reviews tab now keeps the whole discussion (each review by section, rebuttals, the meta-review and the decision), shows the paper's mean, range and confidence-weighted mean on its venue's own scale, and adds a Reviews section to each community: how many of its papers have reviews read, ratings per conference and year, the papers reviewers disagreed on most, and what reviewers most often praise and criticise, each linked to the reviewer's words.
 
 - The paper reader has a Text tab showing the paper's text section by section, and citations open it at the exact place they quote, with the words highlighted; quotes Claude gives as evidence are only shown once they have been found in the paper they are attributed to.
