@@ -20,7 +20,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
 const { EngineLog, PROVIDER_VARIABLES, engineEnvironment, interfaceEnvironment, parseStartupLine, startEngine } = require("./engine.cjs");
-const { engineFilesIn, missingFrom, stage } = require("./engine-files.cjs");
+const { engineFilesIn, missingFrom, smokeStart, stage } = require("./engine-files.cjs");
 const { withParent } = require("./lifecycle.cjs");
 
 const REPO = path.join(__dirname, "..", "..");
@@ -299,20 +299,22 @@ test("a startup line that never comes is a clear failure, and the engine is stop
 	fs.rmSync(folder, { recursive: true, force: true });
 });
 
-test("the engine is staged with what ONNX Runtime loads beside it", async (t) => {
-	const build = path.join(REPO, "target", "release");
-	const skip = needs(
-		fs.existsSync(path.join(build, PROGRAM)) && missingFrom(build).length === 0,
-		"the engine's release build (npm run build)",
-	);
+test("the engine is staged with what ONNX Runtime loads beside it, and starts from there", async (t) => {
+	const build = ENGINE && path.dirname(ENGINE);
+	const skip = needs(build && missingFrom(build).length === 0, "the engine's build with its libraries (cargo build, or cargo test)");
 	if (skip) return t.skip(skip);
 	const to = fs.mkdtempSync(path.join(os.tmpdir(), "rp-stage-"));
-	const names = stage(build, to);
-	assert.deepEqual(missingFrom(to), []);
-	assert.deepEqual(names, engineFilesIn(build));
-	if (process.platform === "win32") assert.ok(names.includes("DirectML.dll"));
-	if (process.platform === "linux") assert.ok(names.includes("libwebgpu_dawn.so"));
-	fs.rmSync(to, { recursive: true, force: true });
+	try {
+		const names = stage(build, to);
+		assert.deepEqual(missingFrom(to), []);
+		assert.deepEqual(names, engineFilesIn(build));
+		if (process.platform === "win32") assert.ok(names.includes("DirectML.dll"));
+		if (process.platform === "linux") assert.ok(names.includes("libwebgpu_dawn.so"));
+		// what the packages ship: the program finds every library it loads in its own folder
+		await smokeStart(to);
+	} finally {
+		fs.rmSync(to, { recursive: true, force: true });
+	}
 });
 
 /** The addresses the processes `pids` listen on (Windows only; null elsewhere). */
