@@ -87,6 +87,9 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Reviewers' scores on older OpenReview pages (reviews signed "AnonReviewer2", as ICLR 2021 and earlier sign them)
   are now counted review by review, as the Reviews tab shows them, instead of being read as a guess from the whole
   page.
+- A rating scale is said to be the venue's published one only where it was found in the venue's own reviewer
+  guidelines (NeurIPS 2022 to 2025, ICML 2024 and 2025); every ICLR scale, and older ICML ones, are now shown as
+  assumed.
 
 ### Security
 

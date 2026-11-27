@@ -343,7 +343,7 @@ mod tests {
         assert_eq!(kept["notes"][2]["kind"], "official_review");
         let rating = &kept["figures"]["fields"][0];
         assert_eq!((rating["field"].clone(), rating["mean"].clone()), (json!("Rating"), json!(7.0)));
-        assert_eq!(rating["scale"], json!({"minimum": 1, "maximum": 10, "source": "published"}));
+        assert_eq!(rating["scale"], json!({"minimum": 1, "maximum": 10, "source": "assumed"}));
         let (_, again) =
             ask(&router, "POST", "/api/papers/iclr-2024-1/reviews", Some(json!({"text": "Loading...", "url": FORUM})))
                 .await;
