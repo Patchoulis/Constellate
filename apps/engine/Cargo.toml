@@ -19,10 +19,12 @@ getrandom = "0.3"
 half = "2"
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 # matrix products through matrixmultiply on every core: the similarity matrix is one n x n product
-ndarray = { version = "0.17", features = ["matrixmultiply-threading"] }
+ndarray = { version = "0.17", features = ["matrixmultiply-threading", "rayon"] }
 ort = { version = "=2.0.0-rc.15", features = ["half"] }
 # text out of a paper's PDF, for its reference list: pure Rust, so it builds anywhere with no system library
 pdf-extract = "0.12"
+# rows of the similarity graph read on every core (nearest neighbours, sparse products); tokenizers uses it already
+rayon = "1"
 regex = "1"
 # arXiv answers in Atom XML; a read-only tree is all that is needed
 roxmltree = "0.20"

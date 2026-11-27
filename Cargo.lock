@@ -342,6 +342,7 @@ dependencies = [
  "ndarray",
  "ort",
  "pdf-extract",
+ "rayon",
  "rcgen",
  "regex",
  "roxmltree",
@@ -1324,6 +1325,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "rawpointer",
+ "rayon",
 ]
 
 [[package]]

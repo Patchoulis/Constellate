@@ -17,8 +17,8 @@
 //! | [`sources`] | where papers come from: conference lists, arXiv, proceedings' PDFs             |
 //! | [`text`]    | what is read out of text: authors' declarations, reviewers' scores, references |
 //!
-//! Still to come as the Python backend (`apps/backend`) is ported: clustering and reports, the AI-text estimate,
-//! and the rest of `api`'s routes.
+//! Still to come as the Python backend (`apps/backend`) is ported: the pipeline that runs these in order, reports,
+//! the AI-text estimate, the language model's descriptions, and the rest of `api`'s routes.
 
 pub mod analysis;
 pub mod api;
