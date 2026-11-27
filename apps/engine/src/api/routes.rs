@@ -66,6 +66,9 @@ pub struct Engine {
     /// How the language model's requests reach its provider: the network, or a test's fake (which reaches nothing,
     /// so that no test of a route can ever call a real provider).
     pub transport: Arc<dyn Transport>,
+    /// Papers' PDFs on demand: fetched once, politely, when a paper's is not kept ([`crate::papers::pdf`]). A test
+    /// gives it a fake fetcher, so that no test reaches the network.
+    pub pdfs: crate::papers::pdf::Pdfs,
     /// The library, opened when a route first needs it (and tried again after a failure to open).
     library: Mutex<Option<Arc<Library>>>,
     /// The person's runs: the one being made, the list, the loaded ones ([`crate::pipeline::served`]).
@@ -91,6 +94,7 @@ impl Engine {
             transport: Arc::new(crate::model::language::Https::default()),
             #[cfg(test)]
             transport: Arc::new(crate::model::language::fake::Fake::default()),
+            pdfs: crate::papers::pdf::Pdfs::default(),
             library: Mutex::new(None),
             runs: Default::default(),
         }
@@ -342,11 +346,14 @@ pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
     table.extend(super::explanation::table());
     table.extend(super::claim_tree::table());
     table.extend(super::citation_contexts::table());
+    table.extend(super::citations::table());
     table.extend(super::answers::table());
     table.extend(super::models::table());
     table.extend(super::writing::table());
     table.extend(super::runs::table());
     table.extend(super::detector::table());
+    table.extend(super::usage::table());
+    table.extend(super::papers::table());
     table
 }
 

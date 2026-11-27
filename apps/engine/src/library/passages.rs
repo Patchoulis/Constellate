@@ -222,14 +222,33 @@ impl Drop for Claimed<'_> {
     }
 }
 
+/// Is a file named `name` (with any extension after it) one Windows opens as a device? Its part before the first
+/// `.`, spaces at its end dropped, in any case: `CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM0`-`COM9` and
+/// `LPT0`-`LPT9`, the superscript digits `¹²³` counting as digits, as Windows counts them.
+fn windows_device(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or("").trim_end().to_uppercase();
+    let numbered = |prefix: &str| {
+        let mut rest = stem.strip_prefix(prefix).unwrap_or("x").chars();
+        matches!((rest.next(), rest.next()), (Some('0'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None))
+    };
+    ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].contains(&stem.as_str()) || numbered("COM") || numbered("LPT")
+}
+
 /// How a PDF's bytes are made passages: [`passages_of_pdf`], or the tests' own.
 type ReadPdf<'a> = dyn Fn(&[u8]) -> Result<Passages, Unreadable> + Sync + 'a;
 
 impl Library {
     /// Where the PDF of `paper_id` is kept, whether or not it is there.
+    ///
+    /// This is the one place a paper id becomes a file name. Every character but a letter, a digit, `_`, `.` and
+    /// `-` is written `_`, as the Python backend did, so the files it kept are found under their names; and a
+    /// name Windows takes for a device (`CON`, `NUL`, `COM1`, also before an extension: `nul.x.pdf`) gets a `_`
+    /// in front, since opening it would open the device. No paper's id is such a name today, so no kept file is
+    /// renamed by that.
     pub fn pdf_file(&self, paper_id: &str) -> PathBuf {
         let name: String =
             paper_id.chars().map(|c| if c.is_alphanumeric() || "_.-".contains(c) { c } else { '_' }).collect();
+        let name = if windows_device(&name) { format!("_{name}") } else { name };
         self.path.with_file_name(PDF_FOLDER).join(format!("{name}.pdf"))
     }
 
@@ -371,6 +390,11 @@ impl Library {
         }
         let pdf = match catch_unwind(AssertUnwindSafe(|| read(&bytes))) {
             Ok(Ok(passages)) => Pdf::Read(passages),
+            // the reader could not be started: nothing is known of the PDF, so nothing is kept and it is tried again
+            Ok(Err(why)) if !why.is_lasting() => {
+                eprintln!("library: the PDF of {paper_id} was not read: {why}");
+                return Pdf::Unreadable(why.to_string());
+            }
             Ok(Err(why)) => Pdf::Unreadable(why.to_string()),
             Err(_) => Pdf::Unreadable(Unreadable::Unhandled.to_string()),
         };
@@ -620,6 +644,27 @@ mod tests {
         assert_eq!(file("hep-th/9901001"), "hep-th_9901001.pdf");
         assert_eq!(file("../../etc"), ".._.._etc.pdf", "never outside the folder");
         assert_eq!(library.pdf_file("x").parent().unwrap(), library.path().with_file_name(PDF_FOLDER));
+    }
+
+    #[test]
+    fn an_id_that_windows_would_take_for_a_device_never_names_a_file_as_one() {
+        let (_folder, library) = library_with(&[]);
+        let file = |id: &str| library.pdf_file(id).file_name().unwrap().to_string_lossy().into_owned();
+        for (id, kept) in [
+            ("CON", "_CON.pdf"),
+            ("nul", "_nul.pdf"),
+            ("Com1", "_Com1.pdf"),
+            ("lpt9.v2", "_lpt9.v2.pdf"),
+            ("AUX", "_AUX.pdf"),
+            ("COM\u{b9}", "_COM\u{b9}.pdf"),
+            ("prn.x.y", "_prn.x.y.pdf"),
+        ] {
+            assert_eq!(file(id), kept, "{id:?}");
+        }
+        // names that only look like one keep their name: those of files kept before
+        for id in ["console", "com10", "nullable-2601", "2601.00001", "CONIN$"] {
+            assert!(!file(id).starts_with('_'), "{id:?}");
+        }
     }
 
     #[test]

@@ -325,6 +325,32 @@ pub const MIGRATIONS: &[&str] = &[
         trained_at TEXT NOT NULL
     );
     ",
+    // 12 (a paper's PDF on demand, papers/): where each conference's proceedings keep their PDFs, and which PDF
+    // a paper's declarations were read from
+    r"
+    -- A conference's index of PDFs for one year (sources/proceedings.rs IndexState, as JSON), by 'slug-year'.
+    CREATE TABLE proceedings_indexes (
+        conference TEXT PRIMARY KEY,
+        state      TEXT NOT NULL,
+        changed_at TEXT NOT NULL
+    );
+    -- The SHA-256 of the PDF a reading of declarations came from; NULL for one moved in from the Python backend,
+    -- which read the same publisher's PDF and did not keep it.
+    ALTER TABLE declarations ADD COLUMN pdf_hash TEXT;
+    ",
+    // 13 (the citation network around a paper, library/references.rs): each paper's whole reference list
+    r"
+    -- A paper's reference list (library/references.rs KeptReferences, as JSON: every entry as read, and what
+    -- looking it up on arXiv found), read by version `reader` of the reader from the PDF whose SHA-256 is
+    -- `pdf_hash`.
+    CREATE TABLE paper_references (
+        paper_id TEXT PRIMARY KEY REFERENCES papers (id) ON DELETE CASCADE,
+        reader   BIGINT NOT NULL,
+        pdf_hash TEXT NOT NULL,
+        content  TEXT NOT NULL,
+        read_at  TEXT NOT NULL
+    );
+    ",
 ];
 
 /// Bring `connection` to the last of `migrations`. Refuses a database newer than the list.

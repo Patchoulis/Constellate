@@ -304,10 +304,11 @@ function CostLine({
 		);
 	const cost = (usd: number) => money(usd, spent.currency, locale);
 	const lines = (table: Record<string, UsageEntry>) =>
-		Object.entries(table).map(
-			([name, entry]) =>
-				`  ${name}: ${cost(entry.usd)} (${count(entry.calls, "call")}, ${tokens(entry.input_tokens)} sent, ${tokens(entry.output_tokens)} received)`,
-		);
+		Object.entries(table).map(([name, entry]) => {
+			const counted = `${count(entry.calls, "call")}, ${tokens(entry.input_tokens)} sent, ${tokens(entry.output_tokens)} received`;
+			// no priced call: no cost is shown, since none is known (not a cost of 0)
+			return entry.usd === null ? `  ${name}: ${counted}` : `  ${name}: ${cost(entry.usd)} (${counted})`;
+		});
 	const detail = [
 		spent.since ? `Counted since ${spent.since}; calls made before that were not recorded.` : "Nothing spent yet.",
 		...(spent.calls ? ["By purpose:", ...lines(spent.purposes), "By model:", ...lines(spent.models)] : []),

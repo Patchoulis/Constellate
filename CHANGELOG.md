@@ -14,6 +14,11 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The AI-text detector can be trained with the language model chosen in Settings, after its cost is shown, within
   the budget accepted, and resumed without paying twice; it says which models wrote the text it learnt from, and a
   detector already trained by an earlier version is used as it is.
+- A paper's PDF is fetched when it is opened and not yet in the library (from arXiv or the conference's
+  proceedings), so its Text tab, citations and the features that read papers work for it too; when it cannot be
+  fetched, the reader says why. The Citations tab can now read a paper's reference list.
+- The reader's PDF of a paper and every other PDF are read in a separate process: a damaged or hostile PDF is
+  marked unreadable and can no longer stop the app.
 - The paper reader has a Text tab showing the paper's text section by section, and citations open it at the exact
   place they quote, with the words highlighted; quotes a model gives as evidence are only shown once they have been
   found in the paper they are attributed to.

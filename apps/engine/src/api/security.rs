@@ -472,10 +472,14 @@ fn protect(headers: &mut HeaderMap, hsts: bool) {
         (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         (header::CACHE_CONTROL, "no-store"),
         (header::REFERRER_POLICY, "no-referrer"),
-        (header::X_FRAME_OPTIONS, "DENY"),
     ];
     for (name, value) in set {
         headers.insert(name, HeaderValue::from_static(value));
+    }
+    // nothing may frame an answer, unless the route says its own page may (a paper's PDF, shown in the reader's
+    // frame; SAMEORIGIN at most, which is all a route ever sets)
+    if headers.get(header::X_FRAME_OPTIONS).is_none_or(|value| value != "SAMEORIGIN") {
+        headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     }
     // a policy that allows nothing, unless the route serves a page and set its own (the sign-in page's, which
     // allows only its own script and style)

@@ -129,8 +129,9 @@ impl Settings {
         let mut next = self.clone();
         for (key, value) in changes {
             match key.as_str() {
+                // a name typed or pasted keeps no spaces around it, as the Python backend kept it
                 "embedding_model" => {
-                    next.embedding_model = choice("embedding_model", value, &choices.embedding_models)?
+                    next.embedding_model = choice("embedding_model", &trimmed(value), &choices.embedding_models)?
                 }
                 "center_embeddings" => next.center_embeddings = switch("center_embeddings", value)?,
                 "clustering" => next.clustering = choice("clustering", value, &choices.clustering)?,
@@ -153,7 +154,7 @@ impl Settings {
                 "describe_provider" => next.describe_provider = provider("describe_provider", value)?,
                 // checked below, against the provider it is chosen with
                 "describe_model" => {
-                    let name = value.as_str().filter(|name| !name.trim().is_empty());
+                    let name = value.as_str().map(str::trim).filter(|name| !name.is_empty());
                     next.describe_model = name.ok_or(Invalid::NotAName { key: "describe_model" })?.to_owned();
                 }
                 "describe_effort" => {
@@ -361,6 +362,16 @@ fn choice(key: &'static str, value: &Value, known: &[String]) -> Result<String, 
     Ok(name.to_owned())
 }
 
+/// A name without the spaces around it; anything else as it is, for [`choice`] to refuse. Only for the names a
+/// person may type (the models): the clustering method and the acceptance filter are picked from a list, and the
+/// Python backend compared those as sent.
+fn trimmed(value: &Value) -> Value {
+    match value {
+        Value::String(name) => Value::from(name.trim()),
+        other => other.clone(),
+    }
+}
+
 /// The flags asked for, in the order of `known`, each once.
 fn flags(key: &'static str, value: &Value, known: &[String]) -> Result<Vec<String>, Invalid> {
     let refused = || Invalid::NotFlags { key, known: known.to_vec() };
@@ -458,6 +469,82 @@ mod tests {
         assert_eq!((saved.max_communities, saved.center_embeddings, saved.clustering.as_str()), (12, false, "kmeans"));
         assert_eq!((saved.min_split_modularity, saved.sub_levels), (1.0, 0));
         assert!(serde_json::to_value(&saved).unwrap().get("junk").is_none());
+    }
+
+    /// `test_settings_keep_their_types_and_ignore_unknown_keys` of the Python backend: through the file this time,
+    /// and what is read back afterwards is what the change answered.
+    #[test]
+    fn saved_settings_keep_their_types_ignore_unknown_keys_and_are_what_is_read_back() {
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("settings.json");
+        let asked = changes(json!({"max_communities": "12", "clustering": "kmeans", "nonsense": 1}));
+        let saved = save(&file, &asked, &choices()).unwrap();
+        assert_eq!((saved.max_communities, saved.clustering.as_str()), (12, "kmeans"));
+        let told = serde_json::to_value(&saved).unwrap();
+        assert_eq!(told["max_communities"], json!(12)); // a number, not the string that was sent
+        assert!(told.get("nonsense").is_none());
+        assert_eq!(load(&file, &choices()).unwrap(), saved);
+        let stored: Map<String, Value> = store::read_json(&file).unwrap().unwrap();
+        assert!(!stored.contains_key("nonsense"));
+    }
+
+    /// `test_the_setting_is_a_switch_and_the_interface_is_told_the_state` of the Python backend, its settings part.
+    #[test]
+    fn the_ai_text_detector_is_a_switch_saved_as_sent() {
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("settings.json");
+        assert!(!save(&file, &changes(json!({"detect_ai": false})), &choices()).unwrap().detect_ai);
+        assert!(!load(&file, &choices()).unwrap().detect_ai);
+        assert!(save(&file, &changes(json!({"detect_ai": true})), &choices()).unwrap().detect_ai);
+        let refused = save(&file, &changes(json!({"detect_ai": 0})), &choices()).unwrap_err();
+        assert_eq!(refused.to_string(), "detect_ai must be true or false");
+    }
+
+    #[test]
+    fn the_bounds_themselves_are_allowed_and_one_past_them_is_not() {
+        let allowed = changes(json!({
+            "max_communities": 500, "min_community_size": 2, "sub_levels": 6, "max_links": 1,
+            "min_split_modularity": 0,
+        }));
+        let saved = Settings::default().apply(&allowed, &choices()).unwrap();
+        assert_eq!(
+            (saved.max_communities, saved.min_community_size, saved.sub_levels, saved.max_links),
+            (500, 2, 6, 1)
+        );
+        assert_eq!(saved.min_split_modularity, 0.0);
+        let cases = [
+            (json!({"max_communities": 501}), "max_communities must be a number between 2 and 500"),
+            (json!({"max_communities": 1}), "max_communities must be a number between 2 and 500"),
+            (json!({"min_community_size": 100_001}), "min_community_size must be a number between 2 and 100000"),
+            (json!({"sub_levels": -1}), "sub_levels must be a number between 0 and 6"),
+            (json!({"sub_levels": 7}), "sub_levels must be a number between 0 and 6"),
+            (json!({"max_links": 51}), "max_links must be a number between 1 and 50"),
+            (json!({"max_links": null}), "max_links must be a number between 1 and 50"),
+            (json!({"min_split_modularity": -0.01}), "min_split_modularity must be a number between 0.0 and 1.0"),
+            (json!({"min_split_modularity": "half"}), "min_split_modularity must be a number between 0.0 and 1.0"),
+            (json!({"describe": "yes"}), "describe must be true or false"),
+            (json!({"include_ai_papers": null}), "include_ai_papers must be true or false"),
+        ];
+        for (bad, said) in cases {
+            assert_eq!(Settings::default().apply(&changes(bad), &choices()).unwrap_err().to_string(), said);
+        }
+    }
+
+    /// The Python backend kept a typed name without the spaces around it; a name picked from a list (the clustering
+    /// method, the acceptance filter) it compared as sent, and so does this one.
+    #[test]
+    fn a_typed_model_name_is_kept_without_the_spaces_around_it() {
+        let asked =
+            changes(json!({"embedding_model": " BAAI/bge-large-en-v1.5 ", "describe_model": " claude-sonnet-5\n"}));
+        let saved = Settings::default().apply(&asked, &choices()).unwrap();
+        assert_eq!(saved.embedding_model, "BAAI/bge-large-en-v1.5");
+        assert_eq!(saved.describe_model, "claude-sonnet-5");
+        let typed = changes(json!({"describe_provider": "compatible", "describe_model": "  qwen3:32b "}));
+        assert_eq!(Settings::default().apply(&typed, &choices()).unwrap().describe_model, "qwen3:32b");
+        let unknown = Settings::default().apply(&changes(json!({"embedding_model": "my/own-model"})), &choices());
+        assert!(
+            unknown.unwrap_err().to_string().starts_with("embedding_model must be one of Qwen/Qwen3-Embedding-0.6B")
+        );
     }
 
     #[test]
