@@ -184,7 +184,8 @@ static HEADING: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// The stretches (byte ranges of the section's text) under the reviewer's headings of criticism; none when the
-/// section has no headings at all.
+/// section has no heading of criticism: with only "Strengths:", what follows it may be praise or criticism and
+/// cannot be told apart, so the section is counted as not split rather than read as raising nothing.
 fn criticism_in(section: &Section) -> Option<Vec<(usize, usize)>> {
     let text = section.text.as_str();
     let marks: Vec<(usize, usize, bool)> = HEADING
@@ -195,7 +196,7 @@ fn criticism_in(section: &Section) -> Option<Vec<(usize, usize)>> {
             Some((whole.start(), whole.end(), Concern::of(word.as_str()) == Some(Concern::Weakness)))
         })
         .collect();
-    if marks.is_empty() {
+    if !marks.iter().any(|(_, _, criticism)| *criticism) {
         return None;
     }
     Some(
@@ -525,6 +526,14 @@ mod tests {
         assert_eq!(older.len(), 2);
         assert!(older.iter().all(|review| review.points.is_empty() && review.not_split.is_empty()));
         assert_eq!(older[0].replies, [AuthorReply { note: 2, attachment: Attachment::Named }]);
+    }
+
+    #[test]
+    fn a_joint_section_with_only_a_heading_of_praise_is_counted_not_split_rather_than_raising_nothing() {
+        let page = "Official Review of Submission1 by Reviewer Ab12\nSummary:\nA paper.\nStrengths And Weaknesses:\n\
+                    Strengths:\n- Clear writing.\n\nThe method lacks baselines.\nRating: 5: ok\n";
+        let points = review_points(&read_discussion(page).unwrap());
+        assert_eq!((points[0].points.len(), points[0].not_split.clone()), (0, vec![1]));
     }
 
     #[test]
