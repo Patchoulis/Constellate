@@ -709,3 +709,155 @@ export interface Library {
 		by_year: Record<string, { abstracts: number; flagged: number }> | null;
 	} | null;
 }
+
+// ---- Weaknesses (critique) ----
+
+/** What a reviewer's point raises, as its section's name says (engine text/review_points.rs). */
+export type ReviewConcern = "weakness" | "question" | "limitation";
+
+/** How an authors' reply is attached to a review: named by its own title, or a guess and what it rests on. */
+export type ReplyAttachment = { kind: "named" } | { kind: "guessed"; basis: "same_reviewer" | "mentions_reviewer" | "follows_review" };
+
+/** A score a reviewer gave, on its venue's scale. */
+export interface CritiqueScore {
+	field: string;
+	value: number;
+	meaning: string;
+	scale: Scale;
+}
+
+/** A section of a review a point is in; `text` is exactly the kept page's text at `span`. */
+export interface CritiqueSection {
+	/** its index among the review's sections */
+	index: number;
+	name: string;
+	text: string;
+	span: Span;
+}
+
+/** One point a reviewer made: exactly the kept page's text at `span` (characters, as code points). */
+export interface CritiquePoint {
+	/** "p3": what the model's reading of it names it; null when it was not asked about */
+	id: string | null;
+	concern: ReviewConcern;
+	/** its section's index among the review's sections */
+	section: number;
+	text: string;
+	span: Span;
+}
+
+/** A note of the paper's authors attached to a review. */
+export interface CritiqueReply {
+	note: number;
+	heading: string;
+	attachment: ReplyAttachment;
+	/** the reply's text from the kept page, cut when `cut` */
+	text: string;
+	cut: boolean;
+	span: Span;
+}
+
+export interface CritiqueReviewer {
+	note: number;
+	/** the reviewer's anonymous id ("aBcD"), when the page shows one */
+	reviewer: string | null;
+	heading: string;
+	rating: CritiqueScore | null;
+	confidence: CritiqueScore | null;
+	sections: CritiqueSection[];
+	points: CritiquePoint[];
+	/** sections of strengths and weaknesses together that the reviewer did not mark apart: their names */
+	not_split: string[];
+	replies: CritiqueReply[];
+}
+
+export type CritiqueReviewers =
+	{ state: "none_kept" } | { state: "read"; address: string; read_at: string; reviewers: CritiqueReviewer[]; points: number };
+
+export type WeaknessKind =
+	| "missing_baseline"
+	| "few_datasets_or_seeds"
+	| "no_significance_or_variance"
+	| "claim_broader_than_evidence"
+	| "missing_ablation"
+	| "reproducibility_detail_missing"
+	| "limitation_not_discussed"
+	| "other";
+
+/** Where the model reads a reviewer's point as applying: a passage found in the paper, or no passage on it. */
+export type PointLocation = { kind: "passage"; evidence: Evidence } | { kind: "no_passage" };
+
+/** The model's reading of one reviewer's point; every quote in it was found in the paper. */
+export interface PointReading {
+	point: string;
+	location: PointLocation | null;
+	/** what the paper says that responds to the point: the paper's words only, no judgement */
+	paper_says: Evidence | null;
+}
+
+/** Whether a weakness says something is absent, and what the engine's search of the paper's text found. */
+export type Absence =
+	| { kind: "not_claimed" }
+	| { kind: "none_found"; searched: string[] }
+	| { kind: "not_searched" }
+	| { kind: "but_see"; searched: string[]; found: Evidence[] };
+
+/** A weakness the model raises that the reviewers did not: its reading, with the passage it is about. */
+export interface ModelWeakness {
+	kind: WeaknessKind;
+	weakness: string;
+	about: Evidence;
+	absence: Absence;
+}
+
+/** What of the model's answer is not shown, counted. */
+export interface CritiqueLeftOut {
+	not_in_paper: number;
+	malformed: number;
+	unknown_point: number;
+	beyond_limit: number;
+	/** weaknesses worded as a judgement of the paper (accept, reject, a score): the section gives none */
+	verdict: number;
+}
+
+export interface CritiqueReading {
+	points: PointReading[];
+	weaknesses: ModelWeakness[];
+	left_out: CritiqueLeftOut;
+}
+
+/** What one model's calls are likely to cost, before they are made (engine model/language.rs `Estimate`). */
+export interface CritiqueModelEstimate {
+	model: string;
+	calls: number;
+	tokens: { input: number; output: number; cache_read: number; cache_write_5m: number; cache_write_1h: number };
+	usd: number | null;
+	most_usd: number | null;
+	counting: { kind: "assumed" | "measured"; chars_per_token: number };
+}
+
+/** What asking would cost (engine model/batch.rs `BatchEstimate`), in US dollars: an estimate. */
+export interface CritiqueEstimate {
+	items: number;
+	kept: number;
+	to_ask: number;
+	by_model: CritiqueModelEstimate[];
+	usd: number | null;
+	most_usd: number | null;
+}
+
+export type CritiqueModelPart =
+	| { state: "no_pdf" }
+	| { state: "unreadable" }
+	| { state: "not_asked"; model: string; estimate: CritiqueEstimate; api_key_set: boolean; points_asked: number; cut: number | null }
+	| { state: "answered"; model: string; kept_at: string; reading: CritiqueReading; points_asked: number; cut: number | null };
+
+/** `GET /api/papers/<id>/critique`: a paper's weaknesses, the reviewers' points first and the model's reading second. */
+export interface Critique {
+	paper_id: string;
+	reviewers: CritiqueReviewers;
+	model: CritiqueModelPart;
+}
+
+/** `POST /api/papers/<id>/critique`: the job started, or nothing asked because the reading is kept. */
+export type CritiqueStarted = { outcome: "started"; job: number } | { outcome: "kept" };
