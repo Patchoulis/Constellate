@@ -127,6 +127,8 @@ pub enum ClusterError {
     NotInGraph { paper: usize, papers: usize },
     #[error("{communities} communities cannot be made of {papers} papers")]
     TooFewPapers { papers: usize, communities: usize },
+    #[error("the vector of paper {paper} holds a number that is not finite")]
+    NotFinite { paper: usize },
     #[error("spectral clustering failed: {0}")]
     Eigen(#[from] EigenError),
 }
@@ -290,6 +292,10 @@ impl Partition {
 pub fn communities(method: Method, papers: Papers, count: usize, limits: Limits) -> Result<Partition, ClusterError> {
     let size = papers.adjacency.nrows();
     papers.check()?;
+    // one NaN would make its group's centre NaN in k-means, and every distance to it 0: every paper would join it
+    if let Some(paper) = papers.vectors.rows().into_iter().position(|row| row.iter().any(|value| !value.is_finite())) {
+        return Err(ClusterError::NotFinite { paper });
+    }
     if count == 0 || count > size {
         return Err(ClusterError::TooFewPapers { papers: size, communities: count });
     }
@@ -646,6 +652,20 @@ mod tests {
         );
         let message = "magic".parse::<Method>().unwrap_err().to_string();
         assert!(message.ends_with("the methods are spectral, spectral-knn, kmeans, fiedler"), "{message}");
+    }
+
+    #[test]
+    fn a_vector_that_is_not_finite_is_refused_rather_than_drawing_every_paper_into_one_community() {
+        let (adjacency, mut vectors, _) = blob_papers();
+        vectors[[17, 3]] = f32::NAN;
+        let papers = Papers { adjacency: adjacency.view(), vectors: vectors.view() };
+        for method in Method::ALL {
+            assert_eq!(
+                communities(method, papers, 3, loose(0)),
+                Err(ClusterError::NotFinite { paper: 17 }),
+                "{method}"
+            );
+        }
     }
 
     #[test]

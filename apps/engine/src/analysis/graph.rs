@@ -26,6 +26,8 @@ pub enum GraphError {
         "{papers} papers is too many for a dense similarity matrix (limit {DENSE_LIMIT}); narrow the date range or categories."
     )]
     TooMany { papers: usize },
+    #[error("the embedding of paper {paper} holds a number that is not finite; embed it again")]
+    NotFinite { paper: usize },
 }
 
 /// Rows of the similarity matrix made together by one thread: a block of 128 rows of 1,024 numbers is half a
@@ -46,10 +48,16 @@ pub fn make_unit(rows: &mut Array2<f32>) {
 ///
 /// With `center`, the mean embedding is removed first: text embeddings all share a large common direction, which
 /// otherwise makes every pair of papers similar and the clip at 0 do nothing.
+///
+/// An embedding with a NaN or an infinity in it is refused: centred, it would make every paper's vector NaN, and
+/// the clip at 0 would turn the whole graph into papers with no links at all, silently.
 pub fn adjacency_matrix(embeddings: ArrayView2<f32>, center: bool) -> Result<Array2<f32>, GraphError> {
     let papers = embeddings.nrows();
     if papers > DENSE_LIMIT {
         return Err(GraphError::TooMany { papers });
+    }
+    if let Some(paper) = embeddings.rows().into_iter().position(|row| row.iter().any(|value| !value.is_finite())) {
+        return Err(GraphError::NotFinite { paper });
     }
     let mut vectors = embeddings.to_owned();
     if center && let Some(mean) = vectors.mean_axis(Axis(0)) {
@@ -194,6 +202,16 @@ mod tests {
         let error = adjacency_matrix(embeddings.view(), true).unwrap_err();
         assert_eq!(error, GraphError::TooMany { papers: DENSE_LIMIT + 1 });
         assert!(error.to_string().contains("narrow the date range"));
+    }
+
+    #[test]
+    fn an_embedding_that_is_not_finite_is_refused_and_named() {
+        let mut embeddings = two_groups();
+        embeddings[[5, 2]] = f32::NAN;
+        assert_eq!(adjacency_matrix(embeddings.view(), true), Err(GraphError::NotFinite { paper: 5 }));
+        embeddings[[5, 2]] = 0.0;
+        embeddings[[1, 0]] = f32::INFINITY;
+        assert_eq!(adjacency_matrix(embeddings.view(), false), Err(GraphError::NotFinite { paper: 1 }));
     }
 
     #[test]
