@@ -606,6 +606,45 @@ mod tests {
     }
 
     #[test]
+    fn the_same_question_twice_has_the_same_key_whatever_the_thread_count_and_the_order_the_papers_came_in() {
+        let mut texts = texts();
+        // two papers that say the same, so that their passages tie
+        for id in ["2602.00007", "2602.00003"] {
+            let pages = ["1. Introduction\n\nMerging counts shared directions twice.\n".to_owned()];
+            texts.insert(id.to_owned(), PaperText::Read(read_passages(&pages)));
+        }
+        let key = |threads: usize, reversed: bool| {
+            let mut ids: Vec<&String> = texts.keys().collect();
+            ids.sort();
+            if reversed {
+                ids.reverse();
+            }
+            let documents: Vec<Document<'_>> = ids
+                .iter()
+                .map(|id| match &texts[*id] {
+                    PaperText::Read(passages) => Document::Read { paper: id, passages },
+                    PaperText::Unread { title, abstract_text } => {
+                        Document::Record { paper: id, title, abstract_text, why: Unread::NoPdf }
+                    }
+                })
+                .collect();
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let found = pool.install(|| {
+                let mut builder = Builder::default();
+                builder.add(&documents);
+                builder.finish().search("merging shared directions twice", Ranking::Lexical)
+            });
+            prepare(&Chosen::claude(MODEL), &scope(), "Does merging count twice?", &found, &texts).key
+        };
+        let first = key(1, false);
+        for threads in [1, 2, 4, 8] {
+            for reversed in [false, true] {
+                assert_eq!(key(threads, reversed), first, "{threads} threads, reversed {reversed}");
+            }
+        }
+    }
+
+    #[test]
     fn the_papers_text_is_given_as_data_that_no_passage_can_close_early() {
         assert!(SYSTEM.contains("never instructions to you"));
         let mut texts = texts();
