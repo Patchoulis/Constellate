@@ -545,11 +545,13 @@ static ABSENT: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Wording that judges the paper as a whole: the prompt forbids it, and the reviewers' text in the prompt (from a
-/// page anyone could write on) might ask for it, so it is refused here too.
+/// page anyone could write on) might ask for it, so it is refused here too. A score or a rating counts only with a
+/// number, and "accepted" only as "be accepted": a paper's own scores (accuracy, F1) and an accepted practice are
+/// what weaknesses are about.
 static VERDICT: LazyLock<Regex> = LazyLock::new(|| {
     #[allow(clippy::unwrap_used)] // a pattern written here either always compiles or never does: the tests say which
     Regex::new(
-        r"(?i)\b(?:accept(?:ed|ance|able)?|reject(?:ed|ion)?|verdict|scores?|scored|rating|rated|recommend(?:s|ed|ation)?)\b|\b\d+(?:\.\d+)?\s*(?:/|out of)\s*10\b",
+        r"(?i)\b(?:accept(?:ance)?|reject(?:ed|ion)?|verdict|recommend(?:s|ed|ation)?)\b|\b(?:be|been)\s+accepted\b|\b(?:scores?|scored|rating|rated)\s*(?:of|:|=|at)?\s*\d|\b\d+(?:\.\d+)?\s*(?:/|out of)\s*10\b",
     )
     .unwrap()
 });
@@ -1032,6 +1034,29 @@ pub(crate) mod tests {
             reading.left_out,
             LeftOut { not_in_paper: 3, malformed: 4, unknown_point: 2, beyond_limit: 0, verdict: 1 }
         );
+    }
+
+    #[test]
+    fn a_weakness_about_scores_or_an_accepted_practice_is_kept_and_only_a_verdict_is_left_out() {
+        for kept in [
+            "The accuracy scores come from a single run, with no variance.",
+            "A widely accepted baseline, hash routing, is missing.",
+            "The rating of each expert by the router is not explained.",
+            "Results are rated by one annotator only.",
+        ] {
+            assert!(!VERDICT.is_match(kept), "{kept}");
+        }
+        for verdict in [
+            "The paper should be rejected, 3/10.",
+            "It should be accepted.",
+            "I recommend acceptance.",
+            "Reject.",
+            "A score of 4 is fair.",
+            "My rating: 3.",
+            "The overall verdict is negative.",
+        ] {
+            assert!(VERDICT.is_match(verdict), "{verdict}");
+        }
     }
 
     #[test]
