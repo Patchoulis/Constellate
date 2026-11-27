@@ -381,7 +381,10 @@ fn checked(question: &str) -> Result<String, ApiError> {
 /// The papers about which the pre-filter decided, said so the user can judge it.
 #[derive(Serialize)]
 pub struct Filtered {
+    /// The scope's papers the library has: `related` and `unrelated` add up to it.
     pub papers: usize,
+    /// The scope's papers the library does not have: neither asked nor skipped, with `papers` the scope's total.
+    pub not_in_library: usize,
     /// Papers sharing a distinctive word with the question.
     pub related: usize,
     /// Papers sharing none: skipped unless `include_unrelated`.
@@ -394,6 +397,7 @@ pub struct Filtered {
 fn filtered(plan: &Plan) -> Filtered {
     Filtered {
         papers: plan.present,
+        not_in_library: plan.relevance.related.len() - plan.present,
         related: plan.related(),
         unrelated: plan.present - plan.related(),
         include_unrelated: plan.include_unrelated,
@@ -1060,7 +1064,8 @@ pub(super) mod tests {
         }
     }
 
-    /// A run of four papers: c0 (p1, p2, p3) with a sub-community c0.0 (p1, p2), and c1 (p4).
+    /// A run of five papers: c0 (p1, p2, p3, and p5, which the library does not have) with a sub-community c0.0
+    /// (p1, p2), and c1 (p4).
     fn engine(key: bool) -> (axum::Router, tempfile::TempDir) {
         let data = tempfile::tempdir().unwrap();
         {
@@ -1086,11 +1091,11 @@ pub(super) mod tests {
         std::fs::create_dir_all(&run).unwrap();
         let graph = json!({"nodes": [
             {"id": "p1", "acceptance": "oral"}, {"id": "p2", "acceptance": "poster"},
-            {"id": "p3", "acceptance": null}, {"id": "p4"}],
+            {"id": "p3", "acceptance": null}, {"id": "p4"}, {"id": "p5"}],
             "edges": [[0, 1, 0.9], [1, 2, 0.5], [0, 2, 0.1]]});
         std::fs::write(run.join("graph.json"), graph.to_string()).unwrap();
         let tree = json!({"communities": [
-            {"tree_path": "c0", "members": [0, 1, 2], "children": [{"tree_path": "c0.0", "members": [0, 1]}]},
+            {"tree_path": "c0", "members": [0, 1, 2, 4], "children": [{"tree_path": "c0.0", "members": [0, 1]}]},
             {"tree_path": "c1", "members": [3]}]});
         std::fs::write(run.join("communities.json"), tree.to_string()).unwrap();
         let listen = Listen::from_environment(&Environment::from_pairs([
@@ -1221,6 +1226,7 @@ pub(super) mod tests {
             (json!(3), json!(2), json!(1)),
             "the paper on molecules shares no word with the question"
         );
+        assert_eq!(plan["filter"]["not_in_library"], 1, "p5 is neither asked nor skipped, but counted");
         assert_eq!((plan["sample"]["papers"].clone(), plan["sample"]["abstract_only"].clone()), (json!(2), json!(2)));
         assert!(plan["all"]["estimate"]["usd"].as_f64().unwrap() > 0.0);
         assert_eq!(posts(), before, "the estimate sends nothing");

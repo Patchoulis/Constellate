@@ -1051,7 +1051,10 @@ export interface StanceRow {
 
 /** What the pre-filter (no model) decided: papers sharing no distinctive word with the question are skipped. */
 export interface StanceFilter {
+	/** the scope's papers the library has: `related` and `unrelated` add up to it */
 	papers: number;
+	/** the scope's papers the library does not have: neither asked nor skipped (the engine always sends it) */
+	not_in_library?: number;
 	related: number;
 	unrelated: number;
 	include_unrelated: boolean;
