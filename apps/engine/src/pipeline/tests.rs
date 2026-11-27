@@ -39,12 +39,12 @@ use std::sync::Mutex;
 use ndarray::Array2;
 use serde_json::Value;
 
-use super::embedding::Embedding;
-use super::gather::Sources;
 use super::steps::{Board, StepOutcome};
 use super::*;
 use crate::jobs::{Cancel, Progress, Tracker};
 use crate::library::{Known, Library, Paper, SliceOutcome};
+use crate::pipeline::steps::embedding::Embedding;
+use crate::pipeline::steps::gather::Sources;
 use crate::sources::Fetch;
 use crate::sources::fake::Fake;
 

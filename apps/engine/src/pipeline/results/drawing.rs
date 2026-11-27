@@ -19,7 +19,7 @@ use crate::analysis::graph::eigen::{self, EigenError};
 use crate::analysis::graph::links::natural_neighbours;
 use crate::analysis::graph::random::Random;
 use crate::library::Paper;
-use crate::sources::acceptance::{Acceptance, Accepted, Term};
+use crate::sources::conferences::acceptance::{Acceptance, Accepted, Term};
 
 /// The most papers the principal components are found from.
 pub const SAMPLE: usize = 3_000;

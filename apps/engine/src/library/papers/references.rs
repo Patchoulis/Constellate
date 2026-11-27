@@ -1,5 +1,5 @@
 //! Each paper's reference list ([`crate::text::pdf::references`]), read once from its PDF and kept, with what arXiv
-//! said about the entries that were looked up there ([`crate::sources::citations`]): what the citation network
+//! said about the entries that were looked up there ([`crate::sources::arxiv::citations`]): what the citation network
 //! around a paper is built from ([`crate::analysis::citations::network`]).
 //!
 //! A list is kept with the version of the reader ([`READER`]) and the SHA-256 of the PDF it was read from, and
@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 
 use crate::analysis::citations::Linker;
 use crate::library::{Library, LibraryError, now};
-use crate::sources::citations::{Answer, Ask, Get, LookupError, ask_for, read_answer, send, url_for};
+use crate::sources::arxiv::citations::{Answer, Ask, Get, LookupError, ask_for, read_answer, send, url_for};
 use crate::text::pdf::references::{Citing, Confidence, Reference, ReferenceList, read_reference_list};
 use crate::text::pdf::{Unreadable, pdf_pages};
 
@@ -287,7 +287,7 @@ mod tests {
     use crate::library::Known;
     use crate::library::papers::passages::fixtures::pdf_with;
     use crate::library::papers::tests::paper;
-    use crate::sources::citations::Response;
+    use crate::sources::arxiv::citations::Response;
 
     fn library() -> (tempfile::TempDir, Library) {
         let folder = tempfile::tempdir().unwrap();

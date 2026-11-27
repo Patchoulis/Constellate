@@ -43,18 +43,9 @@
 //! | [`served`]      | the runs: listed, opened, renamed, deleted                             |
 //! | [`seams`]       | the detector's and the describer's steps, connected by the integrator  |
 
-pub mod agreement;
-pub mod drawing;
-pub mod embedding;
-pub mod files;
-pub mod filter;
-pub mod gather;
-pub mod model_files;
-pub mod report;
-pub mod seams;
+pub mod results;
 pub mod served;
 pub mod steps;
-pub mod vocabulary;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -78,7 +69,8 @@ use crate::selection::Selection;
 use crate::settings::Settings;
 use embedding::Embedding;
 use gather::Sources;
-use steps::{Board, thousands};
+use results::{drawing, files, report, vocabulary};
+use steps::{Board, embedding, filter, gather, seams, thousands};
 pub use steps::{Step, StepOutcome};
 
 /// The version of how communities are cut, kept in every run's `run.json`: raised whenever the same papers and

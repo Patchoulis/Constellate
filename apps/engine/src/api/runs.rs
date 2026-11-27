@@ -34,15 +34,15 @@ use crate::jobs::Finished;
 use crate::model::chosen::Accepted;
 use crate::model::embed::Device;
 use crate::model::language::Provider;
-use crate::pipeline::files::{self, Replaced, RunFileError};
-use crate::pipeline::gather::Sources;
-use crate::pipeline::seams::Naming;
+use crate::pipeline::results::files::{self, Replaced, RunFileError};
 use crate::pipeline::served::{ServeError, Which};
+use crate::pipeline::steps::gather::Sources;
+use crate::pipeline::steps::seams::Naming;
 use crate::pipeline::{self, Context, Redo, RedoStep, Request};
 use crate::runs::index;
 use crate::selection::Selection;
 use crate::settings;
-use crate::sources::acceptance::Acceptance;
+use crate::sources::conferences::acceptance::Acceptance;
 use crate::text::declarations::Flag;
 
 /// The most conferences or categories one run may name.
@@ -384,7 +384,7 @@ pub fn catalog_json() -> Value {
     let acceptance: Vec<Value> = ["all", "highlights", "oral"]
         .iter()
         .map(|name| {
-            let (label, tiers) = pipeline::filter::acceptance_filter(name);
+            let (label, tiers) = pipeline::steps::filter::acceptance_filter(name);
             json!({"name": name, "label": label, "note": includes(tiers)})
         })
         .collect();

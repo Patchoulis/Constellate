@@ -9,6 +9,12 @@
 //! without taking the job's lock: "embedding 3,120 of 12,487 papers", "downloading the embedding model, 412 of
 //! 1,200 MB".
 
+pub mod embedding;
+pub mod filter;
+pub mod gather;
+pub mod model_files;
+pub mod seams;
+
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -24,7 +30,7 @@ pub enum Step {
     Model,
     /// One vector per paper, each kept in the library by paper, text and model.
     Embed,
-    /// The AI-text estimate of every abstract (another module's; see [`super::seams`]).
+    /// The AI-text estimate of every abstract (another module's; see [`crate::pipeline::steps::seams`]).
     Detect,
     /// The papers the settings leave out, left out.
     Filter,
@@ -35,7 +41,7 @@ pub enum Step {
     /// What each community is made of: its terms, its nearest papers, its figures.
     Summarise,
     /// A name and a description for every community, by the language model (another module's; see
-    /// [`super::seams`]).
+    /// [`crate::pipeline::steps::seams`]).
     Describe,
     /// The run's files.
     Write,

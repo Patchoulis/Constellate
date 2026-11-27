@@ -11,11 +11,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 use ndarray::Array2;
 
 use super::model_files::{self, Download, ModelRepo, QWEN3};
-use super::steps::{Board, Count, Skip, StepOutcome, Unit, thousands};
-use super::{RunError, Step};
 use crate::jobs::Tracker;
 use crate::library::{Library, Paper};
 use crate::model::embed::{Device, Encoder};
+use crate::pipeline::steps::{Board, Count, Skip, StepOutcome, Unit, thousands};
+use crate::pipeline::{RunError, Step};
 
 /// Texts handed to the model at once (the Python's batch size).
 pub const BATCH: usize = 16;

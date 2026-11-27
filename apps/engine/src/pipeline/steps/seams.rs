@@ -11,18 +11,18 @@
 //!   names. It asks the model only within what the person accepted for this run ([`Naming::Within`]: the most
 //!   `GET /api/describe/estimate` showed, sent back with the run request); with nothing accepted
 //!   ([`Naming::KeptOnly`]) nothing is sent, and only the communities named before for the same model and papers
-//!   are named. `run.redo` with [`super::RedoStep::Descriptions`] asks again what was kept.
+//!   are named. `run.redo` with [`crate::pipeline::RedoStep::Descriptions`] asks again what was kept.
 //!
 //! Either may fail ([`StepOutcome::Failed`]): the run goes on without what it would have added.
 
-use super::Made;
-use super::steps::{Skip, StepOutcome};
 use crate::features::detector::{self, Scoring, Skipped};
 use crate::features::writing::describe::{self, Group, Outcome, Run};
 use crate::jobs::Tracker;
 use crate::library::Library;
 use crate::model::chosen::Chosen;
 use crate::model::language::{Budget, Transport};
+use crate::pipeline::Made;
+use crate::pipeline::steps::{Skip, StepOutcome};
 
 /// What the person accepted for naming the run's communities, decided before the run starts.
 pub enum Naming {
@@ -36,7 +36,7 @@ pub enum Naming {
 }
 
 /// A record's tree as the describer takes it.
-fn groups(records: &[super::report::Record]) -> Vec<Group> {
+fn groups(records: &[crate::pipeline::results::report::Record]) -> Vec<Group> {
     records
         .iter()
         .map(|record| Group {
@@ -56,7 +56,7 @@ pub fn describe(
     run: &mut Made,
     tracker: &Tracker<'_>,
 ) -> StepOutcome {
-    let redo = run.redo.contains(&super::RedoStep::Descriptions);
+    let redo = run.redo.contains(&crate::pipeline::RedoStep::Descriptions);
     let tree = groups(&run.records);
     let described = Run {
         name: &run.name,

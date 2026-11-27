@@ -32,7 +32,7 @@
 //!
 //! Everything the engine sends to arXiv (its API for listings and lookups, its PDFs, a publisher's redirect to an
 //! arXiv PDF) waits for a turn at one [`ArxivPace`], [`ARXIV_PACE`]: one request at a time (arXiv asks programs
-//! for a single connection), the next one [`super::citations::PAUSE`] after the last ended (it asks for no more
+//! for a single connection), the next one [`crate::sources::arxiv::citations::PAUSE`] after the last ended (it asks for no more
 //! than one request every three seconds), and after a refusal (429, 503) as long as the refusal asks, else
 //! [`FIRST_BACK_OFF`] doubling with each refusal in a row. Turns are given in the order they were asked for:
 //! a reader opening a paper while a run reads its PDFs waits behind the requests asked before it, never behind
@@ -274,7 +274,7 @@ pub struct ArxivPace {
 }
 
 /// The pace everything the engine sends to arXiv keeps.
-pub static ARXIV_PACE: ArxivPace = ArxivPace::new(super::citations::PAUSE);
+pub static ARXIV_PACE: ArxivPace = ArxivPace::new(crate::sources::arxiv::citations::PAUSE);
 
 /// A turn at arXiv, held while one request is under way; given back when dropped (on a panic too), with the
 /// pause, or the back-off a refusal asked for, before the next turn.
@@ -439,7 +439,7 @@ fn open<T>(schedule: &Mutex<Schedule<T>>) -> MutexGuard<'_, Schedule<T>> {
 /// `fetch_one` for every one of `addresses`, under `politeness`; one outcome per address, in their order.
 ///
 /// `fetch_one` is given a [`Fetch`] to fetch with and the address, and does whatever fetching the address means
-/// (following redirects, checking that a PDF is a PDF: [`super::proceedings::download_pdf`]). Why the answer does
+/// (following redirects, checking that a PDF is a PDF: [`crate::sources::conferences::proceedings::download_pdf`]). Why the answer does
 /// not depend on how the threads shared the work: each address's outcome is what `fetch_one` made of that address
 /// alone, kept in the address's place.
 pub fn fetch_all<T, F>(

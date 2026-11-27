@@ -2,8 +2,8 @@
 //! proceedings keep their PDFs, and which PDF a paper's declarations were read from.
 //!
 //! An index is kept as the [`IndexState`] it is in, as JSON, by conference and year (`neurips-2025`), so that the
-//! next start knows when it was fetched and does not fetch it again for [`crate::sources::proceedings::INDEX_DAYS`]
-//! (or, after a failure, for [`crate::sources::proceedings::RETRY`]).
+//! next start knows when it was fetched and does not fetch it again for [`crate::sources::conferences::proceedings::INDEX_DAYS`]
+//! (or, after a failure, for [`crate::sources::conferences::proceedings::RETRY`]).
 //!
 //! A reading of declarations is valid for one version of the reader and one PDF: it is kept with the PDF's
 //! SHA-256, and one kept without (moved in from the Python backend, which did not keep the PDFs it read) is taken
@@ -15,7 +15,7 @@ use rusqlite::{OptionalExtension, params};
 
 use super::readings::Reading;
 use crate::library::{Library, LibraryError, json_column, now, placeholders};
-use crate::sources::proceedings::IndexState;
+use crate::sources::conferences::proceedings::IndexState;
 
 /// Papers asked about in one statement: well under SQLite's limit on bound values.
 const IDS_AT_ONCE: usize = 500;
@@ -129,7 +129,7 @@ mod tests {
     use super::*;
     use crate::library::papers::tests::paper;
     use crate::library::{Declarations, Known};
-    use crate::sources::proceedings::by_title;
+    use crate::sources::conferences::proceedings::by_title;
 
     fn library_with(ids: &[&str]) -> (tempfile::TempDir, Library) {
         let folder = tempfile::tempdir().unwrap();

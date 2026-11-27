@@ -21,14 +21,11 @@
 //! OpenReview is never contacted: it serves a bot challenge to programs, and Constellate does not work around it.
 //! Its addresses appear in records only as links for the reader the user opens.
 
-pub mod acceptance;
 pub mod arxiv;
 pub mod catalog;
-pub mod citations;
 pub mod conferences;
 pub mod download;
 pub mod polite;
-pub mod proceedings;
 
 use std::io::Read;
 use std::sync::LazyLock;

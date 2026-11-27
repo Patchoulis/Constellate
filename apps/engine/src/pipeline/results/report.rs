@@ -2,7 +2,7 @@
 //! `communities.json` the interface reads, `Community` in the contracts), and the readable report.
 //!
 //! A record is the group's mean embedding turned into words (its characteristic terms, the papers nearest to it,
-//! and a name and description once [`super::seams::describe`] has written them) plus similarity figures.
+//! and a name and description once [`crate::pipeline::steps::seams::describe`] has written them) plus similarity figures.
 //! Everything relative is relative to the siblings: the terms of a sub-community are what sets it apart inside its
 //! parent, and its closest communities are among its siblings.
 //!
@@ -18,7 +18,7 @@ use super::vocabulary::Vocabulary;
 use crate::analysis::graph::cluster::Community;
 use crate::library::Paper;
 use crate::selection::Selection;
-use crate::sources::acceptance::Acceptance;
+use crate::sources::conferences::acceptance::Acceptance;
 
 /// Terms listed per community.
 pub const KEYWORDS: usize = 12;

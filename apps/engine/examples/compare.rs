@@ -44,15 +44,15 @@ use constellate::analysis::graph::{adjacency_matrix, make_unit, modularity};
 use constellate::jobs::{Cancel, Progress, Tracker};
 use constellate::library::core::{place, store};
 use constellate::library::{Library, Paper};
-use constellate::pipeline::agreement::{
+use constellate::pipeline::results::agreement::{
     adjusted_mutual_information, adjusted_rand_index, coherence, numbered, silhouette_cosine,
 };
-use constellate::pipeline::embedding::{self, Embedding, Onnx};
-use constellate::pipeline::files;
-use constellate::pipeline::model_files::Network;
-use constellate::pipeline::report;
+use constellate::pipeline::results::files;
+use constellate::pipeline::results::report;
+use constellate::pipeline::results::vocabulary::Vocabulary;
 use constellate::pipeline::steps::Board;
-use constellate::pipeline::vocabulary::Vocabulary;
+use constellate::pipeline::steps::embedding::{self, Embedding, Onnx};
+use constellate::pipeline::steps::model_files::Network;
 
 const SEEDS: u64 = 5;
 /// Subsamples of 80% clustered afresh, unless `--subsamples` says how many.

@@ -38,7 +38,7 @@ use crate::jobs::Finished;
 use crate::library::{Declarations, Ratings, Reading};
 use crate::papers::declarations::{Declared, declarations_of, read_and_count};
 use crate::papers::pdf::{PdfOutcome, as_source};
-use crate::sources::acceptance::{Acceptance, Term, accepted};
+use crate::sources::conferences::acceptance::{Acceptance, Term, accepted};
 use crate::text::declarations::PARSER;
 
 /// The routes of this module, for [`super::routes::table`].

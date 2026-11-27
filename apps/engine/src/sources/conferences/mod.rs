@@ -17,6 +17,9 @@
 //! not the list). Only the second may fall back to arXiv comments and be remembered as done. Treating the third
 //! like the second would store a partial sample as if it were the official list, and never fetch the list again.
 
+pub mod acceptance;
+pub mod proceedings;
+
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::time::Duration;

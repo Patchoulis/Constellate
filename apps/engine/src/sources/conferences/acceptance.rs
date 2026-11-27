@@ -27,8 +27,8 @@ use std::collections::BTreeMap;
 
 use serde::{Serialize, Serializer};
 
-use super::catalog::CONFERENCES;
-use super::{Origin, Paper};
+use crate::sources::catalog::CONFERENCES;
+use crate::sources::{Origin, Paper};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Acceptance {
@@ -312,8 +312,8 @@ pub fn unknown_terms<'a>(papers: impl IntoIterator<Item = &'a Paper>) -> BTreeMa
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::super::fake;
     use super::*;
+    use crate::sources::fake;
 
     fn paper(id: &str, comment: &str) -> Paper {
         Paper { comment: comment.to_owned(), ..fake::paper(id) }

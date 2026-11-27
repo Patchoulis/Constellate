@@ -22,8 +22,8 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 use url::Url;
 
-use super::steps::{Count, StepOutcome, Unit};
 use crate::jobs::Tracker;
+use crate::pipeline::steps::{Count, StepOutcome, Unit};
 
 /// The longest one request may take: a slow connection gets through 1.2 GB in this time.
 pub const PATIENCE: Duration = Duration::from_secs(3 * 60 * 60);

@@ -11,10 +11,10 @@ use std::time::Duration;
 
 use chrono::NaiveDate;
 
-use super::steps::{Board, Count, StepOutcome, Unit, thousands};
-use super::{RunError, Step};
 use crate::jobs::Tracker;
 use crate::library::{Known, Library, Paper, SliceOutcome};
+use crate::pipeline::steps::{Board, Count, StepOutcome, Unit, thousands};
+use crate::pipeline::{RunError, Step};
 use crate::selection::Selection;
 use crate::sources::download::{Gathered, Slice, gather as fetch_slice, slices};
 use crate::sources::{self, Fetch};

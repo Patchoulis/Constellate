@@ -14,7 +14,7 @@
 //!    close title (nine in ten of the words shared, [`SIMILAR_TITLES`]) from the same year or the next counts,
 //!    which survives a word lost at a page break. Below that nothing is linked: two papers are never taken to be
 //!    one on a resemblance. A reference that is not in the library but names an arXiv id is "on arXiv"; any other
-//!    is unresolved, shown with what was read of it. ([`crate::sources::citations`] can look the unresolved ones
+//!    is unresolved, shown with what was read of it. ([`crate::sources::arxiv::citations`] can look the unresolved ones
 //!    up on arXiv.)
 //! 2. **The network around a seed paper** ([`network`]): its references (prior work), the read papers whose
 //!    references include it (derivative work), the citations between those neighbours, so that the picture is a

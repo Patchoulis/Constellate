@@ -29,8 +29,8 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
-use super::polite::{self, Politeness};
-use super::{Fetch, GetError, Limits, Origin, Paper, any_https, get_following};
+use crate::sources::polite::{self, Politeness};
+use crate::sources::{Fetch, GetError, Limits, Origin, Paper, any_https, get_following};
 use crate::threads::{Outcome, Progress};
 
 /// The hosts a PDF may come from, a leading "www." aside.
@@ -385,11 +385,11 @@ fn download_within(fetch: &dyn Fetch, address: &str, limits: Limits) -> Result<V
 mod tests {
     use chrono::TimeZone;
 
-    use super::super::FetchError;
-    use super::super::fake::{Fake, ok, paper, redirect};
     use super::*;
+    use crate::sources::FetchError;
+    use crate::sources::fake::{Fake, ok, paper, redirect};
 
-    fn html(body: &str) -> super::super::Response {
+    fn html(body: &str) -> crate::sources::Response {
         ok("text/html", body)
     }
 
@@ -563,7 +563,7 @@ mod tests {
             ),
             (Fake::new().with(start, redirect(302, "https://arxiv.org:8443/pdf/1")), false),
             (Fake::new().with(start, html("<html>not a pdf</html>")), false),
-            (Fake::new().with(start, super::super::Response { status: 404, ..pdf() }), false),
+            (Fake::new().with(start, crate::sources::Response { status: 404, ..pdf() }), false),
             (Fake::new().with(start, ok("application/pdf", &format!("%PDF{}", "0".repeat(4096)))), false), // too large
             (Fake::new().with(start, redirect(302, start)), false),                                        // a loop
             (Fake::new().failing(start, FetchError::TimedOut(start.to_owned())), false),                   // too slow

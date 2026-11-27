@@ -44,7 +44,7 @@ use crate::library::papers::references::{
 };
 use crate::library::{Library, LibraryError};
 use crate::papers::pdf::PdfOutcome;
-use crate::sources::citations;
+use crate::sources::arxiv::citations;
 use crate::sources::{Fetch, Limits, any_https, get_following};
 
 /// Entries looked up on arXiv per request at most: at its pace, a minute. The rest are looked up when the

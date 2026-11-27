@@ -7,8 +7,8 @@
 //!
 //! Fetching goes through [`crate::sources`] only: the publishers' hosts ([`PDF_HOSTS`]), https on the usual port,
 //! public addresses only (the resolver refuses this computer and its network), every redirect checked before it
-//! is followed, at most [`crate::sources::proceedings::MAX_PDF`] bytes and
-//! [`crate::sources::proceedings::PDF_TIME`] for all of it, and only bytes that start as a PDF does. A
+//! is followed, at most [`crate::sources::conferences::proceedings::MAX_PDF`] bytes and
+//! [`crate::sources::conferences::proceedings::PDF_TIME`] for all of it, and only bytes that start as a PDF does. A
 //! conference paper's address comes from its proceedings' index, fetched as needed and kept
 //! ([`crate::library::papers::proceedings`]).
 //!
@@ -32,8 +32,8 @@ use std::time::{Duration, Instant};
 use url::Url;
 
 use crate::library::{Library, LibraryError, Paper};
+use crate::sources::conferences::proceedings::{self, IndexState, PDF_HOSTS, PdfError, PdfSource};
 use crate::sources::polite::{FIRST_BACK_OFF, PUBLISHER, Rule};
-use crate::sources::proceedings::{self, IndexState, PDF_HOSTS, PdfError, PdfSource};
 use crate::sources::{Fetch, FetchError, GetError, Limits, Response};
 
 /// What asking for a paper's PDF came to.

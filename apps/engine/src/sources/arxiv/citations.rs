@@ -12,11 +12,11 @@
 //! passes in ([`Get`]), so every test runs on recorded answers and no test touches the network.
 //!
 //! The pace is not kept here: every request to arXiv the engine makes waits for its turn at arXiv's one pace
-//! ([`super::polite::ARXIV_PACE`], taken by the network), first come first served with the PDFs and the listings,
+//! ([`crate::sources::polite::ARXIV_PACE`], taken by the network), first come first served with the PDFs and the listings,
 //! and left alone after a refusal for as long as arXiv asks. A refusal ends the lookups at once ([`send`]): the
 //! entries not asked about are asked about next time, and the error says when to try again.
 //!
-//! The address asked is the one its caller passes ([`enrich`]'s `base`): arXiv's own API, [`super::arxiv::API`].
+//! The address asked is the one its caller passes ([`enrich`]'s `base`): arXiv's own API, [`crate::sources::arxiv::API`].
 
 use std::time::Duration;
 
@@ -182,13 +182,14 @@ pub fn read_answer(ask: &Ask, reference: &Reference, feed: &str) -> Answer {
 
 /// Send one request (at arXiv's pace, which `get` keeps) and answer its feed. A refusal (429, 503) is
 /// [`LookupError::RateLimited`], saying how long arXiv asked to be left alone (as long as it says, else
-/// [`super::polite::FIRST_BACK_OFF`]; an hour at most).
+/// [`crate::sources::polite::FIRST_BACK_OFF`]; an hour at most).
 pub fn send(url: &str, get: &mut Get) -> Result<String, LookupError> {
     let response = get(url).map_err(LookupError::Unreachable)?;
     match response.status {
         200 => Ok(response.body),
         429 | 503 => {
-            let wait = response.retry_after.unwrap_or(super::polite::FIRST_BACK_OFF).min(Duration::from_secs(3600));
+            let wait =
+                response.retry_after.unwrap_or(crate::sources::polite::FIRST_BACK_OFF).min(Duration::from_secs(3600));
             Err(LookupError::RateLimited { retry_after: wait })
         }
         status => Err(LookupError::Failed(status)),
@@ -323,7 +324,7 @@ mod tests {
         assert_eq!(send("second", &mut get), Err(LookupError::RateLimited { retry_after: Duration::from_secs(7) }));
         assert_eq!(
             send("third", &mut get),
-            Err(LookupError::RateLimited { retry_after: super::super::polite::FIRST_BACK_OFF }),
+            Err(LookupError::RateLimited { retry_after: crate::sources::polite::FIRST_BACK_OFF }),
             "a refusal that does not say how long"
         );
         assert_eq!(*asked.borrow(), 3, "nothing asked twice: the pace waits, not the lookup");
@@ -345,7 +346,7 @@ mod tests {
             unresolved("Solver-informed rl: Grounding large language models for authentic optimization modeling", 2025),
             LinkedReference { link: Link::InLibrary { paper: "x".to_owned() }, ..unresolved("Already known", 2020) },
         ];
-        let found = enrich(&mut paper, &linker, super::super::arxiv::API, &mut get).unwrap();
+        let found = enrich(&mut paper, &linker, crate::sources::arxiv::API, &mut get).unwrap();
         assert_eq!(found, 1);
         assert_eq!(paper[0].link, Link::OnArxiv { arxiv: "2505.11792".to_owned() });
         assert_eq!(paper[0].reference.confidence, Confidence::Identified);

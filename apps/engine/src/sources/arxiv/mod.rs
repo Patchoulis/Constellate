@@ -6,6 +6,8 @@
 //! for again, each time after a longer pause (or as long as a refusal's `Retry-After` asks, when that is longer),
 //! before the query is given up on.
 
+pub mod citations;
+
 use std::sync::LazyLock;
 use std::time::Duration;
 

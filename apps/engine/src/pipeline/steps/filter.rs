@@ -4,11 +4,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::steps::{StepOutcome, thousands};
 use crate::jobs::Tracker;
 use crate::library::{Library, LibraryError, Paper, Reading};
+use crate::pipeline::steps::{StepOutcome, thousands};
 use crate::settings::Settings;
-use crate::sources::acceptance::{self, Acceptance, Accepted};
+use crate::sources::conferences::acceptance::{self, Acceptance, Accepted};
 
 /// The tiers an acceptance filter lets through, and how it is called (the Python's `settings.ACCEPTANCE`).
 pub fn acceptance_filter(name: &str) -> (&'static str, &'static [Acceptance]) {
