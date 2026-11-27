@@ -323,6 +323,29 @@ mod tests {
     }
 
     #[test]
+    fn a_database_at_each_earlier_version_keeps_its_papers_and_settings_through_the_rest() {
+        for earlier in 1..MIGRATIONS.len() {
+            let folder = tempfile::tempdir().unwrap();
+            {
+                let connection = Connection::open(folder.path().join(DATABASE)).unwrap();
+                migrate(&connection, &MIGRATIONS[..earlier]).unwrap();
+                connection
+                    .execute_batch(
+                        "INSERT INTO papers (id, origin, title, abstract, authors, published, updated, comment,
+                                             primary_category, categories, text_hash)
+                         VALUES ('2601.00001', 'arxiv', 't', 'a', '[]', '2026-01-01T00:00:00Z', '', '', 'cs.LG',
+                                 '[]', 'h');
+                         INSERT INTO settings (name, value) VALUES ('max_links', '8');",
+                    )
+                    .unwrap();
+            }
+            let library = Library::open(folder.path()).unwrap();
+            assert!(library.paper("2601.00001").unwrap().is_some(), "from version {earlier}");
+            assert_eq!(library.settings().unwrap()["max_links"], 8, "from version {earlier}");
+        }
+    }
+
+    #[test]
     fn later_migrations_are_applied_in_order_and_keep_what_is_there() {
         let steps = [
             "CREATE TABLE notes (id TEXT PRIMARY KEY)",
