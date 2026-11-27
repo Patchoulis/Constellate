@@ -40,6 +40,10 @@ export type RunRequest = (
 export type JobState = "idle" | "running" | "done" | "failed";
 
 export interface Status {
+	/** the job's number (absent from the Python backend): what `api.cancelJob` names */
+	id?: number;
+	/** what kind of work it is ("a run", "asking about papers") */
+	kind?: string;
 	state: JobState;
 	/** name of the finished run, once state is "done" */
 	result: string | null;
@@ -53,6 +57,17 @@ export interface Status {
 	mode?: EngineMode;
 	/** the settings the server decides, which the interface does not offer to change */
 	server_owned?: (keyof Settings)[];
+	/** how far a job that does many things has got; null for one that does not say */
+	progress?: JobProgress | null;
+	/** whether a key for the Claude API is set (never the key itself); absent from the Python backend */
+	api_key_set?: boolean;
+}
+
+/** n of m done, and what it has spent so far on the Claude API, in US dollars. */
+export interface JobProgress {
+	done: number;
+	of: number;
+	usd: number;
 }
 
 /** On the user's own computer, or one person's server reached across a network (apps/engine/src/api/config.rs). */

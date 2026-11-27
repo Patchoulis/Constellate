@@ -60,6 +60,10 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - Marked papers and panel sizes are kept between launches: the interface is served on the same port each time.
+- The new engine now serves the reader's Text tab and finds the words a citation quotes; each paper's PDF is read
+  once and kept, and is read again only when the PDF or the way papers are read changes.
+- A Claude API key (and address) set in a `.env` file beside the new engine is now used, like its other settings;
+  the key is never shown, logged or passed on to another program.
 
 ### Security
 

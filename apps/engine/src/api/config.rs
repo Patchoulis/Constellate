@@ -19,6 +19,10 @@
 //! combination, and the plain-HTTP transports and the cookie without `Secure` carry a proof ([`Loopback`],
 //! [`OptOut`]) that only this module can make. No value read here is ever written to a log or an error message:
 //! a `.env` file holds the token and the sign-in secrets.
+//!
+//! The same place gives the Claude API's key and address (`ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`,
+//! [`Environment::language_endpoint`]), so that a `.env` beside the engine is enough. They are secrets like the
+//! token: never shown in a `Debug` of the [`Environment`], and never handed to another program ([`child_process`]).
 
 use std::collections::HashMap;
 use std::fmt;
@@ -33,9 +37,10 @@ use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 use super::login::{self, SignIn};
+use crate::model::language::{self, Endpoint, Unavailable};
 
 /// The variables this engine reads; nothing else is taken from the environment or from `.env`.
-pub const VARIABLES: [&str; 15] = [
+pub const VARIABLES: [&str; 17] = [
     BIND,
     PORT,
     TOKEN,
@@ -51,7 +56,12 @@ pub const VARIABLES: [&str; 15] = [
     login::OIDC_CLIENT_SECRET,
     login::OWNER_EMAIL,
     login::ALLOW_PASSWORD,
+    language::KEY_VARIABLE,
+    language::BASE_VARIABLE,
 ];
+/// The variables whose values are secrets: never passed on to a program the engine starts. The base address is
+/// one too, since a proxy's address may carry its credentials.
+pub const SECRETS: [&str; 4] = [TOKEN, login::OIDC_CLIENT_SECRET, language::KEY_VARIABLE, language::BASE_VARIABLE];
 const BIND: &str = "CONSTELLATE_BIND";
 const PORT: &str = "CONSTELLATE_PORT";
 const TOKEN: &str = "CONSTELLATE_TOKEN";
@@ -313,9 +323,18 @@ pub struct Listen {
     names: Vec<String>,
 }
 
-/// The variables as read, from the process's environment over `.env`.
-#[derive(Clone, Debug, Default)]
+/// The variables as read, from the process's environment over `.env`. Its `Debug` names the variables that are
+/// set, never their values.
+#[derive(Clone, Default)]
 pub struct Environment(HashMap<&'static str, String>);
+
+impl fmt::Debug for Environment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut set: Vec<&str> = self.0.keys().copied().collect();
+        set.sort_unstable();
+        formatter.debug_tuple("Environment").field(&set).finish()
+    }
+}
 
 impl Environment {
     /// The engine's variables: from `.env` in `folder` if there is one, each overridden by the process's
@@ -354,6 +373,22 @@ impl Environment {
     pub fn get(&self, variable: &str) -> Option<&str> {
         self.0.get(variable).map(|value| value.trim()).filter(|value| !value.is_empty())
     }
+
+    /// The Claude API's key and address, from here like every other variable; why not when they cannot be used.
+    pub fn language_endpoint(&self) -> Result<Endpoint, Unavailable> {
+        Endpoint::from_lookup(|name| self.get(name).map(str::to_owned))
+    }
+}
+
+/// The one way the engine starts another program: with the secrets ([`SECRETS`]) taken out of what it inherits,
+/// so that a key set in the engine's environment never reaches a program that has no use for it. A test reads
+/// the engine's sources to see that no program is started any other way.
+pub fn child_process(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    for secret in SECRETS {
+        command.env_remove(secret);
+    }
+    command
 }
 
 /// `NAME=value` lines; blank lines and `#` comments are skipped, `export ` before a name is allowed, a value may
@@ -886,5 +921,59 @@ pub(crate) mod tests {
         assert_eq!(read.get(BIND), std::env::var(BIND).ok().as_deref().or(Some("127.0.0.2")));
         assert_eq!(Environment::from_pairs([(BIND, "  ")]).get(BIND), None);
         assert!(Environment::read(&folder.path().join("nowhere")).is_ok()); // no .env: fine
+    }
+
+    #[test]
+    fn the_claude_apis_key_and_address_are_read_from_env_like_the_rest_and_never_shown() {
+        let key = "test-key-not-real-0123456789";
+        let read = parse_env_file(&format!(
+            "ANTHROPIC_API_KEY={key}\nANTHROPIC_BASE_URL=https://gateway.example.org/claude\n"
+        ))
+        .unwrap();
+        let endpoint = read.language_endpoint().unwrap();
+        assert!(!endpoint.is_default(), "the address set in .env is the one used");
+        let shown = format!("{read:?} {endpoint:?}");
+        assert!(shown.contains("ANTHROPIC_API_KEY"), "{shown}");
+        assert!(!shown.contains(key) && !shown.contains("gateway"), "{shown}");
+        assert_eq!(parse_env_file("").unwrap().language_endpoint().unwrap_err(), Unavailable::NoKey);
+        let plain =
+            parse_env_file(&format!("ANTHROPIC_API_KEY={key}\nANTHROPIC_BASE_URL=http://example.org\n")).unwrap();
+        assert_eq!(plain.language_endpoint().unwrap_err(), Unavailable::BadEndpoint);
+    }
+
+    #[test]
+    fn a_program_the_engine_starts_inherits_none_of_its_secrets() {
+        let command = child_process("a-program");
+        let removed: Vec<String> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        for secret in SECRETS {
+            assert!(removed.iter().any(|name| name == secret), "{secret} is passed on");
+        }
+        // and no program is started any other way
+        fn sources(folder: &Path, found: &mut Vec<PathBuf>) {
+            for entry in fs::read_dir(folder).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    sources(&path, found);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    found.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+        assert!(files.len() > 20);
+        let starting = ["Command", "::new("].concat();
+        for file in files {
+            let text = fs::read_to_string(&file).unwrap();
+            if file.ends_with(Path::new("api").join("config.rs")) {
+                assert_eq!(text.matches(&starting).count(), 1);
+            } else {
+                assert!(!text.contains(&starting), "{} starts a program without child_process", file.display());
+            }
+        }
     }
 }

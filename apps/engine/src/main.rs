@@ -113,7 +113,10 @@ fn main() -> ExitCode {
         }
     };
     let served = runtime.block_on(async {
-        let mut server = Server::bind(listen, Engine::new(data, choices()), routes())?;
+        let mut engine = Engine::new(data, choices());
+        // from the environment over `.env`, like every other variable; only whether it is set is ever told
+        engine.language = environment.language_endpoint();
+        let mut server = Server::bind(listen, engine, routes())?;
         server.announce_setup_code();
         let mut out = io::stdout().lock();
         writeln!(out, "{}", server.startup_line())?;

@@ -75,10 +75,13 @@ export const api = {
 	catalog: () => call<Catalog>("/api/catalog"),
 	paper: (id: string) => call<Paper>(`/api/papers/${id}`),
 	pdfUrl: (id: string) => `/api/pdf/${id}`,
-	/** the paper's text from its PDF, by page, section and paragraph (slow the first time: the PDF is fetched) */
-	passages: (id: string) => call<PaperPassages>(`/api/papers/${id}/passages`),
+	/** the paper's text from its PDF, by page, section and paragraph (slow the first time: the PDF is read); fails
+	 *  with "not found" when the engine has no readable PDF of it */
+	passages: (id: string) => call<PaperPassages>(`/api/papers/${encodeURIComponent(id)}/passages`),
 	/** where a quote is in the paper's text, in the paper's own words */
-	locate: (id: string, quote: string) => call<LocateAnswer>(`/api/papers/${id}/locate`, send("POST", { quote })),
+	locate: (id: string, quote: string) => call<LocateAnswer>(`/api/papers/${encodeURIComponent(id)}/locate`, send("POST", { quote })),
+	/** ask the running job (by its `Status.id`) to stop: it starts nothing new and finishes what is under way */
+	cancelJob: (id: number) => call<{ ok: true }>("/api/job/cancel", send("POST", { id })),
 	/** read what a paper's authors declare, from its PDF (slow the first time: the PDF is fetched) */
 	declarations: (id: string) => call<Declarations>(`/api/declarations/${id}`, { method: "POST" }),
 	/** the reviewers' scores of every paper whose reviews page has been opened, by paper id */

@@ -167,6 +167,41 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE spending ADD COLUMN cache_read_tokens BIGINT NOT NULL DEFAULT 0 CHECK (cache_read_tokens >= 0);
     ALTER TABLE spending ADD COLUMN cache_write_tokens BIGINT NOT NULL DEFAULT 0 CHECK (cache_write_tokens >= 0);
     ",
+    // 4: what was read from a paper's PDF, so that a PDF is read once per version of the reader
+    r"
+    -- What a version of the passages reader (text/passages.rs READER) made of the PDF kept for a paper: its
+    -- passages as JSON, or why it could not be read (remembered, so a PDF that cannot be read is not tried again
+    -- and again). `pdf_hash` is the SHA-256 of the PDF's bytes; `pdf_size` and `pdf_modified` (nanoseconds since
+    -- 1970) tell whether the file may have changed without reading it.
+    CREATE TABLE paper_passages (
+        paper_id     TEXT PRIMARY KEY REFERENCES papers (id) ON DELETE CASCADE,
+        reader       BIGINT NOT NULL,
+        pdf_hash     TEXT NOT NULL,
+        pdf_size     BIGINT NOT NULL,
+        pdf_modified BIGINT NOT NULL,
+        outcome      TEXT NOT NULL CHECK (outcome IN ('read', 'unreadable')),
+        content      TEXT NOT NULL,
+        read_at      TEXT NOT NULL
+    );
+    ",
+    // 5: what the language model answered for a feature, so that no answer is paid for twice
+    r"
+    -- A model's raw answer (its claims, before their quotes are checked: they are checked again when loaded) for
+    -- one feature (library/answers.rs Feature), under a key made from everything the answer depends on.
+    -- `subject` is what a redo clears it with: 'paper:<id>', 'run:<name>' or 'community:<run>/<tree path>'.
+    CREATE TABLE kept_answers (
+        feature    TEXT NOT NULL,
+        answer_key TEXT NOT NULL,
+        subject    TEXT NOT NULL,
+        model      TEXT NOT NULL,
+        prompt     BIGINT NOT NULL,
+        reader     BIGINT NOT NULL,
+        content    TEXT NOT NULL,
+        kept_at    TEXT NOT NULL,
+        PRIMARY KEY (feature, answer_key)
+    );
+    CREATE INDEX kept_answers_by_subject ON kept_answers (feature, subject);
+    ",
 ];
 
 /// Bring `connection` to the last of `migrations`. Refuses a database newer than the list.
