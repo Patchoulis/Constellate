@@ -499,8 +499,9 @@ fn words_of(record: &Record<'_>) -> HashSet<String> {
 /// Which papers could be about a question: what the pre-filter found.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Relevance {
-    /// The question's words the papers were looked at for: those not in most of the papers (a word every paper
-    /// uses tells none apart), or all of them when every one is that common.
+    /// The question's words the papers were looked at for: those in some of the papers but not in most (a word
+    /// every paper uses, or none does, tells none apart); when none is, those some paper uses; when none is
+    /// used, all of them.
     pub terms: Vec<String>,
     /// By paper, in the order given: does its title or abstract have one of `terms`? All true when the question
     /// has no word to look for.
@@ -517,8 +518,23 @@ pub fn relevance(question: &str, records: &[Record<'_>]) -> Relevance {
     }
     let words: Vec<HashSet<String>> = records.par_iter().map(words_of).collect();
     let share = |term: &String| words.iter().filter(|paper| paper.contains(term)).count() as f64 / words.len() as f64;
-    let distinctive: Vec<String> = terms.iter().filter(|term| share(term) < 0.5).cloned().collect();
-    let terms = if distinctive.is_empty() { terms } else { distinctive };
+    // a word no paper uses tells none apart either: looked for alone, it would skip every paper
+    let distinctive: Vec<String> = terms
+        .iter()
+        .filter(|term| {
+            let share = share(term);
+            share > 0.0 && share < 0.5
+        })
+        .cloned()
+        .collect();
+    let used: Vec<String> = terms.iter().filter(|term| share(term) > 0.0).cloned().collect();
+    let terms = if !distinctive.is_empty() {
+        distinctive
+    } else if !used.is_empty() {
+        used
+    } else {
+        terms
+    };
     let related = words.par_iter().map(|paper| terms.iter().any(|term| paper.contains(term))).collect();
     Relevance { terms, related }
 }
@@ -889,6 +905,19 @@ mod tests {
     }
 
     #[test]
+    fn a_question_word_no_paper_uses_does_not_make_the_pre_filter_skip_every_paper() {
+        // a community about synthetic data, asked about robustness, which none of its abstracts names
+        let papers = records(&[
+            ("Synthetic data for pre-training", "Generated text as training data."),
+            ("Cheap synthetic corpora", "Synthetic data at scale."),
+            ("Filtering synthetic data", "Removing bad synthetic samples."),
+        ]);
+        let found = relevance("Does synthetic data improve robustness?", &papers);
+        assert_eq!(found.related, [true, true, true], "{found:?}");
+        assert!(!found.terms.contains(&"robustness".to_owned()), "{found:?}");
+    }
+
+    #[test]
     fn the_pre_filter_and_the_terms_are_the_same_whatever_the_number_of_threads() {
         let titles: Vec<String> = (0..300).map(|n| format!("Paper {n} on synthetic data {}", n % 7)).collect();
         let abstracts: Vec<String> =
@@ -1025,6 +1054,22 @@ mod tests {
         assert_ne!(key(MODEL, Read::Pdf, &key_question("q?", 0)), key(MODEL, Read::Pdf, &key_question("q?", 1)));
         assert_ne!(key(MODEL, Read::Pdf, "q"), key("another-model", Read::Pdf, "q"), "the model is in the key");
         assert_ne!(key(MODEL, Read::Pdf, "q"), key(MODEL, Read::Abstract, "q"), "an abstract's answer is not a PDF's");
+    }
+
+    #[test]
+    fn two_questions_about_a_paper_send_the_same_system_and_shared_text() {
+        let prepared = vec![prepare("2601.00001", &pdf_paper()).unwrap()];
+        let (chosen, schema) = (Chosen::claude(MODEL), schema());
+        let ask = |question: &str| {
+            let prompt = question_prompt(question);
+            let key = key_question(question, 0);
+            let items = items(&prepared, &prompt, &key, &chosen, &schema);
+            (items[0].ask.system.to_owned(), items[0].ask.shared.map(str::to_owned), items[0].slot.key.clone())
+        };
+        let one = ask("Does pre-training on synthetic data help downstream accuracy?");
+        let two = ask("Does a smaller synthetic corpus remove the gain?");
+        assert_eq!((&one.0, &one.1), (&two.0, &two.1), "byte for byte, so the prompt cache is read");
+        assert_ne!(one.2, two.2, "each question's answer is kept apart");
     }
 
     #[test]

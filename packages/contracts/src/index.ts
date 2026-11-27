@@ -951,13 +951,11 @@ export type WeaknessKind =
 /** Where the model reads a reviewer's point as applying: a passage found in the paper, or no passage on it. */
 export type PointLocation = { kind: "passage"; evidence: Evidence } | { kind: "no_passage" };
 
-/** The model's reading of one reviewer's point; every quote in it was found in the paper. */
-export interface PointReading {
-	point: string;
-	location: PointLocation | null;
-	/** what the paper says that responds to the point: the paper's words only, no judgement */
-	paper_says: Evidence | null;
-}
+/** The model's reading of one reviewer's point; every quote in it was found in the paper. `location` is null when
+ *  the model's place for the point was not found in the paper; then `paper_says` is there (never both null). */
+export type PointReading =
+	/** `paper_says`: what the paper says that responds to the point: the paper's words only, no judgement */
+	{ point: string; location: PointLocation; paper_says: Evidence | null } | { point: string; location: null; paper_says: Evidence };
 
 /** Whether a weakness says something is absent, and what the engine's search of the paper's text found. */
 export type Absence =
@@ -1014,8 +1012,18 @@ export interface Critique {
 	model: CritiqueModelPart;
 }
 
+/** `POST /api/papers/<id>/critique`'s body: the model whose estimate was shown, and its worst case accepted (refused
+ *  when asking would now cost more: the paper's text, its reviews or the model changed), or a budget of one's own. */
+export type CritiqueStart = ShownModel & (AcceptedCost | BudgetOf);
+
 /** `POST /api/papers/<id>/critique`: the job started, or nothing asked because the reading is kept. */
 export type CritiqueStarted = { outcome: "started"; job: number } | { outcome: "kept" };
+
+/** `DELETE /api/papers/<id>/critique`: the reading shown (the chosen model's) forgotten, 1, or none there, 0. Other
+ *  models' readings of the paper stay. */
+export interface CritiqueForgotten {
+	forgotten: number;
+}
 
 // ---- Agree / disagree (stances) ----
 
@@ -1051,7 +1059,10 @@ export interface StanceRow {
 
 /** What the pre-filter (no model) decided: papers sharing no distinctive word with the question are skipped. */
 export interface StanceFilter {
+	/** the scope's papers the library has: `related` and `unrelated` add up to it */
 	papers: number;
+	/** the scope's papers the library does not have: neither asked nor skipped (the engine always sends it) */
+	not_in_library?: number;
 	related: number;
 	unrelated: number;
 	include_unrelated: boolean;
@@ -1276,7 +1287,8 @@ export interface DefinedTerm {
 }
 
 export type ExplanationPrepared =
-	| {
+	/** ready: the explanation kept from before (shown at no cost), or, not asked yet, what asking would cost */
+	| ({
 			state: "ready";
 			paper: string;
 			passage: { kind: PassageKind; address: PassageAddress };
@@ -1288,17 +1300,19 @@ export type ExplanationPrepared =
 			model: string;
 			api_key_set: boolean;
 			definitions: DefinedTerm[];
-			/** kept from before: shown at no cost */
-			explained: Explanation | null;
-			/** null when an explanation is kept */
-			estimate: ExplanationEstimate | null;
-	  }
+	  } & ({ explained: Explanation; estimate: null } | { explained: null; estimate: ExplanationEstimate }))
 	| { state: "no_text"; why: "no_pdf" | "unreadable" };
 
 /** `POST /api/papers/<id>/explanation`: the job that asks, when one was started (none when one is kept). */
 export interface ExplanationStarted {
 	started: boolean;
 	job: number | null;
+}
+
+/** `DELETE /api/papers/<id>/explanation`: whether there was an explanation of the passage (by the model chosen) to
+ *  forget; the paper's other explanations stay. */
+export interface ExplanationRedone {
+	redone: boolean;
 }
 
 /** `GET /api/papers/<id>/explanations`: the passages with an explanation kept for the model chosen. */
@@ -1698,6 +1712,8 @@ export type AnswerEstimate =
  *  to cost (in tokens for a model with no price), for the model it was shown for. */
 export type AnswerRequest = ShownModel &
 	AcceptedCost & {
+		/** the id of the estimate shown (`AnswerEstimate.id`): refused when the passages that would be sent changed since */
+		id: string;
 		question: string;
 		/** a community's tree path; absent or null for the whole run */
 		community?: string | null;

@@ -198,6 +198,9 @@ pub struct Index {
     words: u64,
     coverage: Coverage,
     bytes: usize,
+    /// The papers indexed by their record because no PDF of them was kept (by their place in `papers`): those
+    /// whose PDF, kept since, makes the index out of date ([`Index::without_pdf`]).
+    without_pdf: Vec<u32>,
 }
 
 /// How a search ranks.
@@ -223,6 +226,13 @@ impl Index {
     /// What it takes in memory, roughly (what [`INDEX_BUDGET`] and [`CACHE_BUDGET`] are counted in).
     pub fn bytes(&self) -> usize {
         self.bytes
+    }
+
+    /// The papers indexed by their title and abstract because no PDF of them was kept ([`Unread::NoPdf`]), in the
+    /// order handed over. Once one of them has a PDF, the index no longer says what the papers say: whoever keeps
+    /// it checks these, and builds it again.
+    pub fn without_pdf(&self) -> impl Iterator<Item = &str> {
+        self.without_pdf.iter().filter_map(|paper| self.papers.get(*paper as usize)).map(String::as_str)
     }
 
     /// The units that match `query` best, best first, as the module says. No words, no hits.
@@ -391,6 +401,7 @@ impl Builder {
             words: 0,
             coverage: Coverage::default(),
             bytes: 0,
+            without_pdf: Vec::new(),
         };
         Self { index, budget }
     }
@@ -425,6 +436,10 @@ impl Builder {
         let Ok(number) = u32::try_from(index.papers.len()) else { return };
         index.bytes += paper.len() + LIST;
         index.papers.push(paper);
+        if matches!(document.kind, Counted::Unread(Unread::NoPdf)) {
+            index.without_pdf.push(number);
+            index.bytes += 4;
+        }
         for (unit, counts, length) in units {
             let Ok(entry) = u32::try_from(index.entries.len()) else { return };
             index.entries.push(Entry { paper: number, unit, length });
@@ -848,8 +863,12 @@ mod tests {
         let (title, abstract_text) = ("Unreadable", "A scanned paper about distillation.");
         documents.push(Document::Record { paper: "scan", title, abstract_text, why: Unread::Unreadable });
         builder.add(&documents);
-        let coverage = builder.finish().coverage();
+        let index = builder.finish();
+        let coverage = index.coverage();
         assert_eq!(coverage, Coverage { papers: 7, full_text: 3, capped: 0, no_pdf: 2, unreadable: 1, missing: 1 });
+        let counted = [coverage.full_text, coverage.capped, coverage.no_pdf, coverage.unreadable, coverage.missing];
+        assert_eq!(counted.iter().sum::<usize>(), coverage.papers, "every paper is counted once");
+        assert_eq!(index.without_pdf().collect::<Vec<_>>(), ["icml-2026-4", "icml-2026-5"], "not the unreadable one");
     }
 
     #[test]
@@ -976,6 +995,37 @@ mod tests {
         let panicked = indexes.get("r", Wait::Forever, |_| panic!("boom"));
         assert_eq!(panicked.unwrap_err(), "the index could not be built");
         assert!(matches!(indexes.get("r", Wait::Forever, |_| Ok(index(&library()))).unwrap(), Got::Ready(_)));
+    }
+
+    #[test]
+    fn the_least_recently_used_index_is_dropped_first_and_the_one_just_built_is_kept_even_alone_over_the_budget() {
+        let papers = Arc::new(library());
+        let one = index(&papers).bytes();
+        let built = |indexes: &Indexes, scope: &str| {
+            let papers = Arc::clone(&papers);
+            assert!(matches!(indexes.get(scope, Wait::Forever, move |_| Ok(index(&papers))).unwrap(), Got::Ready(_)));
+        };
+        let not_again = |indexes: &Indexes, scope: &str| {
+            let got = indexes.get(scope, Wait::Forever, |_| Err("built again".to_owned()));
+            assert!(matches!(got, Ok(Got::Ready(_))), "{scope}: {got:?}");
+        };
+        // room for two
+        let indexes = Indexes::with_budget(one * 2 + one / 2);
+        built(&indexes, "a");
+        built(&indexes, "b");
+        not_again(&indexes, "a"); // a is now the more recently used
+        built(&indexes, "c");
+        assert_eq!(indexes.kept(), ["a", "c"], "b, used least recently, was dropped");
+        // room for none: the one just built stays, for whoever asks next
+        let small = Indexes::with_budget(1);
+        built(&small, "a");
+        built(&small, "b");
+        assert_eq!(small.kept(), ["b"]);
+        not_again(&small, "b");
+        // forgotten, it is built again
+        small.forget("b");
+        assert!(small.kept().is_empty());
+        built(&small, "b");
     }
 
     #[test]

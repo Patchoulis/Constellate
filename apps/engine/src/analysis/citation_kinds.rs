@@ -17,7 +17,9 @@
 //! paper's title and abstract so the model knows what is cited. Each sentence's reading is kept under its own key
 //! (citing paper, cited paper, the sentence's address, the model, the prompt's version: [`sentence_key`]), so a
 //! sentence is never paid for twice, whatever batch it was asked in. A batch's whole answer is kept too (under a
-//! key made of its sentences' keys), so that a job stopped half way loses nothing of what was answered.
+//! key made of its sentences' keys and its question), so that a job stopped half way loses nothing of what was
+//! answered. A reading is kept with the sentence it is of, and counts only for that sentence: a PDF replaced since
+//! may have another sentence at the same place ([`kept_reading`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -107,13 +109,19 @@ pub struct Classified {
     pub kind: CitationKind,
     /// The words of the sentence or its neighbours that show it; empty for a mention.
     pub quote: String,
+    /// The citing sentence the model was asked about. Its key is its place in the paper ([`sentence_key`]), and a
+    /// PDF replaced since can have another sentence at that very place: the reading counts only for the sentence
+    /// asked about ([`kept_reading`]). None in readings kept before it was kept with them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sentence: Option<String>,
 }
 
 /// What a reading of a citation is worth, once its quote was looked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verdict {
-    /// A kind other than mention, with the place of the words that show it.
-    Justified { kind: CitationKind, at: Address },
+    /// A kind other than mention, with the place of the words that show it and those words as the sentence holds
+    /// them (what the paper's page must say at that place for it to be shown as justified: [`Judgement::of`]).
+    Justified { kind: CitationKind, at: Address, words: String },
     /// The model read it as a mention.
     Mention,
     /// The model said `claimed`, but its words were not in the sentence or its neighbours: a mention, not justified.
@@ -136,11 +144,14 @@ pub fn judge(context: &Context, classified: Option<&Classified>) -> Verdict {
         .window()
         .find_map(|(address, sentence)| {
             // word for word only: the evidence made of it says it was found exactly
-            let (span, _, matched) = locate_in(sentence, &classified.quote)?;
+            let (span, words, matched) = locate_in(sentence, &classified.quote)?;
             (matched == Match::Exact).then_some(())?;
-            Some(Address { start: address.start + span.start, end: address.start + span.end, ..address.clone() })
+            Some((
+                Address { start: address.start + span.start, end: address.start + span.end, ..address.clone() },
+                words,
+            ))
         })
-        .map_or(Verdict::NotJustified { claimed }, |at| Verdict::Justified { kind: claimed, at })
+        .map_or(Verdict::NotJustified { claimed }, |(at, words)| Verdict::Justified { kind: claimed, at, words })
 }
 
 /// A verdict as the interface shows it, beside the sentence: `CitationJudgement` in the contracts. The words that
@@ -156,13 +167,15 @@ pub enum Judgement {
 
 impl Judgement {
     /// `verdict` with its words as evidence of the citing paper (`paper`, read as `passages`). Words that can no
-    /// longer be had from the paper's pages make it not justified.
+    /// longer be had from the paper's pages, or that the page says otherwise at their place, make it not justified.
     pub fn of(verdict: &Verdict, paper: &str, passages: &Passages) -> Self {
         match verdict {
-            Verdict::Justified { kind, at } => match Evidence::at(paper, passages, at) {
-                Some(because) => Judgement::Justified { kind: *kind, because },
-                None => Judgement::NotJustified { claimed: *kind },
-            },
+            Verdict::Justified { kind, at, words } => {
+                match Evidence::at(paper, passages, at).filter(|because| because.quote() == words) {
+                    Some(because) => Judgement::Justified { kind: *kind, because },
+                    None => Judgement::NotJustified { claimed: *kind },
+                }
+            }
             Verdict::Mention => Judgement::Mention,
             Verdict::NotJustified { claimed } => Judgement::NotJustified { claimed: *claimed },
             Verdict::NotClassified => Judgement::NotClassified,
@@ -199,6 +212,18 @@ impl Tally {
 
     pub fn of(&self, kind: CitationKind) -> usize {
         self.kinds.get(&kind).copied().unwrap_or(0)
+    }
+
+    /// A judgement as it was shown, counted: the same counts as its verdict's, but a kind whose words were not
+    /// had from the paper's pages counts as not justified, as it was shown.
+    pub fn add_shown(&mut self, judgement: &Judgement) {
+        self.sentences += 1;
+        match judgement {
+            Judgement::Justified { kind, .. } => *self.kinds.entry(*kind).or_default() += 1,
+            Judgement::Mention => self.mentions += 1,
+            Judgement::NotJustified { .. } => self.not_justified += 1,
+            Judgement::NotClassified => self.not_classified += 1,
+        }
     }
 }
 
@@ -258,8 +283,11 @@ pub fn read_said(said: &Said, asked: usize) -> Vec<Option<Classified>> {
         let Some(at) = citation.id.trim().parse::<usize>().ok().filter(|id| (1..=asked).contains(id)) else {
             continue;
         };
-        let reading = CitationKind::named(&citation.kind)
-            .map(|kind| Classified { kind, quote: citation.quote.trim().to_owned() });
+        let reading = CitationKind::named(&citation.kind).map(|kind| Classified {
+            kind,
+            quote: citation.quote.trim().to_owned(),
+            sentence: None,
+        });
         // the same id answered twice is not an answer
         seen.entry(at).and_modify(|known| *known = None).or_insert(reading);
     }
@@ -362,7 +390,7 @@ impl Plan {
         chosen: &Chosen,
         cases: Vec<Case>,
         records: &HashMap<String, CitedRecord>,
-        is_kept: impl Fn(&AnswerKey) -> Result<bool, LibraryError>,
+        is_kept: impl Fn(&AnswerKey, &Case) -> Result<bool, LibraryError>,
     ) -> Result<Self, LibraryError> {
         let cases: Vec<Case> = cases.into_iter().filter(|case| records.contains_key(&case.cited)).collect();
         let keys: Vec<AnswerKey> =
@@ -374,7 +402,7 @@ impl Plan {
             if !seen.insert(key) {
                 continue; // the same sentence twice: asked once
             }
-            if is_kept(key)? {
+            if is_kept(key, case)? {
                 kept += 1;
                 continue;
             }
@@ -389,13 +417,12 @@ impl Plan {
             for chunk in indices.chunks(PER_CALL) {
                 let contexts: Vec<&Context> = chunk.iter().map(|&index| &cases[index].context).collect();
                 let names: Vec<&str> = chunk.iter().map(|&index| keys[index].as_str()).collect();
-                let key = chosen.key(Feature::CitationKinds, PROMPT, &[&cited], &names.join("\n"));
-                calls.push(Call {
-                    question: question(&record.title, &record.abstract_text, &contexts),
-                    cited: cited.clone(),
-                    cases: chunk.to_vec(),
-                    key,
-                });
+                let question = question(&record.title, &record.abstract_text, &contexts);
+                // the question with them: an answer kept for other sentences at the same places (a PDF replaced
+                // since) is not this call's
+                let key =
+                    chosen.key(Feature::CitationKinds, PROMPT, &[&cited], &format!("{}\n{question}", names.join("\n")));
+                calls.push(Call { question, cited: cited.clone(), cases: chunk.to_vec(), key });
             }
         }
         Ok(Plan { chosen: chosen.clone(), cases, keys, calls, kept, schema: schema() })
@@ -448,6 +475,9 @@ pub struct Classifying {
     pub failed: usize,
     /// Calls not started (budget, stop, the API unavailable).
     pub not_started: usize,
+    /// Citations of the calls that failed or were not started: not asked, or asked with no usable answer. They
+    /// stay not classified, and a later run asks them.
+    pub not_asked: usize,
 }
 
 /// Ask every call of `plan`, within `budget`, and keep each citation's reading under its own key.
@@ -467,10 +497,12 @@ pub fn classify(
             Outcome::Kept(kept) => (kept.answer, kept.model),
             Outcome::Failed(_) => {
                 done.failed += 1;
+                done.not_asked += call.cases.len();
                 continue;
             }
             Outcome::NotStarted(_) => {
                 done.not_started += 1;
+                done.not_asked += call.cases.len();
                 continue;
             }
         };
@@ -479,6 +511,7 @@ pub fn classify(
                 done.unanswered += 1;
                 continue;
             };
+            let reading = Classified { sentence: Some(plan.cases[index].context.sentence.clone()), ..reading };
             let slot = Slot {
                 feature: Feature::CitationKinds,
                 key: plan.keys[index].clone(),
@@ -491,6 +524,15 @@ pub fn classify(
     Ok(done)
 }
 
+/// The reading kept under `key` for `case`, when it is a reading of that case's sentence (one kept for another
+/// sentence at the same place, of a PDF replaced since, is none: it is asked again).
+pub fn kept_reading(library: &Library, key: &AnswerKey, case: &Case) -> Result<Option<Classified>, LibraryError> {
+    Ok(library
+        .kept::<Classified>(Feature::CitationKinds, key)?
+        .map(|kept| kept.answer)
+        .filter(|reading| reading.sentence.as_ref().is_none_or(|sentence| *sentence == case.context.sentence)))
+}
+
 /// The reading kept for each case (by `chosen`), in the cases' order.
 pub fn kept_readings(
     library: &Library,
@@ -500,8 +542,7 @@ pub fn kept_readings(
     cases
         .iter()
         .map(|case| {
-            let key = sentence_key(chosen, &case.citing, &case.cited, &case.context.address);
-            Ok(library.kept::<Classified>(Feature::CitationKinds, &key)?.map(|kept| kept.answer))
+            kept_reading(library, &sentence_key(chosen, &case.citing, &case.cited, &case.context.address), case)
         })
         .collect()
 }
@@ -523,17 +564,16 @@ pub fn most_cited(cases: &[Case], most: usize) -> Vec<String> {
     ranked.into_iter().take(most).map(|(cited, _, _)| cited.to_owned()).collect()
 }
 
-/// Each cited paper's tally over `cases`, judged with their kept `readings`: on every core, in the same order
-/// whatever their number (by cited paper's id).
-pub fn tallies(cases: &[Case], readings: &[Option<Classified>]) -> BTreeMap<String, Tally> {
-    let verdicts: Vec<Verdict> = cases
-        .par_iter()
-        .zip(readings.par_iter())
-        .map(|(case, reading)| judge(&case.context, reading.as_ref()))
-        .collect();
+/// Each case judged with its kept reading ([`judge`]): on every core, in the cases' order whatever their number.
+pub fn verdicts(cases: &[Case], readings: &[Option<Classified>]) -> Vec<Verdict> {
+    cases.par_iter().zip(readings.par_iter()).map(|(case, reading)| judge(&case.context, reading.as_ref())).collect()
+}
+
+/// Each cited paper's tally over `cases`, with their `verdicts` (by cited paper's id).
+pub fn tallies(cases: &[Case], verdicts: &[Verdict]) -> BTreeMap<String, Tally> {
     let mut tallies: BTreeMap<String, Tally> = BTreeMap::new();
     let mut papers: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    for (case, verdict) in cases.iter().zip(&verdicts) {
+    for (case, verdict) in cases.iter().zip(verdicts) {
         tallies.entry(case.cited.clone()).or_default().add(verdict);
         papers.entry(&case.cited).or_default().insert(&case.citing);
     }
@@ -615,7 +655,7 @@ mod tests {
     }
 
     fn classified(kind: CitationKind, quote: &str) -> Classified {
-        Classified { kind, quote: quote.to_owned() }
+        Classified { kind, quote: quote.to_owned(), sentence: None }
     }
 
     #[test]
@@ -623,8 +663,9 @@ mod tests {
         let context =
             context("We compare against TIES merging [4] as our main baseline.", "We evaluate on five tasks.", 100);
         let verdict = judge(&context, Some(&classified(CitationKind::Baseline, "compare against TIES merging")));
-        let Verdict::Justified { kind, at } = verdict else { panic!("{verdict:?}") };
+        let Verdict::Justified { kind, at, words } = verdict else { panic!("{verdict:?}") };
         assert_eq!((kind, at.start, at.end), (CitationKind::Baseline, 103, 131));
+        assert_eq!(words, "compare against TIES merging");
         // in the sentence before
         assert!(matches!(
             judge(&context, Some(&classified(CitationKind::UsesData, "We evaluate on five tasks"))),
@@ -663,7 +704,7 @@ mod tests {
             Some(classified(CitationKind::Mention, "")),
             None,
         ];
-        let tallies = tallies(&cases, &readings);
+        let tallies = tallies(&cases, &verdicts(&cases, &readings));
         let tally = &tallies["ties"];
         assert_eq!((tally.sentences, tally.papers), (4, 3));
         assert_eq!(
@@ -697,7 +738,11 @@ mod tests {
             })
             .collect();
         let on = |threads: usize| {
-            rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(|| tallies(&cases, &readings))
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| tallies(&cases, &verdicts(&cases, &readings)))
         };
         let one = on(1);
         assert_eq!(one, on(4));
@@ -777,8 +822,8 @@ baseline.\nAfter: It wins.\n"
         (folder, library)
     }
 
-    fn not_kept(library: &Library) -> impl Fn(&AnswerKey) -> Result<bool, LibraryError> + '_ {
-        |key| Ok(library.kept::<Classified>(Feature::CitationKinds, key)?.is_some())
+    fn not_kept(library: &Library) -> impl Fn(&AnswerKey, &Case) -> Result<bool, LibraryError> + '_ {
+        |key, case| Ok(kept_reading(library, key, case)?.is_some())
     }
 
     #[test]
@@ -843,7 +888,7 @@ baseline.\nAfter: It wins.\n"
         let transport = Fake::new(replies);
         let plan = Plan::new(&Chosen::claude(MODEL), cases(), &records(), not_kept(&library)).unwrap();
         let done = run(&library, &transport, &plan);
-        assert_eq!(done, Classifying { calls: 3, read: 25, unanswered: 1, failed: 1, not_started: 0 });
+        assert_eq!(done, Classifying { calls: 3, read: 25, unanswered: 1, failed: 1, not_started: 0, not_asked: 5 });
         let sent = transport.sent();
         assert_eq!(sent.len(), 3);
         assert_eq!(sent[0].body["model"], MODEL);
@@ -886,6 +931,59 @@ baseline.\nAfter: It wins.\n"
         let done = run(&library, &transport, &plan);
         assert_eq!((done.read, transport.sent().len()), (1, 0));
         assert!(kept_readings(&library, &Chosen::claude(MODEL), &plan.cases).unwrap()[0].is_some());
+    }
+
+    #[test]
+    fn a_reading_of_another_sentence_at_the_same_place_is_not_taken_for_this_ones() {
+        let (_folder, library) = library();
+        let before = cases()[30..31].to_vec();
+        let plan = Plan::new(&Chosen::claude(MODEL), before.clone(), &records(), not_kept(&library)).unwrap();
+        let transport =
+            Fake::new(vec![reply(json!([{"id": "1", "kind": "uses", "quote": "build on task arithmetic"}]))]);
+        assert_eq!(run(&library, &transport, &plan).read, 1);
+        let kept = kept_readings(&library, &Chosen::claude(MODEL), &before).unwrap();
+        assert_eq!(kept[0].as_ref().unwrap().sentence.as_deref(), Some(before[0].context.sentence.as_str()));
+
+        // the PDF replaced: another sentence, of the same length, at the very same place
+        let mut after = before.clone();
+        after[0].context.sentence = "We doubt the task arithmetic [4] of every model.".to_owned();
+        assert_eq!(after[0].context.sentence.chars().count(), before[0].context.sentence.chars().count());
+        assert_eq!(kept_readings(&library, &Chosen::claude(MODEL), &after).unwrap(), [None]);
+        let again = Plan::new(&Chosen::claude(MODEL), after, &records(), not_kept(&library)).unwrap();
+        assert_eq!((again.kept, again.to_ask()), (0, 1), "asked again");
+        assert_ne!(again.calls[0].key, plan.calls[0].key, "the batch kept for the old sentence is not this call's");
+        // a reading kept before readings were kept with their sentence still counts
+        let old = Classified { kind: CitationKind::Mention, quote: String::new(), sentence: None };
+        library
+            .keep(
+                &Slot {
+                    feature: Feature::CitationKinds,
+                    key: plan.keys[0].clone(),
+                    subject: Subject::Paper("arith".into()),
+                },
+                MODEL,
+                PROMPT,
+                &old,
+            )
+            .unwrap();
+        assert_eq!(kept_readings(&library, &Chosen::claude(MODEL), &before).unwrap(), [Some(old)]);
+    }
+
+    #[test]
+    fn a_kind_is_shown_as_justified_only_when_the_page_says_its_words_at_their_place() {
+        let pages = vec!["We compare against TIES merging [4] as our main baseline.".to_owned()];
+        let passages = crate::text::passages::read_passages(&pages);
+        let mut context =
+            context("We compare against TIES merging [4] as our main baseline.", "We evaluate on five tasks.", 100);
+        context.before = None;
+        context.address = Address { page: 1, end_page: 1, start: 0, end: 57, ..context.address };
+        let verdict = judge(&context, Some(&classified(CitationKind::Baseline, "compare against TIES merging")));
+        let Judgement::Justified { because, .. } = Judgement::of(&verdict, "seed", &passages) else { panic!() };
+        assert_eq!(because.quote(), "compare against TIES merging");
+        // the page says other words at that place than the sentence kept: not shown as justified
+        let Verdict::Justified { kind, at, .. } = verdict else { panic!() };
+        let other = Verdict::Justified { kind, at, words: "compare against DARE merging".to_owned() };
+        assert_eq!(Judgement::of(&other, "seed", &passages), Judgement::NotJustified { claimed: kind });
     }
 
     #[test]

@@ -89,12 +89,18 @@ fn stem(word: &str) -> String {
     }
 }
 
-/// The words of `text` that say what it is about, as compared, in order (repeats kept).
+fn common(word: &str) -> bool {
+    STOPWORDS.split_whitespace().any(|common| common == word)
+}
+
+/// The words of `text` that say what it is about, as compared, in order (repeats kept). A word is common as
+/// written ("this", "does") or once its plural's "s" is dropped ("shows").
 pub fn words_of(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|word| word.chars().count() >= 3 && !word.chars().all(|c| c.is_ascii_digit()))
+        .filter(|word| !common(&word.to_lowercase()))
         .map(stem)
-        .filter(|word| !STOPWORDS.split(' ').any(|common| common == word))
+        .filter(|word| !common(word))
         .collect()
 }
 
@@ -370,5 +376,13 @@ mod tests {
     #[test]
     fn words_are_compared_without_case_plurals_or_common_words() {
         assert_eq!(words_of("The Models use 2024 vectors, and Studies of α-βs!"), ["model", "vector", "study"]);
+        // a common word that ends in "s" is common before its "s" is dropped: "this" is not the word "thi"
+        assert_eq!(words_of("This does show merging; thus it shows these."), ["merging"]);
+    }
+
+    #[test]
+    fn two_passages_sharing_only_common_words_are_not_related() {
+        let papers = vec![("b".to_owned(), read("1. Method\n\nThis is what this does, as it does this.\n"))];
+        assert!(related("This rule does this for routing.", &candidates(&papers, &[])).is_empty());
     }
 }

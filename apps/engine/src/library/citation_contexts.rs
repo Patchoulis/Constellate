@@ -51,6 +51,21 @@ fn sha256(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// Is the paper's PDF on disk still the file its kept passages were read from, as far as its size and time of
+/// change tell (what [`super::passages`] stamps a reading with)? A PDF replaced since leaves the passages' row as
+/// it was until the paper's text is next asked for ([`Library::paper_texts`]); until then the contexts kept with
+/// those passages are of the old file, and do not hold. Told without reading the file, so that a community's
+/// figures cost one look at each file, not the decoding of every paper's passages.
+fn same_file(library: &Library, paper_id: &str, size: i64, modified: i64) -> bool {
+    let Ok(found) = fs::metadata(library.pdf_file(paper_id)) else { return false };
+    let changed = found
+        .modified()
+        .ok()
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |since| i64::try_from(since.as_nanos()).unwrap_or(i64::MAX));
+    found.is_file() && i64::try_from(found.len()).unwrap_or(i64::MAX) == size && changed == modified
+}
+
 /// Read one paper's contexts: its reference list from its PDF's text, its sentences from `passages`. The PDF's
 /// hash comes with them.
 fn read_one(
@@ -120,7 +135,7 @@ impl Library {
             let mut kept = HashMap::new();
             for ids in paper_ids.chunks(500) {
                 let sql = format!(
-                    "SELECT c.paper_id, c.pdf_hash, {column} FROM citation_contexts c
+                    "SELECT c.paper_id, c.pdf_hash, {column}, p.pdf_size, p.pdf_modified FROM citation_contexts c
                      JOIN paper_passages p ON p.paper_id = c.paper_id
                      WHERE c.paper_id IN ({}) AND c.reader = ?{} AND c.version = ?{} AND p.reader = c.reader
                          AND p.pdf_hash = c.pdf_hash",
@@ -134,10 +149,19 @@ impl Library {
                 values.push(rusqlite::types::Value::Integer(i64::from(READER)));
                 values.push(rusqlite::types::Value::Integer(i64::from(CONTEXTS)));
                 let rows = statement.query_map(rusqlite::params_from_iter(values), |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
                 })?;
                 for row in rows {
-                    let (id, hash, content) = row?;
+                    let (id, hash, content, size, modified) = row?;
+                    if !same_file(self, &id, size, modified) {
+                        continue;
+                    }
                     // contents that no longer read as contexts are read again
                     if let Ok(contexts) = serde_json::from_str(&content) {
                         kept.insert(id, (hash, contexts));
@@ -166,7 +190,7 @@ impl Library {
     pub fn citing_papers(&self, cited: &str) -> Result<Vec<(String, usize)>, LibraryError> {
         self.read(|connection| {
             let mut statement = connection.prepare_cached(
-                "SELECT l.citing, l.sentences FROM citation_links l
+                "SELECT l.citing, l.sentences, p.pdf_size, p.pdf_modified FROM citation_links l
                  JOIN citation_contexts c ON c.paper_id = l.citing
                  JOIN paper_passages p ON p.paper_id = c.paper_id
                  WHERE l.cited = ?1 AND c.reader = ?2 AND c.version = ?3 AND p.reader = c.reader
@@ -174,9 +198,21 @@ impl Library {
                  ORDER BY l.sentences DESC, l.citing",
             )?;
             let rows = statement.query_map(params![cited, READER, CONTEXTS], |row| {
-                Ok((row.get::<_, String>(0)?, usize::try_from(row.get::<_, i64>(1)?).unwrap_or(0)))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    usize::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
             })?;
-            Ok(rows.collect::<rusqlite::Result<_>>()?)
+            let mut citing = Vec::new();
+            for row in rows {
+                let (id, sentences, size, modified) = row?;
+                if same_file(self, &id, size, modified) {
+                    citing.push((id, sentences));
+                }
+            }
+            Ok(citing)
         })
     }
 
@@ -414,6 +450,21 @@ mod tests {
         assert!(contexts.entries.is_empty());
         assert_ne!(stamp(&library), first, "another PDF is read again");
         assert!(library.citing_papers("arith").unwrap().is_empty(), "who it cites is replaced with it");
+    }
+
+    #[test]
+    fn contexts_of_a_pdf_replaced_since_do_not_hold_even_before_its_text_is_read_again() {
+        let (_folder, library) = library();
+        read(&library, &["seed"]);
+        assert_eq!(library.citing_papers("arith").unwrap().len(), 1);
+        // replaced, and nothing has read the new file yet: the passages' row is still the old file's
+        library.keep_pdf("seed", &pdf_with(&["1 Introduction", "", "Nothing is cited here at all, now."])).unwrap();
+        assert!(library.kept_contexts(&["seed"], Entries::All).unwrap().is_empty());
+        assert!(library.contexts_kept_among(&["seed"]).unwrap().is_empty());
+        assert!(library.citing_papers("arith").unwrap().is_empty(), "who it cited is of the old file");
+        // the PDF gone altogether: nothing holds either
+        std::fs::remove_file(library.pdf_file("seed")).unwrap();
+        assert!(library.kept_contexts(&["seed"], Entries::InLibrary).unwrap().is_empty());
     }
 
     #[test]

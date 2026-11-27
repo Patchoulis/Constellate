@@ -197,11 +197,24 @@ struct Ready {
     /// Whether it can be asked at all (its provider's key is set); never the key.
     api_key_set: bool,
     definitions: Vec<Defined>,
-    /// Kept from before: shown at no cost.
-    explained: Option<Explained>,
-    /// What asking would cost (`AskingCost` in the contracts); null when an explanation is kept.
-    estimate: Option<Estimate>,
+    #[serde(flatten)]
+    answer: Answer,
 }
+
+/// The passage's explanation kept, or what asking for one would cost: one or the other, never both or neither.
+/// Told as the two fields `explained` and `estimate`, the other null, as the interface reads them.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum Answer {
+    /// Kept from before: shown at no cost.
+    Kept { explained: Explained, estimate: Null },
+    /// Not asked yet: what asking would cost (`AskingCost` in the contracts).
+    NotAsked { explained: Null, estimate: Estimate },
+}
+
+/// A field told as null.
+#[derive(Serialize)]
+struct Null;
 
 fn prepared(opened: &Opened) -> Result<Prepared, ApiError> {
     let passage = &opened.passages.passages[opened.index];
@@ -213,17 +226,21 @@ fn prepared(opened: &Opened) -> Result<Prepared, ApiError> {
             Some(Defined { term: found.term.clone(), evidence })
         })
         .collect();
-    let explained = opened.kept()?.map(|kept| Explained {
-        checked: explanation::check(&kept.answer, &opened.paper, &opened.passages),
-        model: kept.model,
-        kept_at: kept.kept_at,
-    });
-    let estimate = if explained.is_some() {
-        None
-    } else {
-        let schema = schema();
-        let item = item(opened.slot(), &opened.chosen, &opened.prompt, &schema);
-        Some(estimate(&opened.library, &item, &opened.chosen)?.cost)
+    let answer = match opened.kept()? {
+        // its quotes checked again now: a kept answer is the model's words, never evidence
+        Some(kept) => Answer::Kept {
+            explained: Explained {
+                checked: explanation::check(&kept.answer, &opened.paper, &opened.passages),
+                model: kept.model,
+                kept_at: kept.kept_at,
+            },
+            estimate: Null,
+        },
+        None => {
+            let schema = schema();
+            let item = item(opened.slot(), &opened.chosen, &opened.prompt, &schema);
+            Answer::NotAsked { explained: Null, estimate: estimate(&opened.library, &item, &opened.chosen)?.cost }
+        }
     };
     Ok(Prepared::Ready(Box::new(Ready {
         paper: opened.paper.clone(),
@@ -234,8 +251,7 @@ fn prepared(opened: &Opened) -> Result<Prepared, ApiError> {
         model: opened.chosen.model().to_owned(),
         api_key_set: opened.chosen.can_ask(),
         definitions: defined,
-        explained,
-        estimate,
+        answer,
     })))
 }
 
@@ -888,6 +904,49 @@ mod tests {
         other["section"] = json!("");
         let (status, _) = ask(&router, "POST", &related("r1", "iclr-2026-4"), body(&other)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "no text of its own to search with");
+    }
+
+    #[tokio::test]
+    async fn every_answer_of_the_explanation_routes_fits_its_type_in_the_contracts() {
+        use crate::api::contract::assert_fits;
+
+        let data = data();
+        let router = serve(&data, |_| {});
+        let address = address_of(&router, "2601.00001", "kept passages").await;
+        let prepare = "/api/papers/2601.00001/explanation/prepare";
+        let (_, not_asked) = ask(&router, "POST", prepare, body(&address)).await;
+        assert!(not_asked["explained"].is_null() && not_asked["estimate"].is_object(), "{not_asked}");
+        assert_fits("ExplanationPrepared", &not_asked, &[]);
+        let (_, no_text) = ask(&router, "POST", "/api/papers/iclr-2026-4/explanation/prepare", body(&address)).await;
+        assert_fits("ExplanationPrepared", &no_text, &[]);
+        {
+            let library = Library::open(&data.path().join("library")).unwrap();
+            let parsed: Address = serde_json::from_value(address.clone()).unwrap();
+            let said = Said {
+                statements: vec![
+                    json!({"statement": {"part": "explanation", "symbol": "", "text": "Passages are served.",
+                        "source": "paper"}, "quotes": [{"paper": "2601.00001", "quote": "kept passages are served to the reader"}]}),
+                    json!({"statement": {"part": "symbol", "symbol": "x", "text": "A PDF has pages.",
+                        "source": "background"}, "quotes": []}),
+                ],
+            };
+            let chosen = crate::model::chosen::Chosen::claude("claude-opus-5-5");
+            let slot = slot("2601.00001", &chosen, &parsed, Question::Passage);
+            library.keep(&slot, "claude-opus-5-5", crate::explanation::PROMPT, &said).unwrap();
+        }
+        let (_, kept) = ask(&router, "POST", prepare, body(&address)).await;
+        assert!(kept["explained"].is_object() && kept["estimate"].is_null(), "{kept}");
+        assert_fits("ExplanationPrepared", &kept, &[]);
+        let asked = shown(&address, "claude-opus-5-5", json!(1.0));
+        let (_, started) = ask(&router, "POST", "/api/papers/2601.00001/explanation", asked).await;
+        assert_fits("ExplanationStarted", &started, &[]);
+        let (_, marks) = ask(&router, "GET", "/api/papers/2601.00001/explanations", None).await;
+        assert_fits("ExplainedPassages", &marks, &[]);
+        let (_, redone) = ask(&router, "DELETE", "/api/papers/2601.00001/explanation", body(&address)).await;
+        assert_fits("ExplanationRedone", &redone, &[]);
+        let (_, related) = ask(&router, "POST", "/api/runs/r1/papers/2601.00001/related", body(&address)).await;
+        assert!(!related["found"].as_array().unwrap().is_empty());
+        assert_fits("RelatedPassages", &related, &[]);
     }
 
     #[test]
