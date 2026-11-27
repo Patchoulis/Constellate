@@ -13,6 +13,8 @@
 //! | [`random`]   | the seeded random generator they share                                        |
 //! | [`reviews`]  | reviewers' ratings and words taken together: per paper, community and run     |
 
+pub mod citation_contexts;
+pub mod citation_kinds;
 pub mod citations;
 pub mod cluster;
 pub mod eigen;

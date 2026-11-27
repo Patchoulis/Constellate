@@ -202,6 +202,31 @@ pub const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX kept_answers_by_subject ON kept_answers (feature, subject);
     ",
+    // 6 (citation contexts): each paper's citing sentences, and who cites whom among the library's papers
+    r"
+    -- What library/citation_contexts.rs read of a paper: every entry of its reference list that its text cites,
+    -- with the citing sentences and their neighbours (`content`), and the same with only the entries that are
+    -- papers of the library (`linked`). Valid while the paper's passages are of reader `reader` and of the PDF
+    -- whose SHA-256 is `pdf_hash`; `version` is that of what is read (analysis/citation_contexts.rs CONTEXTS).
+    CREATE TABLE citation_contexts (
+        paper_id TEXT PRIMARY KEY REFERENCES papers (id) ON DELETE CASCADE,
+        reader   BIGINT NOT NULL,
+        version  BIGINT NOT NULL,
+        pdf_hash TEXT NOT NULL,
+        content  TEXT NOT NULL,
+        linked   TEXT NOT NULL,
+        read_at  TEXT NOT NULL
+    );
+
+    -- A paper whose kept contexts cite another paper of the library, in how many sentences: replaced with them.
+    CREATE TABLE citation_links (
+        citing    TEXT NOT NULL REFERENCES citation_contexts (paper_id) ON DELETE CASCADE,
+        cited     TEXT NOT NULL REFERENCES papers (id) ON DELETE CASCADE,
+        sentences BIGINT NOT NULL CHECK (sentences > 0),
+        PRIMARY KEY (citing, cited)
+    );
+    CREATE INDEX citation_links_by_cited ON citation_links (cited);
+    ",
 ];
 
 /// Bring `connection` to the last of `migrations`. Refuses a database newer than the list.
