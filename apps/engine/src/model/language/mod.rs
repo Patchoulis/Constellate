@@ -1286,7 +1286,19 @@ impl<'a> Client<'a> {
             return Err(NoAnswer::Unexpected.into());
         };
         // paid for whether or not the answer is usable: recorded before it is looked at
-        let (answered, tokens, cost) = self.record(ask.purpose, ask.model, &message);
+        let (answered, tokens, cost) = match message.usage {
+            Some(_) => self.record(ask.purpose, ask.model, &message),
+            // an answer that says nothing of what it took (a gateway that drops the usage) is counted at its worst
+            // case, as one in no shape known is, not as nothing: its thinking cannot be counted from its text
+            None => {
+                let worst = self.worst(ask);
+                let model = message.model.clone().unwrap_or_else(|| ask.model.to_owned());
+                let call = Call { model: model.clone(), purpose: ask.purpose.to_owned(), tokens: worst };
+                let cost = call.cost();
+                self.recorder.record(call);
+                (model, worst, cost)
+            }
+        };
         budget.settle(held, &tokens, cost);
         match message.stop_reason.as_deref() {
             Some("refusal") => {
@@ -1805,6 +1817,24 @@ mod tests {
         );
         assert_eq!(client.ask(&ask(&schema, None), &plenty()), Err(AskError::NoAnswer(NoAnswer::Cut)));
         assert_eq!(calls.into_inner().unwrap().len(), 2, "both were paid for");
+    }
+
+    #[test]
+    fn an_answer_without_its_usage_is_counted_at_its_worst_case_not_as_free() {
+        let mut answer = message("claude-opus-5-5", r#"{"answer": "x"}"#, "end_turn", Value::Null);
+        answer.as_object_mut().unwrap().remove("usage");
+        let fake = Fake::new(vec![Ok(ok(&answer))]);
+        let calls = Mutex::new(Vec::new());
+        let client = Client::new(&fake, endpoint(), &calls);
+        let schema = schema();
+        let budget = Budget::new(Limit::Tokens(100_000));
+        let answered = client.ask(&ask(&schema, Some("The paper's text.")), &budget).unwrap();
+        assert_eq!(answered.answer, r#"{"answer": "x"}"#);
+        assert_eq!(answered.tokens.output, 2_000, "max_tokens: the thinking it took is not known");
+        assert_eq!(budget.spent().0, answered.tokens.all());
+        let calls = calls.into_inner().unwrap();
+        assert_eq!(calls[0].tokens, answered.tokens);
+        assert!(calls[0].cost().is_some_and(|cost| cost > Usd::ZERO));
     }
 
     #[test]
