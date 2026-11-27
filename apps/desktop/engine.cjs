@@ -113,9 +113,14 @@ function engineEnvironment(source, { data, origin, platform = process.platform }
 	};
 }
 
-/** The interface's server's whole environment: no key of any provider, the engine's address and token. */
-function interfaceEnvironment(source, { port, engine, token, platform = process.platform }) {
+/**
+ * The interface's server's whole environment: no key of any provider; the engine's address and token; and the key
+ * of the shell's window (`windowKey`), which the window holds as a cookie and without which the server forwards
+ * nothing: any other program on this computer reaching the server would otherwise be handed the token's powers.
+ */
+function interfaceEnvironment(source, { port, engine, token, windowKey, platform = process.platform }) {
 	return {
+		...(windowKey ? { CONSTELLATE_WINDOW_KEY: windowKey } : {}),
 		...systemEnvironment(source, platform),
 		ELECTRON_RUN_AS_NODE: "1",
 		NODE_ENV: "production",
@@ -161,6 +166,7 @@ class EngineLog {
 		this.secret = null;
 		this.size = 0;
 		this.tail = "";
+		this.pending = {};
 		try {
 			fs.mkdirSync(folder, { recursive: true });
 			this.size = fs.statSync(this.file).size;
@@ -174,8 +180,33 @@ class EngineLog {
 		this.secret = secret;
 	}
 
-	write(text) {
-		const shown = this.secret ? text.split(this.secret).join("[token]") : text;
+	/** Blanked: the token cannot be split between two pieces of output and so missed, since whole lines are written. */
+	blank(text) {
+		return this.secret ? text.split(this.secret).join("[token]") : text;
+	}
+
+	/** What the engine said last, for a failure message: what was written and the line it has not ended yet. */
+	get recent() {
+		return (this.tail + this.blank(Object.values(this.pending).join(""))).slice(-4000);
+	}
+
+	/** Output of `stream` as it comes: written line by line, the end of an unfinished line kept until it is finished
+	 *  (or `flush`), so that two streams' lines are never mixed either. */
+	write(text, stream = "stderr") {
+		const all = (this.pending[stream] ?? "") + text;
+		const end = all.lastIndexOf("\n");
+		this.pending[stream] = all.slice(end + 1);
+		if (end >= 0) this.append(all.slice(0, end + 1));
+	}
+
+	/** Write the unfinished lines too (the engine ended). */
+	flush() {
+		for (const text of Object.values(this.pending)) if (text) this.append(`${text}\n`);
+		this.pending = {};
+	}
+
+	append(text) {
+		const shown = this.blank(text);
 		this.tail = (this.tail + shown).slice(-4000); // what a failure message quotes
 		const bytes = Buffer.byteLength(shown);
 		try {
@@ -222,14 +253,15 @@ function startEngine({ binary, data, origin, env = process.env, log, deadline = 
 			} else resolve(value);
 		};
 		const timer = setTimeout(
-			() => settle(new Error(`The engine said nothing for ${deadline / 1000} seconds after it was started.\n\n${log.tail}`)),
+			() => settle(new Error(`The engine said nothing for ${deadline / 1000} seconds after it was started.\n\n${log.recent}`)),
 			deadline,
 		);
 		child.stdout.setEncoding("utf8");
 		child.stderr.setEncoding("utf8");
-		child.stderr.on("data", (text) => log.write(text));
+		child.stderr.on("data", (text) => log.write(text, "stderr"));
+		child.once("close", () => log.flush());
 		child.stdout.on("data", (text) => {
-			if (told) return log.write(text);
+			if (told) return log.write(text, "stdout");
 			first += text;
 			const end = first.indexOf("\n");
 			if (end < 0) {
@@ -245,10 +277,10 @@ function startEngine({ binary, data, origin, env = process.env, log, deadline = 
 			} catch (error) {
 				settle(error);
 			}
-			if (rest) log.write(rest);
+			if (rest) log.write(rest, "stdout");
 		});
 		child.once("error", (error) => settle(new Error(`The engine could not be started (${binary}): ${error.message}`)));
-		child.once("exit", (code) => settle(new Error(`The engine stopped before it was ready (code ${code}).\n\n${log.tail}`)));
+		child.once("exit", (code) => settle(new Error(`The engine stopped before it was ready (code ${code}).\n\n${log.recent}`)));
 	});
 }
 
@@ -264,8 +296,12 @@ function answers(url) {
 	});
 }
 
+/** The cookie the window carries its key in (apps/web/lib/page-policy.ts WINDOW_COOKIE, which a test holds to it). */
+const WINDOW_COOKIE = "constellate-window";
+
 module.exports = {
 	EngineLog,
+	WINDOW_COOKIE,
 	PROVIDER_VARIABLES,
 	STARTUP_DEADLINE_MS,
 	answers,

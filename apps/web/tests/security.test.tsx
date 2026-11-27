@@ -14,6 +14,8 @@ import {
 	fromAnotherSite,
 	hostName,
 	isBackendPath,
+	WINDOW_COOKIE,
+	windowAdmitted,
 } from "@/lib/page-policy";
 
 const shown = (text: string) => renderToStaticMarkup(<MathText>{text}</MathText>);
@@ -58,16 +60,28 @@ test("the engine is reached at the address the shell gives, the path and query k
 	assert.throws(() => engineAddress("file:///etc/passwd"));
 });
 
+test("only the desktop app's window, by the key in its cookie, reaches the engine through the interface's server", () => {
+	const key = "k".repeat(64);
+	assert.ok(windowAdmitted(`${WINDOW_COOKIE}=${key}`, key));
+	assert.ok(windowAdmitted(`theme=dark; ${WINDOW_COOKIE}=${key}`, key));
+	for (const cookies of [null, "", `${WINDOW_COOKIE}=${"j".repeat(64)}`, `${WINDOW_COOKIE}=${key}x`, `other=${key}`]) {
+		assert.equal(windowAdmitted(cookies, key), false, String(cookies));
+	}
+	assert.ok(windowAdmitted(null, undefined), "without a key (npm run dev, a server) every request is admitted");
+	// the key goes no further than the interface's server
+	const sent = engineRequestHeaders(new Headers({ cookie: `${WINDOW_COOKIE}=${key}; theme=dark` }), "t");
+	assert.equal(sent.get("cookie"), "theme=dark");
+	assert.equal(engineRequestHeaders(new Headers({ cookie: `${WINDOW_COOKIE}=${key}` }), "t").get("cookie"), null);
+});
+
 test("another site's page cannot reach the engine through the interface's server", () => {
-	const ask = (headers: Record<string, string>) => fromAnotherSite(new Headers(headers));
+	const ask = (headers: Record<string, string>, path = "/api/status") => fromAnotherSite(new Headers(headers), path);
 	assert.equal(ask({}), false, "no page made it (a program)");
 	assert.equal(ask({ "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors" }), false, "the interface's own page");
 	assert.equal(ask({ "sec-fetch-site": "none", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" }), false, "a typed address");
-	assert.equal(
-		ask({ "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" }),
-		false,
-		"a sign-in coming back",
-	);
+	const followed = { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
+	assert.equal(ask(followed, "/auth/callback"), false, "a sign-in coming back");
+	assert.equal(ask(followed, "/api/papers/x/pdf"), true, "a link on another site to the API");
 	assert.equal(ask({ "sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "image" }), true, "an image");
 	assert.equal(
 		ask({ "sec-fetch-site": "same-site", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "script" }),

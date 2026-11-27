@@ -9,6 +9,7 @@ import {
 	fromAnotherSite,
 	isBackendPath,
 	newNonce,
+	windowAdmitted,
 } from "@/lib/page-policy";
 
 /**
@@ -19,14 +20,18 @@ import {
  *
  * The forwarding is Next's own (a rewrite to another server): the request's body and the answer stream through
  * as they come, byte ranges (a PDF in the reader) and a page that stops waiting included. Headers set for the
- * engine here are the request's only: Next sends none of them back to the browser.
+ * engine here are the request's only: Next sends none of them back to the browser (it does name the engine's
+ * address, not its token, in `x-middleware-rewrite`).
  */
 export function proxy(request: NextRequest) {
 	if (!addressedToUs(request.headers.get("host"), allowedHosts(process.env.CONSTELLATE_WEB_HOSTS))) {
 		return NextResponse.json({ error: "this interface answers only requests addressed to it" }, { status: 403 });
 	}
 	if (isBackendPath(request.nextUrl.pathname)) {
-		if (fromAnotherSite(request.headers)) return NextResponse.json({ error: "this interface answers only its own pages" }, { status: 403 });
+		const path = request.nextUrl.pathname;
+		if (fromAnotherSite(request.headers, path) || !windowAdmitted(request.headers.get("cookie"), process.env.CONSTELLATE_WINDOW_KEY)) {
+			return NextResponse.json({ error: "this interface answers only its own pages" }, { status: 403 });
+		}
 		const engine = engineAddress(process.env.CONSTELLATE_ENGINE);
 		const headers = engineRequestHeaders(request.headers, process.env.CONSTELLATE_ENGINE_TOKEN);
 		return NextResponse.rewrite(engineUrl(engine, request.nextUrl), { request: { headers } });

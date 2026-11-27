@@ -44,15 +44,42 @@ export function isBackendPath(path: string): boolean {
 /**
  * Is this a request another site's page made, which the browser says in `Sec-Fetch-Site`? Any web page open in a
  * browser on this computer can reach this server, and a request it sends without `Origin` (an image, a script,
- * a frame) would reach the engine with the token this server adds. Only the interface's own pages, a request no
- * page made (a typed address, a program) and the browser being sent to a page (a sign-in coming back from its
- * provider) are forwarded.
+ * a frame, a link followed) would reach the engine with the token this server adds. Only the interface's own
+ * pages, a request no page made (a typed address, a program: see `windowAdmitted` for those) and, on /auth/, the
+ * browser being sent to a page (a sign-in coming back from its provider) are forwarded.
  */
-export function fromAnotherSite(headers: Headers): boolean {
+export function fromAnotherSite(headers: Headers, path: string): boolean {
 	const site = headers.get("sec-fetch-site");
 	if (site === null || site === "same-origin" || site === "none") return false;
 	const navigating = headers.get("sec-fetch-mode") === "navigate" && headers.get("sec-fetch-dest") === "document";
-	return !navigating;
+	return !(navigating && (path === "/auth" || path.startsWith("/auth/")));
+}
+
+/** The cookie the desktop shell gives its own window, so that the interface's server knows the window's requests. */
+export const WINDOW_COOKIE = "constellate-window";
+
+/**
+ * Does this request come from the desktop app's own window? Any program on this computer can reach this server, and
+ * what it forwards carries the engine's token: without a check here, the token would admit every program the
+ * engine's own check keeps out. The shell makes a key at each start, gives it to this server (`key`, from
+ * CONSTELLATE_WINDOW_KEY) and to its window as an HttpOnly, SameSite=Strict cookie that no page can read. Without a
+ * key (`npm run dev`, a server where the owner signs in to the engine) every request is admitted, as before.
+ */
+export function windowAdmitted(cookies: string | null, key: string | undefined): boolean {
+	if (!key) return true;
+	for (const part of (cookies ?? "").split(";")) {
+		const [name, ...value] = part.trim().split("=");
+		if (name === WINDOW_COOKIE && sameText(value.join("="), key)) return true;
+	}
+	return false;
+}
+
+/** Equal texts, compared in a time that does not depend on where they first differ. */
+function sameText(a: string, b: string): boolean {
+	if (a.length !== b.length) return false;
+	let differ = 0;
+	for (let index = 0; index < a.length; index++) differ |= a.charCodeAt(index) ^ b.charCodeAt(index);
+	return differ === 0;
 }
 
 /** The engine's address when the server is told none: `next dev` started by hand, beside an engine started with
@@ -83,6 +110,13 @@ export function engineRequestHeaders(incoming: Headers, token: string | undefine
 	const headers = new Headers(incoming);
 	headers.delete("authorization");
 	if (token) headers.set("authorization", `Bearer ${token}`);
+	// the window's key is this server's business, not the engine's
+	const cookies = (incoming.get("cookie") ?? "")
+		.split(";")
+		.map((part) => part.trim())
+		.filter((part) => part && !part.startsWith(`${WINDOW_COOKIE}=`));
+	if (cookies.length) headers.set("cookie", cookies.join("; "));
+	else headers.delete("cookie");
 	return headers;
 }
 

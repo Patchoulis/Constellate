@@ -19,7 +19,15 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
-const { EngineLog, PROVIDER_VARIABLES, engineEnvironment, interfaceEnvironment, parseStartupLine, startEngine } = require("./engine.cjs");
+const {
+	EngineLog,
+	PROVIDER_VARIABLES,
+	WINDOW_COOKIE,
+	engineEnvironment,
+	interfaceEnvironment,
+	parseStartupLine,
+	startEngine,
+} = require("./engine.cjs");
 const { engineFilesIn, missingFrom, smokeStart, stage } = require("./engine-files.cjs");
 const { withParent } = require("./lifecycle.cjs");
 
@@ -29,6 +37,9 @@ const PROGRAM = process.platform === "win32" ? "constellate.exe" : "constellate"
 const ENGINE = ["release", "debug"].map((profile) => path.join(REPO, "target", profile, PROGRAM)).find((file) => fs.existsSync(file));
 // a made-up token of the engine's shape, put together here (64 hex characters)
 const TOKEN = "5ec7e7".repeat(10) + "abcd";
+// the window's key, as the shell makes one, and the cookie the window sends it in
+const WINDOW_KEY = "w1nd0w".repeat(10) + "ffff";
+const WINDOW = `${WINDOW_COOKIE}=${WINDOW_KEY}`;
 
 /** Skip unless `ready`; in CI, fail instead. */
 function needs(ready, what) {
@@ -47,11 +58,11 @@ function freePort() {
 }
 
 /** Start the interface's server as the shell does, against the engine at `engine`; resolves once it answers. */
-async function startInterface(engine, token) {
+async function startInterface(engine, token, windowKey) {
 	const port = await freePort();
 	const child = spawn(process.execPath, withParent(SERVER), {
 		cwd: path.dirname(SERVER),
-		env: interfaceEnvironment(process.env, { port, engine, token }),
+		env: interfaceEnvironment(process.env, { port, engine, token, windowKey }),
 		stdio: ["pipe", "pipe", "pipe"],
 	});
 	let output = "";
@@ -122,11 +133,11 @@ test("the interface's server forwards /api with the token it adds itself, and th
 	const skip = needs(fs.existsSync(SERVER), "the interface's build (node scripts/build.mjs --interface)");
 	if (skip) return t.skip(skip);
 	const engine = await standIn();
-	const web = await startInterface(engine.url, TOKEN);
+	const web = await startInterface(engine.url, TOKEN, WINDOW_KEY);
 	try {
 		const origin = web.url;
 		// a request of the window's own page
-		const status = await fetch(`${web.url}/api/status?since=0`, { headers: { origin, "sec-fetch-site": "same-origin" } });
+		const status = await fetch(`${web.url}/api/status?since=0`, { headers: { origin, cookie: WINDOW, "sec-fetch-site": "same-origin" } });
 		assert.equal(status.status, 200);
 		const seen = engine.heard.at(-1);
 		assert.equal(seen.url, "/api/status?since=0");
@@ -139,7 +150,7 @@ test("the interface's server forwards /api with the token it adds itself, and th
 		// a body is forwarded, and a token the page sends is not: the engine's is the only one
 		const posted = await fetch(`${web.url}/api/runs`, {
 			method: "POST",
-			headers: { origin, "content-type": "application/json", authorization: "Bearer from-a-page" },
+			headers: { origin, cookie: WINDOW, "content-type": "application/json", authorization: "Bearer from-a-page" },
 			body: JSON.stringify({ selection: "a stand-in" }),
 		});
 		assert.equal(posted.status, 200);
@@ -148,22 +159,38 @@ test("the interface's server forwards /api with the token it adds itself, and th
 		answers.push(await received(posted));
 
 		// a PDF for the reader's frame, by byte ranges
-		const part = await fetch(`${web.url}/api/papers/2501.00001/pdf`, { headers: { range: "bytes=0-7" } });
+		const part = await fetch(`${web.url}/api/papers/2501.00001/pdf`, { headers: { cookie: WINDOW, range: "bytes=0-7" } });
 		assert.equal(part.status, 206);
 		assert.equal(await part.clone().text(), "%PDF-1.4");
 		assert.equal(engine.heard.at(-1).headers.range, "bytes=0-7");
 		answers.push(await received(part));
 
 		// /auth too (the sign-in of a server), as the engine's own /auth/
-		answers.push(await received(await fetch(`${web.url}/auth`)));
+		answers.push(await received(await fetch(`${web.url}/auth`, { headers: { cookie: WINDOW } })));
 		assert.equal(engine.heard.at(-1).url, "/auth/");
 
 		// another site's page in a browser on this computer reaches nothing through the interface's server
 		const before = engine.heard.length;
-		const foreign = await fetch(`${web.url}/api/status`, { headers: { "sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors" } });
+		const foreign = await fetch(`${web.url}/api/status`, {
+			headers: { cookie: WINDOW, "sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors" },
+		});
 		assert.equal(foreign.status, 403);
+		const followed = await fetch(`${web.url}/api/papers/x/pdf`, {
+			headers: { cookie: WINDOW, "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" },
+		});
+		assert.equal(followed.status, 403, "a link on another site to /api is not followed with the token");
 		assert.equal(engine.heard.length, before, "not forwarded");
 		answers.push(await received(foreign));
+		// nor does any other program on this computer: without the window's key, nothing is forwarded
+		for (const cookie of [undefined, `${WINDOW_COOKIE}=guessed`, `other=${WINDOW_KEY}`]) {
+			const program = await fetch(`${web.url}/api/status`, { headers: cookie ? { cookie } : {} });
+			assert.equal(program.status, 403, String(cookie));
+		}
+		assert.equal(engine.heard.length, before, "not forwarded");
+		// the window's key stays with the interface's server; the window's other cookies go on
+		await fetch(`${web.url}/api/status`, { headers: { cookie: `${WINDOW}; theme=dark` } });
+		assert.equal(engine.heard.at(-1).headers.cookie, "theme=dark");
+		assert.equal(JSON.stringify(engine.heard).includes(WINDOW_KEY), false, "the engine never sees the window's key");
 		// nor does a request addressed to another name (DNS rebinding)
 		const rebound = await new Promise((resolve) => {
 			http.get(`${web.url}/api/status`, { headers: { host: `attacker.example:${web.port}` } }, (response) => {
@@ -172,7 +199,7 @@ test("the interface's server forwards /api with the token it adds itself, and th
 			});
 		});
 		assert.equal(rebound, 403);
-		assert.equal(engine.heard.length, before);
+		assert.equal(engine.heard.length, before + 1, "only the window's request above was forwarded");
 
 		// the stand-in refuses a request without the token, as the engine does: the token is what admits it
 		assert.equal((await fetch(`${engine.url}/api/status`)).status, 401);
@@ -196,7 +223,7 @@ test("the interface's server forwards /api with the token it adds itself, and th
 		// an error: the engine gone, the interface's server answers what it answers
 		await new Promise((resolve) => engine.server.close(resolve));
 		engine.server.closeAllConnections?.();
-		const failed = await fetch(`${web.url}/api/status`, { headers: { origin } });
+		const failed = await fetch(`${web.url}/api/status`, { headers: { origin, cookie: WINDOW } });
 		assert.ok(failed.status >= 500, `a missing engine is a failure (${failed.status})`);
 		answers.push(await received(failed));
 
@@ -206,6 +233,14 @@ test("the interface's server forwards /api with the token it adds itself, and th
 		await stop(web.child);
 		engine.server.close();
 	}
+});
+
+test("the shell and the interface's server name the window's cookie alike, and the window gets it unreadable", () => {
+	const policy = fs.readFileSync(path.join(REPO, "apps", "web", "lib", "page-policy.ts"), "utf8");
+	assert.ok(policy.includes(`export const WINDOW_COOKIE = "${WINDOW_COOKIE}";`));
+	const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+	assert.match(main, /cookies\.set\(\{ url, name: WINDOW_COOKIE, value: WINDOW_KEY, httpOnly: true, sameSite: "strict" \}\)/);
+	assert.match(main, /windowKey: WINDOW_KEY/);
 });
 
 test("the shell's environments: the engine gets keys and its fixed way of listening, the interface neither", () => {
@@ -271,6 +306,13 @@ test("the engine's log is bounded and never holds the token", () => {
 	const log = new EngineLog(folder, { limit: 1000 });
 	log.hide(TOKEN);
 	for (let line = 0; line < 300; line++) log.write(`line ${line} ${line === 50 ? TOKEN : ""}\n`);
+	// the token cut between two pieces of output, and between them a line of the other stream
+	log.write(`split ${TOKEN.slice(0, 20)}`, "stderr");
+	log.write("other stream\n", "stdout");
+	log.write(`${TOKEN.slice(20)} end\n`, "stderr");
+	log.write(`unfinished ${TOKEN}`, "stderr");
+	assert.equal(log.recent.includes(TOKEN), false);
+	log.flush();
 	const files = fs.readdirSync(folder).sort();
 	assert.deepEqual(files, ["engine.1.log", "engine.log"]);
 	for (const file of files) {
@@ -278,7 +320,9 @@ test("the engine's log is bounded and never holds the token", () => {
 		assert.ok(Buffer.byteLength(text) <= 1000);
 		assert.equal(text.includes(TOKEN), false);
 	}
-	assert.match(fs.readFileSync(path.join(folder, "engine.log"), "utf8"), /line 299/);
+	const last = fs.readFileSync(path.join(folder, "engine.log"), "utf8");
+	assert.match(last, /line 299/);
+	assert.match(last, /other stream\nsplit \[token\] end\nunfinished \[token\]\n$/);
 	fs.rmSync(folder, { recursive: true, force: true });
 });
 
@@ -343,7 +387,7 @@ test("the real engine and the interface's server answer through each other and l
 		assert.equal((await fetch(`${engine.url}/api/status`)).status, 401, "the engine refuses a request without its token");
 		const child = spawn(process.execPath, withParent(SERVER), {
 			cwd: path.dirname(SERVER),
-			env: interfaceEnvironment(process.env, { port, engine: engine.url, token: engine.token }),
+			env: interfaceEnvironment(process.env, { port, engine: engine.url, token: engine.token, windowKey: WINDOW_KEY }),
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 		web = { child };
@@ -357,7 +401,7 @@ test("the real engine and the interface's server answer through each other and l
 				break;
 			await new Promise((resolve) => setTimeout(resolve, 100));
 		}
-		const status = await fetch(`${origin}/api/status`, { headers: { origin, "sec-fetch-site": "same-origin" } });
+		const status = await fetch(`${origin}/api/status`, { headers: { origin, cookie: WINDOW, "sec-fetch-site": "same-origin" } });
 		assert.equal(status.status, 200, await status.clone().text());
 		const told = await status.json();
 		assert.equal(told.mode, "local");

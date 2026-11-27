@@ -22,9 +22,10 @@
  */
 const { app, BrowserWindow, dialog, nativeImage, session, shell } = require("electron");
 const { spawn } = require("node:child_process");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const { EngineLog, answers, interfaceEnvironment, startEngine } = require("./engine.cjs");
+const { EngineLog, WINDOW_COOKIE, answers, interfaceEnvironment, startEngine } = require("./engine.cjs");
 const { Lifecycle, withParent } = require("./lifecycle.cjs");
 const { interfacePort } = require("./port.cjs");
 const { holdAppWindow, quietNetwork, readerGuard, question } = require("./reader-guard.cjs");
@@ -39,6 +40,8 @@ const STOP_GRACE_MS = 4000;
 const DEV_URL = process.env.RP_DEV_URL;
 const REPO = path.join(__dirname, "..", "..");
 const ENGINE_FILE = process.platform === "win32" ? "constellate.exe" : "constellate";
+/** This launch's key of the window, for the interface's server (engine.cjs `interfaceEnvironment`). */
+const WINDOW_KEY = crypto.randomBytes(32).toString("hex");
 /** The oldest C library the engine's ONNX Runtime loads with on Linux (Ubuntu 24.04 has it). */
 const LEAST_GLIBC = [2, 38];
 
@@ -150,7 +153,7 @@ async function startInterface(port, url, engine) {
 	if (!life.maySpawn) throw new Error("The interface was not started: the app is closing.");
 	const child = spawn(process.execPath, withParent(places.web), {
 		cwd: path.dirname(places.web),
-		env: interfaceEnvironment(process.env, { port, engine: engine.url, token: engine.token }),
+		env: interfaceEnvironment(process.env, { port, engine: engine.url, token: engine.token, windowKey: WINDOW_KEY }),
 		stdio: ["pipe", "pipe", "pipe"],
 		windowsHide: true,
 	});
@@ -195,7 +198,7 @@ async function startServers() {
 		data: places.data,
 		origin: url,
 		log,
-		admit: (child) => life.maySpawn && (adopt("The engine", child, () => log.tail), true),
+		admit: (child) => life.maySpawn && (adopt("The engine", child, () => log.recent), true),
 	});
 	await startInterface(port, url, engine);
 	return url;
@@ -286,6 +289,10 @@ if (first) {
 			const url = await startServers();
 			if (!life.move("ready")) return; // closed while the servers were starting
 			refusePermissions();
+			// the window's key (engine.cjs interfaceEnvironment): a cookie no page can read and no other site sends
+			if (!DEV_URL) {
+				await session.defaultSession.cookies.set({ url, name: WINDOW_COOKIE, value: WINDOW_KEY, httpOnly: true, sameSite: "strict" });
+			}
 			openWindow(url);
 		} catch (error) {
 			fail(error);
