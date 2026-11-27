@@ -2,14 +2,15 @@
 
 Every statement a feature shows about a paper or a community must carry evidence a user can click to land on the
 exact place in the original paper. Three engine modules and one interface component make that true by construction;
-every feature that asks Claude about papers goes through them instead of inventing its own.
+every feature that asks a language model about papers goes through them instead of inventing its own, whichever
+provider the model is from.
 
-| piece                                                       | what it does                                                                                   |
-| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `apps/engine/src/text/passages.rs`                          | a paper's PDF as addressable text; where a quote is in it; the sentences citing a reference    |
-| `apps/engine/src/evidence.rs`                               | `Evidence`, `Claim`, `Cited`, and `check`, which keeps only statements whose quotes were found |
-| `apps/engine/src/model/language.rs`                         | the Claude API: JSON answers, prompt caching, budgets, estimates, the ledger                   |
-| `apps/web/components/evidence-link.tsx` (`lib/evidence.ts`) | `EvidenceLink`: a citation that opens the reader at the place, with the words marked           |
+| piece                                                       | what it does                                                                                      |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `apps/engine/src/text/passages.rs`                          | a paper's PDF as addressable text; where a quote is in it; the sentences citing a reference       |
+| `apps/engine/src/evidence.rs`                               | `Evidence`, `Claim`, `Cited`, and `check`, which keeps only statements whose quotes were found    |
+| `apps/engine/src/model/language/`                           | the language model, of any provider: JSON answers, prompt caching, budgets, estimates, the ledger |
+| `apps/web/components/evidence-link.tsx` (`lib/evidence.ts`) | `EvidenceLink`: a citation that opens the reader at the place, with the words marked              |
 
 ## The path
 
@@ -62,7 +63,9 @@ end_page, end }`. The reference list is in the pages' text but is not a passage.
   A feature may say how many were left out (`counts.dropped`), never what they said.
 - **A quote attributed to the wrong paper fails**: it is looked for only in the paper it names.
 - **The statement is a model's reading; the quote is the paper's.** Wherever a statement is shown, it is labelled as
-  written by Claude from the papers (CLAUDE.md: what is an estimate or a program's reading says so on hover).
+  written by a language model from the papers (CLAUDE.md: what is an estimate or a program's reading says so on
+  hover). This holds whichever provider's model answered: a small model on the user's own computer is checked
+  exactly as the Claude API is, and its fabricated quotes are dropped the same way.
 
 ## Costs: estimated before, capped during, recorded after
 
@@ -186,7 +189,7 @@ And in the interface:
 {
 	answer.map((cited) => (
 		<p key={cited.statement.sentence}>
-			<span title="Written by Claude from the paper; the quotes are the paper's.">{cited.statement.sentence}</span>{" "}
+			<span title="Written by a language model from the paper; the quotes are the paper's.">{cited.statement.sentence}</span>{" "}
 			<EvidenceLinks evidence={cited.evidence} />
 		</p>
 	));
