@@ -64,6 +64,36 @@ async function torchFor(report = () => ask("nvidia-smi", ["--query-gpu=driver_ve
 	return { index: CUDA.index, why: "for your NVIDIA graphics card (about 3 GB)" };
 }
 
+/**
+ * Claim the right to set Python up: two setups in one folder at the same time break each other's downloads.
+ * The claim is a file holding the claimant's process id; a claim whose process is gone (a crash, a power cut)
+ * is taken over. Returns the function that gives the claim back.
+ */
+function claim(file) {
+	const alive = (pid) => {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch (error) {
+			return error.code === "EPERM";
+		}
+	};
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			fs.writeFileSync(file, String(process.pid), { flag: "wx" });
+			return () => fs.rmSync(file, { force: true });
+		} catch (error) {
+			if (error.code !== "EEXIST") throw error;
+			const holder = Number.parseInt(fs.readFileSync(file, "utf8"), 10);
+			if (holder !== process.pid && alive(holder)) {
+				throw new Error("Constellate is already being installed by another window. Wait for it to finish, then open Constellate again.");
+			}
+			fs.rmSync(file, { force: true }); // left behind by a process that is gone: take it over
+		}
+	}
+	throw new Error(`Could not claim ${file}.`);
+}
+
 /** The environment's Python, whether or not it exists yet. */
 function pythonIn(folder) {
 	return process.platform === "win32" ? path.join(folder, "Scripts", "python.exe") : path.join(folder, "bin", "python");
@@ -146,6 +176,7 @@ async function ensure({ uv, folder, requirements, torch = true, log = () => {}, 
 
 	const home = path.dirname(folder);
 	fs.mkdirSync(home, { recursive: true });
+	const release = claim(path.join(home, "installing.lock"));
 	// uv keeps to this app: its own Python, its own cache, and no settings from the rest of the machine
 	const env = {
 		...process.env,
@@ -167,10 +198,13 @@ async function ensure({ uv, folder, requirements, torch = true, log = () => {}, 
 		}
 		await run("Installing the other packages", ["pip", "install", "--python", python, "-r", requirements]);
 	} catch (error) {
-		error.message += "\n\nThe first start needs a connection to the internet. Constellate will try again the next time it is opened.";
+		release();
+		error.message +=
+			"\n\nThe installation needs a connection to the internet. Constellate will carry on with it the next time it is opened.";
 		throw error;
 	}
 	fs.writeFileSync(path.join(folder, "installed.json"), JSON.stringify({ stamp: stampOf(requirements), torch: wanted.index ?? "default" }));
+	release();
 	log("Ready.");
 	return python;
 }

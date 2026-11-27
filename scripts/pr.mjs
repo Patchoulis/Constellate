@@ -59,7 +59,7 @@ const steps = [
 	["types", () => run("npx", ["turbo", "run", "typecheck"], root)],
 	["tests (backend)", () => run(python, ["-W", "ignore", "-m", "pytest", "-q"], backend)],
 	["tests (interface)", () => run("npx", ["turbo", "run", "test", "--filter=@rp/web"], root)],
-	["tests (desktop)", () => run("node", ["--test", "setup.test.cjs"], join(root, "apps", "desktop"))],
+	["tests (desktop)", () => run("node", ["--test", "setup.test.cjs", "lifecycle.test.cjs"], join(root, "apps", "desktop"))],
 ];
 
 function run(command, args, cwd) {

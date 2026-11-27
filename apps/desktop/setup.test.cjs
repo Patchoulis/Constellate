@@ -82,3 +82,22 @@ test("which PyTorch a machine gets follows its NVIDIA driver", async () => {
 	assert.match(old.why, /older than 580/);
 	assert.equal((await torchFor(async () => "nonsense")).index, null);
 });
+
+test(
+	"two setups in one folder at the same time: the second is told to wait, and a dead claim is taken over",
+	{ skip: !available, timeout: 600_000 },
+	async () => {
+		const home = fs.mkdtempSync(path.join(os.tmpdir(), "rp-setup-"));
+		const requirements = path.join(home, "requirements.txt");
+		fs.writeFileSync(requirements, "six\n");
+		const options = { uv: uvPath, folder: path.join(home, "python"), requirements, torch: false };
+		// a claim held by a process that is alive (this one's parent stands in for "another window")
+		fs.writeFileSync(path.join(home, "installing.lock"), String(process.ppid));
+		await assert.rejects(ensure(options), /already being installed/);
+		// a claim left by a process that is gone
+		fs.writeFileSync(path.join(home, "installing.lock"), "999999999");
+		await ensure(options);
+		assert.equal(fs.existsSync(path.join(home, "installing.lock")), false); // given back when done
+		fs.rmSync(home, { recursive: true, force: true });
+	},
+);

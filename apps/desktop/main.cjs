@@ -14,7 +14,8 @@
  *     the repository, or from the app's resources folder when packaged. `npm run build` makes them.
  *   - RP_DEV_URL=http://localhost:3210: nothing is spawned; the window shows servers started by `npm run dev`.
  *
- * Startup is a small state machine: starting -> ready -> quitting, or starting -> failed (an error box, then quit).
+ * Where the app is between opening and closing is one explicit state machine, lifecycle.cjs: every decision
+ * below that depends on it (may a process start, does a window closing mean stop) asks it rather than a flag.
  */
 const { app, BrowserWindow, dialog, session, shell } = require("electron");
 const { spawn } = require("node:child_process");
@@ -22,6 +23,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const net = require("node:net");
 const path = require("node:path");
+const { Lifecycle } = require("./lifecycle.cjs");
 const setup = require("./setup.cjs");
 
 const BACKEND_PORT = 8765; // the web build forwards /api here (apps/web/next.config.ts)
@@ -43,12 +45,14 @@ const places = app.isPackaged
 			data: path.join(REPO, "data"),
 		};
 
-let state = "starting";
-const children = [];
-let settingUp = null; // the process setting Python up, while there is one
+const life = new Lifecycle();
+const children = []; // the two servers
+let installer = null; // the process setting Python up, while there is one
 
-// One Constellate at a time: a second one would share the first one's backend and lose it when the first closes.
-if (!app.requestSingleInstanceLock()) app.quit();
+// One Constellate at a time: a second one would set Python up a second time alongside the first, share the
+// first one's backend and lose it when the first closes. The second one does nothing at all but quit.
+const first = app.requestSingleInstanceLock();
+if (!first) app.quit();
 app.on("second-instance", () => {
 	const [window] = BrowserWindow.getAllWindows();
 	if (!window) return;
@@ -88,6 +92,7 @@ async function serve(name, command, args, options, url) {
 			`${name} cannot start: something else is already answering at ${url}. Close it (an earlier Constellate may still be running: end "python.exe" in Task Manager) and open Constellate again.`,
 		);
 	}
+	if (!life.maySpawn) throw new Error(`${name} was not started: the app is closing.`);
 	// stdin stays open as long as this shell lives: the backend watches it and stops when it closes (RP_EXIT_WITH_PARENT)
 	const child = spawn(command, args, { ...options, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
 	children.push(child);
@@ -97,11 +102,17 @@ async function serve(name, command, args, options, url) {
 	child.stderr.on("data", keep);
 	const exited = new Promise((_, reject) => {
 		child.once("error", (error) => reject(new Error(`${name} could not start: ${error.message}`)));
-		child.once("exit", (code) => state === "starting" && reject(new Error(`${name} stopped (code ${code}).\n\n${output}`)));
+		child.once("exit", (code) => {
+			const stopped = new Error(`${name} stopped (code ${code}).\n\n${output}`);
+			if (life.childExitIsFailure)
+				fail(stopped); // nobody is waiting for it any more: say so and close
+			else reject(stopped); // still starting up: whoever is waiting below reports it
+		});
 	});
 	const up = (async () => {
 		for (let attempt = 0; attempt < 240; attempt++) {
 			if (await answers(url)) return;
+			if (!life.maySpawn) throw new Error(`${name} is no longer waited for: the app is closing.`);
 			await new Promise((resolve) => setTimeout(resolve, 250));
 		}
 		throw new Error(`${name} did not answer at ${url}.\n\n${output}`);
@@ -109,46 +120,52 @@ async function serve(name, command, args, options, url) {
 	await Promise.race([up, exited]);
 }
 
-/** The Python the backend runs on: the installed app's own (set up on first start), or the one on the path. */
+/** The Python the backend runs on: the installed app's own (set up by the Installation Wizard the first time),
+ *  or the one on the path. */
 async function backendPython() {
 	if (!app.isPackaged) return process.env.RP_PYTHON || "python";
 	const wanted = { uv: places.uv, folder: places.python, requirements: path.join(places.backend, "requirements.txt") };
-	let progress = null; // the window that shows the setup, opened only if there is something to set up
+	let wizard = null; // the window that shows the setup, opened only if there is something to set up
 	const log = (line) => {
-		if (state !== "starting") return; // the user closed the progress window: setup is being stopped
-		if (!progress) {
-			progress = new BrowserWindow({
-				width: 640,
-				height: 420,
+		if (!life.is("installing")) return; // stopping: nothing more to show
+		if (!wizard) {
+			wizard = new BrowserWindow({
+				width: 660,
+				height: 440,
 				backgroundColor: "#141414",
 				autoHideMenuBar: true,
 				resizable: false,
-				title: `${app.getName()}: first start`,
+				title: `${app.getName()} Installation Wizard`,
+				icon: path.join(__dirname, "icon.png"),
 			});
-			void progress.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(SETUP_PAGE)}`);
-			// closing the window while it works means "not now": stop the download and quit; the next start resumes
-			progress.once("closed", () => {
-				if (state !== "starting") return;
-				state = "quitting";
-				settingUp?.kill();
+			void wizard.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(WIZARD_PAGE)}`);
+			// The user closing it means "not now": stop the download and quit; the next start carries on from there.
+			// When the shell closes it (below), the lifecycle has already left "installing", so this does nothing.
+			wizard.once("closed", () => {
+				if (!life.wizardCloseMeansStop) return;
+				life.move("quitting");
+				installer?.kill();
 				app.quit();
 			});
 		}
-		if (progress.isDestroyed()) return;
+		if (wizard.isDestroyed()) return;
 		const show = `document.getElementById("log").textContent += ${JSON.stringify(`${line}\n`)}; window.scrollTo(0, document.body.scrollHeight);`;
-		progress.webContents.executeJavaScript(show).catch(() => {});
+		wizard.webContents.executeJavaScript(show).catch(() => {});
 	};
+	life.move("installing");
 	try {
-		return await setup.ensure({ ...wanted, log, started: (child) => (settingUp = child) });
+		const python = await setup.ensure({ ...wanted, log, started: (child) => (installer = life.maySpawn ? child : (child.kill(), null)) });
+		life.move("serving"); // before the wizard is closed, so that closing it is not taken for the user's doing
+		return python;
 	} finally {
-		settingUp = null;
-		if (progress && !progress.isDestroyed()) progress.close();
+		installer = null;
+		if (wizard && !wizard.isDestroyed()) wizard.close();
 	}
 }
 
-const SETUP_PAGE = `<body style="margin:0;padding:20px;background:#141414;color:#d4d4d4;font:13px/1.5 ui-monospace,Consolas,monospace">
-<h1 style="font-size:15px;margin:0 0 6px">Setting up for the first time</h1>
-<p style="margin:0 0 12px;color:#8a8a8a">Constellate is downloading the Python packages it runs on. This happens once and can take several minutes.</p>
+const WIZARD_PAGE = `<body style="margin:0;padding:20px;background:#141414;color:#d4d4d4;font:13px/1.5 ui-monospace,Consolas,monospace">
+<h1 style="font-size:15px;margin:0 0 6px">Installation Wizard</h1>
+<p style="margin:0 0 12px;color:#8a8a8a">Constellate is downloading the Python packages it runs on: a few gigabytes, once. It can take several minutes. Closing this window stops it; opening Constellate again carries on where it stopped.</p>
 <pre id="log" style="margin:0;white-space:pre-wrap;color:#a3a3a3"></pre></body>`;
 
 /** The environment without API keys: the interface's server shows pages and has no use for them. */
@@ -162,6 +179,8 @@ async function startServers() {
 	if (DEV_URL) return DEV_URL;
 	if (!fs.existsSync(places.web)) throw new Error(`The app is not built yet (${places.web} is missing). Run: npm run build`);
 	const python = await backendPython();
+	life.move("serving"); // from the repository there was nothing to install: straight to serving
+	if (!life.is("serving")) throw new Error("The app is closing.");
 	const port = await freePort();
 	const url = `http://127.0.0.1:${port}`;
 	await Promise.all([
@@ -275,24 +294,31 @@ function refusePermissions() {
 	}
 }
 
-function stopServers() {
-	state = "quitting";
-	settingUp?.kill();
+/** Stop everything this shell started. Whatever state it was in, nothing new starts after this. */
+function stopEverything() {
+	life.move("quitting");
+	installer?.kill();
 	for (const child of children) child.kill();
 }
 
-app.whenReady().then(async () => {
-	try {
-		const url = await startServers();
-		state = "ready";
-		refusePermissions();
-		openWindow(url);
-	} catch (error) {
-		if (state === "quitting") return;
-		state = "failed";
-		dialog.showErrorBox(`${app.getName()} could not start`, error.message);
-		app.quit();
-	}
-});
-app.on("window-all-closed", () => state !== "starting" && app.quit());
-app.on("before-quit", stopServers);
+/** Something went wrong that the user has to know about: say it once, then close. */
+function fail(error) {
+	if (!life.move("failed")) return; // already failing or quitting: one message is enough, and a quit needs none
+	dialog.showErrorBox(app.getName(), error.message);
+	app.quit();
+}
+
+if (first) {
+	app.whenReady().then(async () => {
+		try {
+			const url = await startServers();
+			if (!life.move("ready")) return; // closed while the servers were starting
+			refusePermissions();
+			openWindow(url);
+		} catch (error) {
+			fail(error);
+		}
+	});
+}
+app.on("window-all-closed", () => life.quitsWhenWindowsClose && app.quit());
+app.on("before-quit", stopEverything);

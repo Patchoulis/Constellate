@@ -9,7 +9,7 @@
 	"scripts": {
 		"start": "electron .",
 		"dist": "electron-builder --win --x64",
-		"test": "node --test setup.test.cjs"
+		"test": "node --test setup.test.cjs lifecycle.test.cjs"
 	},
 	"devDependencies": {
 		"electron": "44.11.6",

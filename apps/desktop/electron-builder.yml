@@ -7,6 +7,7 @@ files:
   - "!**/*"
   - main.cjs
   - setup.cjs
+  - lifecycle.cjs
   - icon.png
   - package.json
 # The backend rides along as a plain folder; the interface's server is added by after-pack.cjs.
@@ -26,6 +27,8 @@ win:
   artifactName: Constellate-Setup-${version}.${ext}
 nsis:
   oneClick: true
+  # the installer does not open the app itself: a silent install must not start a second copy behind the user's
+  runAfterFinish: false
   perMachine: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
