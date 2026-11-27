@@ -147,18 +147,23 @@ pub struct Busy {
     pub kind: String,
 }
 
+/// How a job says how far it has got: one of the two, never both, since a job is started one way or the other.
+enum Measure {
+    /// Through its tracker ([`Job::start_tracked`], [`Job::start`]): the last progress it reported, if any.
+    Tracked(Option<Progress>),
+    /// By the papers its threads count ([`Job::start_counted`]), without this lock.
+    Counted(Arc<Counter>),
+}
+
 struct Inner<T> {
     /// Counts the jobs started; 0 until the first.
     id: u64,
     kind: String,
     state: State<T>,
     log: Vec<String>,
-    /// The last progress the work reported; none for work that does not report any.
-    progress: Option<Progress>,
+    measure: Measure,
     /// The running job's request to stop; a new one for every job.
     cancel: Cancel,
-    /// How far the job's papers are, counted by its threads without this lock.
-    counted: Arc<Counter>,
 }
 
 /// What a job looks like at one moment.
@@ -204,9 +209,8 @@ impl<T> Default for Job<T> {
                 kind: String::new(),
                 state: State::Idle,
                 log: Vec::new(),
-                progress: None,
+                measure: Measure::Tracked(None),
                 cancel: Cancel::new(),
-                counted: Arc::default(),
             })),
         }
     }
@@ -243,7 +247,7 @@ impl<T: Clone + Send + 'static> Job<T> {
     {
         let counted = Arc::new(Counter::new());
         let lent = Arc::clone(&counted);
-        self.launch(kind, counted, move |tracker| work(&|line: &str| tracker.log(line), &lent))
+        self.launch(kind, Measure::Counted(counted), move |tracker| work(&|line: &str| tracker.log(line), &lent))
     }
 
     /// [`Job::start`] for work that reports its progress and can be asked to stop: `work` is given a [`Tracker`].
@@ -251,11 +255,11 @@ impl<T: Clone + Send + 'static> Job<T> {
     where
         F: FnOnce(&Tracker<'_>) -> Result<T, String> + Send + 'static,
     {
-        self.launch(kind, Arc::default(), work)
+        self.launch(kind, Measure::Tracked(None), work)
     }
 
-    /// Begin `work` as the one running job; `counted` is where it counts its papers, if it counts any.
-    fn launch<F>(&self, kind: &str, counted: Arc<Counter>, work: F) -> Result<u64, Busy>
+    /// Begin `work` as the one running job, saying how far it has got by `measure`.
+    fn launch<F>(&self, kind: &str, measure: Measure, work: F) -> Result<u64, Busy>
     where
         F: FnOnce(&Tracker<'_>) -> Result<T, String> + Send + 'static,
     {
@@ -268,15 +272,18 @@ impl<T: Clone + Send + 'static> Job<T> {
             job.kind = kind.to_owned();
             job.state = State::Running;
             job.log.clear();
-            job.progress = None;
+            job.measure = measure;
             job.cancel = Cancel::new();
-            job.counted = counted;
             (job.id, job.cancel.clone())
         };
         let inner = Arc::clone(&self.inner);
         thread::spawn(move || {
             let log = |line: &str| open(&inner).log.push(line.to_owned());
-            let progress = |progress: Progress| open(&inner).progress = Some(progress);
+            let progress = |progress: Progress| {
+                if let Measure::Tracked(last) = &mut open(&inner).measure {
+                    *last = Some(progress);
+                }
+            };
             let tracker = Tracker::new(&log, &progress, &cancel);
             let outcome = catch_unwind(AssertUnwindSafe(|| work(&tracker)));
             let mut job = open(&inner);
@@ -304,6 +311,12 @@ impl<T: Clone + Send + 'static> Job<T> {
             State::Failed(error) => (None, Some(error.clone())),
             State::Idle | State::Running => (None, None),
         };
+        let (progress, papers) = match &job.measure {
+            Measure::Tracked(progress) => (*progress, None),
+            Measure::Counted(counted) => {
+                (None, (counted.total() > 0).then(|| Counted { done: counted.done(), of: counted.total() }))
+            }
+        };
         Snapshot {
             id: job.id,
             kind: job.kind.clone(),
@@ -312,8 +325,8 @@ impl<T: Clone + Send + 'static> Job<T> {
             error,
             log: job.log.iter().skip(since).cloned().collect(),
             total: job.log.len(),
-            progress: job.progress,
-            papers: (job.counted.total() > 0).then(|| Counted { done: job.counted.done(), of: job.counted.total() }),
+            progress,
+            papers,
         }
     }
 
@@ -326,7 +339,9 @@ impl<T: Clone + Send + 'static> Job<T> {
         }
         if !job.cancel.is_cancelled() {
             job.cancel.cancel();
-            job.counted.cancel();
+            if let Measure::Counted(counted) = &job.measure {
+                counted.cancel();
+            }
             job.log.push("Asked to stop.".to_owned());
         }
         Ok(())
@@ -520,6 +535,33 @@ mod tests {
         assert_eq!(told["papers"]["of"], 10_000);
         job.start("a run", |_| Ok(1)).unwrap();
         assert_eq!(finished(&job).papers, None, "a job that counts nothing says nothing about papers");
+    }
+
+    #[test]
+    fn a_job_says_how_far_it_has_got_in_one_way_only() {
+        let job: Job<u32> = Job::new();
+        let (reported, wait) = mpsc::channel::<()>();
+        let (release, go) = mpsc::channel::<()>();
+        job.start_tracked("asking", move |tracker| {
+            tracker.progress(Progress { done: 1, of: 3, usd: Usd::ZERO });
+            reported.send(()).map_err(|error| error.to_string())?;
+            go.recv().map_err(|error| error.to_string())?;
+            Ok(1)
+        })
+        .unwrap();
+        wait.recv().unwrap();
+        let tracked = job.snapshot(0);
+        assert_eq!((tracked.progress.map(|progress| progress.done), tracked.papers), (Some(1), None));
+        release.send(()).unwrap();
+        finished(&job);
+        job.start_counted("reading", |_, counter| {
+            counter.expect(4);
+            counter.advance();
+            Ok(1)
+        })
+        .unwrap();
+        let counted = finished(&job);
+        assert_eq!((counted.progress, counted.papers), (None, Some(Counted { done: 1, of: 4 })));
     }
 
     #[test]
