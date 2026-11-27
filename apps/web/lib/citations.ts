@@ -198,6 +198,20 @@ export function citedByLine(citedBy: number): string {
 	return `cited by ${count(citedBy, "paper")} Constellate has read`;
 }
 
+/**
+ * When the lookups of the works the paper cites stopped before every one was asked about: what stopped them, how
+ * many are left, and how to go on. Null when nothing was left.
+ */
+export function lookupsStoppedLine(stopped: CitationNetwork["lookups_stopped"]): string | null {
+	if (!stopped || stopped.left <= 0) return null;
+	const left = `${count(stopped.left, "cited work")} ${stopped.left === 1 ? "was" : "were"} not looked up on arXiv yet`;
+	const why =
+		stopped.kind === "at_most"
+			? "the lookups of the works this paper cites stopped early: one reading looks up only so many"
+			: `the lookups of the works this paper cites stopped early: ${stopped.why}`;
+	return `${why.charAt(0).toUpperCase()}${why.slice(1)}. ${left}; reading the references again continues where they stopped.`;
+}
+
 /** A community's citation figures, or null while none of its papers' reference lists has been read. */
 function readCitations(community: Community) {
 	return community.citations && community.citations.papers_read > 0 ? community.citations : null;

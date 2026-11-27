@@ -18,7 +18,7 @@
  * paper. The dots are kept as paths in the same way while the zoom leaves their size alone.
  *
  * Links show what one paper is closest to, and only on request: hovering a paper draws lines to its few most
- * similar papers (the backend cuts each paper's list at the natural gap in its similarities) and marks them.
+ * similar papers (the engine cuts each paper's list at the natural gap in its similarities) and marks them.
  * A paper the user marked (right-click) has a ring and shows its links all the time. When one community is in
  * focus (or kinds of paper are dimmed), that goes only for the marked papers in view: a focused view is about
  * what it focuses on, and marks elsewhere would draw lines across it.

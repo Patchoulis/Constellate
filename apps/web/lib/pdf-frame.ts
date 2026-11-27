@@ -1,10 +1,10 @@
 /**
- * What the reader's frame of a paper's PDF (`/api/pdf/<id>`, our own backend) ended up showing. The backend
+ * What the reader's frame of a paper's PDF (`/api/papers/<id>/pdf`, the engine) ended up showing. The engine
  * answers a PDF it cannot fetch with an error (`{"error": "..."}`) that a frame would show as raw JSON, or as a
  * blank page: the reader shows the error's words instead.
  *
  *     pdf       the PDF, shown by the browser's viewer
- *     problem   anything else: the backend's words when it gave some, else what the frame was given
+ *     problem   anything else: the engine's words when it gave some, else what the frame was given
  */
 export type FramedPdf = { kind: "pdf" } | { kind: "problem"; words: string };
 
@@ -17,10 +17,10 @@ export function framedPdf(contentType: string | null | undefined, text: string |
 		const told = JSON.parse(body) as { error?: unknown } | null;
 		if (typeof told?.error === "string" && told.error.trim() !== "") return { kind: "problem", words: told.error.trim() };
 	} catch {
-		// not the backend's JSON: said below by what it is
+		// not the engine's JSON: said below by what it is
 	}
-	if (body === "") return { kind: "problem", words: "The backend sent nothing for this PDF." };
-	return { kind: "problem", words: "The backend did not send a PDF." };
+	if (body === "") return { kind: "problem", words: "Constellate sent nothing for this PDF." };
+	return { kind: "problem", words: "Constellate did not send a PDF." };
 }
 
 /** A failed load of the embedded view's page, as Electron's `did-fail-load` tells it. */

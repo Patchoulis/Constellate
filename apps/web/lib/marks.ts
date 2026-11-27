@@ -2,7 +2,7 @@
  * Marked papers: the ones a user singled out in a run, to keep in view and come back to.
  *
  * Marks belong to a run and live in this browser's localStorage, one key per run name, as
- * `{"version":1,"papers":[...ids, newest first]}`. No backend keeps them.
+ * `{"version":1,"papers":[...ids, newest first]}`. The engine does not keep them.
  *
  * The core is pure (a list of paper ids, newest first, and what can be done to it); `useMarks` holds one run's
  * list in React state and writes every change through to storage.

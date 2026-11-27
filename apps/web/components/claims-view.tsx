@@ -22,6 +22,7 @@ import type {
 import { EvidenceLink, EvidenceLinks } from "@/components/evidence-link";
 import { REVIEWS_NOTE } from "@/components/review-summary";
 import { Button, Heading, Segmented } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/confirm";
 import { api } from "@/lib/api";
 import {
 	ESTIMATE_NOTE,
@@ -32,6 +33,8 @@ import {
 	byReviewers,
 	estimateLine,
 	kindLabel,
+	allLeftOutLine,
+	ignoredLine,
 	leftOutLine,
 	marked,
 	move,
@@ -80,7 +83,7 @@ function Ask({
 }) {
 	// what was kept is read again once the job is over, whichever way it ended; the job is followed again when the
 	// tab was left and opened again meanwhile
-	const { job, elsewhere, start } = useFollowedJob(() => onDone(), `claims:${id}`);
+	const { job, elsewhere, start } = useFollowedJob(() => onDone(), `claims:${id}`, { feature: "claim_tree", subject: { paper: id } });
 	const budget = budgetFor(estimate);
 	const begin = () => void start(() => api.startClaims(id, { ...budget, ...shownModel(estimate) }).then(({ job }) => job));
 	const starting = job.state === "starting";
@@ -535,6 +538,7 @@ function Gaps({ view, nodes }: { view: View; nodes: ClaimNode[] }) {
 /** The Claims tab of one paper. `onOpenReviews` opens its Reviews tab, where its reviews are read. */
 export function ClaimsView({ id, onOpenReviews }: { id: string; onOpenReviews?: () => void }) {
 	const chosen = useChosenModel();
+	const confirm = useConfirm();
 	// read again when the model chosen changes (the estimate is that model's), the tree staying in view meanwhile
 	const loaded = useAsync(() => api.claims(id), [id, choiceKey(chosen)]);
 	const [redoError, setRedoError] = useState<string | null>(null);
@@ -548,14 +552,16 @@ export function ClaimsView({ id, onOpenReviews }: { id: string; onOpenReviews?: 
 	const mapping = view.mapping.state === "made" ? view.mapping.mapping : null;
 	const nodes = tree.state === "made" ? tree.nodes : [];
 	const leftOut = tree.state === "made" ? leftOutLine(tree.left_out) : null;
+	const ignored = mapping ? ignoredLine(mapping.ignored) : null;
 	const current = loaded.status === "ready" && (view.estimate === null || isFor(view.estimate, chosen));
-	const redo = () => {
-		if (
-			!window.confirm(
-				"Forget this paper's claim tree and where its reviewers' points were placed?\n\nIt cannot be undone, and asking again costs again. The cost is shown before anything is sent.",
-			)
-		)
-			return;
+	const redo = async () => {
+		const sure = await confirm({
+			title: "Forget this paper's claim tree and where its reviewers' points were placed?",
+			body: <p>It cannot be undone, and asking again costs again. The cost is shown before anything is sent.</p>,
+			confirm: "Forget it",
+			destructive: true,
+		});
+		if (!sure) return;
 		setRedoError(null);
 		api.forgetClaims(id).then(loaded.reload, (error: Error) => setRedoError(error.message));
 	};
@@ -588,6 +594,7 @@ export function ClaimsView({ id, onOpenReviews }: { id: string; onOpenReviews?: 
 					The model&apos;s answer was not a tree of claims, so nothing of it is shown. Ask again with the button below.
 				</p>
 			)}
+			{tree.state === "all_left_out" && <p className="font-ui text-sm text-muted-foreground">{allLeftOutLine(tree.left_out)}</p>}
 			{reviews && tree.state === "made" && <Root reviews={reviews} mapping={mapping} onOpenReviews={onOpenReviews} />}
 			{view.mapping.state === "no_reviews" && tree.state !== "no_text" && (
 				<p className="font-ui text-xs text-muted-foreground">
@@ -610,6 +617,7 @@ export function ClaimsView({ id, onOpenReviews }: { id: string; onOpenReviews?: 
 			)}
 			{tree.state === "made" && <Outline view={view} nodes={nodes} onOpenReviews={onOpenReviews} />}
 			{leftOut && <p className="font-ui text-xs text-muted-foreground">{leftOut}.</p>}
+			{ignored && <p className="font-ui text-xs text-muted-foreground">{ignored}</p>}
 			{mapping && reviews && mapping.unplaced.length > 0 && (
 				<section className="flex flex-col gap-1">
 					<Heading>Points not placed on a claim ({count(mapping.unplaced.length, "point")})</Heading>
@@ -637,13 +645,13 @@ export function ClaimsView({ id, onOpenReviews }: { id: string; onOpenReviews?: 
 			{(tree.state === "made" || tree.state === "malformed" || tree.state === "all_left_out") && (
 				<div className="flex items-center gap-2 font-ui text-xs text-muted-foreground">
 					<span title={MODEL_NOTE}>
-						Read by {tree.state === "made" ? tree.model : "the model"} from{" "}
+						Read by {tree.state === "malformed" ? "the model" : tree.model} from{" "}
 						{view.paper.state === "read" ? `${view.paper.sent} of ${count(view.paper.passages, "passage")}` : "the paper"}
 					</span>
 					<Button
 						variant="ghost"
 						title="Forget this paper's tree and placements; they are asked again, at a cost, only when you click to."
-						onClick={redo}
+						onClick={() => void redo()}
 					>
 						<RotateCcw />
 						Redo

@@ -230,6 +230,32 @@ export function toCsv(table: ExtractionTable, rows: ExtractionRow[] = table.rows
 	return `${lines.join("\r\n")}\r\n`;
 }
 
+/** How the papers of the table are read, when not all from their PDF: "3 papers read from their title and abstract
+ *  only (2 with no PDF kept, 1 whose PDF could not be read); 1 paper not in the library, not asked". */
+export function readFromLine(rows: ExtractionRow[]): string | null {
+	const of = (text: ExtractionRow["text"]) => rows.filter((row) => row.text === text).length;
+	const noPdf = of("no_pdf");
+	const unreadable = of("unreadable");
+	const missing = of("not_in_library");
+	const parts: string[] = [];
+	if (noPdf + unreadable > 0) {
+		const why = [
+			noPdf > 0 ? `${noPdf.toLocaleString()} with no PDF kept` : null,
+			unreadable > 0 ? `${unreadable.toLocaleString()} whose PDF could not be read` : null,
+		].filter(Boolean);
+		parts.push(`${count(noPdf + unreadable, "paper")} read from their title and abstract only (${why.join(", ")})`);
+	}
+	if (missing > 0) parts.push(`${count(missing, "paper")} not in the library, not asked`);
+	return parts.length > 0 ? `${parts.join("; ")}.` : null;
+}
+
+/** Why a paper is asked from its title and abstract only, for the hover over its tag. */
+export function abstractOnlyNote(text: ExtractionRow["text"]): string {
+	return text === "unreadable"
+		? "Its PDF could not be read: this paper is asked from its title and abstract only, and its quotes are found there."
+		: "No PDF of it is kept: this paper is asked from its title and abstract only, and its quotes are found there.";
+}
+
 /** What the table leaves out, in words; null when nothing is. */
 export function leftOutNote(table: ExtractionTable): string | null {
 	const { quotes_not_found, value_not_in_quote, malformed } = table.left_out;

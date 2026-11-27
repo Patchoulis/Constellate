@@ -114,6 +114,23 @@ export function skippedLine(filter: StanceFilter): string | null {
 		: `${what} skipped: nothing in their title or abstract shares a word with the question${words}.`;
 }
 
+/** "4 papers not in the library: neither asked nor skipped." The scope's papers the library does not have. */
+export function notInLibraryLine(filter: StanceFilter): string | null {
+	const missing = filter.not_in_library ?? 0;
+	if (missing === 0) return null;
+	return `${count(missing, "paper")} not in the library: neither asked nor skipped.`;
+}
+
+/** What of one placement's quotes was not found in its paper: "2 quotes the model gave were not found in the
+ *  paper: left out." (a placement still shown on the quotes that were); for one not verified, that none was. */
+export function quotesNotFoundLine(placed: StanceRow["placed"]): string | null {
+	if (placed.group === "not_verified")
+		return `${placed.quotes_not_found === 1 ? "The 1 quote" : `None of the ${count(placed.quotes_not_found, "quote")}`} the model gave ${placed.quotes_not_found === 1 ? "was not" : "was"} found in the paper: what it said is not shown.`;
+	if (!("quotes_not_found" in placed) || !placed.quotes_not_found) return null;
+	const missing = placed.quotes_not_found;
+	return `${count(missing, "quote")} the model gave ${missing === 1 ? "was" : "were"} not found in the paper: left out.`;
+}
+
 /** "Read 10 of 45 papers to ask: 35 not asked yet". */
 export function coverageLine(result: StanceResult): string {
 	const rest = result.to_ask - result.answered;

@@ -96,6 +96,10 @@ export function leftOutLines(leftOut: CritiqueLeftOut): string[] {
 	if (leftOut.beyond_limit > 0) lines.push(`${count(leftOut.beyond_limit, "weakness", "weaknesses")} past the first eight left out.`);
 	if (leftOut.verdict > 0)
 		lines.push(`${count(leftOut.verdict, "statement")} left out: worded as a judgement of the paper, which this section does not give.`);
+	if ((leftOut.not_answered ?? 0) > 0)
+		lines.push(
+			`${count(leftOut.not_answered ?? 0, "reviewer's point", "reviewers' points")} the model gave no reading for: ${leftOut.not_answered === 1 ? "it has" : "they have"} none beside ${leftOut.not_answered === 1 ? "it" : "them"} above.`,
+		);
 	return lines;
 }
 
@@ -108,7 +112,7 @@ export function absenceLine(absence: Absence): string | null {
 		case "not_searched":
 			return "Absence: check yourself. A quote cannot show that something is missing, and the model named no words to search for.";
 		case "none_found":
-			return `Absence: check yourself. The engine searched the paper's text for ${words(absence.searched)} and found none of them.`;
+			return `Absence: check yourself. Constellate searched the paper's text for ${words(absence.searched)} and found none of them.`;
 		case "but_see":
 			return `Absence: check yourself. But the paper's text has ${words(absence.searched)}; see:`;
 	}

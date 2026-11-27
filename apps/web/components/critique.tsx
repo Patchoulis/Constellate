@@ -11,6 +11,7 @@ import { Loader2, RotateCcw, Sparkles, Square } from "lucide-react";
 import type { Critique, CritiqueModelPart, CritiqueReviewer, CritiqueReviewers, ModelWeakness, PointReading } from "@rp/contracts";
 import { EvidenceLink, EvidenceLinks } from "@/components/evidence-link";
 import { Button, Heading } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/confirm";
 import { api } from "@/lib/api";
 import {
 	CONCERN_NAME,
@@ -221,7 +222,7 @@ function ModelPart({
 }) {
 	// the job is followed until it ends, also when the reader's tab was left and opened again; then what is kept is
 	// read again
-	const { job, elsewhere, start } = useFollowedJob(() => onChanged(), `critique:${id}`);
+	const { job, elsewhere, start } = useFollowedJob(() => onChanged(), `critique:${id}`, { feature: "critique", subject: { paper: id } });
 	const ask = (asked: Extract<CritiqueModelPart, { state: "not_asked" }>) =>
 		void start(async () => {
 			// the model and the most shown go with the request: the engine refuses if either changed
@@ -232,6 +233,7 @@ function ModelPart({
 		});
 	const asking = { running: job.state === "running", starting: job.state === "starting" };
 	const [forgetError, setForgetError] = useState<string | null>(null);
+	const confirm = useConfirm();
 
 	const heading = <Heading title={MODEL_NOTE}>The model&apos;s reading, not a review</Heading>;
 	if (part.state === "no_pdf")
@@ -326,13 +328,14 @@ function ModelPart({
 						<Button
 							variant="ghost"
 							title="Forget this reading: the model can then be asked again, at the cost shown then."
-							onClick={() => {
-								if (
-									!window.confirm(
-										"Forget the model's reading of this paper's weaknesses?\n\nIt cannot be undone, and asking again costs again. The cost is shown before anything is sent.",
-									)
-								)
-									return;
+							onClick={async () => {
+								const sure = await confirm({
+									title: "Forget the model's reading of this paper's weaknesses?",
+									body: <p>It cannot be undone, and asking again costs again. The cost is shown before anything is sent.</p>,
+									confirm: "Forget it",
+									destructive: true,
+								});
+								if (!sure) return;
 								setForgetError(null);
 								void api.forgetCritique(id).then(onChanged, (error: Error) => setForgetError(error.message));
 							}}

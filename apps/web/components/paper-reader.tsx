@@ -52,7 +52,7 @@ const EMBEDS = typeof navigator !== "undefined" && /Electron/.test(navigator.use
 
 /**
  * Where each tab of the reader gets its content.
- *   paper    the PDF: from the backend when it can fetch it (arXiv, NeurIPS, ICML, CVPR...: kept locally),
+ *   paper    the PDF: from the engine when it can fetch it (arXiv, NeurIPS, ICML, CVPR...: kept locally),
  *            otherwise the paper's own PDF address, which only the desktop app's embedded view can show
  *   reviews  the paper's OpenReview page, where its reviews and discussion are
  * A tab with no source is not offered. The Citations tab is always offered: it is built from the reference lists
@@ -121,7 +121,7 @@ function Embedded({ url, onText }: { url: string; onText?: (text: string, shown:
 		const look = async () => {
 			if (over) return;
 			try {
-				// the page says what its text is, so it is treated as untrusted: capped here, parsed and checked by the backend
+				// the page says what its text is, so it is treated as untrusted: capped here, parsed and checked by the engine
 				const text = await view.executeJavaScript("String(document.body.innerText).slice(0, 1500000)");
 				if (typeof text === "string" && (await onText(text.slice(0, 1_500_000), view.getURL()))) return;
 			} catch {
@@ -146,7 +146,7 @@ function Embedded({ url, onText }: { url: string; onText?: (text: string, shown:
 	return createElement("webview", { ref, src: url, partition: "reader", plugins: "true", className: "min-h-0 flex-1 bg-background" });
 }
 
-/** The PDF from our own backend, in a frame; an error the backend answers instead is said in its words. */
+/** The PDF from the engine, in a frame; an error the engine answers instead is said in its words. */
 function OwnPdf({ url, title }: { url: string; title: string }) {
 	const [shown, setShown] = useState<FramedPdf>({ kind: "pdf" });
 	const loaded = (frame: HTMLIFrameElement) => {
@@ -168,7 +168,7 @@ function OwnPdf({ url, title }: { url: string; title: string }) {
 	return <iframe src={url} title={title} className="min-h-0 flex-1 bg-background" onLoad={(event) => loaded(event.currentTarget)} />;
 }
 
-/** A page shown inside the reader: a frame for our own backend, an embedded browser view for another site. */
+/** A page shown inside the reader: a frame for the engine, an embedded browser view for another site. */
 function Page({
 	source,
 	title,

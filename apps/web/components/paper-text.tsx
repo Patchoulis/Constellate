@@ -115,7 +115,7 @@ export function PaperText({
 	const passages = ready(read);
 	const target = passages && mark ? passageAt(passages, mark) : -1;
 
-	// the passages explained before; a backend without the route has no explaining at all
+	// the passages explained before; an engine without the route has no explaining at all
 	const marks = useAsync(() => api.explainedPassages(id), [id], { keep: false });
 	const explaining = ready(marks);
 	const explained = new Set(explaining?.explained.map(placeKey) ?? []);
