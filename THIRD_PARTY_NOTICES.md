@@ -31,3 +31,9 @@ SOFTWARE.
 ## Other icons
 
 Interface icons come from Lucide (https://lucide.dev, ISC licence), installed as the `lucide-react` package.
+
+## uv
+
+The Windows installer includes `uv` (https://github.com/astral-sh/uv), which sets up the app's Python on first
+start. It is distributed unmodified under its own licence, MIT or Apache-2.0 at your option,
+(c) Astral Software Inc.

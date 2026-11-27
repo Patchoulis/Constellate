@@ -1,6 +1,7 @@
 name: Release
 
-# Pushing a tag vX.Y.Z publishes a GitHub release whose notes are that version's section of CHANGELOG.md.
+# Pushing a tag vX.Y.Z builds the Windows installer and publishes a GitHub release with it attached, whose
+# notes are that version's section of CHANGELOG.md.
 on:
   push:
     tags: ["v*.*.*"]
@@ -10,8 +11,11 @@ permissions:
 
 jobs:
   release:
-    name: Publish the release
-    runs-on: ubuntu-latest
+    name: Build the installer and publish the release
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - name: The tag, package.json and the changelog agree on the version
@@ -36,8 +40,28 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build the installer
+        run: npm run dist
+      - name: The installer is there and is not empty
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          installer="dist/Constellate-Setup-$VERSION.exe"
+          test "$(stat -c %s "$installer")" -gt 50000000
+          (cd dist && sha256sum "Constellate-Setup-$VERSION.exe" > "Constellate-Setup-$VERSION.exe.sha256")
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" --title "Constellate ${{ steps.version.outputs.version }}" --notes-file notes.md --verify-tag
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "$TAG" --title "Constellate $VERSION" --notes-file notes.md --verify-tag \
+            "dist/Constellate-Setup-$VERSION.exe" "dist/Constellate-Setup-$VERSION.exe.sha256"

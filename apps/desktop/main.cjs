@@ -5,7 +5,9 @@
  *   web       Next's standalone server.js   the UI, on a free port; it forwards /api to the backend
  *
  * Both are child processes of this shell and die with it. The web server is run by Electron's own Node
- * (process.execPath + ELECTRON_RUN_AS_NODE=1), so no Node installation is needed; Python is.
+ * (process.execPath + ELECTRON_RUN_AS_NODE=1), so no Node installation is needed. The installed app also brings
+ * its own Python: setup.cjs makes it on the first start, shown in a small window. From the repository, the
+ * Python on the path is used (RP_PYTHON to choose another).
  *
  * Two ways to run:
  *   - built (the default): the servers come from apps/web/.next/standalone and apps/backend when started from
@@ -20,6 +22,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const net = require("node:net");
 const path = require("node:path");
+const setup = require("./setup.cjs");
 
 const BACKEND_PORT = 8765; // the web build forwards /api here (apps/web/next.config.ts)
 const DEV_URL = process.env.RP_DEV_URL;
@@ -29,6 +32,8 @@ const REPO = path.join(__dirname, "..", "..");
 const places = app.isPackaged
 	? {
 			backend: path.join(process.resourcesPath, "backend"),
+			uv: path.join(process.resourcesPath, "uv", process.platform === "win32" ? "uv.exe" : "uv"),
+			python: path.join(app.getPath("userData"), "python"),
 			web: path.join(process.resourcesPath, "web", "apps", "web", "server.js"),
 			data: path.join(app.getPath("userData"), "data"),
 		}
@@ -73,7 +78,7 @@ async function serve(name, command, args, options, url) {
 	child.stdout.on("data", keep);
 	child.stderr.on("data", keep);
 	const exited = new Promise((_, reject) => {
-		child.once("error", (problem) => reject(new Error(`${name} could not start: ${problem.message}`)));
+		child.once("error", (error) => reject(new Error(`${name} could not start: ${error.message}`)));
 		child.once("exit", (code) => state === "starting" && reject(new Error(`${name} stopped (code ${code}).\n\n${output}`)));
 	});
 	const up = (async () => {
@@ -86,15 +91,48 @@ async function serve(name, command, args, options, url) {
 	await Promise.race([up, exited]);
 }
 
+/** The Python the backend runs on: the installed app's own (set up on first start), or the one on the path. */
+async function backendPython() {
+	if (!app.isPackaged) return process.env.RP_PYTHON || "python";
+	const wanted = { uv: places.uv, folder: places.python, requirements: path.join(places.backend, "requirements.txt") };
+	let progress = null; // the window that shows the setup, opened only if there is something to set up
+	const log = (line) => {
+		if (!progress) {
+			progress = new BrowserWindow({
+				width: 640,
+				height: 420,
+				backgroundColor: "#141414",
+				autoHideMenuBar: true,
+				resizable: false,
+				title: `${app.getName()}: first start`,
+			});
+			void progress.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(SETUP_PAGE)}`);
+		}
+		const show = `document.getElementById("log").textContent += ${JSON.stringify(`${line}\n`)}; window.scrollTo(0, document.body.scrollHeight);`;
+		progress.webContents.executeJavaScript(show).catch(() => {});
+	};
+	try {
+		return await setup.ensure({ ...wanted, log });
+	} finally {
+		if (progress && !progress.isDestroyed()) progress.close();
+	}
+}
+
+const SETUP_PAGE = `<body style="margin:0;padding:20px;background:#141414;color:#d4d4d4;font:13px/1.5 ui-monospace,Consolas,monospace">
+<h1 style="font-size:15px;margin:0 0 6px">Setting up for the first time</h1>
+<p style="margin:0 0 12px;color:#8a8a8a">Constellate is downloading the Python packages it runs on. This happens once and can take several minutes.</p>
+<pre id="log" style="margin:0;white-space:pre-wrap;color:#a3a3a3"></pre></body>`;
+
 async function startServers() {
 	if (DEV_URL) return DEV_URL;
 	if (!fs.existsSync(places.web)) throw new Error(`The app is not built yet (${places.web} is missing). Run: npm run build`);
+	const python = await backendPython();
 	const port = await freePort();
 	const url = `http://127.0.0.1:${port}`;
 	await Promise.all([
 		serve(
 			"The backend (python -m rp.server)",
-			process.env.RP_PYTHON || "python",
+			python,
 			["-W", "ignore", "-m", "rp.server"],
 			{ cwd: places.backend, env: { ...process.env, RP_PORT: String(BACKEND_PORT), RP_DATA: places.data, RP_ORIGIN: url } },
 			`http://127.0.0.1:${BACKEND_PORT}/api/settings`,
@@ -165,7 +203,14 @@ function openWindow(url) {
 
 /** The embedded reader's storage partition, and the sites it may show: where papers and their reviews live. */
 const READER = "reader";
-const READER_SITES = ["openreview.net", "arxiv.org", "proceedings.neurips.cc", "proceedings.mlr.press", "openaccess.thecvf.com", "aclanthology.org"];
+const READER_SITES = [
+	"openreview.net",
+	"arxiv.org",
+	"proceedings.neurips.cc",
+	"proceedings.mlr.press",
+	"openaccess.thecvf.com",
+	"aclanthology.org",
+];
 
 function readable(address) {
 	try {
@@ -203,11 +248,11 @@ app.whenReady().then(async () => {
 		state = "ready";
 		refusePermissions();
 		openWindow(url);
-	} catch (problem) {
+	} catch (error) {
 		state = "failed";
-		dialog.showErrorBox(`${app.getName()} could not start`, problem.message);
+		dialog.showErrorBox(`${app.getName()} could not start`, error.message);
 		app.quit();
 	}
 });
-app.on("window-all-closed", () => app.quit());
+app.on("window-all-closed", () => state !== "starting" && app.quit());
 app.on("before-quit", stopServers);

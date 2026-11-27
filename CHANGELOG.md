@@ -38,6 +38,9 @@ The first release.
 - **Cost**: the sidebar shows the model and provider in use and what the Claude API has cost.
 - **Runs** can be renamed, deleted and redone.
 - **Desktop app** (Electron) with a single build script; tests for the backend and the interface.
+- **Windows installer**, built for every release. It needs nothing preinstalled: the first start sets up the
+  app's own Python and packages, with the GPU build of PyTorch on machines with an NVIDIA card. The
+  uninstaller offers to remove everything the app downloaded and computed as well.
 
 ### Security
 

@@ -6,20 +6,30 @@ directories:
 files:
   - "!**/*"
   - main.cjs
+  - setup.cjs
   - icon.png
   - package.json
-# The two servers ride along as plain folders (scripts/build.mjs prepares the web one).
+# The backend rides along as a plain folder; the interface's server is added by after-pack.cjs.
+afterPack: ./after-pack.cjs
 extraResources:
-  - from: ../web/.next/standalone
-    to: web
   - from: ../backend
     to: backend
     filter:
       - "rp/**/*.py"
       - requirements.txt
+  # uv sets up the app's own Python on first start (setup.cjs); scripts/build.mjs puts it in bin/
+  - from: bin
+    to: uv
 win:
   target: nsis
   icon: icon.png
+  artifactName: Constellate-Setup-${version}.${ext}
 nsis:
   oneClick: true
   perMachine: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  uninstallDisplayName: Constellate
+  # the uninstaller asks whether to remove what the app downloaded as well (installer.nsh)
+  include: installer.nsh
+  deleteAppDataOnUninstall: false

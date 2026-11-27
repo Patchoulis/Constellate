@@ -8,6 +8,7 @@ __pycache__/
 next-env.d.ts
 dist/
 apps/desktop/icon.png
+apps/desktop/bin/
 
 # the library and runs: papers, embeddings, PDFs, what was spent
 data/

@@ -10,7 +10,7 @@
  *   2. assemble            copy the files Next leaves out of the standalone folder (static assets, public/),
  *                          and draw the window icon from apps/web/app/icon.svg
  *   3. --run               start Electron on the result
- *   4. --dist              electron-builder: shell + interface + backend sources -> dist/
+ *   4. --dist              fetch uv, then electron-builder: shell + interface + backend sources + uv -> dist/
  */
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -42,6 +42,24 @@ function icon() {
 	writeFileSync(join(repo, "apps", "desktop", "icon.png"), new Resvg(svg, { fitTo: { mode: "width", value: 256 } }).render().asPng());
 }
 
+/** The installer carries uv, which sets up the app's Python on first start (apps/desktop/setup.cjs). It comes
+ *  from PyPI at a fixed version, which pip checks against the hashes PyPI publishes. */
+const UV_VERSION = "0.13.10";
+
+function packageTool() {
+	const python = process.env.RP_PYTHON || "python";
+	run("fetch uv", `${python} -m pip install --quiet --disable-pip-version-check uv==${UV_VERSION}`);
+	const found = spawnSync(python, ["-c", "import uv; print(uv.find_uv_bin())"], { encoding: "utf8" });
+	const source = found.stdout.trim();
+	if (found.status !== 0 || !existsSync(source)) {
+		console.error("uv was installed but cannot be found.");
+		process.exit(1);
+	}
+	const bin = join(repo, "apps", "desktop", "bin");
+	rmSync(bin, { recursive: true, force: true });
+	cpSync(source, join(bin, process.platform === "win32" ? "uv.exe" : "uv"));
+}
+
 function assemble() {
 	console.log("\n> assemble the standalone server");
 	for (const [from, to] of [
@@ -56,5 +74,10 @@ function assemble() {
 run("build", "npx turbo run build");
 assemble();
 icon();
-if (flags.has("--dist")) run("package", "npx electron-builder --win --x64", join(repo, "apps", "desktop"));
+if (flags.has("--dist")) {
+	packageTool();
+	// the installer carries the root package's version, the one a release is tagged with
+	const { version } = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
+	run("package", `npx electron-builder --win --x64 --publish never -c.extraMetadata.version=${version}`, join(repo, "apps", "desktop"));
+}
 if (flags.has("--run")) run("run", "npx electron .", join(repo, "apps", "desktop"));

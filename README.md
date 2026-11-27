@@ -13,6 +13,36 @@ scripts/build.mjs   build, run and package
 data/               everything stored locally (not in git)
 ```
 
+## Install
+
+**Windows:** download `Constellate-Setup-x.y.z.exe` from the [latest release](../../releases/latest) and run it.
+There is nothing else to install.
+
+- The installer is not code-signed, so Windows SmartScreen may say it does not recognise it: choose _More info_,
+  then _Run anyway_. Each release also carries the installer's SHA-256 checksum.
+- The first start sets up the app's own Python and packages (shown in a small window). That is a download of a
+  few gigabytes and takes several minutes; it happens once. With an NVIDIA graphics card the GPU build of PyTorch
+  is installed and embedding is fast; without one everything still works, slowly.
+- The embedding model (about 1.2 GB) is downloaded the first time papers are embedded.
+- Names, descriptions and overviews of communities are written by Claude and need an API key in the
+  `ANTHROPIC_API_KEY` environment variable. Without one, everything else works and communities are named by
+  their distinguishing terms. To set it: Start, "Edit environment variables for your account", New.
+
+**Uninstall:** Windows Settings, Apps, Installed apps, Constellate, Uninstall. The uninstaller asks whether to also
+remove what the app downloaded and computed (its Python packages and your library of papers, embeddings and
+runs, in `%APPDATA%\Constellate`); answer No to keep them for a later reinstall. The embedding model sits in
+the shared Hugging Face cache (`%USERPROFILE%\.cache\huggingface`), which other programs may use too, so it
+is left alone: delete that folder by hand if nothing else needs it.
+
+**From source** (any platform; needs Node 22+, Python 3.12+ and, for speed, PyTorch with CUDA):
+
+```
+git clone <this repository> && cd constellate
+npm ci
+pip install -r apps/backend/requirements.txt
+npm run app
+```
+
 ## Build and run
 
 ```
@@ -20,15 +50,15 @@ npm install
 npm run setup --workspace @rp/backend      # Python packages; install torch (CUDA) yourself first
 ```
 
-| Command | What it does |
-| --- | --- |
-| `npm run app` | Build, then open the desktop app. An unchanged tree rebuilds in about a second (Turborepo cache). |
-| `npm run build` | Build only. |
-| `npm run dist` | Build, then make the Windows installer in `dist/`. The installed app still needs Python with the backend's packages. |
-| `npm run compare --workspace @rp/backend -- <run>` | Score k-means and spectral clusterings of a finished run against the authors' topics, with stability; writes `clustering_comparison.md` in the run's folder. |
-| `npm test` | Run the tests: the backend's (pytest) and the interface's (Node's test runner). |
-| `npm run dev` | Development servers with hot reload: the interface on http://localhost:3210, the API on :8765. |
-| `npm run pipeline -- --venues "NeurIPS 2025" "ICML 2026"` | Run the pipeline without any interface. Also `--start 2026-11-01 --end 2026-11-07 --categories cs.LG`, and `--redo embeddings`. |
+| Command                                                   | What it does                                                                                                                                                 |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `npm run app`                                             | Build, then open the desktop app. An unchanged tree rebuilds in about a second (Turborepo cache).                                                            |
+| `npm run build`                                           | Build only.                                                                                                                                                  |
+| `npm run dist`                                            | Build, then make the Windows installer in `dist/`. The installed app still needs Python with the backend's packages.                                         |
+| `npm run compare --workspace @rp/backend -- <run>`        | Score k-means and spectral clusterings of a finished run against the authors' topics, with stability; writes `clustering_comparison.md` in the run's folder. |
+| `npm test`                                                | Run the tests: the backend's (pytest) and the interface's (Node's test runner).                                                                              |
+| `npm run dev`                                             | Development servers with hot reload: the interface on http://localhost:3210, the API on :8765.                                                               |
+| `npm run pipeline -- --venues "NeurIPS 2025" "ICML 2026"` | Run the pipeline without any interface. Also `--start 2026-11-01 --end 2026-11-07 --categories cs.LG`, and `--redo embeddings`.                              |
 
 ## What a run does
 

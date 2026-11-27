@@ -8,10 +8,11 @@
 	"main": "main.cjs",
 	"scripts": {
 		"start": "electron .",
-		"dist": "electron-builder --win --x64"
+		"dist": "electron-builder --win --x64",
+		"test": "node --test setup.test.cjs"
 	},
 	"devDependencies": {
-		"electron": "^44.9.3",
+		"electron": "44.11.6",
 		"electron-builder": "26.16.1"
 	}
 }
