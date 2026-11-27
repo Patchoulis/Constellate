@@ -21,6 +21,8 @@ serde_json = "1"
 sha1 = "0.10"
 thiserror = "2"
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+# text out of a PDF carries ligatures and odd spaces; NFKC makes it plain before it is read
+unicode-normalization = "0.1"
 
 # The embedding model runs under ONNX Runtime on whatever graphics card the computer has, of any maker, and on the
 # processor where there is none. Each system has its own way to reach any card:
