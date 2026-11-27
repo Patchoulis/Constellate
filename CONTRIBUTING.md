@@ -73,15 +73,21 @@ and runs every test. `npm run pr -- --fix` formats and fixes what it can.
 A change to code either adds something or fixes something broken; in both cases the pull request should include
 tests so that it stays that way.
 
-- **Unit tests** for functions with one specific job: `apps/backend/tests` (pytest), `apps/web/tests` (node's
-  test runner).
+- **Unit tests** for functions with one specific job: tests in the same file in `apps/engine` (Rust),
+  `apps/backend/tests` (pytest), `apps/web/tests`, `apps/desktop/*.test.cjs` and `scripts/*.test.mjs` (node's test
+  runner). `npm run pr` runs every one of these files it finds.
 - **Tests through the API** for behaviour that crosses modules: the backend tests use Flask's test client.
 
 Tests never touch the network or the real `data/` folder. A parser that reads papers or pages gets a test for
-every layout that was once read wrongly.
+every layout that was once read wrongly. The one exception is the desktop app's first-start setup
+(`apps/desktop/setup.test.cjs`), which installs one small package with uv: it needs uv on the path (or `RP_UV`) and
+is skipped without it, except in CI, where a missing uv fails the run.
 
-Run one test with `python -m pytest apps/backend/tests -k name` or
-`npx tsx --test apps/web/tests/graph.test.ts`.
+Run one test with `python -m pytest apps/backend/tests -k name`, `npx tsx --test apps/web/tests/graph.test.ts` or
+`node --test apps/desktop/reader.test.cjs`.
+
+The shapes of secrets the git hooks and CI refuse are in `.githooks/secrets.txt`, one regular expression per line.
+A provider with a new key format gets a line there, and a sample in `scripts/hooks.test.mjs`.
 
 #### Commits
 
@@ -152,8 +158,9 @@ such: `Nit: rename foo to bar. Not blocking.`
 ### Releases
 
 Every merged change is released. The maintainer moves the Unreleased entries of `CHANGELOG.md` under a new
-version, sets that version in `package.json`, and pushes the tag `vX.Y.Z`; the Release workflow builds the
-installer and publishes it with that version's notes.
+version, sets that version in `package.json`, and pushes the tag `vX.Y.Z` on a commit of `main`; the Release
+workflow refuses a tag anywhere else, builds the installer and publishes it with that version's notes and its
+SHA-256 checksum.
 
 _The structure of this guide is adapted from the [Ream contributing guide](https://github.com/ReamLabs/ream/blob/master/CONTRIBUTING.md),
 itself adapted from [Reth's](https://github.com/paradigmxyz/reth/blob/main/CONTRIBUTING.md)._

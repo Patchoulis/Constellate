@@ -1,12 +1,14 @@
 """The parts that sit between the pipeline and the outside world, with the outside world replaced."""
 
 import json
+import threading
+import time
 
 import numpy as np
 import pytest
 
 from conftest import paper
-from rp import RUNS, conferences, describe, overview, server
+from rp import RUNS, conferences, describe, overview, server, settings
 from rp.library import Papers
 
 
@@ -276,3 +278,72 @@ def test_an_overview_is_looked_up_by_exact_path(client):
     assert client.get("/api/runs/demo/overview/c10").get_json()["state"] == "idle"
     assert client.get("/api/runs/demo/overview/c1.0").get_json()["state"] == "idle"
     assert client.get("/api/runs/demo/overview/c100").status_code == 404
+
+
+def _one_community_run(name):
+    folder = RUNS / name
+    folder.mkdir(parents=True, exist_ok=True)
+    one = {"tree_path": "c0", "name": "c0", "keywords": [], "size": 2, "members": [0, 1], "children": []}
+    (folder / "communities.json").write_text(
+        json.dumps({"name": name, "papers": 2, "modularity": 0, "communities": [one]})
+    )
+    (folder / "run.json").write_text(json.dumps({"selection": {}, "settings": {}, "paper_ids": ["a", "b"]}))
+    library = Papers()
+    library.add([paper(paper_id) for paper_id in "ab"])
+    library.save()
+
+
+def _settled(client, address):
+    for _ in range(200):
+        answer = client.get(address).get_json()
+        if answer["state"] != "running":
+            return answer
+        time.sleep(0.01)
+    raise AssertionError("the overview never finished")
+
+
+def test_an_overview_written_by_one_model_is_not_shown_once_another_is_chosen(client, monkeypatch):
+    """The overview's job was kept per community, not per model: after the model was changed, the finished job
+    of the old model was shown as the overview, and the new model's was never offered."""
+    _one_community_run("models")
+    written = []
+    monkeypatch.setattr(server.overviews, "write", lambda run, path, model, log: written.append(model) or {"by": model})
+    address = "/api/runs/models/overview/c0"
+    before = settings.load()["describe_model"]
+    try:
+        settings.save({"describe_model": "model-one"})
+        client.post(address)
+        assert _settled(client, address) == {"state": "done", "overview": {"by": "model-one"}, "error": None}
+        settings.save({"describe_model": "model-two"})
+        assert client.get(address).get_json() == {"state": "idle", "overview": None, "error": None}
+        client.post(address)
+        assert _settled(client, address)["overview"] == {"by": "model-two"}
+        assert written == ["model-one", "model-two"]
+    finally:
+        settings.save({"describe_model": before})
+
+
+def test_changing_the_model_while_an_overview_is_written_starts_no_second_one(client, monkeypatch):
+    _one_community_run("busy")
+    going = threading.Event()
+    written = []
+
+    def write(run, path, model, log):
+        written.append(model)
+        going.wait(5)
+        return {"by": model}
+
+    monkeypatch.setattr(server.overviews, "write", write)
+    address = "/api/runs/busy/overview/c0"
+    before = settings.load()["describe_model"]
+    try:
+        settings.save({"describe_model": "model-one"})
+        client.post(address)
+        settings.save({"describe_model": "model-two"})
+        assert client.post(address).get_json()["state"] == "running"  # the first one's, still going
+        going.set()
+        _settled(client, address)
+        assert written == ["model-one"]
+    finally:
+        going.set()
+        settings.save({"describe_model": before})

@@ -1,6 +1,7 @@
 /**
  * The first-start setup, for real but small: a Python environment with one tiny package, made by uv.
- * Needs uv (RP_UV, or `uv` on the path) and the network; skipped when uv is not there.    node --test
+ * Needs uv (RP_UV, or `uv` on the path) and the network; skipped when uv is not there, except in CI, where a
+ * missing uv fails the run instead of passing it with the setup untested.    node --test
  */
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
@@ -8,10 +9,11 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
-const { ensure, state, torchFor, CUDA } = require("./setup.cjs");
+const { ensure, physical, state, torchFor, CUDA } = require("./setup.cjs");
 
 const uv = process.env.RP_UV || "uv";
 const available = spawnSync(uv, ["--version"], { windowsHide: true }).status === 0;
+if (!available && process.env.CI) throw new Error(`uv is needed to test the first-start setup and was not found (${uv}): set RP_UV`);
 const uvPath =
 	available && !path.isAbsolute(uv)
 		? spawnSync(process.platform === "win32" ? "where" : "which", [uv])
@@ -72,6 +74,42 @@ test("a missing package tool is reported, not crashed on", async () => {
 	);
 	fs.rmSync(home, { recursive: true, force: true });
 });
+
+/** A folder `real` and a link to it (a junction on Windows, which needs no administrator), in a fresh folder. */
+function linked() {
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), "rp-setup-"));
+	const real = path.join(home, "real");
+	fs.mkdirSync(real);
+	const link = path.join(home, "link");
+	fs.symlinkSync(real, link, "junction");
+	return { home, real: fs.realpathSync.native(real), link };
+}
+
+test("a folder is known by where it really is, made first when it is not there yet", () => {
+	const { home, real, link } = linked();
+	assert.equal(physical(path.join(link, "app")), path.join(real, "app"));
+	assert.ok(fs.statSync(path.join(real, "app")).isDirectory());
+	assert.equal(physical(path.join(real, "app")), path.join(real, "app")); // a real folder is itself
+	fs.rmSync(home, { recursive: true, force: true });
+});
+
+test(
+	"a data folder reached under another address is set up, and its Python found, where it really is",
+	{ skip: !available, timeout: 600_000 },
+	async () => {
+		// Stands in for a folder Windows shows a packaged app's programs in one place and keeps in another: uv's own
+		// link to the Python it fetches must hold the real address, or it leads nowhere for uv itself.
+		const { home, real, link } = linked();
+		const requirements = path.join(home, "requirements.txt");
+		fs.writeFileSync(requirements, "six\n");
+		const options = { uv: uvPath, folder: path.join(link, "python"), requirements, torch: false };
+		const python = await ensure(options);
+		assert.ok(python.startsWith(path.join(real, "python")), python);
+		assert.equal(spawnSync(python, ["-c", "import six"]).status, 0);
+		assert.equal(await ensure(options), python); // and the next start finds it ready under either address
+		fs.rmSync(home, { recursive: true, force: true });
+	},
+);
 
 test("which PyTorch a machine gets follows its NVIDIA driver", async () => {
 	assert.equal((await torchFor(async () => null)).index, null); // no card, or no driver

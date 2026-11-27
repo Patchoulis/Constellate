@@ -14,6 +14,7 @@ GET  /api/library            what is stored locally                  GET /api/ca
 import json
 import os
 import shutil
+import threading
 
 from flask import Flask, jsonify, request, send_file
 
@@ -175,7 +176,10 @@ def delete_run(name):
 
 
 overviews = Overviews()
-overview_jobs = {}  # (run, community path) -> Job: at most one overview of a community is written at a time
+# (run, community path) -> (the key of the overview it is writing or wrote, Job).  At most one overview of a
+# community is written at a time, whatever the model: changing it mid-write must not start a second, paid one.
+overview_jobs = {}
+_overview_lock = threading.Lock()  # looking at a community's job and starting it are one step
 
 
 @app.route("/api/runs/<name>/overview/<path>", methods=["GET", "POST"])
@@ -183,14 +187,20 @@ def community_overview(name, path):
     """GET: where the overview of one community stands.  POST: start writing it (a minute or two)."""
     _run_folder(name)
     model = settings.load()["describe_model"]
-    ready = overviews.get(name, path, model)
+    key = overviews.key(name, path, model)
+    ready = overviews.written(key)
     if ready:
         return jsonify(state=State.DONE.value, overview=ready, error=None)
-    writing = overview_jobs.setdefault(
-        (name, path), Job()
-    )  # not per model: changing it mid-write must not start a second
-    if request.method == "POST" and writing.state is not State.RUNNING:
-        writing.start(lambda log: overviews.write(name, path, model, log))
+    with _overview_lock:
+        about, writing = overview_jobs.get((name, path), (key, Job()))
+        # A job that is over says something only about the overview it was for.  Once the model has been changed,
+        # or the run made again with other papers, its result (or its error) is another overview's: this one has
+        # not been asked for yet.  A job still running is shown whatever it is for, and nothing else starts.
+        if about != key and writing.state is not State.RUNNING:
+            about, writing = key, Job()
+        overview_jobs[(name, path)] = (about, writing)
+        if request.method == "POST" and writing.state is not State.RUNNING:
+            writing.start(lambda log: overviews.write(name, path, model, log))
     now = writing.snapshot()
     return jsonify(state=now["state"], overview=now["result"], error=now["error"])
 

@@ -20,7 +20,7 @@ run: # Build and open the desktop app.
 ##@ Build
 
 .PHONY: build
-build: # Build the backend and the interface.
+build: # Build the interface (Next standalone output).
 	npm run build
 
 .PHONY: dist
@@ -30,15 +30,15 @@ dist: # Build the Windows installer into dist/.
 ##@ Testing and linting
 
 .PHONY: test
-test: # Run every test.
-	npm test
+test: # Run every test: the engine, the backend, the interface, the desktop shell, the scripts and hooks.
+	npm run pr -- --only=tests
 
 .PHONY: fmt
-fmt: # Format all code (cargo fmt, prettier).
+fmt: # Format all code (cargo fmt, prettier, ruff format).
 	npm run pr -- --fix --only=format
 
 .PHONY: lint
-lint: # Lint all code (clippy with warnings denied, and the project's naming rule).
+lint: # Lint all code (clippy with warnings denied, ruff check, and the project's naming rule).
 	npm run pr -- --only=lint
 
 .PHONY: pr

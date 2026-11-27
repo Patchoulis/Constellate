@@ -16,8 +16,13 @@ if grep -v '^#' "$1" | grep -Eiq '^co-authored-by:.*(claude|anthropic|copilot|ch
 	echo "commit-msg: the message credits a tool. Describe the change and nothing else." >&2
 	exit 1
 fi
-# a key pasted into a message is published like any other
-if grep -Eq 'sk-ant-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|hf_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}' "$1"; then
+# a key pasted into a message is published like any other (the shapes: secrets.txt, beside this file)
+secrets="$(dirname "$0")/secrets.txt"
+if [ ! -s "$secrets" ]; then
+	echo "commit-msg: $secrets is missing: the message could not be checked for secrets." >&2
+	exit 1
+fi
+if grep -Eq -f "$secrets" "$1"; then
 	echo "commit-msg: something shaped like a secret is in the message." >&2
 	exit 1
 fi

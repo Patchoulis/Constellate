@@ -22,9 +22,12 @@ data/
 # secrets and machine-local settings: never committed (see CLAUDE.md)
 .env
 .env.*
+*.env
 # ...except the list of names, which holds no values
 !.env.example
 *.pem
 *.key
+*.p12
+*.pfx
 .claude/settings.local.json
 .claude/worktrees/
