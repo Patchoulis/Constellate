@@ -3,7 +3,18 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MathText } from "@/components/math-text";
-import { addressedToUs, allowedHosts, contentSecurityPolicy, hostName, isBackendPath } from "@/lib/page-policy";
+import {
+	addressedToUs,
+	allowedHosts,
+	contentSecurityPolicy,
+	DEV_ENGINE,
+	engineAddress,
+	engineRequestHeaders,
+	engineUrl,
+	fromAnotherSite,
+	hostName,
+	isBackendPath,
+} from "@/lib/page-policy";
 
 const shown = (text: string) => renderToStaticMarkup(<MathText>{text}</MathText>);
 
@@ -18,9 +29,53 @@ test("the interface answers only under this computer's names and those configure
 	assert.equal(hostName("[::1]:80"), "[::1]");
 });
 
-test("the backend's answers keep their own headers; pages get the interface's policy", () => {
+test("the engine's answers keep their own headers; pages get the interface's policy", () => {
 	for (const path of ["/api", "/api/settings", "/auth", "/auth/", "/auth/sign-in.js"]) assert.ok(isBackendPath(path), path);
 	for (const path of ["/", "/apiary", "/authors"]) assert.ok(!isBackendPath(path), path);
+});
+
+test("a request forwarded to the engine carries the engine's token and no token of the page's", () => {
+	const page = new Headers({ origin: "http://127.0.0.1:3210", authorization: "Bearer from-a-page", range: "bytes=0-7" });
+	const sent = engineRequestHeaders(page, "the-engines-token");
+	assert.equal(sent.get("authorization"), "Bearer the-engines-token");
+	assert.equal(sent.get("origin"), "http://127.0.0.1:3210", "the engine checks the page's Origin");
+	assert.equal(sent.get("range"), "bytes=0-7");
+	assert.equal(page.get("authorization"), "Bearer from-a-page", "the page's own headers are left as they were");
+	// on a server, where the owner signs in, nothing is added and a page's token goes nowhere
+	assert.equal(engineRequestHeaders(page, undefined).get("authorization"), null);
+	assert.equal(engineRequestHeaders(page, "").get("authorization"), null);
+});
+
+test("the engine is reached at the address the shell gives, the path and query kept", () => {
+	const engine = engineAddress("http://127.0.0.1:52817");
+	assert.equal(
+		engineUrl(engine, new URL("http://127.0.0.1:3210/api/papers/hep-th%2F9901001/pdf?x=1")).href,
+		"http://127.0.0.1:52817/api/papers/hep-th%2F9901001/pdf?x=1",
+	);
+	assert.equal(engineUrl(engine, new URL("http://localhost:3210/auth")).href, "http://127.0.0.1:52817/auth/");
+	assert.equal(engineAddress(undefined).href, `${DEV_ENGINE}/`);
+	assert.equal(engineAddress("  ").href, `${DEV_ENGINE}/`);
+	assert.throws(() => engineAddress("file:///etc/passwd"));
+});
+
+test("another site's page cannot reach the engine through the interface's server", () => {
+	const ask = (headers: Record<string, string>) => fromAnotherSite(new Headers(headers));
+	assert.equal(ask({}), false, "no page made it (a program)");
+	assert.equal(ask({ "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors" }), false, "the interface's own page");
+	assert.equal(ask({ "sec-fetch-site": "none", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" }), false, "a typed address");
+	assert.equal(
+		ask({ "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" }),
+		false,
+		"a sign-in coming back",
+	);
+	assert.equal(ask({ "sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "image" }), true, "an image");
+	assert.equal(
+		ask({ "sec-fetch-site": "same-site", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "script" }),
+		true,
+		"another port of this computer",
+	);
+	assert.equal(ask({ "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" }), true, "a frame");
+	assert.equal(ask({ "sec-fetch-site": "cross-site", "sec-fetch-mode": "cors" }), true, "a fetch");
 });
 
 test("a page's policy runs only its own nonce's scripts, asks only its own server and allows no plugin or <base>", () => {
