@@ -17,6 +17,7 @@
 //! | [`settings`] | the person's settings and how a change to them is checked                     |
 //! | [`sources`] | where papers come from: conference lists, arXiv, proceedings' PDFs             |
 //! | [`text`]    | what is read out of text: passages, authors' declarations, reviewers' scores, references |
+//! | [`threads`] | how many threads the engine computes on, and many papers' work run on them    |
 //!
 //! Still to come as the Python backend (`apps/backend`) is ported: the pipeline that runs these in order, reports,
 //! the AI-text estimate, the language model's descriptions, and the rest of `api`'s routes.
@@ -32,4 +33,5 @@ pub mod selection;
 pub mod settings;
 pub mod sources;
 pub mod text;
+pub mod threads;
 pub mod usage;

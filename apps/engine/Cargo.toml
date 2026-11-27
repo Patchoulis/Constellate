@@ -26,12 +26,15 @@ hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 # keys (JWKS), and its claims. The pure-Rust backend, so that no C build tools are needed (aws-lc-rs would be).
 # 10.x: later versions need a newer Rust than the workspace's rust-version.
 jsonwebtoken = { version = "10.3", default-features = false, features = ["rust_crypto"] }
-# matrix products through matrixmultiply on every core: the similarity matrix is one n x n product
-ndarray = { version = "0.17", features = ["matrixmultiply-threading", "rayon"] }
+# matrix products through matrixmultiply, on one thread each: the large ones are cut into rows on the engine's
+# own threads (src/threads.rs). matrixmultiply's own threading (at most 4, its own pool) would otherwise run under
+# those threads and multiply them.
+ndarray = { version = "0.17", features = ["rayon"] }
 ort = { version = "=2.0.0-rc.15", features = ["half"] }
 # text out of a paper's PDF, for its reference list: pure Rust, so it builds anywhere with no system library
 pdf-extract = "0.12"
-# rows of the similarity graph read on every core (nearest neighbours, sparse products); tokenizers uses it already
+# the engine's one pool of computing threads (src/threads.rs): rows of the similarity graph, papers read in
+# batches, communities cut side by side; tokenizers uses it already
 rayon = "1"
 regex = "1"
 # arXiv answers in Atom XML; a read-only tree is all that is needed

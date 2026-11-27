@@ -35,7 +35,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use super::login::{self, SignIn};
 
 /// The variables this engine reads; nothing else is taken from the environment or from `.env`.
-pub const VARIABLES: [&str; 15] = [
+pub const VARIABLES: [&str; 16] = [
     BIND,
     PORT,
     TOKEN,
@@ -46,6 +46,7 @@ pub const VARIABLES: [&str; 15] = [
     ORIGIN,
     HOST,
     DATA,
+    crate::threads::VARIABLE,
     login::OIDC_ISSUER,
     login::OIDC_CLIENT_ID,
     login::OIDC_CLIENT_SECRET,
@@ -130,6 +131,14 @@ pub enum ConfigError {
          set when {BIND} is 0.0.0.0 or ::, so that requests addressed to other names can be refused"
     )]
     NamesNeeded,
+    #[error(transparent)]
+    Threads(#[from] crate::threads::ThreadsError),
+}
+
+/// How many threads the engine computes on: every core, or fewer when `CONSTELLATE_THREADS` says so
+/// ([`crate::threads::decide`]).
+pub fn threads(environment: &Environment) -> Result<std::num::NonZeroUsize, ConfigError> {
+    Ok(crate::threads::decide(crate::threads::cap(environment.get(crate::threads::VARIABLE))?))
 }
 
 /// The two ways the engine can be reached. This is the one place that decides which one an address is.
@@ -886,5 +895,16 @@ pub(crate) mod tests {
         assert_eq!(read.get(BIND), std::env::var(BIND).ok().as_deref().or(Some("127.0.0.2")));
         assert_eq!(Environment::from_pairs([(BIND, "  ")]).get(BIND), None);
         assert!(Environment::read(&folder.path().join("nowhere")).is_ok()); // no .env: fine
+    }
+
+    #[test]
+    fn the_computing_threads_are_every_core_or_the_cap_and_a_wrong_cap_stops_the_engine() {
+        let cores = std::thread::available_parallelism().unwrap();
+        assert_eq!(threads(&Environment::default()), Ok(cores));
+        assert_eq!(threads(&Environment::from_pairs([(crate::threads::VARIABLE, "1")])).unwrap().get(), 1);
+        assert_eq!(threads(&Environment::from_pairs([(crate::threads::VARIABLE, "  ")])), Ok(cores));
+        let refused = threads(&Environment::from_pairs([(crate::threads::VARIABLE, "all")])).unwrap_err();
+        assert_eq!(refused, ConfigError::Threads(crate::threads::ThreadsError::NotACount));
+        assert!(refused.to_string().contains("CONSTELLATE_THREADS"));
     }
 }

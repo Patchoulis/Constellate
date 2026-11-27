@@ -16,6 +16,15 @@
 //!   so the shorter ones are padded on the **left**: then every text's last token is the last position.
 //! * It was exported as a text generator, so besides the tokens it expects the memory of earlier tokens for each
 //!   of its layers. There are none; they are passed empty.
+//!
+//! # Threads
+//!
+//! [`Encoder::encode`] takes `&mut self`: ONNX Runtime's sessions are not safe to run from two threads at once
+//! (ort's `Session::run` takes `&mut self` for that reason), so the compiler refuses it, and one encoder runs one
+//! batch at a time. That is also how it is fastest. On a graphics card the batch is what runs in parallel, so
+//! batches go one after another. On the processor ONNX Runtime splits each operator over its own threads, as many
+//! as the engine computes on; running batches side by side on the engine's threads as well would put two sets of
+//! threads on the same cores. The tokenizer's work is a small part of a batch, and is not spread out either.
 
 use std::path::Path;
 
@@ -153,10 +162,13 @@ impl Encoder {
             Device::Processor => vec![],
         };
         let environment = ort::init().with_execution_providers(providers).build()?;
-        // DirectML needs memory patterns off and one operator at a time; the others do not mind
+        // DirectML needs memory patterns off and one operator at a time; the others do not mind. Within an
+        // operator, ONNX Runtime uses as many threads as the engine computes on ([`crate::threads`]), not a count
+        // of its own: on the processor those threads are where the model's time goes.
         Session::builder(&environment)?
             .with_memory_pattern(false)?
             .with_parallel_execution(false)?
+            .with_intra_threads(crate::threads::computing())?
             .commit_from_file(model)
     }
 

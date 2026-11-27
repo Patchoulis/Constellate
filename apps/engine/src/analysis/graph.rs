@@ -4,8 +4,18 @@
 //!
 //! The graph is one dense `n x n` matrix of 32-bit numbers, and it is the only thing of that size ever made:
 //! 12,000 papers are 0.6 GB, 30,000 are 3.6 GB, which is where [`DENSE_LIMIT`] stops.
+//!
+//! # On every core
+//!
+//! Everything here that reads the whole graph does it row by row on the engine's threads ([`crate::threads`]):
+//! the matrix product that makes it, its degrees, modularity. Each row (or block of rows) is worked out by one
+//! thread from inputs nobody writes, and is written by that thread alone (rayon hands out disjoint rows), so
+//! there is nothing to share. Sums of many rows are added up afterwards in the order of the rows, never in the
+//! order threads finished, so every number is the same bit for bit on one thread or on 32.
 
-use ndarray::{Array1, Array2, ArrayView1, ArrayView2, Axis, Zip};
+use ndarray::linalg::general_mat_mul;
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2, Axis, Zip, s};
+use rayon::prelude::*;
 
 /// The most papers a dense similarity matrix is made for.
 pub const DENSE_LIMIT: usize = 30_000;
@@ -18,14 +28,18 @@ pub enum GraphError {
     TooMany { papers: usize },
 }
 
+/// Rows of the similarity matrix made together by one thread: a block of 128 rows of 1,024 numbers is half a
+/// megabyte, which stays in a core's cache while it is multiplied with every paper.
+const ROWS_PER_BLOCK: usize = 128;
+
 /// Scale every row to length 1, in place. A row of zeros stays zeros.
 pub fn make_unit(rows: &mut Array2<f32>) {
-    for mut row in rows.rows_mut() {
+    rows.axis_iter_mut(Axis(0)).into_par_iter().for_each(|mut row| {
         let length = row.dot(&row).sqrt();
         if length > 0.0 {
             row /= length;
         }
-    }
+    });
 }
 
 /// `max(0, cosine similarity)` between every two papers, zero on the diagonal.
@@ -42,15 +56,36 @@ pub fn adjacency_matrix(embeddings: ArrayView2<f32>, center: bool) -> Result<Arr
         vectors -= &mean;
     }
     make_unit(&mut vectors);
-    let mut similarity = vectors.dot(&vectors.t());
-    similarity.mapv_inplace(|value| value.max(0.0));
-    similarity.diag_mut().fill(0.0);
-    Ok(similarity)
+    Ok(similarities(vectors.view()))
 }
 
-/// Each paper's degree: the sum of its row, added up in 64 bits (a row is thousands of small numbers).
+/// `max(0, a b^T)` of unit rows, zero on the diagonal: the product cut into blocks of rows, each block made,
+/// clipped and given its zero by one thread. The matrix library adds up each entry over the same columns in the
+/// same order whichever block it is in, so the matrix is the one the whole product gives.
+fn similarities(vectors: ArrayView2<f32>) -> Array2<f32> {
+    let papers = vectors.nrows();
+    let mut similarity = Array2::<f32>::zeros((papers, papers));
+    let all = vectors.t();
+    similarity.axis_chunks_iter_mut(Axis(0), ROWS_PER_BLOCK).into_par_iter().enumerate().for_each(
+        |(block, mut rows)| {
+            let first = block * ROWS_PER_BLOCK;
+            let mine = vectors.slice(s![first..first + rows.nrows(), ..]);
+            general_mat_mul(1.0, &mine, &all, 0.0, &mut rows);
+            rows.mapv_inplace(|value| value.max(0.0));
+            for (offset, mut row) in rows.outer_iter_mut().enumerate() {
+                row[first + offset] = 0.0;
+            }
+        },
+    );
+    similarity
+}
+
+/// Each paper's degree: the sum of its row, added up in 64 bits (a row is thousands of small numbers), one row
+/// per thread at a time.
 pub fn degrees(matrix: ArrayView2<f32>) -> Array1<f64> {
-    matrix.rows().into_iter().map(|row| row.iter().map(|value| f64::from(*value)).sum()).collect()
+    let sums: Vec<f64> =
+        matrix.axis_iter(Axis(0)).into_par_iter().map(|row| row.iter().map(|value| f64::from(*value)).sum()).collect();
+    Array1::from(sums)
 }
 
 /// Newman modularity of `groups` (each a list of paper indexes) on the graph `matrix`: how much more weight
@@ -64,8 +99,15 @@ pub fn modularity(matrix: ArrayView2<f32>, groups: &[Vec<usize>]) -> f64 {
     groups
         .iter()
         .map(|group| {
-            let inside: f64 =
-                group.iter().map(|&i| group.iter().map(|&j| f64::from(matrix[[i, j]])).sum::<f64>()).sum();
+            // each paper's weight inside its group on a thread of its own, then added up in the group's order
+            let rows: Vec<f64> = group
+                .par_iter()
+                .map(|&i| {
+                    let row = matrix.row(i);
+                    group.iter().map(|&j| f64::from(row[j])).sum::<f64>()
+                })
+                .collect();
+            let inside: f64 = rows.iter().sum();
             let share: f64 = group.iter().map(|&i| degree[i]).sum::<f64>() / total;
             inside / total - share * share
         })
@@ -197,6 +239,35 @@ mod tests {
         assert_eq!(cosine(embeddings.row(0), embeddings.row(1)), 1.0);
         assert_eq!(cosine(embeddings.row(0), embeddings.row(2)), 0.0);
         assert_eq!(cosine(embeddings.row(0), array![0.0, 0.0].view()), 0.0);
+    }
+
+    /// Embeddings with no structure to them, of a size that spans several blocks of rows (and a short last one).
+    fn noise(papers: usize, width: usize) -> Array2<f32> {
+        let mut random = crate::analysis::random::Random::new(7);
+        Array2::from_shape_simple_fn((papers, width), || random.normal() as f32)
+    }
+
+    #[test]
+    fn the_graph_its_degrees_and_modularity_are_the_same_bit_for_bit_on_one_thread_and_on_many() {
+        let embeddings = noise(3 * ROWS_PER_BLOCK + 17, 48);
+        let groups: Vec<Vec<usize>> = vec![(0..150).collect(), (150..embeddings.nrows()).rev().collect()];
+        let work = || {
+            let adjacency = adjacency_matrix(embeddings.view(), true).unwrap();
+            let score = modularity(adjacency.view(), &groups);
+            (degrees(adjacency.view()), score.to_bits(), adjacency)
+        };
+        let (one, many) = crate::threads::on_one_and_many(work);
+        assert_eq!(one, many);
+    }
+
+    #[test]
+    fn the_graph_made_in_blocks_is_the_whole_product_clipped() {
+        let mut vectors = noise(2 * ROWS_PER_BLOCK + 5, 33);
+        make_unit(&mut vectors);
+        let mut whole = vectors.dot(&vectors.t());
+        whole.mapv_inplace(|value| value.max(0.0));
+        whole.diag_mut().fill(0.0);
+        assert_eq!(similarities(vectors.view()), whole);
     }
 
     /// How long a conference-sized graph takes on this computer: `cargo test --release -- --ignored --nocapture`.
