@@ -7,6 +7,8 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- A Table section for each community and for the marked papers: one row per paper, one column per question (task, method, datasets, headline result, baselines, compute, code and data, limitations, or your own), every value shown beside the paper's own words and "not stated in the paper" when it does not say. It is run first on the ten most central papers, with the estimated cost shown before and the real cost after, then on the rest with a second click; it can be sorted, filtered and saved as CSV with every quote and page.
+
 - Opening a paper's Reviews tab now keeps the whole discussion (each review by section, rebuttals, the meta-review and the decision), shows the paper's mean, range and confidence-weighted mean on its venue's own scale, and adds a Reviews section to each community: how many of its papers have reviews read, ratings per conference and year, the papers reviewers disagreed on most, and what reviewers most often praise and criticise, each linked to the reviewer's words.
 
 - The paper reader has a Text tab showing the paper's text section by section, and citations open it at the exact place they quote, with the words highlighted; quotes Claude gives as evidence are only shown once they have been found in the paper they are attributed to.
