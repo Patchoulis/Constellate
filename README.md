@@ -39,14 +39,18 @@ once), the Claude API (names and overviews, if you set a key), OpenReview (only 
 frankfurter.dev for the day's exchange rate when your region's currency is not the US dollar. Nothing about you
 or your library is sent anywhere.
 
-**From source** (any platform; needs Node 22+, Python 3.12+ and, for speed, PyTorch with CUDA):
+**From source** (developers; any platform). You need Node 22 or newer and git; one command gets everything else
+(Rust through rustup, the formatter and linter, the npm packages, the git hooks):
 
 ```
-git clone <this repository> && cd constellate
-npm ci
-pip install -r apps/backend/requirements.txt
+git clone https://github.com/Patchoulis/constellate && cd constellate
+npm run setup
 npm run app
 ```
+
+`make setup`, `make run`, `make pr` do the same for people who reach for make; `make` alone lists every command.
+While the backend is being moved from Python to Rust, running the app from source also needs Python 3.12 or
+newer with `pip install -r apps/backend/requirements.txt`.
 
 ## Build and run
 

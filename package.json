@@ -8,6 +8,7 @@
 		"packages/*"
 	],
 	"scripts": {
+		"setup": "node scripts/setup.mjs",
 		"build": "node scripts/build.mjs",
 		"app": "node scripts/build.mjs --run",
 		"dist": "node scripts/build.mjs --dist",
