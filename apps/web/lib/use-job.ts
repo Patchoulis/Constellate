@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { JobState, RunRequest, Status } from "@rp/contracts";
 import { api } from "@/lib/api";
+import { pollDelay } from "@/lib/use-followed-job";
 
 /**
  * The pipeline job as the browser sees it. It mirrors the backend's state machine (rp/jobs.py):
@@ -76,8 +77,6 @@ export function reduce(job: Job, event: Event): Job {
 	}
 }
 
-const POLL_MS = 1200;
-
 export function useJob(onDone: (run: string) => void) {
 	const [job, dispatch] = useReducer(reduce, { state: "idle", log: [], error: null });
 	const seen = useRef(0);
@@ -88,13 +87,18 @@ export function useJob(onDone: (run: string) => void) {
 	const done = useRef(onDone);
 	done.current = onDone;
 
+	// looks in a row the backend did not answer: the next one waits longer (lib/use-followed-job.ts `pollDelay`)
+	const misses = useRef(0);
+
 	const report = useCallback(async () => {
 		try {
 			const status = await api.status(seen.current);
+			misses.current = 0;
 			const run = finishedRun(last.current, status);
 			dispatch({ type: "reported", status });
 			if (run) done.current(run);
 		} catch (error) {
+			misses.current += 1;
 			dispatch({ type: "unanswered", error: (error as Error).message });
 		}
 	}, []);
@@ -107,7 +111,7 @@ export function useJob(onDone: (run: string) => void) {
 	// One timer per report while running; any other state schedules nothing.
 	useEffect(() => {
 		if (job.state !== "running") return;
-		const timer = setTimeout(report, POLL_MS);
+		const timer = setTimeout(report, pollDelay(misses.current));
 		return () => clearTimeout(timer);
 	}, [job, report]);
 
