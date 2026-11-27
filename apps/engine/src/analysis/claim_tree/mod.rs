@@ -42,7 +42,7 @@ use crate::text::discussion::{Basis, Discussion, Kind, Reply, Section, Signer};
 use crate::text::passages::Passages;
 use crate::text::reviews::Field;
 
-/// What the paper's text is, for the tree.
+/// What the paper's text is, for the tree: the JSON's `paper`, read from [`Claims`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum PaperState {
@@ -54,7 +54,7 @@ pub enum PaperState {
     Unreadable,
 }
 
-/// Where the paper's claim tree stands.
+/// Where the paper's claim tree stands: the JSON's `tree`, read from [`Claims`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum TreeState {
@@ -73,7 +73,9 @@ pub enum TreeState {
     },
 }
 
-/// Where the mapping of the paper's reviews onto its tree stands.
+/// Where the mapping of the paper's reviews onto its tree stands: the JSON's `mapping`, read from the reviews and
+/// [`Claims`] ([`ClaimsView::mapping`]), in this order: no reviews, no points, no tree with nodes, then whether
+/// the mapping onto that tree is kept.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum MappingState {
@@ -196,23 +198,185 @@ pub struct Gap {
     pub evidence: Vec<Evidence>,
 }
 
-/// Everything the Claims view of one paper shows: `ClaimsView` in the contracts.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+/// Why there is no text to find a paper's claims in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoText {
+    NoPdf,
+    Unreadable,
+}
+
+/// The mapping of the reviews' points onto a tree, as kept and checked again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MappingKept {
+    pub mapping: Mapping,
+    pub kept_at: String,
+    pub model: String,
+}
+
+/// What is kept of the paper's tree with the chosen model.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TreeKept {
+    NotAsked,
+    /// The model's answer is kept but is not a tree.
+    Malformed {
+        why: Malformed,
+        kept_at: String,
+    },
+    /// A tree, and the mapping of the reviews onto it when that is kept: a mapping exists only on a tree.
+    Made {
+        tree: Tree,
+        kept_at: String,
+        model: String,
+        mapping: Option<MappingKept>,
+    },
+}
+
+/// The paper's claims, by what its text is: a tree and an estimate only with the text, a mapping only inside a
+/// tree. The JSON's `paper`, `tree`, `mapping`, `node_reviews`, `gaps` and `estimate` are all read from this and
+/// the reviews ([`ClaimsView`]'s methods), so that no combination of them that cannot be right (a tree made of a
+/// paper with no PDF, a mapping made with no tree, an estimate with no text) can be told.
+#[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)] // one per request, never in a collection: boxing would buy nothing
+pub enum Claims {
+    NoText(NoText),
+    Read {
+        passages: usize,
+        /// Of them, those sent to the model.
+        sent: usize,
+        tree: TreeKept,
+        /// What asking what is not kept would cost.
+        estimate: BatchEstimate,
+    },
+}
+
+/// Everything the Claims view of one paper shows: `ClaimsView` in the contracts, which it is serialised as.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ClaimsView {
     pub paper_id: String,
     /// The model chosen in the settings, and its provider: what a new tree would be asked of.
     pub provider: Provider,
     pub model: String,
-    pub paper: PaperState,
-    pub tree: TreeState,
     pub reviews: Option<ReviewsView>,
-    pub mapping: MappingState,
-    /// The root first, then one per node with points placed on it.
-    pub node_reviews: Vec<NodeReviews>,
-    pub contested: usize,
-    pub gaps: Vec<Gap>,
+    pub claims: Claims,
+}
+
+impl ClaimsView {
+    pub fn paper(&self) -> PaperState {
+        match &self.claims {
+            Claims::NoText(NoText::NoPdf) => PaperState::NoPdf,
+            Claims::NoText(NoText::Unreadable) => PaperState::Unreadable,
+            Claims::Read { passages, sent, .. } => PaperState::Read { passages: *passages, sent: *sent },
+        }
+    }
+
+    pub fn tree(&self) -> TreeState {
+        match &self.claims {
+            Claims::NoText(_) => TreeState::NoText,
+            Claims::Read { tree: TreeKept::NotAsked, .. } => TreeState::NotAsked,
+            Claims::Read { tree: TreeKept::Malformed { why, kept_at }, .. } => {
+                TreeState::Malformed { why: why.clone(), kept_at: kept_at.clone() }
+            }
+            Claims::Read { tree: TreeKept::Made { tree, kept_at, model, .. }, .. } => TreeState::Made {
+                nodes: tree.nodes.clone(),
+                left_out: tree.left_out,
+                kept_at: kept_at.clone(),
+                model: model.clone(),
+            },
+        }
+    }
+
+    /// The points of the kept reviews; none without reviews.
+    pub fn points(&self) -> &[Point] {
+        self.reviews.as_ref().map_or(&[], |reviews| &reviews.points.points)
+    }
+
+    /// The tree when it is made, with the mapping onto it when that is kept and there are points to show it with.
+    fn made(&self) -> Option<(&Tree, Option<&MappingKept>)> {
+        let Claims::Read { tree: TreeKept::Made { tree, mapping, .. }, .. } = &self.claims else { return None };
+        let mapped = !tree.nodes.is_empty() && !self.points().is_empty();
+        Some((tree, mapping.as_ref().filter(|_| mapped)))
+    }
+
+    pub fn mapping(&self) -> MappingState {
+        match &self.reviews {
+            None => return MappingState::NoReviews,
+            Some(_) if self.points().is_empty() => return MappingState::NoPoints,
+            Some(_) => {}
+        }
+        match self.made() {
+            Some((tree, _)) if tree.nodes.is_empty() => MappingState::NoTree,
+            Some((_, Some(kept))) => MappingState::Made {
+                mapping: kept.mapping.clone(),
+                kept_at: kept.kept_at.clone(),
+                model: kept.model.clone(),
+            },
+            Some((_, None)) => MappingState::NotAsked,
+            None => MappingState::NoTree,
+        }
+    }
+
+    /// The root first, then one per node with points placed on it; nothing without a mapping.
+    pub fn node_reviews(&self) -> Vec<NodeReviews> {
+        match self.made() {
+            Some((tree, Some(kept))) => node_reviews(tree, &kept.mapping, self.points()),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Nodes a reviewer challenged.
+    pub fn contested(&self) -> usize {
+        contested_of(&self.node_reviews())
+    }
+
+    pub fn gaps(&self) -> Vec<Gap> {
+        self.made().map(|(tree, kept)| gaps(tree, kept.map(|kept| &kept.mapping))).unwrap_or_default()
+    }
+
     /// What asking what is not kept would cost; `None` when there is nothing that can be asked (no text).
-    pub estimate: Option<BatchEstimate>,
+    pub fn estimate(&self) -> Option<&BatchEstimate> {
+        match &self.claims {
+            Claims::Read { estimate, .. } => Some(estimate),
+            Claims::NoText(_) => None,
+        }
+    }
+}
+
+fn contested_of(node_reviews: &[NodeReviews]) -> usize {
+    node_reviews.iter().filter(|node| node.node.is_some() && node.contested).count()
+}
+
+impl Serialize for ClaimsView {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Told<'a> {
+            paper_id: &'a str,
+            provider: Provider,
+            model: &'a str,
+            paper: PaperState,
+            tree: TreeState,
+            reviews: Option<&'a ReviewsView>,
+            mapping: MappingState,
+            node_reviews: Vec<NodeReviews>,
+            contested: usize,
+            gaps: Vec<Gap>,
+            estimate: Option<&'a BatchEstimate>,
+        }
+        let node_reviews = self.node_reviews();
+        Told {
+            paper_id: &self.paper_id,
+            provider: self.provider,
+            model: &self.model,
+            paper: self.paper(),
+            tree: self.tree(),
+            reviews: self.reviews.as_ref(),
+            mapping: self.mapping(),
+            contested: contested_of(&node_reviews),
+            node_reviews,
+            gaps: self.gaps(),
+            estimate: self.estimate(),
+        }
+        .serialize(serializer)
+    }
 }
 
 fn reply_of(reply: &Reply) -> Option<(usize, Attached)> {
@@ -355,105 +519,82 @@ pub fn gaps(tree: &Tree, mapping: Option<&Mapping>) -> Vec<Gap> {
         .collect()
 }
 
-/// The kept tree of `paper`, checked against its passages.
-fn kept_tree(library: &Library, paper: &str, chosen: &Chosen, passages: &Passages) -> Result<TreeState, LibraryError> {
+/// The kept tree of `paper`, checked against its passages; its mapping is not read here.
+fn kept_tree(library: &Library, paper: &str, chosen: &Chosen, passages: &Passages) -> Result<TreeKept, LibraryError> {
     let Some(kept) = library.kept::<SaidTree>(Feature::ClaimTree, &tree_key(chosen, paper))? else {
-        return Ok(TreeState::NotAsked);
+        return Ok(TreeKept::NotAsked);
     };
     Ok(match tree::build(&kept.answer, paper, &PaperText::Read(passages.clone())) {
-        Ok(tree) => {
-            TreeState::Made { nodes: tree.nodes, left_out: tree.left_out, kept_at: kept.kept_at, model: kept.model }
-        }
-        Err(why) => TreeState::Malformed { why, kept_at: kept.kept_at },
+        Ok(tree) => TreeKept::Made { tree, kept_at: kept.kept_at, model: kept.model, mapping: None },
+        Err(why) => TreeKept::Malformed { why, kept_at: kept.kept_at },
     })
+}
+
+/// The mapping's question for `tree` and `points`, when there is a mapping to ask: a tree with nodes, and points.
+fn mapping_question(tree: &Tree, points: &[Point]) -> Option<String> {
+    (!tree.nodes.is_empty() && !points.is_empty()).then(|| mapping::question(tree, points))
+}
+
+/// The claims of a paper whose text was read: the kept tree and mapping, checked again, and the estimate.
+fn read_claims(
+    library: &Library,
+    paper: &str,
+    chosen: &Chosen,
+    passages: &Passages,
+    points: &[Point],
+) -> Result<Claims, LibraryError> {
+    let prompt = paper_prompt(passages);
+    let (tree, question) = match kept_tree(library, paper, chosen, passages)? {
+        TreeKept::Made { tree, kept_at, model, .. } => {
+            let question = mapping_question(&tree, points);
+            let mapping = match &question {
+                Some(question) => library
+                    .kept::<SaidMapping>(Feature::ClaimTree, &mapping_key(chosen, paper, question))?
+                    .map(|kept| MappingKept {
+                        mapping: mapping::place(&kept.answer, &tree, points),
+                        kept_at: kept.kept_at,
+                        model: kept.model,
+                    }),
+                None => None,
+            };
+            (TreeKept::Made { tree, kept_at, model, mapping }, question)
+        }
+        other => (other, None),
+    };
+    let (tree_schema, mapping_schema) = (tree::schema(), mapping::schema());
+    let questions =
+        Questions { chosen, paper, shared: &prompt.text, tree_schema: &tree_schema, mapping_schema: &mapping_schema };
+    let planned = match (&question, &tree) {
+        (Some(question), _) => Planned::Known(question, points.len()),
+        (None, TreeKept::NotAsked) if !points.is_empty() => Planned::Guessed(points),
+        _ => Planned::Nothing,
+    };
+    let estimate = asking::estimate(library, &questions, planned)?;
+    Ok(Claims::Read { passages: prompt.passages, sent: prompt.sent, tree, estimate })
 }
 
 /// The Claims view of `paper` with `model`: what is kept, checked again against the paper and the reviews, and
 /// what asking the rest would cost. Asks nothing. `None` when the paper is not in the library.
 pub fn view(library: &Library, paper: &str, chosen: &Chosen) -> Result<Option<ClaimsView>, LibraryError> {
     let Some(reading) = library.paper_texts(&[paper])?.pop() else { return Ok(None) };
-    let (paper_state, passages) = match reading {
+    let text = match reading {
         PaperReading::NotInLibrary => return Ok(None),
-        PaperReading::Read(passages) => {
-            let prompt = paper_prompt(&passages);
-            (PaperState::Read { passages: prompt.passages, sent: prompt.sent }, Some((passages, prompt)))
-        }
-        PaperReading::NoPdf { .. } => (PaperState::NoPdf, None),
-        PaperReading::Unreadable { .. } => (PaperState::Unreadable, None),
+        PaperReading::Read(passages) => Ok(passages),
+        PaperReading::NoPdf { .. } => Err(NoText::NoPdf),
+        PaperReading::Unreadable { .. } => Err(NoText::Unreadable),
     };
     let reviews = library.reviews(paper)?.map(|kept| reviews_view(&kept));
     let points: &[Point] = reviews.as_ref().map_or(&[], |reviews| &reviews.points.points);
-    let Some((passages, prompt)) = passages else {
-        let mapping = if reviews.is_some() { MappingState::NoTree } else { MappingState::NoReviews };
-        return Ok(Some(ClaimsView {
-            paper_id: paper.to_owned(),
-            provider: chosen.provider(),
-            model: chosen.model().to_owned(),
-            paper: paper_state,
-            tree: TreeState::NoText,
-            reviews,
-            mapping,
-            node_reviews: Vec::new(),
-            contested: 0,
-            gaps: Vec::new(),
-            estimate: None,
-        }));
+    let claims = match text {
+        Ok(passages) => read_claims(library, paper, chosen, &passages, points)?,
+        Err(why) => Claims::NoText(why),
     };
-    let tree = kept_tree(library, paper, chosen, &passages)?;
-    let (tree_schema, mapping_schema) = (tree::schema(), mapping::schema());
-    let questions =
-        Questions { chosen, paper, shared: &prompt.text, tree_schema: &tree_schema, mapping_schema: &mapping_schema };
-    let checked = match &tree {
-        TreeState::Made { nodes, left_out, .. } => Some(Tree { nodes: nodes.clone(), left_out: *left_out }),
-        _ => None,
-    };
-    let question = checked
-        .as_ref()
-        .filter(|tree| !tree.nodes.is_empty() && !points.is_empty())
-        .map(|tree| mapping::question(tree, points));
-    let mapping = match (&reviews, &checked, &question) {
-        (None, _, _) => MappingState::NoReviews,
-        (Some(_), _, _) if points.is_empty() => MappingState::NoPoints,
-        (Some(_), _, None) => MappingState::NoTree,
-        (Some(_), Some(tree), Some(question)) => {
-            match library.kept::<SaidMapping>(Feature::ClaimTree, &mapping_key(chosen, paper, question))? {
-                Some(kept) => MappingState::Made {
-                    mapping: mapping::place(&kept.answer, tree, points),
-                    kept_at: kept.kept_at,
-                    model: kept.model,
-                },
-                None => MappingState::NotAsked,
-            }
-        }
-        (Some(_), None, Some(_)) => MappingState::NoTree,
-    };
-    let planned = match (&question, &tree) {
-        (Some(question), _) => Planned::Known(question, points.len()),
-        (None, TreeState::NotAsked) if !points.is_empty() => Planned::Guessed(points),
-        _ => Planned::Nothing,
-    };
-    let estimate = asking::estimate(library, &questions, planned)?;
-    let made = match &mapping {
-        MappingState::Made { mapping, .. } => Some(mapping),
-        _ => None,
-    };
-    let (node_reviews, gaps) = match &checked {
-        Some(tree) => (made.map(|mapping| node_reviews(tree, mapping, points)).unwrap_or_default(), gaps(tree, made)),
-        None => (Vec::new(), Vec::new()),
-    };
-    let contested = node_reviews.iter().filter(|node| node.node.is_some() && node.contested).count();
     Ok(Some(ClaimsView {
         paper_id: paper.to_owned(),
         provider: chosen.provider(),
         model: chosen.model().to_owned(),
-        paper: paper_state,
-        tree,
         reviews,
-        mapping,
-        node_reviews,
-        contested,
-        gaps,
-        estimate: Some(estimate),
+        claims,
     }))
 }
 
@@ -513,8 +654,8 @@ fn contested_on(
                 let passages = reading.passages()?;
                 let tree = tree::build(said, &kept.paper_id, &PaperText::Read(passages.clone())).ok()?;
                 let points = review_points(&kept.discussion).points;
-                let question = mapping::question(&tree, &points);
-                (!tree.nodes.is_empty() && !points.is_empty()).then_some((*kept, tree, points, question))
+                let question = mapping_question(&tree, &points)?;
+                Some((*kept, tree, points, question))
             })
             .collect()
     };
@@ -530,8 +671,7 @@ fn contested_on(
             continue;
         };
         let mapping = mapping::place(&said.answer, &tree, &points);
-        let contested =
-            node_reviews(&tree, &mapping, &points).iter().filter(|node| node.node.is_some() && node.contested).count();
+        let contested = contested_of(&node_reviews(&tree, &mapping, &points));
         counts.push(PaperContested {
             paper_id: kept.paper_id.clone(),
             contested,
@@ -546,6 +686,8 @@ fn contested_on(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use std::sync::Mutex;
+
+    use serde_json::{Value, json};
 
     use super::asking::tests::{MODEL, PAPER, library_with, mapping_answer, reply, tree_answer};
     use super::asking::{Askers, ask};
@@ -568,8 +710,8 @@ mod tests {
         ask(&askers, PAPER, &Chosen::claude(MODEL), &budget, &tracker).unwrap();
     }
 
-    fn made(view: &ClaimsView) -> (&[Node], &LeftOut) {
-        match &view.tree {
+    fn made(view: &ClaimsView) -> (Vec<Node>, LeftOut) {
+        match view.tree() {
             TreeState::Made { nodes, left_out, .. } => (nodes, left_out),
             other => panic!("{other:?}"),
         }
@@ -583,25 +725,25 @@ mod tests {
         let (nodes, left_out) = made(&view);
         assert_eq!(nodes.len(), 4);
         assert_eq!(left_out.unquoted, 1, "the theorem's made-up quote was not found: left out and counted");
-        let MappingState::Made { mapping, .. } = &view.mapping else { panic!("{:?}", view.mapping) };
+        let MappingState::Made { mapping, .. } = view.mapping() else { panic!("{:?}", view.mapping()) };
         assert_eq!(mapping.placed.len(), 4);
         // p5's words are not in it: unplaced, and listed
         assert_eq!(mapping.unplaced.len(), 1);
         assert_eq!(mapping.unplaced[0].point, "p5");
-        let claim = view.node_reviews.iter().find(|node| node.node.as_deref() == Some("n1")).unwrap();
+        let claim = view.node_reviews().into_iter().find(|node| node.node.as_deref() == Some("n1")).unwrap();
         assert_eq!(claim.reviewers.challenges, ["Reviewer Ab12", "Reviewer Cd34"]);
         assert!(claim.contested);
-        let ablation = view.node_reviews.iter().find(|node| node.node.as_deref() == Some("n4")).unwrap();
+        let ablation = view.node_reviews().into_iter().find(|node| node.node.as_deref() == Some("n4")).unwrap();
         assert_eq!(
             (ablation.reviewers.supports.as_slice(), ablation.contested),
             (&["Reviewer Ab12".to_owned()][..], false)
         );
-        let root = &view.node_reviews[0];
+        let root = &view.node_reviews()[0];
         assert_eq!(
             (root.node.as_deref(), root.reviewers.presentation.as_slice()),
             (None, &["Reviewer Cd34".to_owned()][..])
         );
-        assert_eq!(view.contested, 1);
+        assert_eq!(view.contested(), 1);
         // the reviewers' scores, on the venue's own scale
         let reviews = view.reviews.as_ref().unwrap();
         let first = &reviews.reviewers[0];
@@ -614,7 +756,7 @@ mod tests {
         // the authors' reply, named by its title
         assert_eq!(first.replies.len(), 1);
         assert_eq!(first.replies[0].attached, Attached::Named);
-        assert_eq!(view.estimate.as_ref().unwrap().to_ask, 0);
+        assert_eq!(view.estimate().unwrap().to_ask, 0);
     }
 
     #[test]
@@ -622,34 +764,92 @@ mod tests {
         let (_folder, library) = library_with(true, true);
         asked(&library, &[tree_answer(), mapping_answer()]);
         let view = view(&library, PAPER, &Chosen::claude(MODEL)).unwrap().unwrap();
-        let gaps: Vec<(GapKind, &str)> = view.gaps.iter().map(|gap| (gap.kind, gap.node.as_str())).collect();
+        let gaps: Vec<(GapKind, String)> = view.gaps().into_iter().map(|gap| (gap.kind, gap.node)).collect();
         // the experiment (n3) was examined by no reviewer; every claim and finding has evidence under it
-        assert_eq!(gaps, [(GapKind::NotExamined, "n3")]);
-        assert!(view.gaps[0].evidence[0].address().is_some());
+        assert_eq!(gaps, [(GapKind::NotExamined, "n3".to_owned())]);
+        assert!(view.gaps()[0].evidence[0].address().is_some());
     }
 
     #[test]
     fn a_paper_with_reviews_and_no_pdf_has_no_tree_and_its_reviews_as_stored() {
         let (_folder, library) = library_with(false, true);
         let view = view(&library, PAPER, &Chosen::claude(MODEL)).unwrap().unwrap();
-        assert_eq!((view.paper.clone(), view.tree.clone()), (PaperState::NoPdf, TreeState::NoText));
-        assert_eq!(view.mapping, MappingState::NoTree);
+        assert_eq!((view.paper(), view.tree()), (PaperState::NoPdf, TreeState::NoText));
+        assert_eq!(view.mapping(), MappingState::NoTree);
         assert_eq!(view.reviews.as_ref().unwrap().points.points.len(), 5);
-        assert_eq!(view.estimate, None);
+        assert_eq!(view.estimate(), None);
     }
 
     #[test]
     fn a_paper_with_a_pdf_and_no_reviews_has_the_tree_alone() {
         let (_folder, library) = library_with(true, false);
         let before = view(&library, PAPER, &Chosen::claude(MODEL)).unwrap().unwrap();
-        assert_eq!((before.tree.clone(), before.mapping.clone()), (TreeState::NotAsked, MappingState::NoReviews));
-        assert_eq!(before.estimate.as_ref().unwrap().to_ask, 1);
+        assert_eq!((before.tree(), before.mapping()), (TreeState::NotAsked, MappingState::NoReviews));
+        assert_eq!(before.estimate().unwrap().to_ask, 1);
         asked(&library, &[tree_answer()]);
         let after = view(&library, PAPER, &Chosen::claude(MODEL)).unwrap().unwrap();
         assert_eq!(made(&after).0.len(), 4);
-        assert_eq!(after.mapping, MappingState::NoReviews);
+        assert_eq!(after.mapping(), MappingState::NoReviews);
         // with no reviews, nothing is "not examined": only claims without support would be gaps
-        assert!(after.gaps.is_empty());
+        assert!(after.gaps().is_empty());
+    }
+
+    /// The view of the paper with its tree and mapping asked, as kept.
+    fn mapped() -> (tempfile::TempDir, ClaimsView) {
+        let (folder, library) = library_with(true, true);
+        asked(&library, &[tree_answer(), mapping_answer()]);
+        let view = view(&library, PAPER, &Chosen::claude(MODEL)).unwrap().unwrap();
+        (folder, view)
+    }
+
+    #[test]
+    fn a_kept_mapping_is_not_told_when_the_reviews_are_gone_or_hold_no_points() {
+        let (_folder, mut view) = mapped();
+        assert!(matches!(view.mapping(), MappingState::Made { .. }));
+        let reviews = view.reviews.take();
+        assert_eq!(view.mapping(), MappingState::NoReviews);
+        assert!(view.node_reviews().is_empty() && view.contested() == 0);
+        assert!(view.gaps().iter().all(|gap| gap.kind != GapKind::NotExamined), "nothing was examined by no one");
+        let mut pointless = reviews.unwrap();
+        pointless.points.points.clear();
+        view.reviews = Some(pointless);
+        assert_eq!(view.mapping(), MappingState::NoPoints);
+        assert!(view.node_reviews().is_empty());
+    }
+
+    #[test]
+    fn a_tree_left_with_no_nodes_has_no_tree_to_map_onto_whatever_is_kept() {
+        let (_folder, mut view) = mapped();
+        let Claims::Read { tree: TreeKept::Made { tree, .. }, .. } = &mut view.claims else { panic!() };
+        tree.nodes.clear();
+        assert!(matches!(view.tree(), TreeState::Made { nodes, .. } if nodes.is_empty()));
+        assert_eq!(view.mapping(), MappingState::NoTree);
+        assert!(view.node_reviews().is_empty() && view.gaps().is_empty());
+    }
+
+    #[test]
+    fn a_paper_with_no_text_tells_no_tree_no_estimate_and_its_reviews_points_state() {
+        let (_folder, mut view) = mapped();
+        view.claims = Claims::NoText(NoText::Unreadable);
+        assert_eq!((view.paper(), view.tree(), view.estimate()), (PaperState::Unreadable, TreeState::NoText, None));
+        assert_eq!(view.mapping(), MappingState::NoTree);
+        view.reviews.as_mut().unwrap().points.points.clear();
+        assert_eq!(view.mapping(), MappingState::NoPoints, "as with a PDF: no points comes before no tree");
+        let told = serde_json::to_value(&view).unwrap();
+        assert_eq!((told["tree"]["state"].clone(), told["estimate"].clone()), (json!("no_text"), Value::Null));
+    }
+
+    #[test]
+    fn a_tree_not_asked_or_malformed_has_no_mapping_and_no_gaps() {
+        let (_folder, mut view) = mapped();
+        let estimate = view.estimate().unwrap().clone();
+        let malformed = TreeKept::Malformed { why: Malformed::Empty, kept_at: "then".to_owned() };
+        for tree in [TreeKept::NotAsked, malformed] {
+            view.claims = Claims::Read { passages: 9, sent: 8, tree, estimate: estimate.clone() };
+            assert_eq!(view.mapping(), MappingState::NoTree);
+            assert!(view.node_reviews().is_empty() && view.gaps().is_empty());
+            assert_eq!(view.paper(), PaperState::Read { passages: 9, sent: 8 });
+        }
     }
 
     #[test]
@@ -657,7 +857,7 @@ mod tests {
         let (_folder, library) = library_with(true, true);
         asked(&library, &[tree_answer(), mapping_answer()]);
         assert_eq!(
-            view(&library, PAPER, &Chosen::claude("claude-opus-5-5")).unwrap().unwrap().tree,
+            view(&library, PAPER, &Chosen::claude("claude-opus-5-5")).unwrap().unwrap().tree(),
             TreeState::NotAsked
         );
         assert_eq!(view(&library, "nowhere", &Chosen::claude(MODEL)).unwrap(), None);

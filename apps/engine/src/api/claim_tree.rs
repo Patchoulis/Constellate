@@ -139,7 +139,7 @@ fn begin(
         }
         // in dollars for a model with a price, in tokens for one without, as the estimate was shown
         let view = claim_tree::view(&library, &id, &chosen)?.ok_or(ApiError::NotFound)?;
-        let cost = view.estimate.map(|estimate| estimate.cost).ok_or(ApiError::NotFound)?;
+        let cost = view.estimate().map(|estimate| estimate.cost.clone()).ok_or(ApiError::NotFound)?;
         let terms = Terms::AtMost { usd: MOST_BUDGET_USD, tokens: MOST_BUDGET_TOKENS };
         let budget = budget(&cost, accepted, terms).map_err(|why| ApiError::Invalid(why.to_string()))?;
         let job = engine.job.start_tracked(KIND, move |tracker| {
@@ -439,8 +439,8 @@ mod tests {
         let done = ended(&engine);
         assert_eq!((done.id, done.kind.as_str(), done.state), (job, KIND, Phase::Done), "{:?}", done.log);
         let Json(view) = read(State(Arc::clone(&engine)), Path(PAPER.to_owned())).await.unwrap();
-        assert!(matches!(view.tree, crate::analysis::claim_tree::TreeState::Made { .. }));
-        assert!(matches!(view.mapping, crate::analysis::claim_tree::MappingState::Made { .. }));
+        assert!(matches!(view.tree(), crate::analysis::claim_tree::TreeState::Made { .. }));
+        assert!(matches!(view.mapping(), crate::analysis::claim_tree::MappingState::Made { .. }));
 
         let (release, wait) = mpsc::channel::<()>();
         engine
