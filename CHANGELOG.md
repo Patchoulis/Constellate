@@ -49,5 +49,5 @@ The first release.
   limited to the sites papers are published on.
 - PDFs are fetched only from the publishers' hosts, with a size and time limit.
 
-[Unreleased]: https://github.com/OWNER/constellate/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/OWNER/constellate/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Patchoulis/constellate/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Patchoulis/constellate/releases/tag/v0.1.0
