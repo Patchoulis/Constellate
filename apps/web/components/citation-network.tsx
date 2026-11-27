@@ -345,7 +345,7 @@ export function Citations({ paper, run, onOpen }: { paper: Paper; run?: string; 
 
 	if (!network) {
 		// a backend without the route (the Python one) has no network to show: nothing went wrong
-		if (kept.status === "failed" && missingRoute(kept.error))
+		if (kept.status === "failed" && missingRoute(kept.problem))
 			return <p className="text-sm text-muted-foreground">No citation network is available for this paper here.</p>;
 		if (kept.status === "failed")
 			return (

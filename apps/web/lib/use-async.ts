@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type DependencyList } from "react";
+import { problemOf, withSignal, type RequestProblem } from "@/lib/request";
 
 /**
  * Something fetched, in exactly one of these at a time:
@@ -10,7 +11,8 @@ import { useCallback, useEffect, useRef, useState, type DependencyList } from "r
  *     ready       the answer
  *     reloading   asked again while the last answer stays shown (`reload`, or new deps with `keep`)
  *     failed      the answer is an error; `data` is the answer before it when asking again failed, so what
- *                 the user was reading is not taken away
+ *                 the user was reading is not taken away; `problem` is what went wrong for code (a request's
+ *                 status: lib/missing-route.ts) when the error was a request's
  *
  * A spinner and an error at once cannot be written, nor an error that hides the answer it came after.
  */
@@ -19,11 +21,15 @@ export type Async<T> =
 	| { status: "loading" }
 	| { status: "ready"; data: T }
 	| { status: "reloading"; data: T }
-	| { status: "failed"; error: string; data?: T };
+	| { status: "failed"; error: string; problem?: RequestProblem; data?: T };
 
 /** What happens to a fetch: asked for anew (other deps), asked again (`reload`), answered, refused, or not needed. */
 export type AsyncEvent<T> =
-	{ kind: "ask" } | { kind: "reask" } | { kind: "answer"; data: T } | { kind: "refuse"; error: string } | { kind: "clear" };
+	| { kind: "ask" }
+	| { kind: "reask" }
+	| { kind: "answer"; data: T }
+	| { kind: "refuse"; error: string; problem?: RequestProblem }
+	| { kind: "clear" };
 
 /** The answer kept for the deps it was asked for, if any. */
 function kept<T>(state: Async<T>): T | undefined {
@@ -48,9 +54,8 @@ export function asyncStep<T>(state: Async<T>, event: AsyncEvent<T>): Async<T> {
 			return state.status === "loading" || state.status === "reloading" ? { status: "ready", data: event.data } : state;
 		case "refuse": {
 			if (state.status !== "loading" && state.status !== "reloading") return state;
-			return state.status === "reloading"
-				? { status: "failed", error: event.error, data: state.data }
-				: { status: "failed", error: event.error };
+			const failed = { status: "failed" as const, error: event.error, ...(event.problem ? { problem: event.problem } : {}) };
+			return state.status === "reloading" ? { ...failed, data: state.data } : failed;
 		}
 	}
 }
@@ -76,11 +81,41 @@ export function asked<T>(held: Async<T>, active: boolean, keep: boolean): Async<
 }
 
 /**
+ * Start `load`, telling `step` its answer or refusal, until the returned function is called: from then on what it
+ * answers is dropped and its requests are called off (the signal `load` is given, which `withSignal` also hands to
+ * every `api` request `load` starts before its first await). What `useAsync` does for each request, so that one
+ * superseded by the next (other deps, `reload`) or by its component going away is aborted, not only ignored.
+ */
+export function startLoad<T>(load: (signal: AbortSignal) => Promise<T>, step: (event: AsyncEvent<T>) => void): () => void {
+	const controller = new AbortController();
+	let stale = false;
+	let asked: Promise<T>;
+	try {
+		asked = withSignal(controller.signal, () => load(controller.signal));
+	} catch (error) {
+		asked = Promise.reject(error);
+	}
+	asked.then(
+		(data) => !stale && step({ kind: "answer", data }),
+		(error: unknown) => {
+			if (stale) return;
+			const problem = problemOf(error);
+			step({ kind: "refuse", error: error instanceof Error ? error.message : String(error), ...(problem ? { problem } : {}) });
+		},
+	);
+	return () => {
+		stale = true;
+		controller.abort();
+	};
+}
+
+/**
  * Run `load` whenever `deps` change and report where it stands. Pass null to stay idle (nothing to load yet).
- * An answer that arrives after the deps changed again is dropped; `reload` runs it once more.
+ * An answer that arrives after the deps changed again is dropped and its request called off (`startLoad`);
+ * `reload` runs it once more.
  */
 export function useAsync<T>(
-	load: (() => Promise<T>) | null,
+	load: ((signal: AbortSignal) => Promise<T>) | null,
 	deps: DependencyList,
 	{ keep = true }: AsyncOptions = {},
 ): Async<T> & { reload: () => void } {
@@ -101,15 +136,8 @@ export function useAsync<T>(
 		const again = before !== null && sameDeps(before.key, key) && before.version !== version;
 		setHeld((now) => ({ key, state: again ? asyncStep(now.state, { kind: "reask" }) : asked(now.state, active, keep) }));
 		if (!load) return;
-		let stale = false;
 		const step = (event: AsyncEvent<T>) => setHeld((now) => (sameDeps(now.key, key) ? { key, state: asyncStep(now.state, event) } : now));
-		load().then(
-			(data) => !stale && step({ kind: "answer", data }),
-			(error: Error) => !stale && step({ kind: "refuse", error: error.message }),
-		);
-		return () => {
-			stale = true;
-		};
+		return startLoad(load, step);
 		// `load` is a fresh closure every render; the caller's deps say when it really changed.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [...key, version]);

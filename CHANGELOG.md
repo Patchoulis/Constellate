@@ -124,6 +124,9 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- An engine that stops answering no longer leaves an estimate or a section waiting for ever: a request gives up
+  after 20 seconds (a minute for one that may read a paper's PDF) and says so, an answer that cannot be read says
+  that, and what a closed section or a superseded choice had asked for is called off.
 - A quote a model gives as evidence is no longer accepted when it differs from the paper by a whole word, a number
   or a negation (a quote that leaves out the paper's "not" was found as a close match); only slips inside words
   are still allowed.

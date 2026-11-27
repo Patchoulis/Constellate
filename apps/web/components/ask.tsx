@@ -202,7 +202,7 @@ export function AskBox({
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [elsewhere]);
 
-	if (asked.status === "failed" && missingRoute(asked.error)) return null; // an engine without these routes
+	if (asked.status === "failed" && missingRoute(asked.problem)) return null; // an engine without these routes
 	const askModel = () => {
 		if (state.kind !== "found") return;
 		const { question, estimate } = state;
@@ -398,7 +398,7 @@ export function AskBox({
 /** A community's Ask section, for the community panel. */
 export function CommunityAsk({ run, treePath, papers }: { run: string; treePath: string; papers: number }) {
 	const probe = useAsync(() => api.questions(run), [run]);
-	if (probe.status === "failed" && missingRoute(probe.error)) return null;
+	if (probe.status === "failed" && missingRoute(probe.problem)) return null;
 	return (
 		<section className="flex flex-col gap-2 px-4 pb-4">
 			<Heading>Ask</Heading>
@@ -412,7 +412,7 @@ export function RunAsk({ run, papers, onCitedPapers }: { run: string; papers: nu
 	const [open, setOpen] = useState(false);
 	const probe = useAsync(() => api.questions(run), [run]);
 	const { ref, style, handle } = useResizable<HTMLDivElement>("overview");
-	if (probe.status === "failed" && missingRoute(probe.error)) return null;
+	if (probe.status === "failed" && missingRoute(probe.problem)) return null;
 	if (!open)
 		return (
 			<Button

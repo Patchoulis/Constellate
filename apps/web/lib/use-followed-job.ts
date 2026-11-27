@@ -28,6 +28,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { JobOutcome, JobPapers, JobProgress, Status } from "@rp/contracts";
 import { api } from "@/lib/api";
+import { withSignal } from "@/lib/request";
 import { count } from "@/lib/units";
 
 export type FollowedJob =
@@ -198,7 +199,8 @@ export function createPoller(
 	};
 }
 
-const poller = createPoller((since) => api.status(since));
+// shared by every section: never called off by one of them
+const poller = createPoller((since) => withSignal(null, () => api.status(since)));
 
 /** The jobs this window started, by what they are about (a paper's weaknesses, a community's table…). */
 const startedFor = new Map<string, { id: number; about: string | null }>();
