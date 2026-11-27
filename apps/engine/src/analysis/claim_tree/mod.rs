@@ -71,6 +71,9 @@ pub enum TreeState {
         /// The model that wrote it, as the API named it.
         model: String,
     },
+    /// A tree was written, but every node of it was left out (`left_out` says why): nothing stands to be shown or
+    /// mapped onto. Not `Made` with no nodes, which would read as a paper with no claims.
+    AllLeftOut { left_out: LeftOut, kept_at: String, model: String },
 }
 
 /// Where the mapping of the paper's reviews onto its tree stands: the JSON's `mapping`, read from the reviews and
@@ -275,6 +278,9 @@ impl ClaimsView {
             Claims::Read { tree: TreeKept::NotAsked, .. } => TreeState::NotAsked,
             Claims::Read { tree: TreeKept::Malformed { why, kept_at }, .. } => {
                 TreeState::Malformed { why: why.clone(), kept_at: kept_at.clone() }
+            }
+            Claims::Read { tree: TreeKept::Made { tree, kept_at, model, .. }, .. } if tree.nodes.is_empty() => {
+                TreeState::AllLeftOut { left_out: tree.left_out, kept_at: kept_at.clone(), model: model.clone() }
             }
             Claims::Read { tree: TreeKept::Made { tree, kept_at, model, .. }, .. } => TreeState::Made {
                 nodes: tree.nodes.clone(),
@@ -845,7 +851,7 @@ mod tests {
         let (_folder, mut view) = mapped();
         let Claims::Read { tree: TreeKept::Made { tree, .. }, .. } = &mut view.claims else { panic!() };
         tree.nodes.clear();
-        assert!(matches!(view.tree(), TreeState::Made { nodes, .. } if nodes.is_empty()));
+        assert!(matches!(view.tree(), TreeState::AllLeftOut { .. }), "its own state, not a tree of no claims");
         assert_eq!(view.mapping(), MappingState::NoTree);
         assert!(view.node_reviews().is_empty() && view.gaps().is_empty());
     }

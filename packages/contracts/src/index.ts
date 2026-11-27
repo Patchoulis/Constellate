@@ -1397,7 +1397,9 @@ export type ClaimTreeState =
 	| { state: "no_text" }
 	| { state: "not_asked" }
 	| { state: "malformed"; why: { why: "duplicate_id" | "cycle"; id: string } | { why: "empty" }; kept_at: string }
-	| { state: "made"; nodes: ClaimNode[]; left_out: ClaimsLeftOut; kept_at: string; model: string };
+	| { state: "made"; nodes: ClaimNode[]; left_out: ClaimsLeftOut; kept_at: string; model: string }
+	/** a tree was written but every node of it was left out (`left_out` says why): nothing stands */
+	| { state: "all_left_out"; left_out: ClaimsLeftOut; kept_at: string; model: string };
 
 /** What a reviewer's point does to the node it is placed on. */
 export type ReviewStance = "supports" | "challenges" | "asks" | "presentation" | "whole_paper";
@@ -1435,7 +1437,8 @@ export interface PointMapping {
 	placed: PointPlacement[];
 	/** always shown */
 	unplaced: UnplacedPoint[];
-	ignored: { unknown_points: number; repeated: number };
+	/** answered but not shown: about no point sent, a point placed again, or past the most read (two per point) */
+	ignored: { unknown_points: number; repeated: number; past_most?: number };
 }
 
 export type PointMappingState =
