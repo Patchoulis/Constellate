@@ -27,8 +27,10 @@
 //!
 //! Two limits of that, for whoever wires it in: the rules hold within one call, so two batches running at once
 //! (or a batch beside the arXiv API's own [`super::citations::Pacer`]) each keep them separately, and the engine
-//! must run one download batch at a time (its one background job does); and a host is the one the address names,
-//! so a publisher's address that redirects to arXiv is paced as the publisher.
+//! must run one download batch at a time (its one background job does); and an address is paced by the host it
+//! names, except that a redirect from another host to arXiv waits for a turn at arXiv as arXiv's own addresses
+//! do (a publisher's link to an arXiv PDF must not ask arXiv more often than it allows). A redirect from arXiv to
+//! another host, which arXiv does not make, would be paced as arXiv.
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, VecDeque};
@@ -210,19 +212,96 @@ impl<T> Schedule<T> {
     }
 }
 
-/// A [`Fetch`] that notes whether the host refused, and how long it asked to be left alone. It is made for one
+impl<T> Schedule<T> {
+    /// A turn at arXiv for a request that an address of another host redirected there: granted when arXiv may be
+    /// asked now (no more of its requests under way than its rule allows, its pause over), and then counted as one
+    /// of arXiv's own; otherwise how long until it may be, when that is known.
+    fn borrow(&mut self, rule: Rule, now: Instant) -> Result<(), Option<Duration>> {
+        let host = self.hosts.entry(ARXIV_SITE.to_owned()).or_insert_with(|| Host {
+            rule,
+            waiting: VecDeque::new(),
+            busy: 0,
+            next: now,
+            refusals: 0,
+        });
+        if host.busy >= host.rule.at_once.max(1) {
+            return Err(None);
+        }
+        if host.next > now {
+            return Err(Some(host.next.saturating_duration_since(now)));
+        }
+        host.busy += 1;
+        host.next = now + host.rule.pause;
+        Ok(())
+    }
+
+    /// A borrowed turn at arXiv is over: its pause runs from now, and a refusal keeps arXiv's own addresses waiting
+    /// for as long as it asked.
+    fn give_back(&mut self, refusal: Option<Option<Duration>>, now: Instant) {
+        let Some(host) = self.hosts.get_mut(ARXIV_SITE) else { return };
+        host.busy = host.busy.saturating_sub(1);
+        host.next = host.next.max(now + host.rule.pause);
+        if let Some(asked) = refusal {
+            host.next = host.next.max(now + asked.unwrap_or(FIRST_BACK_OFF).min(LONGEST_WAIT));
+        }
+    }
+}
+
+/// How arXiv's hosts are kept in the schedule ([`site`]).
+const ARXIV_SITE: &str = "arxiv.org";
+
+/// A [`Fetch`] that notes whether the host refused, and how long it asked to be left alone, and that paces a
+/// redirect from another host to arXiv by arXiv's rule: such a request waits for a turn at arXiv like arXiv's own
+/// addresses do, so a publisher's links to arXiv never ask arXiv more often than it allows. It is made for one
 /// attempt on one thread, and never shared.
-struct Watched<'a> {
+struct Watched<'a, T> {
     fetch: &'a (dyn Fetch + Sync),
+    /// The site the attempt was scheduled for.
+    site: &'a str,
+    schedule: &'a Mutex<Schedule<T>>,
+    ready: &'a Condvar,
+    politeness: &'a Politeness,
+    progress: &'a Progress,
     refusal: Cell<Option<Option<Duration>>>,
 }
 
-impl Fetch for Watched<'_> {
+impl<T> Watched<'_, T> {
+    /// Wait for a turn at arXiv; `false` when the batch was cancelled meanwhile.
+    fn turn_at_arxiv(&self) -> bool {
+        let mut state = open(self.schedule);
+        loop {
+            if self.progress.is_cancelled() {
+                return false;
+            }
+            match state.borrow(self.politeness.arxiv, Instant::now()) {
+                Ok(()) => return true,
+                Err(after) => {
+                    let wait = after.map_or(LOOK_FOR_CANCEL, |after| after.min(LOOK_FOR_CANCEL));
+                    state = self.ready.wait_timeout(state, wait).unwrap_or_else(PoisonError::into_inner).0;
+                }
+            }
+        }
+    }
+}
+
+impl<T> Fetch for Watched<'_, T> {
     fn get(&self, url: &str, limits: Limits) -> Result<Response, FetchError> {
+        let borrowed = site(url) == ARXIV_SITE && self.site != ARXIV_SITE;
+        if borrowed && !self.turn_at_arxiv() {
+            return Err(FetchError::Unreachable(url.to_owned(), "the batch was cancelled".to_owned()));
+        }
         let answer = self.fetch.get(url, limits);
+        let refused = |answer: &Result<Response, FetchError>| match answer {
+            Ok(response) => matches!(response.status, 429 | 503).then_some(response.retry_after),
+            Err(_) => None,
+        };
+        if borrowed {
+            open(self.schedule).give_back(refused(&answer), Instant::now());
+            self.ready.notify_all();
+        }
         // the last answer of the attempt decides: a refusal followed by an answer is not a refusal
-        if let Ok(response) = &answer {
-            self.refusal.set(matches!(response.status, 429 | 503).then_some(response.retry_after));
+        if answer.is_ok() {
+            self.refusal.set(refused(&answer));
         }
         answer
     }
@@ -252,7 +331,7 @@ where
     progress.expect(addresses.len());
     let schedule = Mutex::new(Schedule::new(addresses, politeness, Instant::now()));
     let ready = Condvar::new();
-    let worker = || fetch_while_any(fetch, addresses, &schedule, &ready, progress, &fetch_one);
+    let worker = || fetch_while_any(fetch, addresses, politeness, &schedule, &ready, progress, &fetch_one);
     thread::scope(|scope| {
         let threads = politeness.in_flight.max(1).min(addresses.len());
         let started = (0..threads)
@@ -271,6 +350,7 @@ where
 fn fetch_while_any<T, F>(
     fetch: &(dyn Fetch + Sync),
     addresses: &[String],
+    politeness: &Politeness,
     schedule: &Mutex<Schedule<T>>,
     ready: &Condvar,
     progress: &Progress,
@@ -295,7 +375,7 @@ fn fetch_while_any<T, F>(
                 }
             }
         };
-        let watched = Watched { fetch, refusal: Cell::new(None) };
+        let watched = Watched { fetch, site: &site, schedule, ready, politeness, progress, refusal: Cell::new(None) };
         let outcome = threads::caught(|| fetch_one(&watched, &addresses[index]));
         open(schedule).finished(index, &site, outcome, watched.refusal.get(), Instant::now(), progress);
         ready.notify_all();
@@ -431,6 +511,37 @@ mod tests {
         assert!((1..=6).contains(&fetched), "only those already begun: {fetched}");
         assert_eq!(fake.asked().len(), fetched);
         assert_eq!(outcomes.iter().filter(|outcome| **outcome == Outcome::Cancelled).count(), 40 - fetched);
+    }
+
+    #[test]
+    fn a_publishers_redirect_to_arxiv_waits_for_its_turn_at_arxiv() {
+        // four publisher addresses that each redirect to an arXiv PDF, beside four arXiv addresses of its own
+        let mut fake = Fake::new().slow(Duration::from_millis(10));
+        let mut addresses = Vec::new();
+        for paper in 0..4 {
+            let publisher = format!("https://proceedings.mlr.press/{paper}.pdf");
+            let arxiv = format!("https://arxiv.org/pdf/{paper}");
+            let redirected = format!("https://arxiv.org/pdf/moved-{paper}");
+            fake = fake
+                .with(&publisher, super::super::fake::redirect(302, &redirected))
+                .with(&redirected, ok("application/pdf", &redirected))
+                .with(&arxiv, ok("application/pdf", &arxiv));
+            addresses.push(publisher);
+            addresses.push(arxiv);
+        }
+        let follow = |fetch: &dyn Fetch, address: &str| -> Result<String, String> {
+            let (_, response) = super::super::get_following(fetch, address, LIMITS, &super::super::any_https)
+                .map_err(|e| e.to_string())?;
+            Ok(response.text())
+        };
+        let outcomes = fetch_all(&fake, &addresses, &quick(), &Progress::new(), follow);
+        assert!(outcomes.iter().all(|outcome| matches!(outcome, Outcome::Done(Ok(_)))), "{outcomes:?}");
+        assert_eq!(fake.most_at_once("arxiv.org"), 1, "arXiv was asked more than once at a time");
+        let began = fake.began("arxiv.org");
+        assert_eq!(began.len(), 8);
+        for pair in began.windows(2) {
+            assert!(pair[1] - pair[0] >= Duration::from_millis(40), "{:?} apart", pair[1] - pair[0]);
+        }
     }
 
     #[test]
