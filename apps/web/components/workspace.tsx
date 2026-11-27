@@ -17,6 +17,7 @@ import { useMarks } from "@/lib/marks";
 import type { Job } from "@/lib/use-job";
 import { ready, useAsync } from "@/lib/use-async";
 import { useResizable } from "@/lib/use-resizable";
+import { stepLine } from "@/lib/run-step";
 
 /** The run's log, folded to its last line until opened. */
 export function ActivityLog({ job }: { job: Job }) {
@@ -39,7 +40,10 @@ export function ActivityLog({ job }: { job: Job }) {
 				className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs"
 			>
 				<span className={running ? "size-1.5 animate-pulse rounded-full bg-success" : "size-1.5 rounded-full bg-muted-foreground"} />
-				<span className="flex-1 truncate text-muted-foreground">{job.log[job.log.length - 1].trim()}</span>
+				{/* while a run is made, its step and how far it has got (the model's download in MB); else the last line */}
+				<span className="flex-1 truncate text-muted-foreground">
+					{running && job.step ? stepLine(job.step) : job.log[job.log.length - 1].trim()}
+				</span>
 				{open ? <ChevronDown className="size-3.5" /> : <ChevronUp className="size-3.5" />}
 			</button>
 			{open && (

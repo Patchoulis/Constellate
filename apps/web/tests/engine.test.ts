@@ -7,7 +7,7 @@ import { CSRF_HEADER, changesSomething, csrfOf, serverOwned, signInRedirect, spl
 test("only a server owns settings, and only those it names", () => {
 	assert.deepEqual([...serverOwned({ mode: "network", server_owned: ["embedding_model"] })], ["embedding_model"]);
 	assert.equal(serverOwned({ mode: "local", server_owned: ["embedding_model"] }).size, 0);
-	assert.equal(serverOwned({}).size, 0); // the Python backend says neither
+	assert.equal(serverOwned({}).size, 0); // a status that says neither
 	assert.equal(serverOwned(undefined).size, 0); // not known yet
 	assert.equal(serverOwned({ mode: "network" }).size, 0);
 });

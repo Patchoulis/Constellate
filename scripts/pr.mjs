@@ -1,55 +1,53 @@
 /**
  * Everything a pull request must pass, in one command:  npm run pr      (npm run pr -- --fix  also formats)
  *
- *   format   cargo fmt (Rust), prettier (TypeScript, JSON, Markdown, YAML) and ruff format (Python)
- *   lint     clippy with warnings denied (Rust), ruff check (Python), and the naming rule below
+ *   format   cargo fmt (Rust) and prettier (TypeScript, JSON, Markdown, YAML)
+ *   lint     clippy with warnings denied (Rust), and the naming rule below
  *   types    tsc
- *   tests    cargo test, pytest, the interface's tests, every test of the desktop shell (the embedded reader's
- *            confinement too, in a real Electron), and the scripts' and git hooks' tests
+ *   tests    cargo test, the interface's tests, every test of the desktop shell (the two servers it starts, for
+ *            real, against the interface's build, which is made first; the embedded reader's confinement, in a
+ *            real Electron), and the scripts' and git hooks' tests
  *   advisories   known vulnerabilities in the dependencies, from each ecosystem's own database (needs the network):
  *            npm audit (what ships: moderate and above; everything, build tools included: high and above),
- *            cargo deny (deny.toml: RustSec advisories, licences, sources), pip-audit (the backend's lock)
+ *            cargo deny (deny.toml: RustSec advisories, licences, sources)
  *
  *   --only=<start>   only the steps whose name starts so (--only=advisories)
  *   --skip=<start>   all steps but those (CI runs the advisories as a job of their own: --skip=advisories)
  *
  * A step whose tool is missing fails, and says how to install it: a check that did not run has not passed.
  *
- * The naming rule: a caught error is called `error`, in both languages: `except X as error`, `catch (error)`.
- * One name everywhere means a reader never has to look up what `e`, `err`, `ex` or `problem` is this time.
+ * The naming rule: a caught error is called `error`: `catch (error)`, `.catch((error) => ...)`. One name everywhere
+ * means a reader never has to look up what `e`, `err`, `ex` or `problem` is this time.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const backend = join(root, "apps", "backend");
 const desktop = join(root, "apps", "desktop");
 const fix = process.argv.includes("--fix");
-const python = process.env.RP_PYTHON || "python";
 
-/** The project's own source files: what git tracks or would track, so nobody's virtual environment is read. */
+/** The project's own source files: what git tracks or would track, so nothing installed is read. */
 function sources() {
 	const listed = spawnSync("git", ["ls-files", "--cached", "--others", "--exclude-standard"], { cwd: root, encoding: "utf8" });
 	return listed.stdout
 		.split("\n")
-		.filter((name) => [".py", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".cjs", ".mjs"].includes(extname(name)))
+		.filter((name) => [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".cjs", ".mjs"].includes(extname(name)))
 		.map((name) => join(root, name))
 		.filter((path) => existsSync(path));
 }
 
 /**
- * The name a line catches an error under, when it does: `except X as e:`, `catch (e)`, `catch (e: unknown)`, or
- * a promise's `.catch((e) => ...)` / `.catch(e => ...)` / `.catch(function (e) ...)`. Null for any other line,
- * and for a comment (which may show how not to write it).
+ * The name a line catches an error under, when it does: `catch (e)`, `catch (e: unknown)`, or a promise's
+ * `.catch((e) => ...)` / `.catch(e => ...)` / `.catch(function (e) ...)`. Null for any other line, and for a
+ * comment (which may show how not to write it).
  */
-export function caughtName(line, python) {
-	if (/^\s*(\*|\/\/|\/\*|#)/.test(line)) return null;
-	const pattern = python
-		? /\bexcept\b[^:\n]*\bas\s+(\w+)\s*:/
-		: /(?<!\.)\bcatch\s*\(\s*(\w+)\s*(?::[^)]*)?\)|\.catch\(\s*(?:async\s+)?(?:function\s*\w*\s*)?\(?\s*(\w+)\s*(?::[^)]*)?\)?\s*(?:=>|\{)/;
+export function caughtName(line) {
+	if (/^\s*(\*|\/\/|\/\*)/.test(line)) return null;
+	const pattern =
+		/(?<!\.)\bcatch\s*\(\s*(\w+)\s*(?::[^)]*)?\)|\.catch\(\s*(?:async\s+)?(?:function\s*\w*\s*)?\(?\s*(\w+)\s*(?::[^)]*)?\)?\s*(?:=>|\{)/;
 	const caught = pattern.exec(line);
 	return caught ? (caught[1] ?? caught[2]) : null;
 }
@@ -61,7 +59,7 @@ function misnamedErrors() {
 		readFileSync(path, "utf8")
 			.split("\n")
 			.forEach((line, index) => {
-				const name = caughtName(line, extname(path) === ".py");
+				const name = caughtName(line);
 				if (name !== null && name !== "error") found.push(`${relative(root, path)}:${index + 1}: caught as \`${name}\`, not \`error\``);
 			});
 	}
@@ -71,8 +69,6 @@ function misnamedErrors() {
 const steps = [
 	["format (cargo fmt)", () => run("cargo", ["fmt", "--all", ...(fix ? [] : ["--check"])], root)],
 	["format (prettier)", () => run("npx", ["prettier", fix ? "--write" : "--check", "--log-level", "warn", "."], root)],
-	["format (ruff)", () => run(python, ["-m", "ruff", "format", ...(fix ? [] : ["--check"]), "."], backend)],
-	["lint (ruff)", () => run(python, ["-m", "ruff", "check", ...(fix ? ["--fix"] : []), "."], backend)],
 	[
 		"lint (a caught error is named `error`)",
 		() => {
@@ -84,8 +80,9 @@ const steps = [
 	["lint (clippy)", () => run("cargo", ["clippy", "--all-targets", "--quiet", "--", "-D", "warnings"], root)],
 	["types", () => run("npx", ["turbo", "run", "typecheck"], root)],
 	["tests (rust)", () => run("cargo", ["test", "--quiet"], root)],
-	["tests (backend)", () => run(python, ["-W", "ignore", "-m", "pytest", "-q"], backend)],
 	["tests (interface)", () => run("npx", ["turbo", "run", "test", "--filter=@rp/web"], root)],
+	// the interface's server, which the shell's tests start (apps/desktop/servers.test.cjs); cached when unchanged
+	["tests (desktop: the interface built first)", () => run("node", ["scripts/build.mjs", "--interface"], root)],
 	// every test file there is, so that a new one cannot be left out of the list by mistake
 	["tests (desktop)", () => run("node", ["--test", ...testsIn(desktop, ".test.cjs")], desktop)],
 	// a hostile page in the embedded reader, inside a real Electron (a hidden window; about two minutes)
@@ -105,24 +102,6 @@ const steps = [
 			needs("cargo", ["deny", "--version"], "cargo install cargo-deny --locked") &&
 			run("cargo", ["deny", "--log-level", "error", "check", "advisories", "licenses", "sources"], root),
 	],
-	[
-		"advisories (python)",
-		() => {
-			if (!needs(python, ["-m", "pip_audit", "--version"], `${python} -m pip install pip-audit`)) return false;
-			const folder = mkdtempSync(join(tmpdir(), "rp-audit-"));
-			const pins = join(folder, "requirements.txt");
-			writeFileSync(pins, everyPlatform(readFileSync(join(backend, "requirements.lock.txt"), "utf8")));
-			try {
-				return run(
-					python,
-					["-m", "pip_audit", "--strict", "--no-deps", "--disable-pip", "--progress-spinner", "off", "-r", `"${pins}"`],
-					root,
-				);
-			} finally {
-				rmSync(folder, { recursive: true, force: true });
-			}
-		},
-	],
 ];
 
 /** Is `command` there? If not, say how to get it: the step then fails rather than passing having checked nothing. */
@@ -130,18 +109,6 @@ function needs(command, probe, install) {
 	if (spawnSync([command, ...probe].join(" "), { env, stdio: "ignore", shell: true }).status === 0) return true;
 	console.error(`${command} ${probe.slice(0, -1).join(" ")} is not installed. Install it with: ${install}`);
 	return false;
-}
-
-/**
- * The backend's lock with its platform markers taken off (`colorama==0.4.6 ; sys_platform == 'win32'`), so that
- * pip-audit checks the packages of every system the app is set up on, not only of the one this runs on.
- */
-export function everyPlatform(lock) {
-	const pins = lock
-		.split(/\r?\n/)
-		.map((line) => line.replace(/#.*/, "").split(";")[0].trim())
-		.filter(Boolean);
-	return `${[...new Set(pins)].join("\n")}\n`;
 }
 
 /** The names of the test files in `folder` (none is an error: the step would pass having tested nothing). */

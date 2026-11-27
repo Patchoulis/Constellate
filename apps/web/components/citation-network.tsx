@@ -8,7 +8,6 @@ import { KIND_HUE, edgeKinds, lineKind } from "@/lib/citation-kinds";
 import { MathText } from "@/components/math-text";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { Input } from "@/components/ui/field";
-import { missingRoute } from "@/lib/answers";
 import { api } from "@/lib/api";
 import { openOutside } from "@/lib/links";
 import {
@@ -344,9 +343,6 @@ export function Citations({ paper, run, onOpen }: { paper: Paper; run?: string; 
 	const open = opener(onOpen);
 
 	if (!network) {
-		// a backend without the route (the Python one) has no network to show: nothing went wrong
-		if (kept.status === "failed" && missingRoute(kept.problem))
-			return <p className="text-sm text-muted-foreground">No citation network is available for this paper here.</p>;
 		if (kept.status === "failed")
 			return (
 				<div className="flex flex-col items-start gap-2 font-ui">

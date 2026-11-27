@@ -12,12 +12,12 @@ import {
 	historyOf,
 	indexingLine,
 	leftOutLine,
-	missingRoute,
 	reduceAsk,
 	splitPassages,
 	stateNote,
 	type AskState,
 } from "@/lib/answers";
+import { noReadablePdf } from "@/lib/no-pdf";
 import { RequestError } from "@/lib/request";
 
 const coverage: SearchCoverage = { papers: 739, full_text: 212, capped: 0, no_pdf: 520, unreadable: 7, missing: 0 };
@@ -168,17 +168,17 @@ test("the Ask box sends nothing to the model until it is started, and waits for 
 	assert.equal(reduceAsk(opening, { type: "viewed", view: { ...view("answered"), id: "first" } }), opening);
 });
 
-test("the Ask box is hidden only when the engine has no such route", () => {
+test("a paper's text is said to be unavailable only when the engine has no PDF it can read", () => {
 	const refused = (status: number, error: string | null) => new RequestError({ kind: "refused", status, error });
-	assert.equal(missingRoute(refused(404, "not found")), true);
-	assert.equal(missingRoute(refused(404, null)), true, "a 404 with no error of the backend's own");
-	assert.equal(missingRoute({ kind: "refused", status: 404, error: "not found" }), true, "the problem a failed useAsync keeps");
-	assert.equal(missingRoute(new RequestError({ kind: "unreachable" })), false);
-	assert.equal(missingRoute(new RequestError({ kind: "timeout", seconds: 20 })), false);
-	// a route that exists and failed: said, not taken for an older backend and hidden
-	assert.equal(missingRoute(refused(404, "the run demo was not found")), false);
-	assert.equal(missingRoute(refused(404, "the quote was not found in the paper")), false);
-	assert.equal(missingRoute(refused(500, "not found")), false, "the words alone, with another status");
-	assert.equal(missingRoute(new Error("not found")), false, "words alone, not a request's answer");
-	assert.equal(missingRoute("not found"), false);
+	assert.equal(noReadablePdf(refused(404, "not found")), true);
+	assert.equal(noReadablePdf(refused(404, null)), true, "a 404 with no error of the engine's own");
+	assert.equal(noReadablePdf({ kind: "refused", status: 404, error: "not found" }), true, "the problem a failed useAsync keeps");
+	assert.equal(noReadablePdf(new RequestError({ kind: "unreachable" })), false);
+	assert.equal(noReadablePdf(new RequestError({ kind: "timeout", seconds: 20 })), false);
+	// a route that exists and failed: said, not taken for a missing PDF and hidden
+	assert.equal(noReadablePdf(refused(404, "the run demo was not found")), false);
+	assert.equal(noReadablePdf(refused(404, "the quote was not found in the paper")), false);
+	assert.equal(noReadablePdf(refused(500, "not found")), false, "the words alone, with another status");
+	assert.equal(noReadablePdf(new Error("not found")), false, "words alone, not a request's answer");
+	assert.equal(noReadablePdf("not found"), false);
 });

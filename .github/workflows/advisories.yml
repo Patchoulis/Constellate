@@ -1,7 +1,7 @@
 name: Advisories
 
-# Known vulnerabilities in the dependencies, from each ecosystem's own database: npm audit (the npm lockfile),
-# cargo deny (Cargo.lock, with deny.toml) and pip-audit (apps/backend/requirements.lock.txt, what the app installs).
+# Known vulnerabilities in the dependencies, from each ecosystem's own database: npm audit (the npm lockfile) and
+# cargo deny (Cargo.lock, with deny.toml).
 # The same steps as `npm run pr -- --only=advisories`.
 #
 # A workflow of its own, beside CI, so that an advisory published today against some dependency fails this check
@@ -32,14 +32,10 @@ jobs:
     env:
       # the versions of the checking tools themselves, raised by hand
       CARGO_DENY_VERSION: "0.22.1"
-      PIP_AUDIT_VERSION: "2.10.1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.13"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
@@ -58,8 +54,6 @@ jobs:
         with:
           path: ~/.cargo/bin/cargo-deny
           key: cargo-deny-${{ runner.os }}-${{ env.CARGO_DENY_VERSION }}
-      - name: Install pip-audit
-        run: pip install "pip-audit==$PIP_AUDIT_VERSION"
       # npm audit reads package-lock.json; nothing needs installing (and no dependency's install script runs)
       - name: Check every lockfile against the advisory databases
         run: node scripts/pr.mjs --only=advisories

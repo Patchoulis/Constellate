@@ -7,7 +7,7 @@ import { AcceptanceTag } from "@/components/brand";
 import { tagText, tagTitle, termsOf } from "@/lib/acceptance";
 import { kindNotes } from "@/lib/paper-filter";
 
-// as the backend sends them (rp/tiers.py), for decisions seen in the conferences' lists
+// as the backend sends them (engine sources/acceptance.rs), for decisions seen in the conferences' lists
 const HIGHLIGHT: AcceptanceTerm = {
 	conference: "CVPR 2024",
 	called: "Highlight",

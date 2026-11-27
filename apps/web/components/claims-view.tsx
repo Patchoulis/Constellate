@@ -4,7 +4,7 @@
  * The paper reader's Claims tab (engine analysis/claim_tree): the paper's claims as a tree, each with the paper's
  * own words, and its reviewers' points placed on them. Reviewers come first; the model's own reading of gaps
  * comes last, collapsed and labelled. Nothing is asked of the model until the user has seen the estimate and
- * clicked; nothing is shown when the engine has no such route (the Python backend).
+ * clicked.
  */
 import { useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, ListTree, Loader2, MessagesSquare, RotateCcw, Square } from "lucide-react";
@@ -540,8 +540,8 @@ export function ClaimsView({ id, onOpenReviews }: { id: string; onOpenReviews?: 
 	const [redoError, setRedoError] = useState<string | null>(null);
 	const view = ready(loaded);
 	if (!view) {
-		if (loaded.status === "loading") return <p className="font-ui text-sm text-muted-foreground">Loading…</p>;
-		return null; // an engine without this route (or a paper it does not have): nothing to show
+		if (loaded.status === "failed") return <p className="font-ui text-sm text-destructive">The claims could not be read: {loaded.error}</p>;
+		return <p className="font-ui text-sm text-muted-foreground">Loading…</p>;
 	}
 	const reviews = view.reviews;
 	const tree = view.tree;

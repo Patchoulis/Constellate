@@ -259,8 +259,7 @@ function RunRow({
 }
 
 /**
- * The runs, a page at a time and searched as the user types (lib/runs-list.ts): the engine's paged list, or the
- * Python backend's whole one searched and paged here. The open run stays in sight, first, when it is not among
+ * The runs, a page at a time and searched as the user types (lib/runs-list.ts): the engine's paged list. The open run stays in sight, first, when it is not among
  * the rows shown. `plain` is the whole list the page holds: it says when the list changed (a run made, renamed or
  * deleted) and what is known of the open run.
  */
@@ -311,7 +310,7 @@ function RunsSection({
 		if (offset === null) return;
 		const controller = new AbortController();
 		withSignal(controller.signal, () => api.runsPage({ offset, limit: RUNS_PAGE, sort: "created", search: search || undefined })).then(
-			(answer) => dispatch({ kind: "page", asked, offset, ...pageOf(answer as RunPage | RunSummary[], search, offset) }),
+			(answer) => dispatch({ kind: "page", asked, offset, ...pageOf(answer as RunPage) }),
 			(error: Error) => controller.signal.aborted || dispatch({ kind: "refused", asked, error: error.message }),
 		);
 		return () => controller.abort();
@@ -421,9 +420,6 @@ function CostLine({
 				onChange={onChange}
 			/>
 			{why && <span className="shrink-0 text-warning">· {why}</span>}
-			{!why && choosable.source === "older_backend" && spent && !spent.provider.ready && (
-				<span className="shrink-0 text-warning">· no key set</span>
-			)}
 		</span>
 	);
 	if (!spent)

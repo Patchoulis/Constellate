@@ -68,18 +68,17 @@ Please make sure that this passes before you ask for review; it is exactly what 
 npm run pr
 ```
 
-It checks formatting (`cargo fmt`, `prettier`, `ruff format`), lints (`clippy` with warnings denied, `ruff check`
-and the naming rule below), type-checks
-and runs every test. `npm run pr -- --fix` formats and fixes what it can.
+It checks formatting (`cargo fmt`, `prettier`), lints (`clippy` with warnings denied, and the naming rule below),
+type-checks, builds the interface (the shell's tests start its server) and runs every test. `npm run pr -- --fix`
+formats and fixes what it can.
 
 #### Style
 
-- **Formatting is the formatter's job.** TypeScript, JSON, Markdown and YAML are laid out by Prettier
-  (`.prettierrc.json`: tabs, 140 columns); Python by `ruff format` (`apps/backend/pyproject.toml`: 120 columns).
-  Do not format by hand and do not argue with the tool.
-- **Lint warnings are errors.** `ruff check` must be clean and `tsc` must pass with no errors.
-- **A caught error is named `error`**, in both languages: `except ValueError as error:`, `catch (error)`. Not
-  `e`, `err`, `ex` or `problem`.
+- **Formatting is the formatter's job.** Rust is laid out by `cargo fmt` (`rustfmt.toml`); TypeScript, JSON,
+  Markdown and YAML by Prettier (`.prettierrc.json`: tabs, 140 columns). Do not format by hand and do not argue
+  with the tool.
+- **Lint warnings are errors.** `cargo clippy -- -D warnings` must be clean and `tsc` must pass with no errors.
+- **A caught error is named `error`**: `Err(error)`, `catch (error)`. Not `e`, `err`, `ex` or `problem`.
 - **State is explicit.** Anything with stages (a job, a request, a window starting up) is a named set of states
   with its transitions written down in one place, not a handful of booleans.
 - **Say what something is in the words of the subject**, in names, comments and messages: a paper, a community,
@@ -93,17 +92,22 @@ A change to code either adds something or fixes something broken; in both cases 
 tests so that it stays that way.
 
 - **Unit tests** for functions with one specific job: tests in the same file in `apps/engine` (Rust),
-  `apps/backend/tests` (pytest), `apps/web/tests`, `apps/desktop/*.test.cjs` and `scripts/*.test.mjs` (node's test
-  runner). `npm run pr` runs every one of these files it finds.
-- **Tests through the API** for behaviour that crosses modules: the backend tests use Flask's test client.
+  `apps/web/tests`, `apps/desktop/*.test.cjs` and `scripts/*.test.mjs` (node's test runner). `npm run pr` runs
+  every one of these files it finds.
+- **Tests through the API** for behaviour that crosses modules: the engine's tests call its routes as the
+  interface does (`apps/engine/src/api`), and the shell's (`apps/desktop/servers.test.cjs`) start the real engine
+  and the interface's server and check what passes between them: the token reaches the engine, and never a page.
 
 Tests never touch the network or the real `data/` folder. A parser that reads papers or pages gets a test for
-every layout that was once read wrongly. The one exception is the desktop app's first-start setup
-(`apps/desktop/setup.test.cjs`), which installs one small package with uv: it needs uv on the path (or `RP_UV`) and
-is skipped without it, except in CI, where a missing uv fails the run.
+every layout that was once read wrongly. The shell's server tests need the interface's build (`npm run pr` makes
+it) and the engine's program (`cargo test` leaves one); without them they are skipped, except in CI, where they
+fail instead.
 
-Run one test with `python -m pytest apps/backend/tests -k name`, `npx tsx --test apps/web/tests/graph.test.ts` or
+Run one test with `cargo test -p constellate name`, `npx tsx --test apps/web/tests/graph.test.ts` or
 `node --test apps/desktop/reader.test.cjs`.
+
+To work on the interface with hot reload, `npm run dev` starts the engine and `next dev` on http://localhost:3210
+(`scripts/dev.mjs`); `RP_DEV_URL=http://localhost:3210 npm start -w @rp/desktop` opens the desktop window on it.
 
 The shapes of secrets the git hooks and CI refuse are in `.githooks/secrets.txt`, one regular expression per line.
 A provider with a new key format gets a line there, and a sample in `scripts/hooks.test.mjs`.
@@ -117,16 +121,9 @@ them). CI runs them as a workflow of their own, Advisories, on every pull reques
   the build tools included (they only ever read this repository's own files).
 - `cargo deny check advisories licenses sources` for the engine's crates, with `deny.toml`: RustSec advisories, the
   licences the installer may carry, and crates only from crates.io. `npm run setup` installs cargo-deny.
-- `pip-audit` on `apps/backend/requirements.lock.txt`, for the packages of every system (`pip install pip-audit`,
-  or `pip install -r apps/backend/requirements-test.txt`).
 
 When one fails, move the package to the smallest version that fixes it. Some fixes need more than a bump:
 
-- **A package of the backend's Python** is pinned in `apps/backend/requirements.lock.txt`, the lock the app's first
-  start installs with (`apps/desktop/setup.cjs`). After changing `requirements.txt`, make the lock again:
-  `uv pip compile requirements.txt --universal --python-version 3.13 --no-annotate -o requirements.lock.txt` in
-  `apps/backend` (it keeps the versions already there unless asked: `--upgrade-package <name>`). `torch` stays below
-  the newest release that PyTorch's CUDA index in `setup.cjs` has, so both builds are one version.
 - **An npm package that comes with another one** is moved with an entry under `overrides` in the root
   `package.json`, which takes no comments, so each is explained here:
   - `minimatch@>=7.0.0 <11.0.1` -> `11.0.1`: GHSA-g3hv-75wg-m249, in electron-builder's packaging (app-builder-lib and
@@ -158,7 +155,7 @@ Commit messages and pull request titles follow [Conventional Commits](https://ww
 **Examples:**
 
 - `feat(web): show or dim papers by acceptance tier`
-- `fix(backend): read checklist answers written [N/A]`
+- `fix(engine): read checklist answers written [N/A]`
 - `refactor: split the reviews reader into blocks`
 - `docs(readme): describe the reader`
 
@@ -175,7 +172,7 @@ Commit messages and pull request titles follow [Conventional Commits](https://ww
 - `chore`: maintenance, including releases
 - `revert`: undoes an earlier commit
 
-Scopes: `backend`, `web`, `desktop`, `contracts`, `build`, `release`. A breaking change has `!` after the type or
+Scopes: `engine`, `web`, `desktop`, `contracts`, `build`, `release`. A breaking change has `!` after the type or
 scope and a `BREAKING CHANGE:` footer.
 
 #### Opening the pull request

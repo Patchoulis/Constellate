@@ -6,7 +6,7 @@ export const SIGN_IN_PAGE = "/auth/";
 /** The header a server reads the session's anti-forgery token from. */
 export const CSRF_HEADER = "X-Constellate-Csrf";
 
-/** The settings this engine decides itself: none on the user's own computer (and from the Python backend). */
+/** The settings this engine decides itself: none on the user's own computer, nor while its status is not known. */
 export function serverOwned(status: Pick<Status, "mode" | "server_owned"> | undefined): ReadonlySet<keyof Settings> {
 	if (status?.mode !== "network") return new Set();
 	return new Set(status.server_owned ?? []);

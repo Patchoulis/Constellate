@@ -8,26 +8,19 @@ directories:
 files:
   - "!**/*"
   - main.cjs
-  - setup.cjs
+  - engine.cjs
   - lifecycle.cjs
   - port.cjs
   - reader.cjs
   - reader-guard.cjs
   - icon.png
   - package.json
-# The backend rides along as a plain folder; the interface's server is added by after-pack.cjs.
+# The interface's server and the licences are added by after-pack.cjs.
 afterPack: ./after-pack.cjs
 extraResources:
-  - from: ../backend
-    to: backend
-    filter:
-      - "rp/**/*.py"
-      - requirements.txt
-      # the exact version of every package (setup.cjs installs with it)
-      - requirements.lock.txt
-  # uv sets up the app's own Python on first start (setup.cjs); scripts/build.mjs puts it in bin/
-  - from: bin
-    to: uv
+  # the engine and the libraries ONNX Runtime loads beside it, staged by scripts/build.mjs --dist (engine-files.cjs)
+  - from: engine
+    to: engine
 win:
   target: nsis
   executableName: Constellate
@@ -44,3 +37,15 @@ nsis:
   # the uninstaller asks whether to remove what the app downloaded as well (installer.nsh)
   include: installer.nsh
   deleteAppDataOnUninstall: false
+# Linux: an AppImage (runs as it is, on any distribution with glibc 2.38 or newer) and a .deb (Ubuntu 24.04, Debian 13)
+linux:
+  target:
+    - AppImage
+    - deb
+  executableName: constellate
+  icon: icon.png
+  category: Science
+  synopsis: Research papers gathered, embedded and split into communities
+  description: Gathers research papers from conference lists and arXiv, embeds and clusters them on this computer, and helps a researcher find what matters.
+  maintainer: Constellate
+  artifactName: Constellate-${version}-${arch}.${ext}

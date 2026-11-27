@@ -5,7 +5,6 @@
  * library this one cites and each paper citing it, the sentences where it happens, each a link into the citing
  * paper's text, with the sentence before and after, the section, and whether it is cited alone. Beside each, when
  * the model was asked, what kind of citation it is, with the words that show it (components/citation-kinds.tsx asks).
- * Nothing is shown when the engine has no such route (the Python backend).
  */
 import { useState } from "react";
 import { BookOpenText, Loader2, Square } from "lucide-react";
@@ -226,6 +225,8 @@ export function CitationSentences({ paper, run, onOpen }: { paper: string; run?:
 	};
 	// the run's reading of citing sentences, followed until it ends, also when the tab was left and opened again
 	const { job, elsewhere, start } = useFollowedJob(reload, `citation-contexts:${run ?? ""}`);
+	if (loaded.status === "failed")
+		return <p className="font-ui text-xs text-destructive">The citing sentences could not be read: {loaded.error}</p>;
 	if (!contexts) return null;
 	const { coverage } = contexts;
 	return (

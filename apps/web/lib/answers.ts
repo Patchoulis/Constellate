@@ -100,9 +100,6 @@ export function splitPassages(passages: PassageFound[]): { cited: PassageFound[]
 	return { cited: passages.filter((found) => found.cited), unused: passages.filter((found) => !found.cited) };
 }
 
-/** Does this error say the engine has no such route (the Python backend)? Then the Ask box is not shown. */
-export { isMissingRoute as missingRoute } from "@/lib/missing-route";
-
 /** The questions asked of one scope: the whole run's (community null), or one community's. */
 export function historyOf(questions: AnswerSummary[], community: string | null): AnswerSummary[] {
 	return questions.filter((asked) => (asked.community ?? null) === community);

@@ -1,4 +1,4 @@
-/** The shapes the backend's HTTP API returns (apps/backend/rp/server.py, apps/engine) and the web app reads. */
+/** The shapes the engine's HTTP API returns (apps/engine/src/api) and the web app reads. */
 
 export interface Settings {
 	embedding_model: string;
@@ -21,11 +21,11 @@ export interface Settings {
 	/** papers whose authors' declarations raise one of these flags are left out (Catalog.flags) */
 	exclude_flags: string[];
 	describe: boolean;
-	/** the language model's provider (ModelProvider.id); absent from the Python backend, which knows Claude only */
+	/** the language model's provider (ModelProvider.id) */
 	describe_provider?: ProviderId;
 	/** one of that provider's models, or an id typed for a provider that takes one */
 	describe_model: string;
-	/** how hard the model thinks; absent from the Python backend */
+	/** how hard the model thinks */
 	describe_effort?: Effort;
 }
 
@@ -165,24 +165,24 @@ export interface ShownModel {
 	model: string;
 }
 
-/** A step whose stored results a run can be told to ignore and produce again (rp/pipeline.py REDO). */
+/** A step whose stored results a run can be told to ignore and produce again (engine pipeline/mod.rs `RedoStep`). */
 export type RedoStep = "download" | "embeddings" | "descriptions";
 
 /** Every step that can be done again, in the order a run does them. */
 export const REDO_STEPS: RedoStep[] = ["download", "embeddings", "descriptions"];
 
-/** Conferences, or a submission-date range with optional categories (rp/selection.py checks it); or an earlier
+/** Conferences, or a submission-date range with optional categories (engine selection.rs checks it); or an earlier
  *  run to do again. Either way `redo` lists the steps to do again despite what is stored. */
 export type RunRequest = (
 	{ venues: string[]; include_workshops: boolean } | { start: string; end: string; categories: string[] } | { rerun: string }
 ) & {
 	redo?: RedoStep[];
 	/** name the run's communities within the most `GET /api/describe/estimate` showed (DescribeAccepted); absent: the
-	 *  run is made without names, which can be added from it later. The engine only; Python names without asking. */
+	 *  run is made without names, which can be added from it later. */
 	describe?: DescribeAccepted;
 };
 
-/** The backend's job state machine (rp/jobs.py). */
+/** The engine's one background job (apps/engine/src/jobs.rs). */
 export type JobState = "idle" | "running" | "done" | "failed";
 
 /**
@@ -200,7 +200,7 @@ export type FeatureName =
 export type FeatureSubject = { paper: string } | { run: string } | { community: { run: string; community: string } };
 
 export interface Status {
-	/** the job's number (absent from the Python backend): what `api.cancelJob` names */
+	/** the job's number: what `api.cancelJob` names */
 	id?: number;
 	/** what kind of work it is ("a run", "asking about papers") */
 	kind?: string;
@@ -210,15 +210,15 @@ export interface Status {
 	 * the engine and kept for compatibility with the Python backend: read `outcome` where it is there
 	 */
 	result: string | null;
-	/** what a finished job made; absent from the Python backend, whose finished jobs are runs (`result`) */
+	/** what a finished job made; null while it runs and when it failed */
 	outcome?: JobOutcome | null;
 	error: string | null;
 	/** log lines after the `since` the request asked for */
 	log: string[];
 	total: number;
-	/** what is unsafe about how the engine listens (apps/engine); absent from the Python backend */
+	/** what is unsafe about how the engine listens (apps/engine) */
 	warnings?: string[];
-	/** what kind of engine this is; absent from the Python backend, which is always local */
+	/** what kind of engine this is */
 	mode?: EngineMode;
 	/** the settings the server decides, which the interface does not offer to change */
 	server_owned?: (keyof Settings)[];
@@ -226,9 +226,9 @@ export interface Status {
 	progress?: JobProgress | null;
 	/** how many of its papers a job that counts them has done; null for one that does not */
 	papers?: JobPapers | null;
-	/** whether a key for the chosen provider is set (never the key itself); absent from the Python backend */
+	/** whether a key for the chosen provider is set (never the key itself) */
 	api_key_set?: boolean;
-	/** the step of the run being made and how far it has got; null when no run is being made (engine only) */
+	/** the step of the run being made and how far it has got; null when no run is being made */
 	step?: RunStep | null;
 	/**
 	 * the feature a feature's job is (or was) for, from the moment it starts, so that any window can tell which section a
@@ -457,7 +457,7 @@ export interface Paper {
 	reviews: Ratings | null;
 }
 
-/** Reviewers' scores, by field, as the conference names and scales them (rp/reviews.py). */
+/** Reviewers' scores, by field, as the conference names and scales them (engine text/reviews.rs). */
 export interface Ratings {
 	/** how many reviews gave scores */
 	reviews: number;
@@ -670,7 +670,7 @@ export interface ReviewSummary {
 /** How a conference paper was accepted, in tiers that hold across conferences; best first. */
 export type Acceptance = "oral" | "spotlight" | "poster";
 
-/** How the conference itself named a paper's acceptance (rp/tiers.py, docs/acceptance-tiers.md). */
+/** How the conference itself named a paper's acceptance (engine sources/acceptance.rs, docs/acceptance-tiers.md). */
 export interface AcceptanceTerm {
 	/** the conference and year: "CVPR 2024" */
 	conference: string;
@@ -682,7 +682,7 @@ export interface AcceptanceTerm {
 	known: boolean;
 }
 
-/** What the authors of a paper declare in it (rp/proceedings.py). */
+/** What the authors of a paper declare in it (engine text/declarations.rs). */
 export interface Declarations {
 	/** the NeurIPS-style checklist, when the paper has one */
 	checklist: { number: number; title: string; answer: "Yes" | "No" | "NA"; justification: string }[];
@@ -709,7 +709,7 @@ export interface AiVerdict {
 export interface OverviewPoint {
 	title: string;
 	insight: string;
-	/** the engine: the papers whose quotes were found (at least 3); the Python: the papers cited */
+	/** the papers whose quotes were found (at least 3) */
 	papers: { id: string; title: string }[];
 	/** the quotes found, in the papers' own words (the engine only) */
 	evidence?: Evidence[];
@@ -761,7 +761,7 @@ export interface CatalogGroup {
 	items: CatalogItem[];
 }
 
-/** What the run form offers to pick from (rp/catalog.py). */
+/** What the run form offers to pick from (engine sources/catalog.rs). */
 export interface Catalog {
 	conferences: CatalogGroup[];
 	categories: CatalogGroup[];
@@ -772,7 +772,7 @@ export interface Catalog {
 	clustering: CatalogItem[];
 }
 
-/** What the language model has cost (rp/usage.py). Counted from `since`: earlier calls were not recorded. */
+/** What the language model has cost (engine usage/). Counted from `since`: earlier calls were not recorded. */
 export interface Usage {
 	provider: { /** "Anthropic API", or the host requests are sent to */ name: string; /** are credentials set? */ ready: boolean };
 	/** the model that writes names and overviews (Settings) */
@@ -799,7 +799,7 @@ export interface UsageEntry {
 	/** the prompt read at the full rate */
 	input_tokens: number;
 	output_tokens: number;
-	/** read from and written to the prompt cache, each billed at its own rate (absent from older backends) */
+	/** read from and written to the prompt cache, each billed at its own rate */
 	cache_read_tokens?: number;
 	cache_write_tokens?: number;
 	/** of the priced calls; null when none of its calls had a price, which is not a cost of 0 */

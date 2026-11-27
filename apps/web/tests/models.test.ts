@@ -9,16 +9,12 @@ import {
 	chosenOf,
 	effortSent,
 	effortsOf,
-	engineCatalog,
 	groupsOf,
 	isPlainId,
-	olderBackend,
 	priceLabel,
 	priceOf,
 	endpointIds,
 } from "@/lib/models";
-import { isMissingRoute } from "@/lib/missing-route";
-import { RequestError } from "@/lib/request";
 
 const USD = { code: "USD", rate: 1, date: null };
 
@@ -130,22 +126,24 @@ test("a pick saves the provider with the model, except where the provider is the
 	assert.deepEqual(changeFor("openai", "gpt-6.2-sol", true), { describe_model: "gpt-6.2-sol" });
 });
 
-test("a backend without the models route falls back to today's list of Claude models", async () => {
-	const missing = await engineCatalog(() => Promise.reject(new RequestError({ kind: "refused", status: 404, error: null })));
-	assert.equal(missing, null);
-	const older = choosableOf(missing, [{ name: "claude-opus-5-5", label: "Claude Opus 5.5", note: "the default" }], undefined);
-	assert.equal(older.source, "older_backend");
+test("until the engine has told its models, the settings' model alone is shown, and nothing is offered", () => {
+	const models = [{ name: "claude-opus-5-5", label: "Claude Opus 5.5", note: "the default" }];
+	const waiting = choosableOf(undefined, models, undefined);
+	assert.equal(waiting.source, "waiting");
 	assert.deepEqual(
-		older.catalog.providers.map((one) => one.id),
+		waiting.catalog.providers.map((one) => one.id),
 		["anthropic"],
-		"no provider the running backend cannot use",
 	);
-	assert.equal(older.catalog.chosen.model, "claude-opus-5-5");
-	assert.deepEqual(effortsOf(chosenOf(older.catalog, undefined)), [], "no effort the older backend does not know");
-	assert.equal(choosableOf(await engineCatalog(() => Promise.resolve(catalog)), [], undefined).source, "engine");
-	await assert.rejects(engineCatalog(() => Promise.reject(new RequestError({ kind: "unreachable" }))));
-	assert.ok(isMissingRoute(new RequestError({ kind: "refused", status: 404, error: "not found" })) && !isMissingRoute(undefined));
-	assert.equal(olderBackend([], "claude-sonnet-5-5").catalog.chosen.model, "claude-sonnet-5-5");
+	assert.equal(waiting.catalog.chosen.model, "claude-opus-5-5");
+	assert.deepEqual(effortsOf(chosenOf(waiting.catalog, undefined)), []);
+	const named = choosableOf(undefined, models, { describe_provider: "openai", describe_model: "gpt-6.2-sol" });
+	assert.equal(named.catalog.chosen.provider, "openai");
+	assert.equal(named.catalog.chosen.model, "gpt-6.2-sol");
+	// asking failed: said, as why the model cannot be used now
+	const failed = choosableOf(undefined, models, undefined, "The backend answered 500");
+	assert.equal(failed.source === "waiting" && failed.why, "The backend answered 500");
+	assert.deepEqual(failed.catalog.providers[0].available, { state: "unavailable", why: "The backend answered 500" });
+	assert.equal(choosableOf(catalog, [], undefined).source, "engine");
 });
 
 test("a server's list of models keeps only the ids that can be used, and says how many it left out", () => {

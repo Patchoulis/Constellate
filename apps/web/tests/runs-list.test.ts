@@ -107,14 +107,10 @@ test("a refusal is kept with the rows shown before, and only for the request wai
 	assert.equal(refused, failed, "no further page after a failure: try again first");
 });
 
-test("the Python backend's whole list is searched and paged here as the engine would", () => {
-	const first = pageOf(many, "", 0);
-	assert.equal(first.rows.length, RUNS_PAGE);
-	assert.equal(first.total, 120);
-	assert.equal(pageOf(many, "", RUNS_PAGE).rows[0].name, `run-${RUNS_PAGE + 2}`);
+test("a run matches a search by every word of it, in its title or name, as the engine searches", () => {
 	const titled = [summary(1, "NeurIPS 2025 graph neural networks"), summary(2, "ICML 2025"), summary(3, "Graph theory")];
 	assert.deepEqual(
-		pageOf(titled, "graph NETWORKS", 0).rows.map((row) => row.name),
+		titled.filter((run) => matchesSearch(run, "graph NETWORKS")).map((run) => run.name),
 		["run-1"],
 		"every word, any case",
 	);
@@ -142,7 +138,7 @@ test("the engine's page is taken as it is, its unreadable runs said and its unre
 			{ kind: "unread", name: "c" },
 		],
 	};
-	const told = pageOf(page, "", 0);
+	const told = pageOf(page);
 	assert.equal(told.total, 300);
 	assert.deepEqual(told.rows[0], { name: "a", title: "A", papers: 10, details: "10 papers · 3 communities", problem: null });
 	assert.equal(told.rows[1].problem, "Its files cannot be read: communities.json is not JSON");

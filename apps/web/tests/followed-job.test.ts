@@ -170,7 +170,7 @@ test("a probe right after a look answers from it, without asking again", async (
 });
 
 test("after a job is started, the last job's end is never told as the new one's, and its log is asked from the start", async () => {
-	// the Python backend: no job numbers, so only the start tells one job from the next
+	// a status without job numbers: only the start tells one job from the next
 	const ended = { ...status("done", { log: ["old 1", "old 2"] }), id: undefined };
 	const fresh = { ...status("running", { log: ["new 1"] }), id: undefined };
 	const { poller, asked } = scripted([ended, fresh]);

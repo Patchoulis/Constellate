@@ -9,7 +9,7 @@ import { api } from "@/lib/api";
 import { ChosenModelContext, chosenModelOf } from "@/lib/chosen-model";
 import { serverOwned } from "@/lib/engine";
 import { forgetMarks } from "@/lib/marks";
-import { choosableOf, engineCatalog } from "@/lib/models";
+import { choosableOf } from "@/lib/models";
 import { NO_SAVES, saveStep, type SaveEvent, type Saves } from "@/lib/settings-saves";
 import { ready, useAsync } from "@/lib/use-async";
 import { useJob } from "@/lib/use-job";
@@ -48,9 +48,14 @@ export default function Home() {
 	// what kind of engine this window talks to: a server decides some settings itself
 	const engine = useAsync(() => api.status(0), []);
 	const { settings, change, refused } = useSettings();
-	// the language models the engine offers; the Python backend has no such route, and offers Claude's alone
-	const models = useAsync(() => engineCatalog(api.models), []);
-	const choosable = choosableOf(ready(models), ready(catalog)?.describe_models ?? [], settings?.describe_model);
+	// the language models the engine offers; until it has told them, the settings' model alone is shown
+	const models = useAsync(api.models, []);
+	const choosable = choosableOf(
+		ready(models),
+		ready(catalog)?.describe_models ?? [],
+		settings,
+		models.status === "failed" ? models.error : null,
+	);
 	const owned = serverOwned(ready(engine));
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [chosen, setChosen] = useState<string | null>(null);

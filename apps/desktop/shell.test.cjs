@@ -107,3 +107,41 @@ test("the installed program file names the product, so that Windows names Conste
 	assert.match(builder, /^win:\n(?: {2}.*\n)*? {2}executableName: Constellate$/m, "Constellate.exe, never electron.exe");
 	assert.match(builder, /^ {2}icon: icon\.png$/m, "its icon");
 });
+
+test("the Linux packages are named, pictured and filed as the app", () => {
+	const builder = fs.readFileSync(path.join(__dirname, "electron-builder.yml"), "utf8");
+	const linux = /^linux:\n((?: {2}.*\n)+)/m.exec(builder)?.[1] ?? "";
+	assert.match(linux, /^ {4}- AppImage$/m);
+	assert.match(linux, /^ {4}- deb$/m);
+	assert.match(linux, /^ {2}icon: icon\.png$/m);
+	assert.match(linux, /^ {2}category: Science$/m);
+});
+
+test("the engine is what goes into the app's resources, and nothing of the old backend's setup does", () => {
+	const builder = fs.readFileSync(path.join(__dirname, "electron-builder.yml"), "utf8");
+	assert.match(builder, /^extraResources:\n {2}# .*\n {2}- from: engine\n {4}to: engine$/m);
+	assert.doesNotMatch(builder, /backend|requirements|from: bin/);
+});
+
+test("the licences gathered for the engine are the crates compiled into it, for the system packaged", (t) => {
+	const { cratesInEngine, engineMetadata } = require("./after-pack.cjs");
+	let windows;
+	try {
+		windows = cratesInEngine(engineMetadata("win32"));
+	} catch (error) {
+		if (process.env.CI) throw error;
+		return t.skip(`cargo is not on the PATH (${error.message.split("\n")[0]})`);
+	}
+	const linux = cratesInEngine(engineMetadata("linux"));
+	const names = (crates) => new Set(crates.map((crate) => crate.name));
+	for (const name of ["ort", "ort-sys", "axum", "rusqlite", "tokenizers", "serde"]) {
+		assert.ok(names(windows).has(name), `${name} on Windows`);
+		assert.ok(names(linux).has(name), `${name} on Linux`);
+	}
+	assert.ok(names(windows).has("windows-sys") && !names(linux).has("windows-sys"), "each system's own crates");
+	// what runs only while building, and the tests' own crates, are not shipped
+	for (const name of ["serde_derive", "thiserror-impl", "cc", "tempfile", "rcgen", "constellate"]) {
+		assert.equal(names(windows).has(name), false, name);
+	}
+	for (const crate of windows) assert.ok(crate.license || crate.license_file, `${crate.name} names its licence`);
+});

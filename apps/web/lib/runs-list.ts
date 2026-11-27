@@ -5,8 +5,7 @@ import { count } from "@/lib/units";
  * The sidebar's list of runs, a page at a time, searched as the user types.
  *
  * The engine serves pages of the list (`GET /api/runs?offset=&limit=&sort=&search=`, a `RunPage`): a library with
- * hundreds of runs is never read or drawn whole. The Python backend ignores the query and answers every run (a
- * `RunSummary[]`): that list is searched and paged here, the same way, so the sidebar behaves alike with both.
+ * hundreds of runs is never read or drawn whole.
  *
  * The list is in exactly one of these at a time, and `runsListStep` is the one place it changes:
  *
@@ -104,15 +103,8 @@ export function matchesSearch(run: { name: string; title: string }, search: stri
 	return words.every((word) => where.includes(word));
 }
 
-/**
- * What the list endpoint answered, as one page for `search` from `offset`: the engine's page as it is, or the Python
- * backend's whole list searched and cut here.
- */
-export function pageOf(answer: RunPage | RunSummary[], search: string, offset: number): { rows: ListedRun[]; total: number } {
-	if (Array.isArray(answer)) {
-		const found = answer.filter((run) => matchesSearch(run, search));
-		return { rows: found.slice(offset, offset + RUNS_PAGE).map(listedOfSummary), total: found.length };
-	}
+/** What the list endpoint answered, as one page: the engine's page as it is. */
+export function pageOf(answer: RunPage): { rows: ListedRun[]; total: number } {
 	return { rows: answer.rows.map(listedOfRow), total: answer.total };
 }
 

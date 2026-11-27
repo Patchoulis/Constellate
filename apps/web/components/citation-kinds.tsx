@@ -5,7 +5,6 @@
  * contrast, take data or benchmarks from, or build on, each figure a count of citing sentences out of all those
  * citing that paper, and each number opening the sentences behind it. The kinds are the model's reading: asked for
  * only after the estimate is shown, on a click, a sample first and the rest on a second click, within a budget.
- * Nothing is shown when the engine has no such route (the Python backend).
  */
 import { useState } from "react";
 import { BookOpenText, RotateCcw, Sparkles } from "lucide-react";
@@ -170,6 +169,8 @@ export function CommunityCitationKinds({
 	const { job, elsewhere, start } = useFollowedJob(reload, `citation-kinds:${run}:${treePath}`);
 	const [forgetting, setForgetting] = useState(false);
 	const [forgetError, setForgetError] = useState<string | null>(null);
+	if (loaded.status === "failed")
+		return <p className="font-ui text-xs text-destructive">The citation kinds could not be read: {loaded.error}</p>;
 	if (!summary) return null;
 	const coverage = { papers: summary.papers, read: summary.papers_read, without_pdf: summary.without_pdf, unreadable: summary.unreadable };
 	const lists = { run, treePath, titles: summary.titles, onOpenPaper };
