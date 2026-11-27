@@ -86,6 +86,11 @@ function save(run: string, marks: Marks) {
 	}
 }
 
+/** A run was deleted: its marks go with it, so a run made later under the same name does not find them. */
+export function forgetMarks(run: string) {
+	save(run, []);
+}
+
 export interface MarksOf {
 	/** the run's marked papers that are in its graph, newest first */
 	marked: Marks;

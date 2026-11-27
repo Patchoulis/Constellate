@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, PenLine, X } from "lucide-react";
 import type { OverviewPoint, OverviewStatus } from "@rp/contracts";
 import { CommunityDot } from "@/components/community-panel";
@@ -9,6 +9,7 @@ import { Button, Heading, RowButton } from "@/components/ui/button";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
 import { communityLabel, type CommunityNode } from "@/lib/community";
+import { useFocusReturn } from "@/lib/use-focus-return";
 import { useResizable } from "@/lib/use-resizable";
 
 const POLL_MS = 3000;
@@ -19,28 +20,38 @@ const CITED_AT_FIRST = 4;
  *
  *     idle --write--> running --> done | failed --write--> running
  *
- * It is asked for once when shown, and again every few seconds while (and only while) it is being written.
+ * It is asked for once when shown, again whenever the language model chosen in Settings changes (the overview
+ * kept is the model's: another model's is not this one's), and every few seconds while (and only while) it is
+ * being written. An answer to a question asked before the model changed is dropped.
  */
-function useOverview(run: string, treePath: string) {
+export function useOverview(run: string, treePath: string, model: string | undefined) {
 	const [status, setStatus] = useState<OverviewStatus | null>(null);
 	const [unreachable, setUnreachable] = useState<string | null>(null);
+	const asking = useRef(0); // which question is the latest: only its answer is shown
 	const ask = useCallback(
-		(write = false) =>
-			api.overview(run, treePath, write).then(
+		(write = false) => {
+			const question = ++asking.current;
+			return api.overview(run, treePath, write).then(
 				(next) => {
+					if (question !== asking.current) return;
 					setStatus(next);
 					setUnreachable(null);
 				},
 				(error: Error) => {
+					if (question !== asking.current) return;
 					setUnreachable(error.message);
 					// a new object, so the effect below runs again: one failed poll must not end the polling
 					setStatus((last) => last && { ...last });
 				},
-			),
-		[run, treePath],
+			);
+		},
+		// the model is not sent: the backend writes with the one in its settings, which is this one
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[run, treePath, model],
 	);
 	useEffect(() => {
 		setStatus(null);
+		setUnreachable(null);
 		void ask();
 	}, [ask]);
 	useEffect(() => {
@@ -86,18 +97,22 @@ function Point({ point, onOpenPaper }: { point: OverviewPoint; onOpenPaper: (id:
 export function OverviewPanel({
 	run,
 	node,
+	model,
 	onOpenPaper,
 	onClose,
 }: {
 	run: string;
 	node: CommunityNode;
+	/** the language model chosen in Settings, once known: the overview shown is the one it wrote */
+	model: string | undefined;
 	onOpenPaper: (id: string) => void;
 	onClose: () => void;
 }) {
 	const { community } = node;
-	const { status, error, write } = useOverview(run, community.tree_path);
+	const { status, error, write } = useOverview(run, community.tree_path, model);
 	const overview = status?.state === "done" ? status.overview : null;
 	const { ref, style, handle } = useResizable<HTMLDivElement>("overview");
+	useFocusReturn(ref);
 	return (
 		<div
 			ref={ref}

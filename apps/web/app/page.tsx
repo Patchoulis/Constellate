@@ -1,23 +1,43 @@
 "use client";
 
-import { useState } from "react";
+import { useReducer, useRef, useState } from "react";
 import { REDO_STEPS, type Settings } from "@rp/contracts";
 import { SettingsDialog } from "@/components/settings-dialog";
 import { Sidebar } from "@/components/sidebar";
 import { ActivityLog, Notice, Workspace } from "@/components/workspace";
 import { api } from "@/lib/api";
 import { serverOwned } from "@/lib/engine";
+import { forgetMarks } from "@/lib/marks";
 import { choosableOf, engineCatalog } from "@/lib/models";
+import { NO_SAVES, saveStep, type SaveEvent, type Saves } from "@/lib/settings-saves";
 import { ready, useAsync } from "@/lib/use-async";
 import { useJob } from "@/lib/use-job";
 
-/** Settings as the backend holds them; a change is saved there and the answer becomes the new state. */
+/**
+ * Settings as the backend holds them; a change is saved there and the latest save's answer becomes the new state.
+ * A change the backend refuses is kept with its reason (lib/settings-saves.ts) and shown until that setting is
+ * saved, and the settings are read again: nothing is quietly put back.
+ */
 function useSettings() {
 	const loaded = useAsync(api.settings, []);
-	const [saved, setSaved] = useState<Settings>();
-	const settings = saved ?? ready(loaded);
-	const change = (changes: Partial<Settings>) => api.saveSettings(changes).then(setSaved, () => loaded.reload());
-	return { settings, change };
+	const [saves, step] = useReducer((state: Saves<Settings>, event: SaveEvent<Settings>) => saveStep(state, event), NO_SAVES);
+	const asked = useRef(0); // the number of the latest save, known before the reducer has run
+	const settings = saves.saved ?? ready(loaded);
+	const change = (changes: Partial<Settings>) => {
+		const id = ++asked.current;
+		step({ kind: "asked" });
+		return api.saveSettings(changes).then(
+			(next) => step({ kind: "saved", id, changes, settings: next }),
+			(error: Error) => {
+				step({ kind: "refused", id, changes, error: error.message });
+				return api.settings().then(
+					(now) => step({ kind: "read", id, settings: now }),
+					() => undefined, // unreachable now: what was shown stays, and the refusal says why it did not change
+				);
+			},
+		);
+	};
+	return { settings, change, refused: saves.refused };
 }
 
 export default function Home() {
@@ -26,13 +46,15 @@ export default function Home() {
 	const catalog = useAsync(api.catalog, []);
 	// what kind of engine this window talks to: a server decides some settings itself
 	const engine = useAsync(() => api.status(0), []);
-	const { settings, change } = useSettings();
+	const { settings, change, refused } = useSettings();
 	// the language models the engine offers; the Python backend has no such route, and offers Claude's alone
 	const models = useAsync(() => engineCatalog(api.models), []);
 	const choosable = choosableOf(ready(models), ready(catalog)?.describe_models ?? [], settings?.describe_model);
 	const owned = serverOwned(ready(engine));
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [chosen, setChosen] = useState<string | null>(null);
+	// why renaming or deleting a run did not happen, until the next try
+	const [failed, setFailed] = useState<string | null>(null);
 	// Counts finished runs. A run done again keeps its name, so the name alone would not show the new result.
 	const [finishedRuns, setFinishedRuns] = useState(0);
 	const { job, start, follow } = useJob((finished) => {
@@ -58,21 +80,35 @@ export default function Home() {
 				providerOwned={owned.has("describe_provider")}
 				onChange={(changes) => void change(changes)}
 				catalog={ready(catalog)}
-				error={job.error ?? (runs.status === "failed" ? runs.error : null)}
-				onSelect={setChosen}
-				onRename={(name, title) => void api.rename(name, title).then(runs.reload)}
-				onDelete={(name) =>
-					void api.remove(name).then(() => {
-						if (name === current) setChosen(null); // fall back to the most recent run that is left
-						runs.reload();
-					})
+				error={
+					job.error ??
+					failed ??
+					// until that setting is saved; also behind the open settings dialog, which has no place for it yet
+					(refused ? `Not saved: ${refused.error}` : null) ??
+					(runs.status === "failed" ? runs.error : null)
 				}
+				onSelect={setChosen}
+				onRename={(name, title) => {
+					setFailed(null);
+					void api.rename(name, title).then(runs.reload, (error: Error) => setFailed(error.message));
+				}}
+				onDelete={(name) => {
+					setFailed(null);
+					void api.remove(name).then(
+						() => {
+							forgetMarks(name); // a run made later under the same name starts with none
+							if (name === current) setChosen(null); // fall back to the most recent run that is left
+							runs.reload();
+						},
+						(error: Error) => setFailed(error.message),
+					);
+				}}
 				onStart={start}
 				onRedoAll={(name) => void start({ rerun: name, redo: REDO_STEPS })}
 				onOpenSettings={() => setSettingsOpen(true)}
 			/>
 			{current ? (
-				<Workspace key={`${current}#${finishedRuns}`} name={current} catalog={ready(catalog)}>
+				<Workspace key={`${current}#${finishedRuns}`} name={current} catalog={ready(catalog)} model={settings?.describe_model}>
 					{log}
 				</Workspace>
 			) : (
