@@ -12,6 +12,10 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The engine uses any maker's graphics card: through DirectML on Windows and through Vulkan (WebGPU) on Linux, with
   the processor as the fallback. It is built and tested on Linux as well as Windows.
 
+- The engine has the model prices and the exchange rates built in, with the day each rate is from: once it
+  replaces the backend, the app no longer asks the internet for a rate. A weekly check compares the rates with the
+  European Central Bank's and, when one has moved by more than 1%, prepares a new version with the new rates.
+
 ### Changed
 
 - The backend is being rewritten in Rust (`apps/engine`), organised by subject; the Python backend stays until the

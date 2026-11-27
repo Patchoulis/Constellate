@@ -1,0 +1,68 @@
+{
+	"updated": "2026-11-27",
+	"models": {
+		"claude-opus-5-5": {
+			"input": 4,
+			"output": 20
+		},
+		"claude-sonnet-5-5": {
+			"input": 2,
+			"output": 10
+		},
+		"claude-haiku-5-5": {
+			"input": 0.1,
+			"output": 0.5,
+			"long_prompt": {
+				"above": 100000,
+				"input": 0.5,
+				"output": 2.5
+			}
+		},
+		"claude-fable-5-2": {
+			"input": 8,
+			"output": 40
+		},
+		"claude-opus-5": {
+			"input": 5,
+			"output": 25
+		},
+		"claude-opus-4-8": {
+			"input": 5,
+			"output": 25
+		},
+		"claude-sonnet-5": {
+			"input": 2,
+			"output": 10
+		}
+	},
+	"rates": {
+		"base": "USD",
+		"date": "2026-11-26",
+		"source": "European Central Bank via frankfurter.dev",
+		"per_dollar": {
+			"AUD": 1.5071,
+			"BRL": 5.7651,
+			"CAD": 1.423,
+			"CHF": 0.83399,
+			"CNY": 6.6602,
+			"CZK": 22.281,
+			"DKK": 6.8097,
+			"EUR": 0.91116,
+			"GBP": 0.76314,
+			"HKD": 7.8374,
+			"HUF": 339.16,
+			"ILS": 3.3273,
+			"INR": 92.45,
+			"JPY": 159.26,
+			"KRW": 1344.65,
+			"MXN": 19.6711,
+			"NOK": 9.7658,
+			"NZD": 1.8253,
+			"PLN": 4.0855,
+			"SEK": 10.2073,
+			"SGD": 1.2905,
+			"TRY": 50.677,
+			"ZAR": 17.5532
+		}
+	}
+}
