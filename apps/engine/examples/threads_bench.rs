@@ -13,11 +13,11 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use constellate::analysis::citations::{LibraryPaper, Linker, Members, ReadPaper, community_citations, network};
-use constellate::analysis::cluster::{Limits, Method, Papers, communities};
+use constellate::analysis::graph::cluster::{Limits, Method, Papers, communities};
+use constellate::analysis::graph::kmeans::kmeans;
+use constellate::analysis::graph::links::{knn_graph, natural_neighbours};
 use constellate::analysis::graph::{adjacency_matrix, degrees, make_unit, modularity};
-use constellate::analysis::kmeans::kmeans;
-use constellate::analysis::links::{knn_graph, natural_neighbours};
-use constellate::text::references::{Confidence, Reference};
+use constellate::text::pdf::references::{Confidence, Reference};
 use constellate::threads::{self, Progress};
 use ndarray::{Array2, Axis};
 
@@ -254,7 +254,7 @@ fn pdfs_stage(folder: &Path) {
     let size = format!("{} texts", texts.len());
     timed("reference lists (read_reference_list, each)", &size, || {
         threads::each(&texts, &Progress::new(), |text| {
-            constellate::text::references::read_reference_list(text).references.len()
+            constellate::text::pdf::references::read_reference_list(text).references.len()
         })
     });
     timed("declarations (read_declarations, each)", &size, || {

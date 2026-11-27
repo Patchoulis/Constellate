@@ -2,47 +2,26 @@
 //!
 //! | module       | what lives there                                                                   |
 //! |--------------|------------------------------------------------------------------------------------|
-//! | [`config`]   | how the engine listens, from the environment: this computer only, or a network     |
-//! | [`connections`] | how many connections there may be, and how long one may stay silent             |
-//! | [`security`] | the checks every request passes (address, origin, token or session) and its headers |
-//! | [`login`]    | across a network: the owner's sign-in, with Google or a password, and sessions     |
-//! | [`routes`]   | the routes, the state they share and how errors are told                           |
-//! | [`reviews`]  | a paper's reviews read from the page the user opened, and what they come to        |
-//! | [`passages`] | a paper's text from its PDF, and where a quote is in it                            |
-//! | [`citations`] | the citation network around a paper, from the reference lists read            |
-//! | [`papers`]   | a paper's record, its PDF (fetched when not kept), what its authors declare        |
-//! | [`stances`]  | where a community's papers agree and disagree on a question                        |
+//! | [`routes`]   | the route table, the state the routes share and how errors are told                |
+//! | [`guard`]    | what every request passes first: how the engine listens, connections, checks, sign-in |
+//! | [`papers`]   | one paper: its record, PDF, declarations, passages, reviews and citations          |
+//! | [`runs`]     | the runs: making one, listing, serving, renaming, deleting; the catalogue           |
 //! | [`models`]   | the language models' providers and models, for the interface to choose from        |
 //! | [`usage`]    | what the language model has cost: in all, by model and purpose, and this session   |
 //!
 //! [`Server`] puts them together: bound to its address, it says once where it is ([`Server::startup_line`]) and
 //! serves until it is told to stop.
 
-pub mod answers;
-pub mod citation_contexts;
-pub mod citations;
-pub mod claim_tree;
-pub mod config;
-pub mod connections;
 #[cfg(test)]
 pub(crate) mod contract;
-pub mod critique;
-pub mod detector;
-pub mod explanation;
-pub mod extraction;
-pub mod login;
+pub mod guard;
 pub mod models;
 #[cfg(test)]
 pub(crate) mod other_providers;
 pub mod papers;
-pub mod passages;
-pub mod reviews;
 pub mod routes;
 pub mod runs;
-pub mod security;
-pub mod stances;
 pub mod usage;
-pub mod writing;
 
 use std::future::Future;
 use std::io;
@@ -56,12 +35,12 @@ use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use hyper_util::rt::{TokioExecutor, TokioTimer};
 use hyper_util::server::conn::auto::Builder;
 
-use config::{Listen, Transport};
-use connections::Seats;
-use login::oidc::{self, Provider};
-use login::password::{Hashing, PasswordError, SetupCode};
+use guard::config::{Listen, Transport};
+use guard::connections::Seats;
+use guard::login::oidc::{self, Provider};
+use guard::login::password::{Hashing, PasswordError, SetupCode};
+use guard::security::{Admission, Guard};
 use routes::{Engine, Shared};
-use security::{Admission, Guard};
 
 /// How long a client may take to send a request's headers before its connection is closed.
 const HEADERS_PATIENCE: Duration = Duration::from_secs(10);
@@ -112,7 +91,7 @@ impl Server {
     ) -> io::Result<Server> {
         let bound = listener.local_addr()?;
         let (app, engine, setup) = application(&listen, bound, engine, routes, provider, hashing)?;
-        Ok(Server { listener, bound, listen, engine, app, quiet: connections::QUIET, setup })
+        Ok(Server { listener, bound, listen, engine, app, quiet: guard::connections::QUIET, setup })
     }
 
     /// Tell whoever runs the server, on standard error, the code to set the owner's first password with, if
@@ -202,7 +181,7 @@ pub(crate) fn application(
     let (admission, setup) =
         Admission::new(listen, &engine.data, provider, hashing).map_err(|error| io::Error::other(error.to_string()))?;
     let routes = match admission.login() {
-        Some(login) => routes.merge(login::routes(login)),
+        Some(login) => routes.merge(guard::login::routes(login)),
         None => routes,
     };
     let engine = Arc::new(engine);
@@ -218,17 +197,17 @@ fn patient(builder: &mut Builder<TokioExecutor>) {
         .timer(TokioTimer::new())
         .max_header_list_size(LARGEST_HEADERS as u32)
         // a peer that stops answering pings is gone: its connection is closed
-        .keep_alive_interval(Some(connections::QUIET / 2))
+        .keep_alive_interval(Some(guard::connections::QUIET / 2))
         .keep_alive_timeout(HEADERS_PATIENCE);
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 pub(crate) mod tests {
-    use super::config::tests::{STRONG, certificate_in};
-    use super::config::{Environment, Listen};
     use super::routes::{Engine, routes};
     use super::*;
+    use crate::api::guard::config::tests::{STRONG, certificate_in};
+    use crate::api::guard::config::{Environment, Listen};
     use crate::settings::Choices;
 
     use axum::body::{Body, to_bytes};
@@ -259,7 +238,7 @@ pub(crate) mod tests {
 
     /// The router as served for `listen` at `at`, with `engine`, a provider nobody reaches and quick hashing.
     pub(crate) fn served(listen: &Listen, at: &str, engine: Engine) -> (Router, Option<SetupCode>) {
-        let provider = Arc::new(login::oidc::tests::Fake::new(&[]));
+        let provider = Arc::new(guard::login::oidc::tests::Fake::new(&[]));
         let (router, _, code) =
             application(listen, at.parse().unwrap(), engine, routes(), provider, || Ok(Hashing::light())).unwrap();
         (router, code)
@@ -452,7 +431,7 @@ pub(crate) mod tests {
             (status, told),
             (StatusCode::PAYLOAD_TOO_LARGE, json!({"error": "the request body is larger than 4 MB"}))
         );
-        let huge = format!("{{\"describe\": \"{}\"}}", "x".repeat(security::LARGEST_BODY));
+        let huge = format!("{{\"describe\": \"{}\"}}", "x".repeat(guard::security::LARGEST_BODY));
         // no Content-Length header: cut off as it is read
         let undeclared = asked("PUT", "/api/settings")
             .header(header::CONTENT_TYPE, "application/json")
@@ -671,7 +650,7 @@ pub(crate) mod tests {
             ("CONSTELLATE_TLS_CERT", certificate.to_str().unwrap()),
             ("CONSTELLATE_TLS_KEY", key.to_str().unwrap()),
         ]);
-        assert_eq!(listen.mode(), config::Mode::Network);
+        assert_eq!(listen.mode(), guard::config::Mode::Network);
         let socket = TcpListener::bind("127.0.0.1:0").unwrap();
         let mut server =
             Server::on(socket, listen, Engine::new(folder.path().join("data"), choices()), routes()).unwrap();

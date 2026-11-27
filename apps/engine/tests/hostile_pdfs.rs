@@ -1,5 +1,5 @@
 //! PDFs made to hurt the reader, read the way the engine reads every PDF: in a child process of the engine's own
-//! program (`src/text/pdf.rs`). Each must end only its child, with a reason, and leave this process (standing in
+//! program (`src/text/pdf/mod.rs`). Each must end only its child, with a reason, and leave this process (standing in
 //! for the engine) reading the next PDF as usual.
 //!
 //! `cargo test --release --test hostile_pdfs -- --ignored --nocapture` also measures what the process costs, on

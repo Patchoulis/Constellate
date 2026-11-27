@@ -16,7 +16,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use constellate::library::Paper;
-use constellate::pipeline::files;
+use constellate::pipeline::results::files;
 use ndarray::Array2;
 use serde_json::{Value, json};
 

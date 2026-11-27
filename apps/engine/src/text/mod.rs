@@ -3,26 +3,16 @@
 //!
 //! | module           | what it reads                                                                  |
 //! |------------------|--------------------------------------------------------------------------------|
+//! | [`pdf`]          | a paper's PDF: its text in reading order, its passages, its reference list     |
+//! | [`reviews`]      | a reviews page: the scores, the whole thread, each reviewer's points           |
 //! | [`declarations`] | what authors declare in a paper: the NeurIPS checklist, statements, flags      |
-//! | [`passages`]     | a paper's text made addressable; where a quote is in it; the sentences citing a reference |
-//! | [`pdf`]          | the text of a paper's PDF, in reading order, whole or page by page             |
-//! | [`references`]   | the works a paper cites, from its reference list                               |
-//! | [`retrieval`]    | where a run's or a community's papers talk about something: a lexical index    |
-//! | [`review_points`] | what each reviewer raised, point by point, with the authors' replies          |
-//! | [`reviews`]      | the scores reviewers gave, from the text of a reviews page                     |
-//! | [`discussion`]   | the whole thread of a reviews page: reviews by section, replies, the decision  |
 //! | [`words`]        | words as the lexical matchers compare them: one cut, one plural, one stop-list  |
 //!
 //! Positions and lengths in the readers count characters, not bytes, as the Python readers they replace did:
 //! a statement is cut after 1,500 characters whatever script it is written in.
 
 pub mod declarations;
-pub mod discussion;
-pub mod passages;
 pub mod pdf;
-pub mod references;
-pub mod retrieval;
-pub mod review_points;
 pub mod reviews;
 pub mod words;
 

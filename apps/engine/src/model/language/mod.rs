@@ -419,7 +419,7 @@ pub struct Reply {
 ///
 /// The first two are before the request was taken in (nothing can have been billed); [`TransportError::Lost`]
 /// is after it was sent, when the provider may have answered and billed it: it is not sent again, which could
-/// pay twice, and the call's outcome is left as unknown (`library::asking`).
+/// pay twice, and the call's outcome is left as unknown (`library::money::asking`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum TransportError {
     /// No connection could be made (the address, the network, TLS): nothing was sent.
@@ -621,7 +621,7 @@ pub trait Recorder: Send + Sync {
     }
 
     /// Record the `calls` a question in `slot` took that gave no answer to keep, and remove the intent written in
-    /// `library` before it was sent (`library::asking`): the ledger now knows what it cost. The library's own
+    /// `library` before it was sent (`library::money::asking`): the ledger now knows what it cost. The library's own
     /// ledger does both in one transaction ([`Library::record_paid`]).
     fn record_paid(
         &self,
@@ -637,9 +637,9 @@ pub trait Recorder: Send + Sync {
 }
 
 /// A call as the library's ledger keeps it: whole millionths of a dollar, counts that fit its columns.
-fn ledger_call(call: &Call) -> crate::library::ledger::Call<'_> {
+fn ledger_call(call: &Call) -> crate::library::money::ledger::Call<'_> {
     let signed = |count: u64| i64::try_from(count).unwrap_or(i64::MAX);
-    crate::library::ledger::Call {
+    crate::library::money::ledger::Call {
         model: &call.model,
         purpose: &call.purpose,
         input_tokens: signed(call.tokens.input),
@@ -1678,7 +1678,7 @@ impl<'a> Client<'a> {
 
     /// The most [`Client::ask`] can spend on `ask`, every attempt counted as the budget holds it: tokens of every
     /// kind, and US dollars (`None` when a model that may bill it has no known price). What is written down before
-    /// the call is sent (`library::asking`), as what it may have cost should its outcome be lost.
+    /// the call is sent (`library::money::asking`), as what it may have cost should its outcome be lost.
     pub fn most(&self, ask: &Ask<'_>) -> (u64, Option<Usd>) {
         let provider = self.endpoint.provider;
         if provider == Provider::Anthropic {

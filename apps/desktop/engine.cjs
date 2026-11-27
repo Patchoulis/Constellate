@@ -75,7 +75,7 @@ const SYSTEM_VARIABLES = {
 	darwin: ["HOME", "TMPDIR", "PATH", "LANG"],
 };
 const PROXY_VARIABLES = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "all_proxy", "no_proxy"];
-/** Where the embedding model is downloaded from (a mirror) and where a copy may already be (apps/engine/src/pipeline/model_files.rs). */
+/** Where the embedding model is downloaded from (a mirror) and where a copy may already be (apps/engine/src/pipeline/steps/model_files.rs). */
 const MODEL_VARIABLES = ["HF_ENDPOINT", "HF_HOME", "HF_HUB_CACHE"];
 
 /** `names` taken from `source` where they are set (on Windows, whatever the case they are written in there). */

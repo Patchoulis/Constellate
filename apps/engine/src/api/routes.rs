@@ -9,10 +9,10 @@
 //! PUT /api/settings         change some of them: a JSON object of the ones to change
 //! ```
 //!
-//! and a paper's reviews, read from the page the user opened ([`super::reviews`]), and a paper's text and where a
-//! quote is in it ([`super::passages`]).
+//! and a paper's reviews, read from the page the user opened ([`crate::api::papers::reviews`]), and a paper's text and where a
+//! quote is in it ([`crate::api::papers::passages`]).
 //!
-//! Across a network the owner's sign-in routes are served too (`/auth/...`, [`super::login`]).
+//! Across a network the owner's sign-in routes are served too (`/auth/...`, [`crate::api::guard::login`]).
 //!
 //! A route is a function of the shared [`Engine`]; adding one is a line in [`table`] (or a `Router<Shared>` of
 //! its own given to [`secured`]). Whatever is added passes the security layer like everything else: it is
@@ -34,8 +34,8 @@ use serde_json::{Map, Value};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 
-use super::config::Mode;
-use super::security::{self, Guard, LARGEST_BODY};
+use crate::api::guard::config::Mode;
+use crate::api::guard::security::{self, Guard, LARGEST_BODY};
 use crate::jobs::{Busy, Counted, Finished, Job, Phase, Progress};
 use crate::library::{Library, LibraryError};
 use crate::model::chosen::Chosen;
@@ -54,7 +54,7 @@ pub struct Engine {
     pub data: PathBuf,
     /// What each choice among the settings may be.
     pub choices: Choices,
-    /// What is unsafe about how the engine listens ([`super::config::Listen::warnings`]), for the interface.
+    /// What is unsafe about how the engine listens ([`crate::api::guard::config::Listen::warnings`]), for the interface.
     pub warnings: Vec<String>,
     /// This computer only, or a network: set by the server from how it listens.
     pub mode: Mode,
@@ -117,10 +117,10 @@ impl Engine {
         if let Err(error) = library.read_stored_pages_again() {
             eprintln!("library: reviews pages could not be read again: {error}");
         }
-        // the Python backend's data folder, moved in once, part by part (library/import.rs); what could not be is
+        // the Python backend's data folder, moved in once, part by part (library/core/import.rs); what could not be is
         // told in /api/library and as a warning in /api/status, and tried again at the next start
         let moved = library.import_old(&self.data.join("library"));
-        if moved != crate::library::import::Moved::default() {
+        if moved != crate::library::core::import::Moved::default() {
             eprintln!("library: the earlier version's data folder: {moved:?}");
         }
         *self.import_problems.lock().unwrap_or_else(PoisonError::into_inner) = moved.problems();
@@ -285,8 +285,8 @@ impl From<SettingsError> for ApiError {
     }
 }
 
-impl From<crate::library::store::StoreError> for ApiError {
-    fn from(error: crate::library::store::StoreError) -> Self {
+impl From<crate::library::core::store::StoreError> for ApiError {
+    fn from(error: crate::library::core::store::StoreError) -> Self {
         eprintln!("{error}");
         ApiError::Files
     }
@@ -347,7 +347,7 @@ pub fn one_name(name: &str) -> Result<&str, ApiError> {
 }
 
 /// Run file work (which may wait for a lock) off the threads that answer requests.
-pub(super) async fn on_the_side<T: Send + 'static>(
+pub(crate) async fn on_the_side<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, ApiError> + Send + 'static,
 ) -> Result<T, ApiError> {
     tokio::task::spawn_blocking(work).await.map_err(|_| ApiError::Internal)?
@@ -355,6 +355,9 @@ pub(super) async fn on_the_side<T: Send + 'static>(
 
 /// Every route the engine has, by path. A test walks this list to see that each one is refused to whoever has
 /// not signed in, so a route is added here and nowhere else.
+///
+/// The api's own routes and each feature's (`crate::features::<feature>::routes::table()`) are added one line
+/// each, in the fixed order below, the order they were added in; a new one goes at the end.
 pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
     let mut table = vec![
         ("/api/status", get(status)),
@@ -362,20 +365,20 @@ pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
         ("/api/settings", get(read_settings).put(change_settings)),
         ("/api/usage/unsettled", get(unsettled)),
     ];
-    table.extend(super::reviews::table());
-    table.extend(super::passages::table());
-    table.extend(super::critique::table());
-    table.extend(super::stances::table());
-    table.extend(super::extraction::table());
-    table.extend(super::explanation::table());
-    table.extend(super::claim_tree::table());
-    table.extend(super::citation_contexts::table());
-    table.extend(super::citations::table());
-    table.extend(super::answers::table());
+    table.extend(crate::api::papers::reviews::table());
+    table.extend(crate::api::papers::passages::table());
+    table.extend(crate::features::critique::routes::table());
+    table.extend(crate::features::stances::routes::table());
+    table.extend(crate::features::extraction::routes::table());
+    table.extend(crate::features::explanation::routes::table());
+    table.extend(crate::features::claim_tree::routes::table());
+    table.extend(crate::features::citation_contexts::routes::table());
+    table.extend(crate::api::papers::citations::table());
+    table.extend(crate::features::answers::routes::table());
     table.extend(super::models::table());
-    table.extend(super::writing::table());
+    table.extend(crate::features::writing::routes::table());
     table.extend(super::runs::table());
-    table.extend(super::detector::table());
+    table.extend(crate::features::detector::routes::table());
     table.extend(super::usage::table());
     table.extend(super::papers::table());
     table
@@ -496,7 +499,7 @@ async fn status(
 }
 
 /// `Unsettled` in the contracts: calls asked of the language model whose outcome is unknown (an intent left by a
-/// crash, a connection lost after sending: `library::asking`), told in the ledger's terms. They may have been
+/// crash, a connection lost after sending: `library::money::asking`), told in the ledger's terms. They may have been
 /// billed, at most this much; they are not asked again until the user starts that work again.
 #[derive(Serialize)]
 struct UnsettledView {
@@ -607,7 +610,7 @@ mod tests {
 
     #[tokio::test]
     async fn calls_left_with_their_outcome_unknown_are_told_in_the_ledgers_terms_as_the_contract_has_them() {
-        use crate::library::asking::Intent;
+        use crate::library::money::asking::Intent;
         use crate::library::{AnswerKey, Feature, Slot, Subject};
         let data = tempfile::tempdir().unwrap();
         let engine = Arc::new(Engine::new(data.path().to_path_buf(), Choices::default()));

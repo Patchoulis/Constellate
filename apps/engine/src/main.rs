@@ -1,4 +1,4 @@
-//! The engine's program: read how to listen (`api::config`), say where it listens in one line on standard output,
+//! The engine's program: read how to listen (`api::guard::config`), say where it listens in one line on standard output,
 //! serve until standard input closes or Ctrl-C.
 //!
 //! Standard output is for that one line only: the desktop shell reads it over a pipe, and it may carry the token.
@@ -9,9 +9,9 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use constellate::api::Server;
-use constellate::api::config::{self, DATA, Environment, Listen};
+use constellate::api::guard::config::{self, DATA, Environment, Listen};
 use constellate::api::routes::{Engine, routes};
-use constellate::library::place;
+use constellate::library::core::place;
 use constellate::model::language;
 use constellate::settings::Choices;
 use constellate::text::pdf;
@@ -91,7 +91,7 @@ fn shout(warnings: &[String]) {
 static ALLOCATOR: cap::Cap<std::alloc::System> = cap::Cap::new(std::alloc::System, usize::MAX);
 
 fn main() -> ExitCode {
-    // a child started to read one PDF (src/text/pdf.rs): nothing else, not even the configuration, is read
+    // a child started to read one PDF (src/text/pdf/mod.rs): nothing else, not even the configuration, is read
     if std::env::args_os().nth(1).is_some_and(|argument| argument == pdf::CHILD_ARGUMENT) {
         if ALLOCATOR.set_limit(pdf::CHILD_HEAP).is_err() {
             return ExitCode::FAILURE;

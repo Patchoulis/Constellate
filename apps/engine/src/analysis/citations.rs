@@ -2,7 +2,7 @@
 //! communities cite and are cited.
 //!
 //! Everything here is worked out from the reference lists of the papers whose PDFs Constellate has read
-//! ([`crate::text::references`]), and from nothing else. It is not the whole literature: a paper's *references*
+//! ([`crate::text::pdf::references`]), and from nothing else. It is not the whole literature: a paper's *references*
 //! are complete once its own PDF is read, but the papers that *cite* it are only those among the read ones. The
 //! interface says so wherever it shows these figures.
 //!
@@ -14,7 +14,7 @@
 //!    close title (nine in ten of the words shared, [`SIMILAR_TITLES`]) from the same year or the next counts,
 //!    which survives a word lost at a page break. Below that nothing is linked: two papers are never taken to be
 //!    one on a resemblance. A reference that is not in the library but names an arXiv id is "on arXiv"; any other
-//!    is unresolved, shown with what was read of it. ([`crate::sources::citations`] can look the unresolved ones
+//!    is unresolved, shown with what was read of it. ([`crate::sources::arxiv::citations`] can look the unresolved ones
 //!    up on arXiv.)
 //! 2. **The network around a seed paper** ([`network`]): its references (prior work), the read papers whose
 //!    references include it (derivative work), the citations between those neighbours, so that the picture is a
@@ -29,7 +29,7 @@ use chrono::NaiveDate;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::text::references::{Confidence, Reference, title_key, title_words};
+use crate::text::pdf::references::{Confidence, Reference, title_key, title_words};
 
 /// The share of their words two titles must have in common to be taken for the same title.
 pub const SIMILAR_TITLES: f64 = 0.9;

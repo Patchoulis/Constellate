@@ -5,7 +5,7 @@
 //! to.** A language model asked to support what it says with quotes will now and then write a quote no paper
 //! contains, paraphrase one, or give the right words the wrong paper. So what a model returns is never evidence by
 //! itself. It is a [`Claim`]: a statement with the quotes it says support it. [`check`] looks for each quote in the
-//! text of the paper it names ([`crate::text::passages`]), keeps the statements whose quotes were found, with the
+//! text of the paper it names ([`crate::text::pdf::passages`]), keeps the statements whose quotes were found, with the
 //! place and the paper's own wording ([`Evidence`]), and drops or counts the rest.
 //!
 //! [`Evidence`] has no variant for "not checked", and its fields can only be set here: by [`check`], by
@@ -26,7 +26,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::text::passages::{Address, Located, Match, Passages, Span, chars_of, letters_in, locate_in};
+use crate::text::pdf::passages::{Address, Located, Match, Passages, Span, chars_of, letters_in, locate_in};
 
 /// A quote with fewer letters and digits than this proves nothing ("the model", "we show"), and is not evidence.
 pub const SHORTEST_QUOTE: usize = 20;
@@ -350,7 +350,7 @@ pub fn check<T>(claims: Vec<Claim<T>>, papers: &Papers, rules: Rules) -> Checked
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::text::passages::read_passages;
+    use crate::text::pdf::passages::read_passages;
 
     fn read(text: &str) -> PaperText {
         PaperText::Read(read_passages(&[text.to_owned()]))

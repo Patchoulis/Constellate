@@ -43,7 +43,7 @@ use super::language::{
     Planned, Recorder, Reply, Transport, TransportError, Unavailable,
 };
 use crate::jobs::{Progress, Tracker};
-use crate::library::asking::Intent;
+use crate::library::money::asking::Intent;
 use crate::library::{AnswerKey, Feature, Kept, Library, LibraryError, Slot};
 use crate::usage::Call;
 
@@ -113,7 +113,7 @@ pub enum Stopped {
     Cancelled,
     #[error(transparent)]
     Unavailable(Unavailable),
-    /// What was about to be asked could not be written down first ([`crate::library::asking`]): nothing is sent
+    /// What was about to be asked could not be written down first ([`crate::library::money::asking`]): nothing is sent
     /// whose cost could then be lost unseen.
     #[error("the library could not be written, so nothing more was asked")]
     Unrecorded,

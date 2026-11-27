@@ -8,9 +8,9 @@
 //!
 //! # The seam with the other modules
 //!
-//! Two steps are other modules': scoring abstracts with the AI-text detector ([`Step::Detect`], [`crate::detector`])
+//! Two steps are other modules': scoring abstracts with the AI-text detector ([`Step::Detect`], [`crate::features::detector`])
 //! and naming and describing the communities with the language model ([`Step::Describe`],
-//! [`crate::writing::describe`]). The run calls them through [`seams::detect`] and [`seams::describe`]; [`seams`]
+//! [`crate::features::writing::describe`]). The run calls them through [`seams::detect`] and [`seams::describe`]; [`seams`]
 //! says what each is handed and must set. The model is asked only within what the person accepted with the run's
 //! request ([`seams::Naming`]). Both steps are optional: a failure is told in the log and the run is made without
 //! what it would have added.
@@ -31,30 +31,13 @@
 //!
 //! | module          | what lives there                                                       |
 //! |-----------------|------------------------------------------------------------------------|
-//! | [`steps`]       | the steps, their outcomes, the board of the step under way             |
-//! | [`gather`]      | the selection fetched into the library, and its papers                 |
-//! | [`model_files`] | the embedding model's files, downloaded once, checked, resumable       |
-//! | [`embedding`]   | the papers the library has no vector for, embedded                     |
-//! | [`filter`]      | what the settings leave out                                            |
-//! | [`vocabulary`]  | the words of the papers, and the terms that set a group apart          |
-//! | [`report`]      | the community records (`communities.json`) and the readable report     |
-//! | [`drawing`]     | the papers and links of the graph view (`graph.json`)                  |
-//! | [`files`]       | a run's folder and files, as the Python laid them out                  |
+//! | [`steps`]       | the steps of a run, in order: gather, the model's files, embedding, filter, the seams |
+//! | [`results`]     | what a run makes: vocabulary, community records and report, drawing, files, agreement |
 //! | [`served`]      | the runs: listed, opened, renamed, deleted                             |
-//! | [`seams`]       | the detector's and the describer's steps, connected by the integrator  |
 
-pub mod agreement;
-pub mod drawing;
-pub mod embedding;
-pub mod files;
-pub mod filter;
-pub mod gather;
-pub mod model_files;
-pub mod report;
-pub mod seams;
+pub mod results;
 pub mod served;
 pub mod steps;
-pub mod vocabulary;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -68,17 +51,18 @@ use std::time::Instant;
 use ndarray::{Array2, Axis};
 use serde_json::json;
 
-use crate::analysis::cluster::{self, ClusterError, Limits, Method, Papers};
-use crate::analysis::eigen::EigenError;
+use crate::analysis::graph::cluster::{self, ClusterError, Limits, Method, Papers};
+use crate::analysis::graph::eigen::EigenError;
 use crate::analysis::graph::{self, GraphError, make_unit};
 use crate::jobs::Tracker;
-use crate::library::store::StoreError;
+use crate::library::core::store::StoreError;
 use crate::library::{Library, LibraryError, Paper};
 use crate::selection::Selection;
 use crate::settings::Settings;
 use embedding::Embedding;
 use gather::Sources;
-use steps::{Board, thousands};
+use results::{drawing, files, report, vocabulary};
+use steps::{Board, embedding, filter, gather, seams, thousands};
 pub use steps::{Step, StepOutcome};
 
 /// The version of how communities are cut, kept in every run's `run.json`: raised whenever the same papers and

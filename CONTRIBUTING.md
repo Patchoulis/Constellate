@@ -95,8 +95,9 @@ tests so that it stays that way.
   `apps/web/tests`, `apps/desktop/*.test.cjs` and `scripts/*.test.mjs` (node's test runner). `npm run pr` runs
   every one of these files it finds.
 - **Tests through the API** for behaviour that crosses modules: the engine's tests call its routes as the
-  interface does (`apps/engine/src/api`), and the shell's (`apps/desktop/servers.test.cjs`) start the real engine
-  and the interface's server and check what passes between them: the token reaches the engine, and never a page.
+  interface does (`apps/engine/src/api`, and each feature's `routes.rs` in `apps/engine/src/features`), and the
+  shell's (`apps/desktop/servers.test.cjs`) start the real engine and the interface's server and check what passes
+  between them: the token reaches the engine, and never a page.
 
 Tests never touch the network or the real `data/` folder. A parser that reads papers or pages gets a test for
 every layout that was once read wrongly. The shell's server tests need the interface's build (`npm run pr` makes

@@ -7,6 +7,45 @@ The engine is not a public server. The desktop app starts it on the user's own c
 answers. Every request must prove that, whatever address the engine listens on. It can also run as one person's own
 server, used from elsewhere through a browser: then its owner signs in ([Running a server](#running-a-server)).
 
+## Where things are
+
+One folder per subject, and no folder holds more than about eight files (`src/lib.rs` says what each is for):
+
+```text
+src/
+  lib.rs main.rs           the crate and the program
+  evidence.rs jobs.rs machine.rs selection.rs settings.rs threads.rs
+  features/                one folder per model feature, all of it: logic, routes, storage
+    answers/ citation_contexts/ claim_tree/ critique/ detector/ explanation/ extraction/ stances/ writing/
+  analysis/                the citation network, what reviews come to
+    graph/                 the similarity graph, its eigenvectors, k-means, the clustering into communities
+  api/                     the route table (routes.rs), models, runs, usage
+    guard/                 how the engine listens, connections, the checks every request passes, login/
+    papers/                one paper's record, PDF, passages, reviews and citations
+  library/                 the SQLite library (Library, its errors and re-exports)
+    core/                  schema, place, file store, import, preferences, run records
+    papers/                papers, embeddings, passages, readings, reviews, references, proceedings
+    money/                 kept answers, calls about to be asked, the ledger
+  model/                   the embedding model, asking many papers at once, the chosen model
+    language/              the language model's providers
+  papers/                  one paper's PDF on demand and its declarations
+  pipeline/                making a run, serving the runs, the end-to-end test
+    steps/                 the steps of a run: gather, the model's files, embedding, filter, the seams
+    results/               what a run makes: vocabulary, report, drawing, files, agreement
+  runs/                    many runs: the index, the cache, likely next
+  sources/                 fetching politely, slices, the catalogue
+    arxiv/                 the arXiv API, cited works looked up there
+    conferences/           conferences' own lists, acceptance tiers, proceedings
+  text/                    authors' declarations, shared word helpers
+    pdf/                   a PDF's text, its passages, its reference list
+    reviews/               a reviews page: scores, the whole thread, each reviewer's points
+  usage/                   prices, currency, what calls cost
+```
+
+**Adding a feature** is one folder under `src/features/`, with `mod.rs` (what it is, in its doc comment, and its
+logic), `routes.rs` (its routes, with a `table()`) and, if it keeps more than the model's answers, `store.rs`; then
+one `pub mod` line in `src/features/mod.rs` and one `table.extend(...)` line in `table()` in `src/api/routes.rs`.
+
 ## Starting it
 
 ```sh
@@ -354,8 +393,9 @@ Across a network, also (the first six answer anyone; the last two need the sessi
 Errors are `{ "error": "..." }` with `400` for a bad request, `404` for nothing there, `409` when a job is already
 running (naming it) and `413` for a body that is too large.
 
-Adding a route is a line in `table()` in `src/api/routes.rs`; it is served behind the same checks as the others,
-and a test walks that list to see that every route is refused to whoever has not signed in.
+Adding a route is a line in `table()` in `src/api/routes.rs`, or in the `table()` of a feature's own `routes.rs`
+that it extends with; it is served behind the same checks as the others, and a test walks that list to see that
+every route is refused to whoever has not signed in.
 A route that takes a name in its path (a run) checks it with `routes::one_name` first.
 
 ## Where the data is kept

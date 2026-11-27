@@ -28,22 +28,22 @@ use axum::routing::{MethodRouter, get};
 use serde_json::{Value, json};
 
 use super::routes::{ApiError, Shared, on_the_side, one_name};
-use crate::analysis::cluster::Method;
+use crate::analysis::graph::cluster::Method;
+use crate::features::writing::describe;
 use crate::jobs::Finished;
 use crate::model::chosen::Accepted;
 use crate::model::embed::Device;
 use crate::model::language::Provider;
-use crate::pipeline::files::{self, Replaced, RunFileError};
-use crate::pipeline::gather::Sources;
-use crate::pipeline::seams::Naming;
+use crate::pipeline::results::files::{self, Replaced, RunFileError};
 use crate::pipeline::served::{ServeError, Which};
+use crate::pipeline::steps::gather::Sources;
+use crate::pipeline::steps::seams::Naming;
 use crate::pipeline::{self, Context, Redo, RedoStep, Request};
 use crate::runs::index;
 use crate::selection::Selection;
 use crate::settings;
-use crate::sources::acceptance::Acceptance;
+use crate::sources::conferences::acceptance::Acceptance;
 use crate::text::declarations::Flag;
-use crate::writing::describe;
 
 /// The most conferences or categories one run may name.
 pub const MOST_PICKED: usize = 100;
@@ -384,7 +384,7 @@ pub fn catalog_json() -> Value {
     let acceptance: Vec<Value> = ["all", "highlights", "oral"]
         .iter()
         .map(|name| {
-            let (label, tiers) = pipeline::filter::acceptance_filter(name);
+            let (label, tiers) = pipeline::steps::filter::acceptance_filter(name);
             json!({"name": name, "label": label, "note": includes(tiers)})
         })
         .collect();
@@ -448,7 +448,7 @@ fn machine_of(device: Option<Device>) -> Value {
 async fn library(State(engine): State<Shared>) -> Result<Json<Value>, ApiError> {
     let answer = on_the_side(move || {
         let library = engine.library()?;
-        let (detector, validation) = super::detector::library_part(&engine)?;
+        let (detector, validation) = crate::features::detector::routes::library_part(&engine)?;
         let problems = engine.import_problems();
         Ok(json!({
             "papers": library.paper_count()?,
@@ -473,11 +473,11 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
-    use super::super::config::tests::STRONG;
-    use super::super::config::{Environment, Listen};
     use super::super::routes::Engine;
     use super::super::tests::served;
     use super::*;
+    use crate::api::guard::config::tests::STRONG;
+    use crate::api::guard::config::{Environment, Listen};
     use crate::pipeline::tests::{PYTHON_RUN, python_data_folder};
     use crate::settings::Choices;
 

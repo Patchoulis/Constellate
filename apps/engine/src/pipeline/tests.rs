@@ -39,12 +39,12 @@ use std::sync::Mutex;
 use ndarray::Array2;
 use serde_json::Value;
 
-use super::embedding::Embedding;
-use super::gather::Sources;
 use super::steps::{Board, StepOutcome};
 use super::*;
 use crate::jobs::{Cancel, Progress, Tracker};
 use crate::library::{Known, Library, Paper, SliceOutcome};
+use crate::pipeline::steps::embedding::Embedding;
+use crate::pipeline::steps::gather::Sources;
 use crate::sources::Fetch;
 use crate::sources::fake::Fake;
 
@@ -448,7 +448,7 @@ fn a_spectral_run_on_nearest_neighbours_cuts_along_the_pieces_of_the_graph_as_th
     let rows: Vec<Vec<f32>> = serde_json::from_value(input["embeddings"].clone()).unwrap();
     let embeddings = Array2::from_shape_vec((rows.len(), rows[0].len()), rows.concat()).unwrap();
     let adjacency = crate::analysis::graph::adjacency_matrix(embeddings.view(), true).unwrap();
-    let neighbours = crate::analysis::links::knn_graph(adjacency.view(), crate::analysis::links::KNN);
+    let neighbours = crate::analysis::graph::links::knn_graph(adjacency.view(), crate::analysis::graph::links::KNN);
     // the pieces, by labelling each paper with the smallest paper it is joined to
     let mut piece: Vec<usize> = (0..rows.len()).collect();
     loop {
@@ -737,10 +737,11 @@ fn naming_settings() -> Settings {
 /// Naming within what was accepted of the estimate before the run, as `POST /api/runs` builds it.
 fn accepted(settings: &Settings) -> (seams::Naming, f64) {
     use crate::model::chosen::Accepted;
-    let chosen = crate::writing::describe::tests::chosen("claude-opus-5-5");
-    let shown = crate::writing::describe::estimate_before_run(&chosen, settings);
+    let chosen = crate::features::writing::describe::tests::chosen("claude-opus-5-5");
+    let shown = crate::features::writing::describe::estimate_before_run(&chosen, settings);
     let most = shown.cost.most_usd.unwrap().dollars();
-    let budget = crate::writing::describe::budget_before_run(&chosen, settings, Accepted::Dollars(most)).unwrap();
+    let budget =
+        crate::features::writing::describe::budget_before_run(&chosen, settings, Accepted::Dollars(most)).unwrap();
     (seams::Naming::Within { chosen, budget }, most)
 }
 
@@ -750,7 +751,7 @@ fn a_run_named_within_what_was_accepted_carries_its_names_and_costs_the_estimate
     let library = Library::open(&data.path().join("library")).unwrap();
     let selection = Selection::parse(&["NeurIPS 2025".into()], None, None, &[], false).unwrap();
     let (fetch, words) = (conference_fetch(90), Words { asked: Mutex::new(0) });
-    let transport = crate::writing::describe::tests::scripted();
+    let transport = crate::features::writing::describe::tests::scripted();
     let (naming, most) = accepted(&naming_settings());
     let (name, log) = make_named(
         data.path(),
@@ -801,9 +802,9 @@ fn a_run_with_nothing_accepted_is_made_without_names_and_sends_nothing() {
     let library = Library::open(&data.path().join("library")).unwrap();
     let selection = Selection::parse(&["NeurIPS 2025".into()], None, None, &[], false).unwrap();
     let (fetch, words) = (conference_fetch(90), Words { asked: Mutex::new(0) });
-    let transport = crate::writing::describe::tests::scripted();
+    let transport = crate::features::writing::describe::tests::scripted();
     // a model that could be asked (its key set): nothing is sent all the same, since nothing was accepted
-    let naming = seams::Naming::KeptOnly(crate::writing::describe::tests::chosen("claude-opus-5-5"));
+    let naming = seams::Naming::KeptOnly(crate::features::writing::describe::tests::chosen("claude-opus-5-5"));
     let (name, log) = make_named(
         data.path(),
         &library,
@@ -828,19 +829,19 @@ fn a_budget_reached_part_way_stops_the_naming_and_the_run_is_made_with_the_names
     let library = Library::open(&data.path().join("library")).unwrap();
     let selection = Selection::parse(&["NeurIPS 2025".into()], None, None, &[], false).unwrap();
     let (fetch, words) = (conference_fetch(90), Words { asked: Mutex::new(0) });
-    let transport = crate::writing::describe::tests::scripted();
-    let chosen = crate::writing::describe::tests::chosen("claude-opus-5-5");
+    let transport = crate::features::writing::describe::tests::scripted();
+    let chosen = crate::features::writing::describe::tests::chosen("claude-opus-5-5");
     // the run made once without names, so that the worst case of each of its calls is known from its own prompts
     let (name, _) =
         make_run(data.path(), &library, &selection, naming_settings(), &fetch, &words, Redo::new()).unwrap();
     let folder = data.path().join("runs").join(&name);
-    let tree = crate::writing::read_tree(&folder).unwrap().unwrap();
-    let groups = crate::writing::describe::Group::from_stored(&tree.communities);
+    let tree = crate::features::writing::read_tree(&folder).unwrap().unwrap();
+    let groups = crate::features::writing::describe::Group::from_stored(&tree.communities);
     let ids = files::paper_ids(&folder).unwrap();
     let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
     let papers: Vec<Paper> = library.papers(&ids).unwrap().into_iter().map(Option::unwrap).collect();
     let embeddings = library.vectors(&naming_settings().embedding_model, &papers).unwrap();
-    let made = crate::writing::describe::Run {
+    let made = crate::features::writing::describe::Run {
         name: &name,
         folder: None,
         papers: &papers,
@@ -848,7 +849,7 @@ fn a_budget_reached_part_way_stops_the_naming_and_the_run_is_made_with_the_names
         communities: &groups,
         redo: false,
     };
-    let estimate = crate::writing::describe::estimate_run(&library, &made, &chosen).unwrap();
+    let estimate = crate::features::writing::describe::estimate_run(&library, &made, &chosen).unwrap();
     let worst = estimate.cost.most_tokens / u64::try_from(estimate.to_ask).unwrap();
     assert!(estimate.to_ask >= 2);
     // room for the worst case of one call and a little more, not for a second once the first has taken what it
@@ -878,7 +879,7 @@ fn a_budget_reached_part_way_stops_the_naming_and_the_run_is_made_with_the_names
 fn a_run_scores_its_abstracts_with_the_trained_detector_once_and_reuses_the_scores_when_made_again() {
     let data = tempfile::tempdir().unwrap();
     let library = Library::open(&data.path().join("library")).unwrap();
-    crate::detector::tests::build_in(&library);
+    crate::features::detector::tests::build_in(&library);
     let selection = Selection::parse(&["NeurIPS 2025".into()], None, None, &[], false).unwrap();
     let (fetch, words) = (conference_fetch(90), Words { asked: Mutex::new(0) });
     let settings = Settings { detect_ai: true, ..naming_settings() };
@@ -1023,7 +1024,7 @@ fn twelve_thousand_made_up_papers_are_made_into_a_run() {
     let (papers, width, topics) = (12_000, 1_024, 40);
     let data = tempfile::tempdir().unwrap();
     let library = Library::open(&data.path().join("library")).unwrap();
-    let mut random = crate::analysis::random::Random::new(3);
+    let mut random = crate::analysis::graph::random::Random::new(3);
     let centres = Array2::from_shape_simple_fn((topics, width), || random.normal() as f32);
     let words: Vec<String> = (0..4_000).map(|word| format!("word{word:04}x")).collect();
     let mut made = Vec::with_capacity(papers);
@@ -1090,7 +1091,7 @@ fn a_real_run_is_made_again_from_a_python_data_folder() {
     println!("moved in: {moved:?} in {:.1}s", started.elapsed().as_secs_f64());
     assert!(moved.problems().is_empty(), "{:?}", moved.problems());
     let again = std::time::Instant::now();
-    assert_eq!(library.import_old(&data.join("library")), crate::library::import::Moved::default());
+    assert_eq!(library.import_old(&data.join("library")), crate::library::core::import::Moved::default());
     println!("at the next start: nothing to move, in {:.3}s", again.elapsed().as_secs_f64());
     let folder = files::folder_of(&data, &name).unwrap();
     let selection = files::stored_selection(&folder).unwrap();

@@ -15,10 +15,10 @@ use axum::http::{Request, StatusCode, header};
 use serde_json::{Map, Value, json};
 use tower::ServiceExt;
 
-use super::config::tests::STRONG;
-use super::config::{Environment, Listen};
 use super::routes::Engine;
 use super::tests::served;
+use crate::api::guard::config::tests::STRONG;
+use crate::api::guard::config::{Environment, Listen};
 use crate::model::language::fake::{Sent, completion, message, ok, response};
 use crate::model::language::{ApiKey, KeyHeader, Provider, Providers, Reply, Transport, TransportError};
 use crate::settings::{self, Choices};

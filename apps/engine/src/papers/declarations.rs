@@ -21,7 +21,7 @@ use std::sync::Mutex;
 use sha2::{Digest, Sha256};
 
 use super::pdf::{PdfOutcome, Pdfs};
-use crate::library::proceedings::KeptDeclarations;
+use crate::library::papers::proceedings::KeptDeclarations;
 use crate::library::{Declarations, Library, LibraryError, Reading};
 use crate::sources::polite::IN_FLIGHT;
 use crate::text::declarations::{PARSER, read_declarations};
@@ -263,8 +263,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::library::papers::passages::fixtures::pdf_with;
     use crate::library::papers::tests::paper;
-    use crate::library::passages::fixtures::pdf_with;
     use crate::library::{Known, Paper};
     use crate::sources::Response;
     use crate::sources::fake::{Fake, status};
