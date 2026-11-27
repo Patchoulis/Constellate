@@ -109,8 +109,9 @@ never contain the key or the endpoint.
 | `GET /api/papers/<id>/passages` |                      | `PaperPassages` (engine `Passages`), 404 when the paper's PDF cannot be had    |
 | `POST /api/papers/<id>/locate`  | `{ "quote": "..." }` | `LocateAnswer`: `{found: true, address, wording, matched}` or `{found: false}` |
 
-Both read the paper's PDF through the library (kept by id) and its `Passages` (kept by id and `READER`).
-`LocateAnswer::from(passages.locate(quote))` is the second route's answer.
+Both read the paper's PDF through the library (kept by id) and its `Passages` (kept by id, `READER` and the PDF's
+hash): `apps/engine/src/api/passages.rs`. `LocateAnswer::from(passages.locate(quote))` is the second route's answer;
+a quote of more than `LONGEST_QUOTE` (5,000) characters, or an empty one, is refused.
 
 ## The reader
 
@@ -196,6 +197,84 @@ And in the interface:
 For the citing sentences of feature 2: `citing_sentences(&passages, &read_reference_list(&pages.join("\n")))` gives,
 for each reference, its sentences with their addresses; `Evidence::at(paper, &passages, &sentence.address)` makes
 the evidence for one without asking the model to quote it.
+
+## What every feature starts from
+
+Four pieces, so that no feature reads PDFs, keeps answers, or runs batches of calls its own way:
+
+| piece                                                       | what it does                                                                               |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `Library::paper_texts(&ids)` / `paper_text(id)` / `citable` | each paper's `PaperReading` (read, no PDF, unreadable, not in the library), PDFs read once |
+| `Library::kept` / `keep` / `forget`, `AnswerKey::new`       | the model's raw answers by `Feature` and key; `forget` is a redo button                    |
+| `model::batch::estimate_batch` / `ask_all`                  | the cost before, then the calls: kept ones skipped, a few at a time, within a `Budget`     |
+| `Job::start_tracked`, `Tracker`, `POST /api/job/cancel`     | "n of m done, x USD so far" in `/api/status`, and a stop button                            |
+
+An extraction table over a community's papers, engine side (`Said { cells: Vec<Claim<Cell>> }` is the answer's shape):
+
+```rust
+const PROMPT: u32 = 1; // raise it when the prompt or the answer's shape changes: kept answers are then asked again
+let readings = library.paper_texts(&papers)?; // PDFs read on every core the first time, kept after
+let texts: Vec<String> = readings.iter().map(|reading| reading.passages().map(as_prompt).unwrap_or_default()).collect();
+let items: Vec<Item> = papers.iter().zip(&texts).map(|(paper, text)| Item {
+    slot: Slot {
+        feature: Feature::Extraction,
+        key: AnswerKey::new(Feature::Extraction, DEFAULT_MODEL, PROMPT, &[paper], &columns_json),
+        subject: Subject::Paper((*paper).to_owned()),
+    },
+    prompt: PROMPT,
+    ask: Ask { purpose: "extraction table", model: DEFAULT_MODEL, system: SYSTEM, shared: Some(text),
+               question: &columns_json, form: Form::Json(&schema), effort: Effort::Low, max_tokens: 2_000 },
+    likely_tokens: 600,
+}).collect();
+// GET .../extraction/estimate: shown before the user starts ("about USD 4 for these 739 papers"); nothing is sent
+let estimate = batch::estimate_batch::<Said>(&library, &items, Counting::ASSUMED)?;
+// POST .../extraction: one job; its progress and the stop button come with it
+engine.job.start_tracked("extraction table", move |tracker| {
+    let transport = Https::default();
+    let endpoint = engine.language.clone().map_err(|why| why.to_string())?;
+    let asking = Asking { library: &library, transport: &transport, endpoint, recorder: &*library, in_flight: IN_FLIGHT };
+    let outcomes = batch::ask_all::<Said>(asking, &items, &budget, tracker).map_err(|error| error.to_string())?;
+    // ... the result is a count; the table is read with GET, which checks the kept claims as below
+});
+// GET .../extraction: what is kept, its quotes checked again against the same texts
+for ((paper, reading), outcome) in papers.iter().zip(readings).zip(outcomes) {
+    let said = match outcome { Outcome::Kept(kept) => kept.answer, Outcome::Answered(new) => new.answer, _ => continue };
+    let cite = Papers::from([((*paper).to_owned(), reading.into_text().ok_or(ApiError::NotFound)?)]);
+    rows.push(evidence::check(said.cells, &cite, Rules::ONE_PAPER).cited);
+}
+// the redo button: library.forget(Feature::Extraction, &[Subject::Paper(id), ...])
+```
+
+What to know about each piece:
+
+- `paper_texts` takes ids in any order and answers in that order. A paper's PDF is `pdfs/<id>.pdf` in the library's
+  folder (`Library::pdf_file`; `keep_pdf` puts one there): nothing here downloads. Several hundred ids at a time;
+  passages are held in memory.
+- `AnswerKey::new(feature, model, prompt, papers, question)`: `question` is everything else the answer depends on
+  (the question, the columns as JSON, the passage's address). The papers are a set; the reader version is added.
+  Items of one batch with the same slot are asked once and share the outcome.
+- `ask_all` answers one `Outcome` per item in the items' order: `Kept`, `Answered`, `Failed(Failure)` (this one
+  only) or `NotStarted(Stopped)` (budget, cancelled, the API unavailable). Items sharing model, system and `shared`
+  are asked in turn on one thread so the prompt cache is read; at most `in_flight` calls at once; every call is
+  recorded in the ledger; every answer is kept as it arrives. Tests use a fake `Transport`: never the network.
+- One job runs at a time (`Busy` otherwise). Work started with `start_tracked` checks `tracker.cancelled()`
+  (`ask_all` does) and returns what it has.
+
+The conventions that keep seven features' branches from colliding:
+
+- **Engine**: the feature's code in its own module file (`apps/engine/src/<area>/<feature>.rs`, declared with one
+  `pub mod` line), its routes in its own file `apps/engine/src/api/<feature>.rs` with a `table()`, added to
+  `routes::table()` with one `table.extend(super::<feature>::table());` line (and one `pub mod` line in `api/mod.rs`).
+- **Its `Feature` variant** is already in `library/answers.rs`; use it, and do not rename it (it is stored).
+- **A table of its own** only if `kept_answers` cannot hold what it keeps: then one migration appended at the end of
+  `library/schema.rs` with a comment naming the feature. Branches will collide on the number; the integrator
+  renumbers on merge (a migration is never edited once released).
+- **Contracts**: its types appended at the end of `packages/contracts/src/index.ts`, under a banner comment
+  `// ---- <feature name> ----`; nothing existing is changed in place. Its calls added at the end of `api` in
+  `apps/web/lib/api.ts`.
+- **Interface**: its own component files under `apps/web/components/`, mounted with one or two lines where it shows
+  (the reader's tabs, a community's sections); its tests in `apps/web/tests/<feature>.test.tsx`.
+- **The changelog**: one line under `## [Unreleased]`, `### Added`.
 
 ## Measured on real papers
 
