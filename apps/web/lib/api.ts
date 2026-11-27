@@ -18,6 +18,11 @@ import type {
 	Settings,
 	Status,
 	Usage,
+	ExplainedPassages,
+	ExplanationPrepared,
+	ExplanationStarted,
+	PassageAddress,
+	RelatedPassages,
 } from "@rp/contracts";
 import { changesSomething, csrfOf, signInRedirect, withCsrf } from "@/lib/engine";
 
@@ -111,4 +116,18 @@ export const api = {
 	/** read this paper's reference list from its PDF (slow the first time: the PDF is fetched); answers its network */
 	readReferences: (id: string, inRun?: string) =>
 		call<CitationNetwork>(`/api/papers/${id}/references${inRun ? `?run=${encodeURIComponent(inRun)}` : ""}`, { method: "POST" }),
+	/** what explaining the passage at `address` involves, free: its definitions, a kept explanation or the estimate */
+	prepareExplanation: (id: string, address: PassageAddress) =>
+		call<ExplanationPrepared>(`/api/papers/${encodeURIComponent(id)}/explanation/prepare`, send("POST", { address })),
+	/** ask the model to explain the passage at `address`, as a job (none is started when one is kept) */
+	explain: (id: string, address: PassageAddress, model: string, mostUsd: number | null) =>
+		call<ExplanationStarted>(`/api/papers/${encodeURIComponent(id)}/explanation`, send("POST", { address, model, most_usd: mostUsd })),
+	/** set the kept explanation of a passage aside, so that it is asked for again */
+	redoExplanation: (id: string, address: PassageAddress) =>
+		call<{ redone: true }>(`/api/papers/${encodeURIComponent(id)}/explanation`, send("DELETE", { address })),
+	/** the passages of a paper with an explanation kept for the model chosen */
+	explainedPassages: (id: string) => call<ExplainedPassages>(`/api/papers/${encodeURIComponent(id)}/explanations`),
+	/** passages of the run's papers near this one that share the passage's words (no model) */
+	relatedPassages: (name: string, id: string, address: PassageAddress) =>
+		call<RelatedPassages>(`${run(name)}/papers/${encodeURIComponent(id)}/related`, send("POST", { address })),
 };

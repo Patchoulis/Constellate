@@ -47,7 +47,7 @@ export function useJob(onDone: (run: string) => void) {
 		try {
 			const status = await api.status(seen.current);
 			dispatch({ type: "reported", status });
-			if (status.state === "done" && status.result) done.current(status.result);
+			if (status.state === "done" && status.result && status.kind !== "explaining a passage") done.current(status.result);
 		} catch (error) {
 			dispatch({ type: "unanswered", error: (error as Error).message });
 		}
