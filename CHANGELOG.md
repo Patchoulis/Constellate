@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-27
+
 ### Known issues
 
 - The clustering method "spectral-knn" can give different communities on different computers when its neighbour
@@ -338,5 +340,6 @@ The first release.
   limited to the sites papers are published on.
 - PDFs are fetched only from the publishers' hosts, with a size and time limit.
 
-[Unreleased]: https://github.com/Patchoulis/Constellate/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Patchoulis/Constellate/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Patchoulis/Constellate/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Patchoulis/Constellate/releases/tag/v0.1.0
