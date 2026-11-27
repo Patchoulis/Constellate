@@ -33,7 +33,7 @@ from . import (
     usage,
 )
 from .jobs import Busy, Job, State
-from .library import Papers, acceptance
+from .library import Papers, accepted
 from .overview import Overviews
 from .selection import Selection
 
@@ -219,10 +219,12 @@ def paper(paper_id):
     """A paper's record, plus what is known about it: how it was accepted, whether its PDF can be shown here,
     what its authors declare (null until read), and the AI-text detector's verdict (null if never scored)."""
     found = papers.get(paper_id)
+    tier, term = accepted(found)
     return jsonify(
         found
         | {
-            "acceptance": acceptance(found),
+            "acceptance": tier,
+            "acceptance_term": term,
             "readable": proceedings.pdf_url(found) is not None,
             "declarations": proceedings.known(paper_id),
             "reviews": reviews.known(paper_id),

@@ -13,7 +13,7 @@ import { pickMarkedLabels, placeLabels, type MarkedPlace, type PaperPlace } from
 import type { Marks } from "@/lib/marks";
 import { panelSize } from "@/lib/use-resizable";
 import { count } from "@/lib/units";
-import { countKinds, PAPER_KINDS, shownPapers, type PaperKind } from "@/lib/paper-filter";
+import { countKinds, kindNotes, PAPER_KINDS, shownPapers, type PaperKind } from "@/lib/paper-filter";
 import { cn } from "@/lib/utils";
 import { boxOf, layoutGraph, type Layout } from "@/lib/layout";
 
@@ -145,6 +145,7 @@ export function GraphView({
 	// What is shown in full: the focused community's papers (or all), minus the kinds switched off above the graph.
 	const [hidden, setHidden] = useState<ReadonlySet<PaperKind>>(new Set());
 	const counts = useMemo(() => countKinds(graph.nodes), [graph]);
+	const notes = useMemo(() => kindNotes(graph.nodes), [graph]);
 	useEffect(() => {
 		rendererRef.current?.setFocus(shownPapers(graph.nodes, hidden, focus ? focus.community.members : null));
 	}, [graph, layout, focus, hidden]);
@@ -254,12 +255,12 @@ export function GraphView({
 					{marked.length > 0 && <span>· {count(marked.length, "paper")} marked</span>}
 				</div>
 				{/* Which kinds of paper are shown in full: click one to dim it, again to bring it back. */}
-				{PAPER_KINDS.filter(({ kind }) => counts[kind] > 0).map(({ kind, label, note }) => (
+				{PAPER_KINDS.filter(({ kind }) => counts[kind] > 0).map(({ kind, label }) => (
 					<button
 						key={kind}
 						type="button"
 						aria-pressed={!hidden.has(kind)}
-						title={`${note}. Click to ${hidden.has(kind) ? "show" : "dim"} them.`}
+						title={`${notes[kind]}. Click to ${hidden.has(kind) ? "show" : "dim"} them.`}
 						onClick={() => toggle(kind)}
 						className={cn(
 							"rounded-md border bg-card/90 px-2 py-1 tabular-nums transition-colors hover:border-ring",
@@ -297,7 +298,7 @@ export function GraphView({
 							<Title text={node.title} />
 						</div>
 						<div className="mt-0.5 flex flex-wrap items-center gap-1 empty:hidden">
-							<AcceptanceTag state={node.acceptance} small />
+							<AcceptanceTag state={node.acceptance} term={node.acceptance_term} small />
 							{node.ai && <AiTag small hedged />}
 							<RatingTags ratings={ratings[node.id]} small most={1} />
 						</div>
@@ -322,7 +323,7 @@ export function GraphView({
 						</div>
 					)}
 					<div className="mt-1 flex flex-wrap items-center gap-1 empty:hidden">
-						<AcceptanceTag state={hovered.acceptance} />
+						<AcceptanceTag state={hovered.acceptance} term={hovered.acceptance_term} />
 						{hovered.ai && <AiTag hedged />}
 						<RatingTags ratings={ratings[hovered.id]} />
 					</div>

@@ -160,7 +160,7 @@ function MarkedList({
 								</span>
 							)}
 							<span className="flex flex-wrap items-center gap-1 empty:hidden">
-								<AcceptanceTag state={node.acceptance} small />
+								<AcceptanceTag state={node.acceptance} term={node.acceptance_term} small />
 								{node.ai && <AiTag small />}
 							</span>
 						</RowButton>

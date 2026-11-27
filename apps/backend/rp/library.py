@@ -11,7 +11,7 @@ import re
 
 import numpy as np
 
-from . import LIBRARY, store
+from . import LIBRARY, store, tiers
 
 
 def from_arxiv(paper: dict) -> bool:
@@ -23,19 +23,23 @@ def from_arxiv(paper: dict) -> bool:
 TIERS = ("oral", "spotlight", "poster")  # best first
 
 
-def acceptance(paper: dict) -> str | None:
-    """How a conference paper was accepted, in three tiers that hold across conferences; None for a paper that
-    did not come from a conference's list.  Conferences word their decisions differently ("Accept (oral)",
-    "Accept (spotlight)", "Accept (regular)", "Highlight", "Award Candidate", plain "Accept"); anything that is
-    not singled out counts as an ordinary acceptance."""
+def accepted(paper: dict) -> tuple[str | None, dict | None]:
+    """How a conference paper was accepted: (tier, the conference's own term for it; see tiers.py).  (None, None)
+    for a paper that did not come from a conference's list."""
     if from_arxiv(paper):
-        return None
-    decision = paper.get("comment", "").lower()
-    if re.search(r"oral|award|best paper", decision):
-        return "oral"
-    if re.search(r"spotlight|highlight", decision):
-        return "spotlight"
-    return "poster"
+        return None, None
+    slug, year, _ = paper["id"].split("-")
+    return tiers.read(slug, year, paper.get("comment", ""))
+
+
+def acceptance(paper: dict) -> str | None:
+    """The tier alone: one of TIERS, which hold across conferences, or None for a paper not from a list."""
+    return accepted(paper)[0]
+
+
+def acceptance_term(paper: dict) -> dict | None:
+    """The conference's own term for how it accepted a paper (AcceptanceTerm in packages/contracts), or None."""
+    return accepted(paper)[1]
 
 
 def paper_text(paper: dict) -> str:

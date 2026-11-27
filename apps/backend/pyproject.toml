@@ -13,6 +13,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E501"]   # fixtures are text as it appears in papers and pages: long lines
+"rp/tiers.py" = ["E501"]   # a table of the conferences' terms, one row a line
 
 [tool.ruff.lint.isort]
 known-first-party = ["rp", "conftest"]

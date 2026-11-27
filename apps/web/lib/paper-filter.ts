@@ -1,4 +1,5 @@
 import type { GraphNode } from "@rp/contracts";
+import { termsOf } from "@/lib/acceptance";
 
 /**
  * The kinds of paper the graph can show or dim, by two independent traits:
@@ -24,6 +25,22 @@ export function countKinds(nodes: GraphNode[]): Record<PaperKind, number> {
 	const counts: Record<PaperKind, number> = { oral: 0, spotlight: 0, poster: 0, none: 0, ai: 0, human: 0 };
 	for (const node of nodes) for (const kind of kindsOf(node)) counts[kind] += 1;
 	return counts;
+}
+
+/**
+ * What each kind's chip says on hover. The tiers are Constellate's, so the orals' and spotlights' notes name the
+ * conferences' own terms they include among these papers ("Spotlights: Spotlight, Highlight, Notable top 25%").
+ */
+export function kindNotes(nodes: GraphNode[]): Record<PaperKind, string> {
+	const notes = Object.fromEntries(PAPER_KINDS.map(({ kind, note }) => [kind, note])) as Record<PaperKind, string>;
+	for (const [tier, label] of [
+		["oral", "Orals"],
+		["spotlight", "Spotlights"],
+	] as const) {
+		const terms = termsOf(nodes, tier);
+		if (terms.length) notes[tier] += `. ${label} here: ${terms.join(", ")}`;
+	}
+	return notes;
 }
 
 /**

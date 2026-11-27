@@ -10,7 +10,7 @@ Fields outside computer science publish in journals, not conference proceedings;
 (used with a date range) are the real source.  Chemistry has no conference here for that reason.
 """
 
-from . import claude, cluster, proceedings, settings
+from . import claude, cluster, proceedings, settings, tiers
 
 # field -> [(conference name, host of its official list or None)]
 CONFERENCES = {
@@ -112,6 +112,15 @@ EMBEDDING_MODELS = [
 ]
 
 
+def _includes(included) -> str:
+    """What an acceptance filter lets through, in the conferences' own words."""
+    if "poster" in included:
+        return "Every accepted paper, whatever its tier"
+    # a word counts where its conference and year gave it that tier: ICML 2021's "Spotlight" was an ordinary paper
+    terms = "; ".join(f"{tier.capitalize()}s: {', '.join(tiers.equivalents(tier))}" for tier in included)
+    return f"{terms} (each where its conference and year count it so)"
+
+
 def as_json() -> dict:
     # "name" is what gets stored; "label" is what a menu shows when that is not the same thing
     named = lambda table: [{"name": name, "label": label, "note": note} for name, (label, note) in table.items()]  # noqa: E731
@@ -119,7 +128,10 @@ def as_json() -> dict:
         "embedding_models": [{"name": name, "note": note} for name, note in EMBEDDING_MODELS],
         "describe_models": named(claude.MODELS),
         "clustering": named(cluster.METHODS),
-        "acceptance": [{"name": name, "label": label, "note": ""} for name, (label, _) in settings.ACCEPTANCE.items()],
+        "acceptance": [
+            {"name": name, "label": label, "note": _includes(included)}
+            for name, (label, included) in settings.ACCEPTANCE.items()
+        ],
         "flags": [
             {
                 "field": "Leave out papers where",
