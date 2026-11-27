@@ -18,6 +18,8 @@ import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/api";
 import { communityLabel, type CommunityNode } from "@/lib/community";
 import { pdfAt } from "@/lib/evidence";
+import { isOpenReviewPage, openOutside, safeLink } from "@/lib/links";
+import { framedPdf, pageFailed, type FailedLoad, type FramedPdf } from "@/lib/pdf-frame";
 import { ready, useAsync, type Async } from "@/lib/use-async";
 import { useFocusReturn } from "@/lib/use-focus-return";
 import { useResizable } from "@/lib/use-resizable";
@@ -57,11 +59,29 @@ const EMBEDS = typeof navigator !== "undefined" && /Electron/.test(navigator.use
  * Constellate has read (components/citation-network.tsx).
  */
 function sources(paper: Paper): { paper?: { url: string; embedded: boolean }; reviews?: { url: string; embedded: boolean } } {
-	const remote = paper.pdf_url ?? undefined;
+	// the record's addresses are shown only when they are https (lib/links.ts)
+	const remote = safeLink(paper.pdf_url)?.href;
 	return {
 		paper: paper.readable ? { url: api.pdfUrl(paper.id), embedded: false } : remote ? { url: remote, embedded: true } : undefined,
-		reviews: paper.url?.includes("openreview.net") ? { url: paper.url, embedded: true } : undefined,
+		reviews: paper.url && isOpenReviewPage(paper.url) ? { url: paper.url, embedded: true } : undefined,
 	};
+}
+
+/** A page the reader could not show: what happened, the address, and a way to open it in the browser. */
+function NotShown({ why, url }: { why: string; url: string }) {
+	const opens = safeLink(url) !== null;
+	return (
+		<div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-sm text-muted-foreground">
+			<p>{why}</p>
+			<p className="max-w-full font-mono text-xs break-all">{url}</p>
+			{opens && (
+				<Button variant="outline" onClick={() => openOutside(url)}>
+					<ExternalLink />
+					Open it in my browser
+				</Button>
+			)}
+		</div>
+	);
 }
 
 /** What the desktop app's embedded view offers beyond an ordinary element. */
@@ -79,6 +99,19 @@ const LOOKS = 12; // times the shown page's text is read, a few seconds apart: r
  */
 function Embedded({ url, onText }: { url: string; onText?: (text: string, shown: string) => Promise<boolean> }) {
 	const ref = useRef<EmbeddedView | null>(null);
+	const [failed, setFailed] = useState<{ why: string; url: string } | null>(null);
+	useEffect(() => {
+		const view = ref.current;
+		if (!view) return;
+		const onFail = (event: Event) => {
+			const told = event as unknown as FailedLoad;
+			if (!pageFailed(told)) return;
+			const why = told.errorDescription ? ` (${told.errorDescription})` : "";
+			setFailed({ why: `This page could not be loaded${why}.`, url: told.validatedURL || url });
+		};
+		view.addEventListener("did-fail-load", onFail);
+		return () => view.removeEventListener("did-fail-load", onFail);
+	}, [url]);
 	useEffect(() => {
 		const view = ref.current;
 		if (!view || !onText) return;
@@ -108,8 +141,25 @@ function Embedded({ url, onText }: { url: string; onText?: (text: string, shown:
 			view.removeEventListener("did-stop-loading", loaded);
 		};
 	}, [onText]);
+	if (failed) return <NotShown why={failed.why} url={failed.url} />;
 	// its own storage partition: the shell refuses an embedded view without it (apps/desktop/main.cjs)
 	return createElement("webview", { ref, src: url, partition: "reader", plugins: "true", className: "min-h-0 flex-1 bg-background" });
+}
+
+/** The PDF from our own backend, in a frame; an error the backend answers instead is said in its words. */
+function OwnPdf({ url, title }: { url: string; title: string }) {
+	const [shown, setShown] = useState<FramedPdf>({ kind: "pdf" });
+	const loaded = (frame: HTMLIFrameElement) => {
+		try {
+			const page = frame.contentDocument;
+			if (page) setShown(framedPdf(page.contentType, page.body?.innerText));
+		} catch {
+			// not readable from here: the frame stays as the browser shows it
+		}
+	};
+	if (shown.kind === "problem")
+		return <NotShown why={`The PDF could not be shown: ${shown.words}`} url={new URL(url, window.location.href).href} />;
+	return <iframe src={url} title={title} className="min-h-0 flex-1 bg-background" onLoad={(event) => loaded(event.currentTarget)} />;
 }
 
 /** A page shown inside the reader: a frame for our own backend, an embedded browser view for another site. */
@@ -122,17 +172,9 @@ function Page({
 	title: string;
 	onText?: (text: string, shown: string) => Promise<boolean>;
 }) {
-	if (!source.embedded) return <iframe src={source.url} title={title} className="min-h-0 flex-1 bg-background" />;
+	if (!source.embedded) return <OwnPdf url={source.url} title={title} />;
 	if (EMBEDS) return <Embedded url={source.url} onText={onText} />;
-	return (
-		<div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-sm text-muted-foreground">
-			This page can only be shown inside the desktop app.
-			<Button variant="outline" onClick={() => window.open(source.url, "_blank", "noopener")}>
-				<ExternalLink />
-				Open it in the browser
-			</Button>
-		</div>
-	);
+	return <NotShown why="This page can only be shown inside the desktop app." url={source.url} />;
 }
 
 const ANSWER = { Yes: "text-success", No: "text-warning", NA: "text-muted-foreground" } as const;
@@ -414,13 +456,8 @@ export function PaperReader({
 				{tabs.length > 1 && <Segmented options={tabs} value={view} onChange={setView} />}
 				<span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{found ? found.title : id}</span>
 				<MarkButton marked={marked} onToggle={onToggleMark} />
-				{found?.url && (
-					<Button
-						variant="ghost"
-						size="icon"
-						title="Open the paper's page in the browser"
-						onClick={() => window.open(found.url, "_blank", "noopener")}
-					>
+				{safeLink(found?.url) && (
+					<Button variant="ghost" size="icon" title="Open the paper's page in the browser" onClick={() => openOutside(found?.url)}>
 						<ExternalLink />
 					</Button>
 				)}
