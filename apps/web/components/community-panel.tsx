@@ -219,8 +219,8 @@ function Detail({
 				<p className="font-sans text-base text-foreground">{community.description}</p>
 			) : (
 				<p className="text-xs text-muted-foreground">
-					No written description yet: the backend has no Claude API key. Set ANTHROPIC_API_KEY and run again; the download and the
-					embeddings are reused.
+					No written description yet: the backend has no key for the chosen language model (Settings, Language model, says which variable to
+					set). Set it and run again; the download and the embeddings are reused.
 				</p>
 			)}
 			<div className="flex flex-wrap gap-1">

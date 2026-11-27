@@ -21,7 +21,90 @@ export interface Settings {
 	/** papers whose authors' declarations raise one of these flags are left out (Catalog.flags) */
 	exclude_flags: string[];
 	describe: boolean;
+	/** the language model's provider (ModelProvider.id); absent from the Python backend, which knows Claude only */
+	describe_provider?: ProviderId;
+	/** one of that provider's models, or an id typed for a provider that takes one */
 	describe_model: string;
+	/** how hard the model thinks; absent from the Python backend */
+	describe_effort?: Effort;
+}
+
+/** How hard a language model thinks before it answers (apps/engine/src/model/language). */
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+
+/** A provider of language models (apps/engine/src/model/language/provider.rs). */
+export type ProviderId =
+	| "anthropic"
+	| "openai"
+	| "gemini"
+	| "compatible"
+	| "openrouter"
+	| "xai"
+	| "mistral"
+	| "deepseek"
+	| "groq"
+	| "together"
+	| "fireworks"
+	| "cerebras"
+	| "moonshot"
+	| "minimax"
+	| "zai"
+	| "nvidia"
+	| "huggingface"
+	| "vercel"
+	| "baseten"
+	| "meta";
+
+/** A model's price as the engine knows it: never 0 for one whose price is not known. */
+export type ModelPrice =
+	/** US dollars per million tokens, as published */
+	| { kind: "known"; input: number; output: number; cache_read: number | null }
+	| { kind: "not_known" }
+	/** a server on this computer: no API fee */
+	| { kind: "this_computer" };
+
+/** One model a provider offers. */
+export interface ModelEntry {
+	id: string;
+	label: string;
+	note: string;
+	/** the efforts it takes; none when it has no such setting */
+	efforts: Effort[];
+	price: ModelPrice;
+}
+
+/** What a provider can and cannot do (the engine's capability table). */
+export interface ModelCapabilities {
+	answers: "enforced" | "requested" | "json_mode" | "prompted";
+	effort: "by_model" | "not_sent";
+	caching: "marked" | "automatic_writes_billed" | "automatic" | "not_reported";
+	counting: "endpoint" | "characters";
+}
+
+/** One provider, as `GET /api/models` tells it: never a key, of an address only its host. */
+export interface ModelProvider {
+	id: ProviderId;
+	label: string;
+	key: { variable: string; /** a server on this computer usually needs none */ needed: boolean; set: boolean };
+	address: { variable: string | null; host: string | null; place: "provider" | "set" | "this_computer" | "not_set" };
+	available: { state: "ready" } | { state: "unavailable"; /** what to do: "set OPENAI_API_KEY" */ why: string };
+	/** listed only, listed or typed, or typed only (a server's own models) */
+	ids: "listed" | "listed_or_typed" | "typed";
+	capabilities: ModelCapabilities;
+	/** what it cannot do, in plain words */
+	limits: string[];
+	models: ModelEntry[];
+	/** the price of a model id typed rather than listed */
+	price_of_typed: ModelPrice;
+	/** where the facts about it were read */
+	docs: string;
+}
+
+/** `GET /api/models` (apps/engine/src/api/models.rs). */
+export interface ModelCatalog {
+	providers: ModelProvider[];
+	/** the model the settings choose */
+	chosen: { provider: ProviderId; model: string; effort: Effort };
 }
 
 /** A step whose stored results a run can be told to ignore and produce again (rp/pipeline.py REDO). */
@@ -554,7 +637,7 @@ export interface Catalog {
 	clustering: CatalogItem[];
 }
 
-/** What the Claude API has cost (rp/usage.py). Counted from `since`: earlier calls were not recorded. */
+/** What the language model has cost (rp/usage.py). Counted from `since`: earlier calls were not recorded. */
 export interface Usage {
 	provider: { /** "Anthropic API", or the host requests are sent to */ name: string; /** are credentials set? */ ready: boolean };
 	/** the model that writes names and overviews (Settings) */

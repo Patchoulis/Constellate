@@ -2,7 +2,9 @@
 
 import { Dialog } from "radix-ui";
 import { FileSearch, RotateCcw, X } from "lucide-react";
-import { REDO_STEPS, type Catalog, type Library, type RedoStep, type Settings } from "@rp/contracts";
+import { REDO_STEPS, type Catalog, type Library, type ModelProvider, type RedoStep, type Settings } from "@rp/contracts";
+import { ModelChoice } from "@/components/model-choice";
+import { groupsOf, type Choosable } from "@/lib/models";
 import { Button, Heading } from "@/components/ui/button";
 import { Input, Label, SwitchRow } from "@/components/ui/field";
 import { Choice, GroupedPicker } from "@/components/ui/picker";
@@ -14,21 +16,88 @@ type Field = { key: keyof Settings; label: string; hint?: string } & (
 	| { kind: "switch" }
 	| { kind: "number"; step?: number }
 	// one of a list the backend offers (Catalog), in a dropdown
-	| { kind: "choice"; from: "embedding_models" | "describe_models" | "clustering" | "acceptance" }
+	| { kind: "choice"; from: "embedding_models" | "clustering" | "acceptance" }
 	// any number of a list the backend offers
 	| { kind: "several"; from: "flags"; placeholder: string }
+	// the language model: a provider and one of its models, and the effort (model-choice.tsx)
+	| { kind: "model" }
 );
+
+/** How a provider's address is shown: its host, and where that is. */
+function where(provider: ModelProvider): string {
+	const host = provider.address.host ?? "no address set";
+	switch (provider.address.place) {
+		case "this_computer":
+			return `${host}, on this computer: no API cost`;
+		case "set":
+			return `${host} (set in ${provider.address.variable})`;
+		case "not_set":
+			return `no address set: set ${provider.address.variable}`;
+		case "provider":
+			return host;
+	}
+}
+
+/** Whether a provider's key is set, by its variable's name: never the key. */
+function keyState(provider: ModelProvider): string {
+	if (provider.key.set) return `${provider.key.variable} is set`;
+	return provider.key.needed ? `${provider.key.variable} is not set` : `no key needed (${provider.key.variable} if the server wants one)`;
+}
+
+/** Every provider: whether it can be used, its key (set or not, never the key), its host, what it cannot do. */
+function LanguageModels({ choosable }: { choosable: Choosable }) {
+	if (choosable.source === "older_backend") {
+		return (
+			<p className="text-xs text-muted-foreground">
+				The backend this window is connected to reaches the Claude API only, with ANTHROPIC_API_KEY. The engine offers the other providers.
+			</p>
+		);
+	}
+	return (
+		<>
+			<p className="text-xs text-muted-foreground">
+				Keys and addresses are not entered here: set the variable named below in the engine&apos;s environment or its .env file, and start
+				the engine again. A key is never shown, only whether it is set.
+			</p>
+			<ul className="flex flex-col gap-2">
+				{groupsOf(choosable.catalog).map(({ provider, why }) => (
+					<li key={provider.id} className="flex flex-col gap-0.5 text-xs">
+						<span className="flex items-baseline justify-between gap-2">
+							<span className="text-sm text-foreground">{provider.label}</span>
+							<span className={why ? "text-warning" : "text-muted-foreground"}>{why ?? "ready"}</span>
+						</span>
+						<span className="text-muted-foreground">
+							{keyState(provider)} · {where(provider)}
+						</span>
+						{provider.limits.map((limit) => (
+							<span key={limit} className="text-muted-foreground">
+								{limit}
+							</span>
+						))}
+					</li>
+				))}
+			</ul>
+		</>
+	);
+}
 
 /** Stored results that can be thrown away and produced again, each as a button that does it now: one step for
  *  all of the open run's papers, or every step. */
 const REDO: { steps: RedoStep[]; label: string; hint: string }[] = [
 	{ steps: ["download"], label: "Download all again", hint: "Fetch the run's whole paper list again and overwrite the stored records" },
 	{ steps: ["embeddings"], label: "Embed all again", hint: "Recompute the embedding of every paper in the run" },
-	{ steps: ["descriptions"], label: "Describe all again", hint: "Ask Claude for new names and descriptions of every community" },
+	{
+		steps: ["descriptions"],
+		label: "Describe all again",
+		hint: "Ask the language model for new names and descriptions of every community",
+	},
 	{ steps: REDO_STEPS, label: "Redo all of it", hint: "All three: download, embed and describe everything in the run from scratch" },
 ];
 
 const AI_GROUP = "AI-written papers";
+
+/** Prices in the menu's hints are told in US dollars here; the sidebar tells them in the user's currency. */
+const DOLLAR = { code: "USD", rate: 1, date: null };
 
 const GROUPS: { title: string; note?: string; columns?: number; fields: Field[] }[] = [
 	{
@@ -99,26 +168,49 @@ const GROUPS: { title: string; note?: string; columns?: number; fields: Field[] 
 			{
 				kind: "switch",
 				key: "describe",
-				label: "Describe communities with Claude",
-				hint: "Needs ANTHROPIC_API_KEY in the backend's environment",
+				label: "Describe communities with a language model",
+				hint: "Needs the chosen provider's key in the backend's environment (see Language model below)",
 			},
-			{ kind: "choice", key: "describe_model", label: "Claude model", from: "describe_models" },
+			{ kind: "model", key: "describe_model", label: "Language model" },
 		],
 	},
 ];
+
+const MODELS_GROUP = "Language model";
 
 function Editor({
 	field,
 	settings,
 	catalog,
+	choosable,
+	providerOwned,
 	onChange,
 }: {
 	field: Field;
 	settings: Settings;
 	catalog: Catalog | undefined;
+	choosable: Choosable;
+	providerOwned: boolean;
 	onChange: (changes: Partial<Settings>) => void;
 }) {
 	const set = (value: Settings[keyof Settings]) => onChange({ [field.key]: value });
+	if (field.kind === "model") {
+		return (
+			<Label>
+				{field.label}
+				<span className="flex h-8 items-center rounded-md border border-input bg-background px-2 text-sm">
+					<ModelChoice
+						quiet
+						choosable={choosable}
+						settings={settings}
+						providerOwned={providerOwned}
+						currency={DOLLAR}
+						onChange={onChange}
+					/>
+				</span>
+			</Label>
+		);
+	}
 	if (field.kind === "switch") {
 		return <SwitchRow label={field.label} hint={field.hint} checked={Boolean(settings[field.key])} onCheckedChange={set} />;
 	}
@@ -167,6 +259,7 @@ export function SettingsDialog({
 	detector,
 	machine,
 	serverOwned = new Set<keyof Settings>(),
+	choosable,
 	onOpenChange,
 	onChange,
 	onRedo,
@@ -183,6 +276,8 @@ export function SettingsDialog({
 	machine: Library["machine"] | undefined;
 	/** the settings the server this window is connected to decides (none on the user's own computer) */
 	serverOwned?: ReadonlySet<keyof Settings>;
+	/** the language models to choose from, and what each provider can do */
+	choosable: Choosable;
 	onOpenChange: (open: boolean) => void;
 	onChange: (changes: Partial<Settings>) => void;
 	/** Run the open run again with these steps redone; undefined when there is no run to redo, or one is running. */
@@ -271,11 +366,29 @@ export function SettingsDialog({
 									)}
 									<div className={group.columns ? "grid grid-cols-2 gap-2" : "flex flex-col gap-2"}>
 										{shown.map((field) => (
-											<Editor key={field.key} field={field} settings={settings} catalog={catalog} onChange={onChange} />
+											<Editor
+												key={field.key}
+												field={field}
+												settings={settings}
+												catalog={catalog}
+												choosable={choosable}
+												providerOwned={serverOwned.has("describe_provider")}
+												onChange={onChange}
+											/>
 										))}
 									</div>
 								</section>
 							))}
+							<section className="flex flex-col gap-2">
+								<Heading>{MODELS_GROUP}</Heading>
+								{serverOwned.has("describe_provider") && (
+									<p className="text-xs text-muted-foreground">
+										The provider is decided by the server this window is connected to: its key and account are the server&apos;s. Its models
+										can be chosen above.
+									</p>
+								)}
+								<LanguageModels choosable={choosable} />
+							</section>
 						</div>
 					)}
 				</Dialog.Content>

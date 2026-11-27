@@ -7,9 +7,11 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Names, descriptions and overviews can be written by other providers' models than Claude: OpenAI, Google Gemini, OpenRouter, xAI, Mistral, DeepSeek, Groq and a dozen more, or a model on your own computer through Ollama, LM Studio or any OpenAI-compatible server. The model menu at the bottom of the sidebar groups them by provider, says which ones need a key and which variable to set, takes a model id typed in where the provider allows it, and offers the effort where the model has one; the cost line names the provider and model and says "cost not known" rather than 0 when a price is not published, and "no API cost" for a model on your own computer. Settings list every provider, whether its key is set, where it is reached and what it cannot do.
+
 - Opening a paper's Reviews tab now keeps the whole discussion (each review by section, rebuttals, the meta-review and the decision), shows the paper's mean, range and confidence-weighted mean on its venue's own scale, and adds a Reviews section to each community: how many of its papers have reviews read, ratings per conference and year, the papers reviewers disagreed on most, and what reviewers most often praise and criticise, each linked to the reviewer's words.
 
-- The paper reader has a Text tab showing the paper's text section by section, and citations open it at the exact place they quote, with the words highlighted; quotes Claude gives as evidence are only shown once they have been found in the paper they are attributed to.
+- The paper reader has a Text tab showing the paper's text section by section, and citations open it at the exact place they quote, with the words highlighted; quotes a model gives as evidence are only shown once they have been found in the paper they are attributed to.
 
 - The runs sidebar, the communities panel, the paper reader, the overview and the activity log can be resized by dragging their edge (or with the arrow keys once the edge is focused); double-click an edge to put it back, and the sizes are remembered.
 

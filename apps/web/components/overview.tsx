@@ -154,7 +154,7 @@ export function OverviewPanel({
 						)}
 						{error && <p className="text-sm text-destructive">{error}</p>}
 						<p className="text-xs text-muted-foreground">
-							It is written with the Claude model chosen in Settings and kept, so it is only written once.
+							It is written with the language model chosen in Settings and kept, so it is only written once.
 						</p>
 					</div>
 				)}

@@ -20,13 +20,13 @@ function Tick({ state }: { state: "none" | "some" | "all" }) {
 	);
 }
 
-const ROW = "flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 text-sm outline-none data-[highlighted]:bg-accent";
-const MENU =
+export const ROW = "flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 text-sm outline-none data-[highlighted]:bg-accent";
+export const MENU =
 	"z-50 max-h-[min(28rem,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto rounded-md border bg-popover p-1 shadow-xl";
 
 /** What a menu opens from: looks like a text field, shows what is chosen. `quiet` is for a menu inside a line of
  *  small text (a status line): no box, the line's own size. */
-function Trigger({ text, empty, count, quiet }: { text: string; empty: boolean; count?: number; quiet?: boolean }) {
+export function Trigger({ text, empty, count, quiet }: { text: string; empty: boolean; count?: number; quiet?: boolean }) {
 	return (
 		<DropdownMenu.Trigger
 			className={
