@@ -980,6 +980,8 @@ export interface CritiqueLeftOut {
 	beyond_limit: number;
 	/** weaknesses worded as a judgement of the paper (accept, reject, a score): the section gives none */
 	verdict: number;
+	/** points asked about that the answer has no entry for: they have no reading at all */
+	not_answered?: number;
 }
 
 export interface CritiqueReading {

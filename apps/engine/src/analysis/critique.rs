@@ -467,6 +467,8 @@ pub struct LeftOut {
     pub beyond_limit: usize,
     /// Weaknesses worded as a judgement of the paper (accept, reject, a score): this section gives none.
     pub verdict: usize,
+    /// Points asked about that the answer has no entry for, in the shape asked: they have no reading at all.
+    pub not_answered: usize,
 }
 
 /// The model's answer, checked: what is shown.
@@ -576,6 +578,7 @@ pub fn read(said: &Said, paper: &str, papers: &Papers, ids: &[String]) -> Readin
             Ok(Ok(entry)) => points.push(Some(entry)),
         }
     }
+    left_out.not_answered = ids.len().saturating_sub(seen.len());
     let mut weaknesses: Vec<WeaknessEntry> = Vec::new();
     for entry in &said.weaknesses {
         match weakness_entry(entry) {
@@ -1043,8 +1046,20 @@ pub(crate) mod tests {
         assert_eq!(reading.weaknesses[0].absence, Absence::NotClaimed);
         assert_eq!(
             reading.left_out,
-            LeftOut { not_in_paper: 3, malformed: 4, unknown_point: 2, beyond_limit: 0, verdict: 1 }
+            LeftOut { not_in_paper: 3, malformed: 4, unknown_point: 2, beyond_limit: 0, verdict: 1, not_answered: 0 }
         );
+    }
+
+    #[test]
+    fn points_asked_about_that_the_answer_leaves_out_are_counted_as_not_answered() {
+        let answer = said(json!({
+            "points": [{"point": "p2", "located": "no_passage", "quote": "", "paper_says": ""},
+                       {"point": "p2", "located": "no_passage", "quote": "", "paper_says": ""}],
+            "weaknesses": []
+        }));
+        let reading = read(&answer, "p", &papers(), &ids(4));
+        assert_eq!(reading.points.len(), 1);
+        assert_eq!((reading.left_out.not_answered, reading.left_out.unknown_point), (3, 1), "p1, p3 and p4");
     }
 
     #[test]
