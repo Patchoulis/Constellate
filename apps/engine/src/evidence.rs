@@ -50,7 +50,11 @@ pub enum Established {
 }
 
 /// One piece of evidence: a place in a paper, and the paper's own words there. `Evidence` in the contracts.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// It is serialised for the interface but never read back from JSON: that would make evidence nothing checked.
+/// A feature that keeps its answers keeps the model's [`Claim`]s and checks them again when it loads them
+/// (cheap: the paper's passages are kept).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Evidence {
     paper: String,
     /// The paper's own wording, which may differ from the model's quote by spacing, hyphenation, punctuation and
@@ -102,14 +106,18 @@ impl Evidence {
     /// construction. `None` when the place is not in the paper's pages (an address from another reading).
     pub fn at(paper: &str, passages: &Passages, address: &Address) -> Option<Evidence> {
         let pages = |number: u32| passages.pages.get(usize::try_from(number).ok()?.checked_sub(1)?);
+        let length = |text: &str| u32::try_from(text.chars().count()).unwrap_or(u32::MAX);
         let first = pages(address.page)?;
         let quote = if address.end_page == address.page {
-            let length = u32::try_from(first.text.chars().count()).ok()?;
-            (address.start < address.end && address.end <= length)
+            (address.start < address.end && address.end <= length(&first.text))
                 .then(|| chars_of(&first.text, address.start, address.end))?
         } else {
-            let last = pages(address.end_page)?;
-            format!("{} {}", chars_of(&first.text, address.start, u32::MAX), chars_of(&last.text, 0, address.end))
+            // only on to the very next page, and inside both pages' text
+            let last = pages(address.end_page).filter(|_| address.end_page == address.page + 1)?;
+            let inside = address.start < length(&first.text) && address.end > 0 && address.end <= length(&last.text);
+            inside.then(|| {
+                format!("{} {}", chars_of(&first.text, address.start, u32::MAX), chars_of(&last.text, 0, address.end))
+            })?
         };
         let address = address.clone();
         (!quote.trim().is_empty()).then(|| Evidence {
@@ -164,7 +172,7 @@ pub struct Claim<T> {
 
 /// A statement with the evidence it rests on, every piece of which was found: what a feature shows. `Cited<T>`
 /// in the contracts.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Cited<T> {
     pub statement: T,
     pub evidence: Vec<Evidence>,
@@ -232,7 +240,7 @@ pub struct Counts {
 }
 
 /// What [`check`] returns: the statements to show, those not to, and the counts.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Checked<T> {
     pub cited: Vec<Cited<T>>,
     pub dropped: Vec<Dropped<T>>,
@@ -512,8 +520,12 @@ mod tests {
         assert_eq!(evidence.quote(), "We show that merging task vectors counts shared directions twice.");
         let outside = Address { page: 9, ..address.clone() };
         assert_eq!(Evidence::at("2501.00001", passages, &outside), None);
-        let past = Address { end: 100_000, ..address };
+        let past = Address { end: 100_000, ..address.clone() };
         assert_eq!(Evidence::at("2501.00001", passages, &past), None);
+        let backwards = Address { end_page: 0, ..address.clone() };
+        assert_eq!(Evidence::at("2501.00001", passages, &backwards), None);
+        let beyond = Address { end_page: 2, ..address };
+        assert_eq!(Evidence::at("2501.00001", passages, &beyond), None, "there is no page 2");
     }
 
     #[test]

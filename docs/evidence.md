@@ -90,7 +90,9 @@ end_page, end }`. The reference list is in the pages' text but is not a passage.
   in the prefix changed. Prefixes under 512 tokens are not cached by the current models.
 - **Read papers, in the engine.** `Passages` are kept by paper id and `READER` (reading a PDF takes a moment, and
   stored addresses must keep pointing at the same words). Answers are kept by what produced them (model, papers,
-  question), as overviews are: work that was done is not done again.
+  question), as overviews are: work that was done is not done again. Keep the model's `Claim`s, not `Cited`:
+  `Evidence` is never read back from JSON (that would make it unchecked), so a stored answer is checked again when
+  it is loaded, which is cheap once the passages are kept.
 
 ## Errors
 

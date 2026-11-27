@@ -427,7 +427,10 @@ export function PaperReader({
 					{paper.status === "failed" && <p className="text-sm text-destructive">{paper.error}</p>}
 					{paper.status === "loading" && <p className="text-sm text-muted-foreground">Loading…</p>}
 					{found && view === "citations" && <Citations paper={found} run={run} onOpen={onOpen} />}
-					{found && view === "text" && <PaperText id={found.id} at={at} onOpenPdf={from.paper ? openPdf : undefined} />}
+					{found && view === "text" && (
+						// a new citation starts afresh: nothing of the last one may stay highlighted while this one is found
+						<PaperText key={JSON.stringify(at ?? null)} id={found.id} at={at} onOpenPdf={from.paper ? openPdf : undefined} />
+					)}
 					{found && view !== "citations" && view !== "text" && (
 						<Abstract
 							paper={found}

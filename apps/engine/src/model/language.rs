@@ -526,9 +526,8 @@ impl Budget {
         spending.held_usd =
             Usd::from_picodollars(spending.held_usd.picodollars().saturating_sub(held.usd.picodollars()));
         spending.tokens = spending.tokens.saturating_add(took.all());
-        if let Some(cost) = cost {
-            spending.usd += cost;
-        }
+        // a call whose price is not known is counted at what it held, so that a budget in dollars still sees it
+        spending.usd += cost.unwrap_or(held.usd);
     }
 }
 
@@ -724,7 +723,9 @@ fn failure(reply: &Reply, model: &str) -> AskError {
         .retry_after
         .as_deref()
         .and_then(|seconds| seconds.trim().parse::<f64>().ok())
-        .map(Duration::from_secs_f64);
+        // a header that is negative, not a number, or absurd is no wait at all (and must not panic)
+        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+        .and_then(|seconds| Duration::try_from_secs_f64(seconds.min(LONGEST_WAIT.as_secs_f64() + 1.0)).ok());
     match reply.status {
         401 => Unavailable::KeyRefused.into(),
         402 => Unavailable::Billing.into(),
@@ -844,12 +845,15 @@ impl<'a> Client<'a> {
         let parts: Vec<Usage> = usage
             .as_ref()
             .and_then(|usage| usage.iterations.clone())
-            .map(|parts| parts.into_iter().filter(|part| part.model.is_some()).collect())
+            .map(|parts| parts.into_iter().collect())
             .unwrap_or_default();
         let parts: Vec<(String, Tokens)> = if parts.is_empty() {
             vec![(answered.clone(), usage.map(|usage| usage.tokens()).unwrap_or_default())]
         } else {
-            parts.into_iter().map(|part| (part.model.clone().unwrap_or_default(), part.tokens())).collect()
+            parts
+                .into_iter()
+                .map(|part| (part.model.clone().unwrap_or_else(|| answered.clone()), part.tokens()))
+                .collect()
         };
         let mut total = Tokens::default();
         let mut cost = Some(Usd::ZERO);
@@ -882,7 +886,12 @@ impl<'a> Client<'a> {
             }
         };
         let Ok(message) = serde_json::from_slice::<Message>(&reply.body) else {
-            budget.settle(held, &self.worst(ask), price_of(ask.model, &self.worst(ask)));
+            // an answer was given and so probably billed, but says nothing of what it took: its worst case is
+            // recorded and counted, rather than nothing
+            let worst = self.worst(ask);
+            let call = Call { model: ask.model.to_owned(), purpose: ask.purpose.to_owned(), tokens: worst };
+            budget.settle(held, &worst, call.cost());
+            self.recorder.record(call);
             return Err(NoAnswer::Unexpected.into());
         };
         // paid for whether or not the answer is usable: recorded before it is looked at
@@ -1220,6 +1229,12 @@ mod tests {
         let mut spent = error(429, "rate_limit_error", "spend limit");
         spent.body = json!({"type": "error", "error": {"type": "rate_limit_error", "message": "limit", "details": {"error_code": "enforced_spend_limit_reached"}}}).to_string().into_bytes();
         assert_eq!(failure(&spent, "m"), AskError::Unavailable(Unavailable::SpendLimit));
+        for header in ["-1", "NaN", "inf", "1e30", "soon"] {
+            let mut odd = error(429, "rate_limit_error", "slow down");
+            odd.retry_after = Some(header.to_owned());
+            let AskError::NoAnswer(NoAnswer::RateLimited { retry_after }) = failure(&odd, "m") else { panic!() };
+            assert!(retry_after.is_none_or(|wait| wait > LONGEST_WAIT), "{header}: never waited for, never a panic");
+        }
         let fake = Fake::new(vec![
             Ok(error(500, "api_error", "x")),
             Ok(error(500, "api_error", "x")),
