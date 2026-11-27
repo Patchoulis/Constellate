@@ -360,15 +360,66 @@ pub enum Location {
     NoPassage,
 }
 
-/// The model's reading of one reviewer's point.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// What the model's reading of one reviewer's point holds: a place for it, the paper's response to it, or both,
+/// but never neither (a reading with nothing found in the paper is no reading, and is not shown).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PointFound {
+    /// Where the point applies (a passage found in the paper, or the answer that there is none), and the paper's
+    /// response when one was found.
+    Placed { location: Location, paper_says: Option<Evidence> },
+    /// The model's place for the point was not found in the paper (or contradicted its own response): only the
+    /// paper's response, found, is shown.
+    Responded { paper_says: Evidence },
+}
+
+/// The model's reading of one reviewer's point. `PointReading` in the contracts: `location` is null exactly when
+/// `paper_says` is not.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PointReading {
     /// The point's id ("p3").
     pub point: String,
-    /// None when the model's quote of the place was not found in the paper.
-    pub location: Option<Location>,
+    pub found: PointFound,
+}
+
+impl PointReading {
+    /// A reading of `point` from what was found of it, if anything was.
+    pub fn of(point: String, location: Option<Location>, paper_says: Option<Evidence>) -> Option<Self> {
+        let found = match (location, paper_says) {
+            (Some(location), paper_says) => PointFound::Placed { location, paper_says },
+            (None, Some(paper_says)) => PointFound::Responded { paper_says },
+            (None, None) => return None,
+        };
+        Some(Self { point, found })
+    }
+
+    /// Where the point applies; none when the model's place for it was not found in the paper.
+    pub fn location(&self) -> Option<&Location> {
+        match &self.found {
+            PointFound::Placed { location, .. } => Some(location),
+            PointFound::Responded { .. } => None,
+        }
+    }
+
     /// What the paper says that responds to the point, found in the paper; shown as the paper's words only.
-    pub paper_says: Option<Evidence>,
+    pub fn paper_says(&self) -> Option<&Evidence> {
+        match &self.found {
+            PointFound::Placed { paper_says, .. } => paper_says.as_ref(),
+            PointFound::Responded { paper_says } => Some(paper_says),
+        }
+    }
+}
+
+/// As the interface reads it: `{point, location, paper_says}`, either of the two null but not both.
+impl Serialize for PointReading {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            point: &'a str,
+            location: Option<&'a Location>,
+            paper_says: Option<&'a Evidence>,
+        }
+        Wire { point: &self.point, location: self.location(), paper_says: self.paper_says() }.serialize(serializer)
+    }
 }
 
 /// Whether a weakness says something is absent, and what a search of the paper's text found.
@@ -561,8 +612,8 @@ pub fn read(said: &Said, paper: &str, papers: &Papers, ids: &[String]) -> Readin
             }
             location => location,
         };
-        if location.is_some() || paper_says.is_some() {
-            readings.push((entry.point, PointReading { point: ids[entry.point].clone(), location, paper_says }));
+        if let Some(reading) = PointReading::of(ids[entry.point].clone(), location, paper_says) {
+            readings.push((entry.point, reading));
         }
     }
     readings.sort_by_key(|(point, _)| *point);
@@ -965,19 +1016,36 @@ pub(crate) mod tests {
         let reading = read(&answer, "p", &cite, &ids(5));
         let read_points: Vec<&str> = reading.points.iter().map(|point| point.point.as_str()).collect();
         assert_eq!(read_points, ["p1", "p2", "p5"]);
-        assert_eq!(reading.points[2].location, None);
-        assert!(reading.points[2].paper_says.is_some());
-        let Some(Location::Passage { evidence }) = &reading.points[0].location else { panic!() };
+        assert_eq!(reading.points[2].location(), None);
+        assert!(reading.points[2].paper_says().is_some());
+        let Some(Location::Passage { evidence }) = reading.points[0].location() else { panic!() };
         assert_eq!(evidence.paper(), "p");
         assert!(evidence.address().is_some());
-        assert!(reading.points[0].paper_says.as_ref().unwrap().quote().starts_with("In response to the reviews"));
-        assert_eq!(reading.points[1].location, Some(Location::NoPassage));
+        assert!(reading.points[0].paper_says().unwrap().quote().starts_with("In response to the reviews"));
+        assert_eq!(reading.points[1].location(), Some(&Location::NoPassage));
+        // "no passage" is told as such, never as a place
+        let told = serde_json::to_value(&reading.points[1]).unwrap();
+        assert_eq!(told, json!({"point": "p2", "location": {"kind": "no_passage"}, "paper_says": null}));
         assert_eq!(reading.weaknesses.len(), 1);
         assert_eq!(reading.weaknesses[0].absence, Absence::NotClaimed);
         assert_eq!(
             reading.left_out,
             LeftOut { not_in_paper: 3, malformed: 4, unknown_point: 2, beyond_limit: 0, verdict: 1 }
         );
+    }
+
+    #[test]
+    fn a_points_reading_has_a_place_or_the_papers_response_and_is_none_with_neither() {
+        let response = Evidence::at("p", &passages(PAPER), &passages(PAPER).passages[1].address).unwrap();
+        assert_eq!(PointReading::of("p1".into(), None, None), None, "nothing found: no reading");
+        let responded = PointReading::of("p1".into(), None, Some(response.clone())).unwrap();
+        assert_eq!((responded.location(), responded.paper_says()), (None, Some(&response)));
+        let told = serde_json::to_value(&responded).unwrap();
+        assert_eq!((told["location"].clone(), told["paper_says"]["paper"].clone()), (Value::Null, json!("p")));
+        let placed = PointReading::of("p2".into(), Some(Location::NoPassage), None).unwrap();
+        assert_eq!((placed.location(), placed.paper_says()), (Some(&Location::NoPassage), None));
+        let both = PointReading::of("p3".into(), Some(Location::Passage { evidence: response.clone() }), Some(response));
+        assert!(matches!(both.unwrap().found, PointFound::Placed { paper_says: Some(_), .. }));
     }
 
     #[test]
