@@ -15,8 +15,9 @@ import { count } from "@/lib/units";
  *     more         a further page is asked for; `rows` stay
  *     failed       asking failed (`error`); `rows` are what was shown before, if anything
  *
- * A page answered for another search than the one asked now, or for an offset that is not the next one, changes
- * nothing: typing on, or a "Show more" clicked twice, never mixes two lists.
+ * A page answered for a request other than the one waited for now (another search, the same search asked again
+ * because the runs changed), or for an offset that is not the next one, changes nothing: typing on, a run deleted
+ * while the list is read, or a "Show more" clicked twice, never mixes two lists.
  */
 
 /** Runs asked for at a time. */
@@ -36,37 +37,41 @@ export interface ListedRun {
 	problem: string | null;
 }
 
+/** `asked` numbers each request the list makes: a page answered for an earlier one (the same search asked again
+ *  because the runs changed meanwhile) is not taken. */
+type Asked = { search: string; asked: number; rows: ListedRun[] };
+
 export type RunsList =
-	| { state: "loading"; search: string; rows: ListedRun[]; total: number | null }
-	| { state: "shown"; search: string; rows: ListedRun[]; total: number }
-	| { state: "more"; search: string; rows: ListedRun[]; total: number }
-	| { state: "failed"; search: string; rows: ListedRun[]; total: number | null; error: string };
+	| (Asked & { state: "loading"; total: number | null })
+	| (Asked & { state: "shown"; total: number })
+	| (Asked & { state: "more"; total: number })
+	| (Asked & { state: "failed"; total: number | null; error: string });
 
 export type RunsListEvent =
 	| { kind: "search"; search: string }
 	| { kind: "more" }
-	| { kind: "page"; search: string; offset: number; rows: ListedRun[]; total: number }
-	| { kind: "refused"; search: string; error: string };
+	| { kind: "page"; asked: number; offset: number; rows: ListedRun[]; total: number }
+	| { kind: "refused"; asked: number; error: string };
 
-export const FIRST: RunsList = { state: "loading", search: "", rows: [], total: null };
+export const FIRST: RunsList = { state: "loading", search: "", asked: 0, rows: [], total: null };
 
 export function runsListStep(list: RunsList, event: RunsListEvent): RunsList {
 	switch (event.kind) {
 		case "search":
-			return { state: "loading", search: event.search, rows: list.rows, total: list.total };
+			return { state: "loading", search: event.search, asked: list.asked + 1, rows: list.rows, total: list.total };
 		case "more":
-			return list.state === "shown" && list.rows.length < list.total ? { ...list, state: "more" } : list;
+			return list.state === "shown" && list.rows.length < list.total ? { ...list, state: "more", asked: list.asked + 1 } : list;
 		case "page": {
-			if (event.search !== list.search) return list; // another search's page
-			if (list.state === "loading" && event.offset === 0)
-				return { state: "shown", search: list.search, rows: event.rows, total: event.total };
+			if (event.asked !== list.asked) return list; // an earlier request's page
+			const { search, asked } = list;
+			if (list.state === "loading" && event.offset === 0) return { state: "shown", search, asked, rows: event.rows, total: event.total };
 			if (list.state === "more" && event.offset === list.rows.length)
-				return { state: "shown", search: list.search, rows: [...list.rows, ...event.rows], total: event.total };
+				return { state: "shown", search, asked, rows: [...list.rows, ...event.rows], total: event.total };
 			return list;
 		}
 		case "refused":
-			if (event.search !== list.search || (list.state !== "loading" && list.state !== "more")) return list;
-			return { state: "failed", search: list.search, rows: list.rows, total: list.total, error: event.error };
+			if (event.asked !== list.asked || (list.state !== "loading" && list.state !== "more")) return list;
+			return { state: "failed", search: list.search, asked: list.asked, rows: list.rows, total: list.total, error: event.error };
 	}
 }
 

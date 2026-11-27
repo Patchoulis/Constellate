@@ -33,13 +33,13 @@ const many = Array.from({ length: 120 }, (_, index) => summary(index + 2));
 
 test("the first page is asked from the start, then a further page from where the rows end", () => {
 	assert.equal(offsetAsked(FIRST), 0);
-	const shown = runsListStep(FIRST, { kind: "page", search: "", offset: 0, rows: [listed(2), listed(3)], total: 120 });
+	const shown = runsListStep(FIRST, { kind: "page", asked: FIRST.asked, offset: 0, rows: [listed(2), listed(3)], total: 120 });
 	assert.equal(shown.state, "shown");
 	assert.equal(offsetAsked(shown), null, "nothing asked while it is shown");
 	const more = runsListStep(shown, { kind: "more" });
 	assert.equal(more.state, "more");
 	assert.equal(offsetAsked(more), 2);
-	const longer = runsListStep(more, { kind: "page", search: "", offset: 2, rows: [listed(4)], total: 120 });
+	const longer = runsListStep(more, { kind: "page", asked: more.asked, offset: 2, rows: [listed(4)], total: 120 });
 	assert.deepEqual(
 		longer.rows.map((row) => row.name),
 		["run-2", "run-3", "run-4"],
@@ -49,22 +49,38 @@ test("the first page is asked from the start, then a further page from where the
 
 test("a page for another search, or for an offset that is not the next one, changes nothing", () => {
 	const searching = runsListStep(FIRST, { kind: "search", search: "gnn" });
-	assert.equal(runsListStep(searching, { kind: "page", search: "", offset: 0, rows: [listed(2)], total: 1 }), searching);
-	const shown = runsListStep(searching, { kind: "page", search: "gnn", offset: 0, rows: [listed(2)], total: 5 });
+	assert.equal(runsListStep(searching, { kind: "page", asked: FIRST.asked, offset: 0, rows: [listed(2)], total: 1 }), searching);
+	const shown = runsListStep(searching, { kind: "page", asked: searching.asked, offset: 0, rows: [listed(2)], total: 5 });
 	const more = runsListStep(shown, { kind: "more" });
-	assert.equal(runsListStep(more, { kind: "page", search: "gnn", offset: 0, rows: [listed(9)], total: 5 }), more, "an old first page");
-	assert.equal(runsListStep(shown, { kind: "page", search: "gnn", offset: 1, rows: [listed(9)], total: 5 }), shown, "nothing asked");
+	assert.equal(runsListStep(more, { kind: "page", asked: shown.asked, offset: 0, rows: [listed(9)], total: 5 }), more, "an old first page");
+	assert.equal(runsListStep(shown, { kind: "page", asked: shown.asked, offset: 1, rows: [listed(9)], total: 5 }), shown, "nothing asked");
 	assert.equal(runsListStep(more, { kind: "more" }), more, "a second click while one page is asked");
 });
 
+test("the same search asked again while its first page is on its way takes only the page asked after", () => {
+	// the runs changed (one deleted) while the first page was asked: it is asked again, the earlier answer dropped
+	const again = runsListStep(FIRST, { kind: "search", search: "" });
+	assert.equal(again.search, FIRST.search);
+	assert.equal(
+		runsListStep(again, { kind: "page", asked: FIRST.asked, offset: 0, rows: [listed(2)], total: 2 }),
+		again,
+		"from before the change",
+	);
+	const shown = runsListStep(again, { kind: "page", asked: again.asked, offset: 0, rows: [listed(3)], total: 1 });
+	assert.deepEqual(
+		shown.rows.map((row) => row.name),
+		["run-3"],
+	);
+});
+
 test("asking for more when every run is shown does nothing", () => {
-	const all = runsListStep(FIRST, { kind: "page", search: "", offset: 0, rows: [listed(2)], total: 1 });
+	const all = runsListStep(FIRST, { kind: "page", asked: FIRST.asked, offset: 0, rows: [listed(2)], total: 1 });
 	assert.equal(runsListStep(all, { kind: "more" }), all);
 	assert.equal(shownLine(all), null);
 });
 
 test("a new search keeps the last rows in view until its first page comes", () => {
-	const shown = runsListStep(FIRST, { kind: "page", search: "", offset: 0, rows: [listed(2)], total: 1 });
+	const shown = runsListStep(FIRST, { kind: "page", asked: FIRST.asked, offset: 0, rows: [listed(2)], total: 1 });
 	const searching = runsListStep(shown, { kind: "search", search: "vision" });
 	assert.equal(searching.state, "loading");
 	assert.deepEqual(searching.rows, shown.rows);
@@ -72,18 +88,19 @@ test("a new search keeps the last rows in view until its first page comes", () =
 });
 
 test("a refusal is kept with the rows shown before, and only for the request waited for", () => {
-	const shown = runsListStep(FIRST, { kind: "page", search: "", offset: 0, rows: [listed(2)], total: 9 });
+	const shown = runsListStep(FIRST, { kind: "page", asked: FIRST.asked, offset: 0, rows: [listed(2)], total: 9 });
 	const more = runsListStep(shown, { kind: "more" });
-	const failed = runsListStep(more, { kind: "refused", search: "", error: "The engine did not answer within 20 seconds." });
+	const failed = runsListStep(more, { kind: "refused", asked: more.asked, error: "The engine did not answer within 20 seconds." });
 	assert.deepEqual(failed, {
 		state: "failed",
 		search: "",
+		asked: more.asked,
 		rows: shown.rows,
 		total: 9,
 		error: "The engine did not answer within 20 seconds.",
 	});
-	assert.equal(runsListStep(shown, { kind: "refused", search: "", error: "late" }), shown, "nothing was waited for");
-	assert.equal(runsListStep(more, { kind: "refused", search: "other", error: "x" }), more, "another search's");
+	assert.equal(runsListStep(shown, { kind: "refused", asked: shown.asked, error: "late" }), shown, "nothing was waited for");
+	assert.equal(runsListStep(more, { kind: "refused", asked: shown.asked, error: "x" }), more, "an earlier request's");
 	// trying again asks the first page anew
 	assert.equal(offsetAsked(runsListStep(failed, { kind: "search", search: "" })), 0);
 	const refused: RunsList = runsListStep(failed, { kind: "more" });

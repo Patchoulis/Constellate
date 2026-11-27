@@ -18,6 +18,7 @@ import {
 	RUNS_PAGE,
 	SEARCH_DEBOUNCE_MS,
 	listedOfSummary,
+	matchesSearch,
 	offsetAsked,
 	pageOf,
 	runsListStep,
@@ -305,19 +306,20 @@ function RunsSection({
 
 	// the page the list asks for now; called off when another is asked for
 	const offset = offsetAsked(list);
-	const { search } = list;
+	const { search, asked } = list;
 	useEffect(() => {
 		if (offset === null) return;
 		const controller = new AbortController();
 		withSignal(controller.signal, () => api.runsPage({ offset, limit: RUNS_PAGE, sort: "created", search: search || undefined })).then(
-			(answer) => dispatch({ kind: "page", search, offset, ...pageOf(answer as RunPage | RunSummary[], search, offset) }),
-			(error: Error) => controller.signal.aborted || dispatch({ kind: "refused", search, error: error.message }),
+			(answer) => dispatch({ kind: "page", asked, offset, ...pageOf(answer as RunPage | RunSummary[], search, offset) }),
+			(error: Error) => controller.signal.aborted || dispatch({ kind: "refused", asked, error: error.message }),
 		);
 		return () => controller.abort();
-	}, [offset, search]);
+	}, [offset, search, asked]);
 
-	// nothing could be listed at all: the whole list the page holds, searched here
-	const rows = list.state === "failed" && list.rows.length === 0 ? pageOf(plain, search, 0).rows : list.rows;
+	// nothing could be listed at all: the whole list the page holds, searched here, every run of it
+	const rows =
+		list.state === "failed" && list.rows.length === 0 ? plain.filter((run) => matchesSearch(run, search)).map(listedOfSummary) : list.rows;
 	const known = plain.find((run) => run.name === current);
 	const shown = withOpenRun(rows, current, known && listedOfSummary(known));
 	const more = shownLine(list);
