@@ -1,15 +1,15 @@
 /**
  * The choice of language model, as pure logic: providers grouped with their models, which can be used and why
  * not, the efforts a model has, and what a model costs, in words with their currency. The engine tells all of it
- * (`GET /api/models`); the Python backend, which knows the Claude API only, does not, and then today's list of
- * Claude models is all there is to choose from.
+ * (`GET /api/models`). Until it has answered (or when asking failed), the model the settings name is all there is
+ * to show, and nothing can be picked.
  */
 import type { CatalogItem, Effort, ModelCatalog, ModelEntry, ModelPrice, ModelProvider, ProviderId, Settings } from "@rp/contracts";
-import { isMissingRoute } from "@/lib/missing-route";
 import { money, type Currency } from "@/lib/units";
 
-/** Where the choice came from: the engine, which knows every provider, or an older backend, which knows Claude only. */
-export type Choosable = { source: "engine"; catalog: ModelCatalog } | { source: "older_backend"; catalog: ModelCatalog };
+/** What can be chosen: the engine's catalog once it has answered; before that (or when asking failed, `why`), only
+ *  the model the settings name. */
+export type Choosable = { source: "engine"; catalog: ModelCatalog } | { source: "waiting"; catalog: ModelCatalog; why: string | null };
 
 /** The efforts, lowest first, as the engine ranks them. */
 export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
@@ -23,44 +23,39 @@ export const EFFORT_LABEL: Record<Effort, string> = {
 	max: "most effort",
 };
 
-/** The Claude API alone, with the models a backend without `GET /api/models` lists: what the app offered before. */
-export function olderBackend(models: CatalogItem[], chosen: string | undefined): Choosable {
-	const anthropic: ModelProvider = {
-		id: "anthropic",
-		label: "Anthropic",
-		key: { variable: "ANTHROPIC_API_KEY", needed: true, set: true },
-		address: { variable: "ANTHROPIC_BASE_URL", host: "api.anthropic.com", place: "provider" },
-		available: { state: "ready" },
+/** The model the settings name, alone, while the engine's catalog is not known: shown, not offered. */
+export function waitingFor(
+	models: CatalogItem[],
+	settings: Partial<Pick<Settings, "describe_provider" | "describe_model">> | undefined,
+	why: string | null,
+): Choosable {
+	const id = settings?.describe_provider ?? "anthropic";
+	const model = settings?.describe_model ?? models[0]?.name ?? "";
+	const known = models.find((item) => item.name === model);
+	const only: ModelProvider = {
+		id,
+		label: id,
+		key: { variable: "", needed: false, set: true },
+		address: { variable: "", host: "", place: "provider" },
+		available: why ? { state: "unavailable", why } : { state: "ready" },
 		ids: "listed",
 		capabilities: { answers: "enforced", effort: "not_sent", caching: "marked", counting: "endpoint" },
 		limits: [],
-		models: models.map((item) => ({
-			id: item.name,
-			label: item.label ?? item.name,
-			note: item.note,
-			efforts: [],
-			price: { kind: "not_known" },
-		})),
+		models: [{ id: model, label: known?.label ?? model, note: known?.note ?? "", efforts: [], price: { kind: "not_known" } }],
 		price_of_typed: { kind: "not_known" },
 		docs: "",
 	};
-	const model = chosen ?? models[0]?.name ?? "";
-	return { source: "older_backend", catalog: { providers: [anthropic], chosen: { provider: "anthropic", model, effort: "medium" } } };
+	return { source: "waiting", why, catalog: { providers: [only], chosen: { provider: id, model, effort: "medium" } } };
 }
 
-/** The engine's catalog, or null from a backend that has no `GET /api/models`. */
-export async function engineCatalog(fetchCatalog: () => Promise<ModelCatalog>): Promise<ModelCatalog | null> {
-	try {
-		return await fetchCatalog();
-	} catch (error) {
-		if (isMissingRoute(error)) return null;
-		throw error;
-	}
-}
-
-/** What can be chosen: the engine's catalog when it told one, else today's list of Claude models. */
-export function choosableOf(engine: ModelCatalog | null | undefined, models: CatalogItem[], chosen: string | undefined): Choosable {
-	return engine ? { source: "engine", catalog: engine } : olderBackend(models, chosen);
+/** What can be chosen: the engine's catalog when it has told it, else the settings' model alone. */
+export function choosableOf(
+	engine: ModelCatalog | undefined,
+	models: CatalogItem[],
+	settings: Partial<Pick<Settings, "describe_provider" | "describe_model">> | undefined,
+	why: string | null = null,
+): Choosable {
+	return engine ? { source: "engine", catalog: engine } : waitingFor(models, settings, why);
 }
 
 /** Why a provider cannot be used ("set OPENAI_API_KEY"), or null when it can. */

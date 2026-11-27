@@ -36,8 +36,7 @@ test("a feature's finished job, or one that made nothing, opens no run", () => {
 	assert.equal(finishedRun(running, critique), null);
 	assert.equal(finishedRun(running, status("done", { outcome: { kind: "nothing" } })), null);
 	assert.equal(finishedRun(running, status("failed", { error: "no" })), null);
-	// the Python backend says nothing of an outcome: its finished jobs are runs
-	assert.equal(finishedRun(running, status("done", { result: "iclr2026" })), "iclr2026");
+	assert.equal(finishedRun(running, status("done", { outcome: { kind: "run", run: "iclr2026" } })), "iclr2026");
 });
 
 test("a feature's failure is not said as the run's, a run's is", () => {
@@ -45,8 +44,6 @@ test("a feature's failure is not said as the run's, a run's is", () => {
 	assert.equal(reduce(idle, { type: "reported", status: extraction }).error, null);
 	assert.equal(reduce(running, { type: "reported", status: extraction }).error, null);
 	assert.equal(reduce(running, { type: "reported", status: status("failed", { error: "only 3 papers" }) }).error, "only 3 papers");
-	// the Python backend names no kind: its jobs are runs
-	assert.equal(reduce(running, { type: "reported", status: status("failed", { kind: undefined, error: "no" }) }).error, "no");
 	assert.ok(isFeatureJob({ kind: "a run", outcome: { kind: "feature", feature: "critique", subject: { paper: "p" } } }));
 	assert.ok(!isFeatureJob({ kind: "a run", outcome: null }));
 });

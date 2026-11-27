@@ -5,7 +5,6 @@
  * from a term its papers keep using or a question the model proposed; see what it costs before anything is sent;
  * ask the most central papers first and the rest on a second click; then see the papers placed in groups, each
  * with its own words, the counts with what they are counts of, by acceptance tier and by year. Never one verdict.
- * Nothing is shown when the engine has no such route (the Python backend).
  */
 import { useCallback, useEffect, useState } from "react";
 import { RotateCcw, Sparkles, Square } from "lucide-react";
@@ -495,7 +494,9 @@ export function CommunityStances({ run, scope, onOpenPaper }: { run: string; sco
 	const trouble = jobTrouble(job, "paper");
 
 	const found = ready(listing);
-	if (!found) return null; // not loaded yet, or an engine without these routes: nothing to show
+	if (listing.status === "failed")
+		return <p className="font-ui text-xs text-destructive">The questions could not be read: {listing.error}</p>;
+	if (!found) return null; // not loaded yet
 	return (
 		<section className="flex flex-col gap-3 px-4 pb-4">
 			<Heading title={STANCE_NOTE}>Agree / disagree</Heading>

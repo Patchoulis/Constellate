@@ -4,8 +4,7 @@
  * Ask a run or a community a question (engine api/answers.rs). The passages that match are found first, with no
  * model and at no cost, and shown with their citations; the model is asked only when the user clicks the button
  * that shows what it would cost. Its answer is a list of statements, each followed by the papers' words it rests
- * on; statements whose quotes were not found in the papers are left out and counted. Nothing is shown when the
- * engine has no such routes (the Python backend).
+ * on; statements whose quotes were not found in the papers are left out and counted.
  */
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { Loader2, MessageCircleQuestion, RotateCcw, Search, Square, Trash2, X } from "lucide-react";
@@ -31,7 +30,6 @@ import {
 	stateNote,
 } from "@/lib/answers";
 import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
-import { isMissingRoute as missingRoute } from "@/lib/missing-route";
 import { ready, useAsync } from "@/lib/use-async";
 import { elsewhereLine, useFollowedJob } from "@/lib/use-followed-job";
 import { useResizable } from "@/lib/use-resizable";
@@ -202,7 +200,6 @@ export function AskBox({
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [elsewhere]);
 
-	if (asked.status === "failed" && missingRoute(asked.error)) return null; // an engine without these routes
 	const askModel = () => {
 		if (state.kind !== "found") return;
 		const { question, estimate } = state;
@@ -264,6 +261,7 @@ export function AskBox({
 				</p>
 			)}
 			{state.kind === "failed" && <p className="text-sm text-destructive">{state.error}</p>}
+			{asked.status === "failed" && <p className="text-sm text-destructive">The questions asked before could not be read: {asked.error}</p>}
 
 			{state.kind === "found" && (
 				<div className="flex flex-col gap-3">
@@ -397,8 +395,6 @@ export function AskBox({
 
 /** A community's Ask section, for the community panel. */
 export function CommunityAsk({ run, treePath, papers }: { run: string; treePath: string; papers: number }) {
-	const probe = useAsync(() => api.questions(run), [run]);
-	if (probe.status === "failed" && missingRoute(probe.error)) return null;
 	return (
 		<section className="flex flex-col gap-2 px-4 pb-4">
 			<Heading>Ask</Heading>
@@ -410,9 +406,7 @@ export function CommunityAsk({ run, treePath, papers }: { run: string; treePath:
 /** Ask the whole run: a button over the graph that opens the Ask box in a panel. */
 export function RunAsk({ run, papers, onCitedPapers }: { run: string; papers: number; onCitedPapers?: (papers: string[]) => void }) {
 	const [open, setOpen] = useState(false);
-	const probe = useAsync(() => api.questions(run), [run]);
 	const { ref, style, handle } = useResizable<HTMLDivElement>("overview");
-	if (probe.status === "failed" && missingRoute(probe.error)) return null;
 	if (!open)
 		return (
 			<Button

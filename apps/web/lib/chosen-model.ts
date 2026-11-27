@@ -12,7 +12,7 @@ import type { AskingCost, Effort, ProviderId, Settings } from "@rp/contracts";
 import type { Async } from "@/lib/use-async";
 
 export interface ChosenModel {
-	/** null from a backend that names no provider (the Python backend: the Claude API alone) */
+	/** null while the settings name no provider (the engine's default is then asked) */
 	provider: ProviderId | null;
 	model: string;
 	effort: Effort | null;

@@ -4,7 +4,6 @@
  * The extraction table of a community or of the marked papers (engine analysis/extraction.rs): one row per paper,
  * one column per question, every value with the paper's own words beside it. It is run on a sample first (the
  * set's most central papers), its estimate shown before, its cost after; then on the rest, with a second click.
- * Nothing is shown when the engine has no such route (the Python backend).
  */
 import { useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Download, Plus, RotateCcw, Square, X } from "lucide-react";
@@ -594,9 +593,11 @@ function Opened({
  */
 export function ExtractionTable({ run, scope, onOpenPaper }: { run: string; scope: ExtractionScope; onOpenPaper: (id: string) => void }) {
 	const [open, setOpen] = useState(false);
-	// the columns are asked for first: an engine without the route answers nothing, and nothing is shown
+	// the columns are asked for first
 	const columns = useAsync(() => api.extractionColumns(run), [run]);
 	const given = ready(columns);
+	if (columns.status === "failed")
+		return <p className="font-ui text-xs text-destructive">The extraction table could not be read: {columns.error}</p>;
 	if (!given) return null;
 	return (
 		<section className="flex flex-col gap-2 px-4 pb-4">

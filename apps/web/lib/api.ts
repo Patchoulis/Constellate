@@ -93,7 +93,7 @@ export const api = {
 	/** what was spent, with the worth of a US dollar in `currency` (a three-letter code) */
 	usage: (currency: string) => call<Usage>(`/api/usage?currency=${encodeURIComponent(currency)}`),
 	catalog: () => call<Catalog>("/api/catalog"),
-	/** every language model provider and its models (the engine only: the Python backend answers 404) */
+	/** every language model provider and its models: whether each key is set (never the key), prices, efforts */
 	models: () => call<ModelCatalog>("/api/models"),
 	/** the models the OpenAI-compatible server says it has */
 	endpointModels: () => call<{ models: string[] }>("/api/models/endpoint"),

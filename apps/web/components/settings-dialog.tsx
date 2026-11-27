@@ -46,10 +46,12 @@ function keyState(provider: ModelProvider): string {
 
 /** Every provider: whether it can be used, its key (set or not, never the key), its host, what it cannot do. */
 function LanguageModels({ choosable }: { choosable: Choosable }) {
-	if (choosable.source === "older_backend") {
+	if (choosable.source === "waiting") {
 		return (
-			<p className="text-xs text-muted-foreground">
-				The backend this window is connected to reaches the Claude API only, with ANTHROPIC_API_KEY. The engine offers the other providers.
+			<p className={choosable.why ? "text-xs text-warning" : "text-xs text-muted-foreground"}>
+				{choosable.why
+					? `The engine did not say which language models it offers: ${choosable.why}`
+					: "Asking the engine which language models it offers…"}
 			</p>
 		);
 	}

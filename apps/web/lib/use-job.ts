@@ -1,19 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
-import type { JobState, RunRequest, Status } from "@rp/contracts";
+import type { JobState, RunRequest, RunStep, Status } from "@rp/contracts";
 import { api } from "@/lib/api";
 import { pollDelay } from "@/lib/use-followed-job";
 
 /**
- * The pipeline job as the browser sees it. It mirrors the backend's state machine (rp/jobs.py):
+ * The pipeline job as the browser sees it. It mirrors the engine's job (apps/engine/src/jobs.rs):
  *
  *     idle --start--> running --> done | failed --start--> running
  *
- * While the job is running, and only then, the backend is polled for new log lines and the next state.
+ * While the job is running, and only then, the engine is polled for new log lines and the next state.
  *
- * A finished job opens a run only when it made one (its `outcome`; a Python backend's finished jobs are all runs,
- * named in `result`), and only when this page saw it go from running to finished: a job that had finished before
+ * A finished job opens a run only when it made one (its `outcome`), and only when this page saw it go from
+ * running to finished: a job that had finished before
  * the page asked opens nothing, so that the last run is not opened again at every load. A feature's job is its
  * component's to follow (lib/use-followed-job.ts).
  */
@@ -21,12 +21,14 @@ export interface Job {
 	state: JobState;
 	log: string[];
 	error: string | null;
+	/** the step of the run being made and how far it has got, while one is (engine `Status.step`) */
+	step?: RunStep | null;
 }
 
 export type Event =
 	| { type: "started" }
 	| { type: "reported"; status: Status }
-	// the backend did not answer, or refused to start a run: what the job is doing is unchanged
+	// the engine did not answer, or refused to start a run: what the job is doing is unchanged
 	| { type: "unanswered"; error: string };
 
 /**
@@ -35,14 +37,14 @@ export type Event =
  */
 export function finishedRun(before: Job, status: Status): string | null {
 	if (before.state !== "running" || status.state !== "done") return null;
-	if (status.outcome === undefined) return status.result; // the Python backend: every job is a run
 	return status.outcome?.kind === "run" ? status.outcome.run : null;
 }
 
 /**
  * The kinds of job a feature starts (apps/engine/src/api: each feature's `start_tracked` kind). A feature shows its
  * own job's progress and failure beside the button that started it (lib/use-followed-job.ts); the run's log keeps
- * its lines, but its failure is not the run's ("New run" would say the extraction table's budget ran out).
+ * its lines, but its failure is not the run's ("New run" would say the extraction table's budget ran out). A
+ * failed job has no `outcome`, so its kind is what tells.
  */
 const FEATURE_KINDS = new Set([
 	"answering a question",
@@ -70,7 +72,8 @@ export function reduce(job: Job, event: Event): Job {
 			const status = event.status;
 			// a feature's failure is said by its own section, not under "New run" as if a run had failed
 			const said = isFeatureJob(status) ? null : status.error;
-			return { state: status.state, log: [...job.log, ...status.log], error: said };
+			const step = status.state === "running" ? (status.step ?? null) : null;
+			return { state: status.state, log: [...job.log, ...status.log], error: said, step };
 		}
 		case "unanswered":
 			return { ...job, error: event.error }; // a new object: while running, the next poll is still scheduled

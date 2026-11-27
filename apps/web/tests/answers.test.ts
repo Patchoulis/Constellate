@@ -12,12 +12,12 @@ import {
 	historyOf,
 	indexingLine,
 	leftOutLine,
-	missingRoute,
 	reduceAsk,
 	splitPassages,
 	stateNote,
 	type AskState,
 } from "@/lib/answers";
+import { noReadablePdf } from "@/lib/no-pdf";
 
 const coverage: SearchCoverage = { papers: 739, full_text: 212, capped: 0, no_pdf: 520, unreadable: 7, missing: 0 };
 
@@ -167,11 +167,11 @@ test("the Ask box sends nothing to the model until it is started, and waits for 
 	assert.equal(reduceAsk(opening, { type: "viewed", view: { ...view("answered"), id: "first" } }), opening);
 });
 
-test("the Ask box is hidden only when the engine has no such route", () => {
-	assert.equal(missingRoute("not found"), true);
-	assert.equal(missingRoute("The backend answered 404"), true);
-	assert.equal(missingRoute("The backend is not reachable. Start it with: npm run dev"), false);
-	// a route that exists and failed: said, not taken for an older backend and hidden
-	assert.equal(missingRoute("the run demo was not found"), false);
-	assert.equal(missingRoute("the quote was not found in the paper"), false);
+test("a paper's text is said to be unavailable only when the engine has no PDF it can read", () => {
+	assert.equal(noReadablePdf("not found"), true);
+	assert.equal(noReadablePdf("The backend answered 404"), true);
+	assert.equal(noReadablePdf("The backend is not reachable. Start it with: npm run dev"), false);
+	// a route that failed for another reason: said, not taken for a missing PDF and hidden
+	assert.equal(noReadablePdf("the run demo was not found"), false);
+	assert.equal(noReadablePdf("the quote was not found in the paper"), false);
 });

@@ -5,10 +5,10 @@ import { AlignLeft, FileText, MessageSquareText, Sparkles } from "lucide-react";
 import type { Passage, PassageAddress, PassageKind } from "@rp/contracts";
 import { PassageExplainer, type AskedOnce, type ExplainMode } from "@/components/passage-explainer";
 import { Button } from "@/components/ui/button";
-import { missingRoute } from "@/lib/answers";
 import { api } from "@/lib/api";
 import { highlighted, pages, passageAt } from "@/lib/evidence";
 import { explainable, placeKey, resolveSelection, selectionQuote } from "@/lib/explanation";
+import { noReadablePdf } from "@/lib/no-pdf";
 import { ready, useAsync } from "@/lib/use-async";
 import { cn } from "@/lib/utils";
 
@@ -89,8 +89,8 @@ function passageOf(node: Node | null): Element | null {
  * view; `at.quote` without an address is looked for in the paper first.
  *
  * Words selected here (with the mouse or the keyboard), or a passage's own button, can be explained by the model
- * or matched with passages of nearby papers (components/passage-explainer.tsx). Both need the engine's routes:
- * on a backend without them nothing of it is shown.
+ * or matched with passages of nearby papers (components/passage-explainer.tsx). Both are offered once the
+ * explanations kept for the paper have been read.
  */
 export function PaperText({
 	id,
@@ -198,8 +198,8 @@ export function PaperText({
 	};
 
 	if (read.status === "failed")
-		// a backend without the route (the Python one), or no PDF the engine can read: nothing went wrong
-		return missingRoute(read.error) ? (
+		// no PDF the engine can have or read (it answers 404): nothing went wrong
+		return noReadablePdf(read.error) ? (
 			<p className="text-sm text-muted-foreground">
 				The paper&apos;s text is not available here{onOpenPdf ? ": its PDF is in the Paper tab." : "."}
 			</p>

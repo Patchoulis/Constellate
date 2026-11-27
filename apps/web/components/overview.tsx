@@ -61,7 +61,7 @@ export function useOverview(run: string, treePath: string, model: string | undef
 		const timer = setTimeout(ask, POLL_MS);
 		return () => clearTimeout(timer);
 	}, [status, ask]);
-	// the engine writes only within the most of the estimate it showed; the Python backend shows none
+	// the engine writes only within the most of the estimate it showed
 	const estimate = status?.estimate ?? null;
 	const write = () => ask(estimate ? { ...shownModel(estimate), ...accepting(estimate) } : true);
 	return { status, error: unreachable ?? status?.error ?? null, write };

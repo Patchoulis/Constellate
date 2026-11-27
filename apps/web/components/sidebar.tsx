@@ -290,9 +290,6 @@ function CostLine({
 				onChange={onChange}
 			/>
 			{why && <span className="shrink-0 text-warning">· {why}</span>}
-			{!why && choosable.source === "older_backend" && spent && !spent.provider.ready && (
-				<span className="shrink-0 text-warning">· no key set</span>
-			)}
 		</span>
 	);
 	if (!spent)

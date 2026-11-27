@@ -130,8 +130,8 @@ export function ModelChoice({
 	onChange: (changes: Partial<Settings>) => void;
 }) {
 	const chosen = chosenOf(choosable.catalog, settings);
-	// the Python backend knows the Claude API only: only the model is sent to it
-	const fixed = providerOwned || choosable.source === "older_backend";
+	// until the engine has told its providers, nothing but the settings' own model is shown, and nothing is offered
+	const fixed = providerOwned || choosable.source === "waiting";
 	const pick = (provider: ProviderId, id: string) => onChange(changeFor(provider, id, fixed));
 	const efforts = effortsOf(chosen);
 	const sent = effortSent(chosen.effort, efforts);

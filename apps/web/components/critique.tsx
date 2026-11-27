@@ -4,7 +4,7 @@
  * A paper's Weaknesses section in the reader (engine analysis/critique.rs): what the reviewers raised first, in
  * their own words, each point opening on its place in the review; and, apart and only on request, the model's
  * reading of the paper, every statement of it with the paper's words it rests on. There is no score and no verdict
- * anywhere in it. Nothing is shown when the engine has no such route (an older backend).
+ * anywhere in it.
  */
 import { useState } from "react";
 import { Loader2, RotateCcw, Sparkles, Square } from "lucide-react";
@@ -355,6 +355,8 @@ export function Weaknesses({ id, onReviews, className }: { id: string; onReviews
 	// stays in view meanwhile, and the estimate cannot be accepted until it is the new one
 	const loaded = useAsync(() => api.critique(id), [id, choiceKey(chosen)]);
 	const critique = ready(loaded);
+	if (loaded.status === "failed")
+		return <p className="font-ui text-xs text-destructive">The weaknesses could not be read: {loaded.error}</p>;
 	if (!critique) return null;
 	const model = critique.model;
 	const current = loaded.status === "ready" && (model.state !== "not_asked" || isFor(model, chosen));
