@@ -14,10 +14,12 @@
 //!
 //! # Politely, and once
 //!
-//! Every request (an index page, a PDF) passes one [`Gate`] per site, shared by everyone who fetches PDFs on
-//! demand, so that a reader opening papers while a job reads a run's declarations together keep each site's rule
-//! ([`crate::sources::polite`]): arXiv one request at a time and three seconds apart, a publisher two at once. A
-//! site that refuses (429, 503) is left alone for as long as it asks, else [`FIRST_BACK_OFF`].
+//! Every request to a publisher (an index page, a PDF) passes one [`Gate`] per site, shared by everyone who
+//! fetches PDFs on demand, so that a reader opening papers while a job reads a run's declarations together keep
+//! each publisher's rule ([`crate::sources::polite::PUBLISHER`]): two at once. A site that refuses (429, 503) is
+//! left alone for as long as it asks, else [`FIRST_BACK_OFF`]. A request to arXiv waits instead for its turn at
+//! arXiv's one pace, first come first served with everything else the engine sends to arXiv (the network takes it:
+//! [`crate::sources::polite::ARXIV_PACE`]).
 //!
 //! Two requests for the same paper's PDF at once fetch it once: the first claims the paper and the second waits
 //! for what the first got (the same scheme as the library's reading of passages). One index is fetched at a time.
@@ -30,7 +32,7 @@ use std::time::{Duration, Instant};
 use url::Url;
 
 use crate::library::{Library, LibraryError, Paper};
-use crate::sources::polite::{ARXIV, FIRST_BACK_OFF, PUBLISHER, Rule};
+use crate::sources::polite::{FIRST_BACK_OFF, PUBLISHER, Rule};
 use crate::sources::proceedings::{self, IndexState, PDF_HOSTS, PdfError, PdfSource};
 use crate::sources::{Fetch, FetchError, GetError, Limits, Response};
 
@@ -137,10 +139,6 @@ impl Drop for Turn<'_> {
 }
 
 impl Gate {
-    fn rule_for(site: &str) -> Rule {
-        if site == "arxiv.org" { ARXIV } else { PUBLISHER }
-    }
-
     /// Wait for a turn at the site of `address`; or, when the site asked to be left alone for longer than
     /// [`LONGEST_TURN_WAIT`], say how much longer instead of waiting (a reader must not hang on it).
     fn turn(&self, address: &str) -> Result<Turn<'_>, Duration> {
@@ -148,8 +146,7 @@ impl Gate {
         let mut sites = self.sites.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
             let now = Instant::now();
-            let site =
-                sites.entry(name.clone()).or_insert_with(|| Site { rule: Self::rule_for(&name), busy: 0, next: now });
+            let site = sites.entry(name.clone()).or_insert_with(|| Site { rule: PUBLISHER, busy: 0, next: now });
             if site.busy < site.rule.at_once && site.next <= now {
                 site.busy += 1;
                 return Ok(Turn { gate: self, site: name, back_off: None });
@@ -163,7 +160,8 @@ impl Gate {
     }
 }
 
-/// [`Fetch`] through the [`Gate`]: every request, redirects included, waits for its turn at its site.
+/// [`Fetch`] through the [`Gate`]: every request to a publisher, redirects included, waits for its turn at its
+/// site; one to arXiv for its turn at arXiv's one pace, which the fetch given keeps (the network does).
 struct Gated<'a> {
     fetch: &'a (dyn Fetch + Send + Sync),
     gate: &'a Gate,
@@ -171,6 +169,9 @@ struct Gated<'a> {
 
 impl Fetch for Gated<'_> {
     fn get(&self, url: &str, limits: Limits) -> Result<Response, FetchError> {
+        if site_of(url) == "arxiv.org" {
+            return self.fetch.get(url, limits);
+        }
         let mut turn = self.gate.turn(url).map_err(|left| {
             FetchError::Unreachable(
                 url.to_owned(),
@@ -269,6 +270,12 @@ impl Pdfs {
     /// Fetching through `fetch`: the network ([`crate::sources::Http`]), or a test's fake.
     pub fn new(fetch: Arc<dyn Fetch + Send + Sync>) -> Self {
         Self { fetch, gate: Gate::default(), claimed: Mutex::default(), indexes: Mutex::default() }
+    }
+
+    /// What is fetched through when a paper is asked about outside the library (its references looked up on
+    /// arXiv): the network in the program, a test's fake in a test.
+    pub fn fetch(&self) -> &(dyn Fetch + Send + Sync) {
+        self.fetch.as_ref()
     }
 
     /// The PDF of `paper_id`: the kept one, or fetched now and kept. [`LibraryError::UnknownPaper`] for a paper
@@ -407,6 +414,7 @@ mod tests {
     use crate::library::Known;
     use crate::library::papers::tests::paper;
     use crate::sources::fake::{Fake, ok, redirect, status};
+    use crate::sources::polite::{ArxivPace, Paced};
 
     const ARXIV_PDF: &str = "https://arxiv.org/pdf/2601.00001";
 
@@ -504,7 +512,8 @@ mod tests {
     }
 
     #[test]
-    fn arxiv_is_asked_one_request_at_a_time_and_three_seconds_apart_by_everyone() {
+    fn arxiv_is_asked_one_request_at_a_time_and_at_its_pace_by_everyone() {
+        static PACE: ArxivPace = ArxivPace::new(Duration::from_millis(300));
         let papers: Vec<Paper> = (1..=2).map(|n| on_arxiv(&format!("2601.0000{n}"))).collect();
         let (_folder, library) = library_with(&papers);
         let fake = Arc::new(
@@ -512,7 +521,8 @@ mod tests {
                 .with("https://arxiv.org/pdf/2601.00001", pdf("one"))
                 .with("https://arxiv.org/pdf/2601.00002", pdf("two")),
         );
-        let pdfs = Pdfs::new(fake.clone());
+        // as the network does it
+        let pdfs = Pdfs::new(Arc::new(Paced { inner: Arc::clone(&fake), pace: &PACE }));
         std::thread::scope(|scope| {
             for paper in &papers {
                 let (pdfs, library) = (&pdfs, &library);
@@ -521,7 +531,7 @@ mod tests {
         });
         let began = fake.began("arxiv.org");
         assert_eq!((began.len(), fake.most_at_once("arxiv.org")), (2, 1));
-        assert!(began[1] - began[0] >= ARXIV.pause, "{:?}", began[1] - began[0]);
+        assert!(began[1] - began[0] >= Duration::from_millis(300), "{:?}", began[1] - began[0]);
     }
 
     #[test]

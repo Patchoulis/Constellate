@@ -12,16 +12,20 @@
 //!
 //! The GET reads nothing and asks no one: it links the kept lists to the library as it is now. The POST reads the
 //! list once per PDF and version of the reader ([`crate::library::references`]: a second POST reads nothing), and
-//! asks arXiv about at most [`MOST_LOOKUPS`] entries, one request every three seconds, never about an entry it
-//! asked about before. Nothing else is asked of any outside service.
+//! asks arXiv about at most [`MOST_LOOKUPS`] entries, at arXiv's one pace (first come, first served with the PDFs
+//! and listings the engine fetches: [`crate::sources::polite::ARXIV_PACE`]), never about an entry it asked about
+//! before; when it stops before every entry was asked about, the answer says so (`lookups_stopped`). Two POSTs for
+//! one paper are made one after the other: the second finds what the first read and looked up. A PDF that cannot
+//! be read is kept as such, and read again only once it is replaced. Nothing else is asked of any outside service.
 //!
 //! A paper whose PDF cannot be had is answered with why, as the reader shows it: 404 when it is published nowhere
 //! a program may fetch it from, 502 when its source refused or could not be reached, 422 when the PDF cannot be
 //! read.
 
 use std::collections::HashSet;
-use std::sync::{LazyLock, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::sync::{Condvar, LazyLock, Mutex, PoisonError};
+use std::time::Duration;
 
 use axum::Json;
 use axum::extract::rejection::QueryRejection;
@@ -34,11 +38,11 @@ use url::Url;
 
 use super::reviews::papers_of;
 use super::routes::{ApiError, Shared, on_the_side};
-use crate::analysis::citations::{CitationNetwork, Linker, network};
+use crate::analysis::citations::{CitationNetwork, Linker, LookupsStopped, network};
 use crate::library::references::{Arxiv, KeptReferences, Looked, ReferencesReading, Stopped, look_up, to_look_up};
 use crate::library::{Library, LibraryError};
 use crate::papers::pdf::PdfOutcome;
-use crate::sources::citations::{self, Clock, Pacer};
+use crate::sources::citations;
 use crate::sources::{Fetch, Limits, any_https, get_following};
 
 /// Entries looked up on arXiv per request at most: at its pace, a minute. The rest are looked up when the
@@ -49,8 +53,41 @@ const LONGEST_ID: usize = 200;
 /// What one answer of arXiv's API may be: a feed of at most five short entries.
 const LOOKUP_LIMITS: Limits = Limits { max_bytes: 2 * 1024 * 1024, time: Duration::from_secs(30) };
 
-/// The pace of every lookup the engine makes, whoever asks: two requests at once keep arXiv's pace together.
-static PACE: LazyLock<Mutex<Pacer>> = LazyLock::new(|| Mutex::new(Pacer::default()));
+/// The papers whose references are being read, by data folder and paper: a second POST for one of them waits for
+/// the first, then finds what it read and looked up, rather than asking arXiv the same again and overwriting it.
+#[derive(Default)]
+struct Reading {
+    papers: Mutex<HashSet<(PathBuf, String)>>,
+    done: Condvar,
+}
+
+static READING: LazyLock<Reading> = LazyLock::new(Reading::default);
+
+/// A paper being read, from [`Reading::claim`] until dropped (on a panic too).
+struct Claim<'a> {
+    reading: &'a Reading,
+    paper: (PathBuf, String),
+}
+
+impl Reading {
+    /// Wait until nobody else reads `paper` of `data`, then claim it.
+    fn claim(&self, data: PathBuf, paper: &str) -> Claim<'_> {
+        let paper = (data, paper.to_owned());
+        let mut papers = self.papers.lock().unwrap_or_else(PoisonError::into_inner);
+        while papers.contains(&paper) {
+            papers = self.done.wait(papers).unwrap_or_else(PoisonError::into_inner);
+        }
+        papers.insert(paper.clone());
+        Claim { reading: self, paper }
+    }
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        self.reading.papers.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.paper);
+        self.reading.done.notify_all();
+    }
+}
 
 /// The routes of this module, for [`super::routes::table`].
 pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
@@ -139,43 +176,14 @@ async fn citations_of(
     Ok(Json(on_the_side(move || network_of(&engine, &seed, run.as_deref())).await?))
 }
 
-/// Time as the lookups' pace needs it: the wall clock.
-struct Wall;
-
-impl Clock for Wall {
-    fn now(&self) -> Instant {
-        Instant::now()
-    }
-    fn sleep(&mut self, duration: Duration) {
-        std::thread::sleep(duration);
-    }
-}
-
 /// Only arXiv's API is asked, over https; a redirect anywhere else is not followed.
 fn on_arxiv_api(address: &Url) -> bool {
     any_https(address) && address.host_str() == Some("export.arxiv.org")
 }
 
-/// What the lookups reach: the network in the program, nothing at all in a test.
-#[cfg(not(test))]
-fn lookups_fetch() -> Box<dyn Fetch> {
-    Box::new(crate::sources::Http::new())
-}
-
-#[cfg(test)]
-fn lookups_fetch() -> Box<dyn Fetch> {
-    struct NoNetwork;
-    impl Fetch for NoNetwork {
-        fn get(&self, url: &str, _: Limits) -> Result<crate::sources::Response, crate::sources::FetchError> {
-            Err(crate::sources::FetchError::Unreachable(url.to_owned(), "a test reaches no network".to_owned()))
-        }
-    }
-    Box::new(NoNetwork)
-}
-
-/// Look up on arXiv what `list` (of `seed`) cites that is not in the library, through `fetch`, at the pace every
-/// lookup of the engine keeps. Blocks for up to [`MOST_LOOKUPS`] times arXiv's pause, and while another request's
-/// lookups go on; a list with nothing to ask about waits for nobody.
+/// Look up on arXiv what `list` (of `seed`) cites that is not in the library, through `fetch` (the engine's: the
+/// network, which keeps arXiv's one pace). Blocks for up to [`MOST_LOOKUPS`] turns at arXiv; a list with nothing
+/// to ask about waits for nobody.
 fn look_up_on_arxiv(list: &mut KeptReferences, seed: &str, linker: &Linker, fetch: &dyn Fetch) -> Looked {
     if to_look_up(list, seed, linker).is_empty() {
         return Looked { asked: 0, found: 0, stopped: Stopped::AllAsked };
@@ -184,9 +192,18 @@ fn look_up_on_arxiv(list: &mut KeptReferences, seed: &str, linker: &Linker, fetc
         let (_, response) = get_following(fetch, url, LOOKUP_LIMITS, &on_arxiv_api).map_err(|why| why.to_string())?;
         Ok(citations::Response { status: response.status, retry_after: response.retry_after, body: response.text() })
     };
-    let mut pacer = PACE.lock().unwrap_or_else(PoisonError::into_inner);
-    let arxiv = Arxiv { base: crate::sources::arxiv::API, pacer: &mut pacer, get: &mut get, clock: &mut Wall };
+    let arxiv = Arxiv { base: crate::sources::arxiv::API, get: &mut get };
     look_up(list, seed, linker, MOST_LOOKUPS, arxiv)
+}
+
+/// What the answer says of lookups that stopped before every entry worth asking about was asked about; `left` of
+/// them are still to be asked.
+fn stopped_early(stopped: &Stopped, left: usize) -> Option<LookupsStopped> {
+    match stopped {
+        Stopped::AllAsked => None,
+        Stopped::AtMost { left } => Some(LookupsStopped::AtMost { left: *left }),
+        Stopped::Failed(why) => Some(LookupsStopped::Failed { why: why.to_string(), left }),
+    }
 }
 
 /// The refusal for a paper whose PDF cannot be had: not found when it is published nowhere a program may fetch
@@ -205,6 +222,8 @@ fn read_then_network(engine: &Shared, seed: &str, run: Option<&str>) -> Result<C
     library.paper(paper_id(seed)?)?.ok_or(ApiError::NotFound)?;
     // a run that is not there is not found before anything is fetched
     let run = run_papers(engine, run)?;
+    // one at a time per paper: the fetch, the reading, the lookups and keeping them
+    let _claim = READING.claim(engine.data.clone(), seed);
     let outcome = engine.pdfs.pdf(&library, seed)?;
     if outcome.file().is_none() {
         return Err(no_pdf(&outcome));
@@ -220,14 +239,17 @@ fn read_then_network(engine: &Shared, seed: &str, run: Option<&str>) -> Result<C
     };
     let papers = library.link_papers()?;
     let linker = Linker::new(&papers);
-    let looked = look_up_on_arxiv(&mut list, seed, &linker, lookups_fetch().as_ref());
+    let looked = look_up_on_arxiv(&mut list, seed, &linker, engine.pdfs.fetch());
     if looked.asked > 0 {
         library.keep_lookups(seed, &pdf_hash, &list)?;
     }
     if let Stopped::Failed(why) = &looked.stopped {
         eprintln!("citations: arXiv lookups for {seed} stopped after {} requests: {why}", looked.asked);
     }
-    Ok(network_now(&library, &linker, seed, run.as_ref())?)
+    let left = to_look_up(&list, seed, &linker).len();
+    let mut answer = network_now(&library, &linker, seed, run.as_ref())?;
+    answer.lookups_stopped = stopped_early(&looked.stopped, left);
+    Ok(answer)
 }
 
 async fn read_references(
@@ -262,7 +284,7 @@ mod tests {
     use crate::library::references::Lookup;
     use crate::library::{Known, Paper};
     use crate::settings::Choices;
-    use crate::sources::fake::{Fake, status};
+    use crate::sources::fake::{Fake, ok, status};
 
     const AT: &str = "127.0.0.1:8765";
     const SEED: &str = "hep-th/9901001";
@@ -404,6 +426,14 @@ mod tests {
         papers_read: u64,
         papers_in_library: u64,
         built: String,
+        lookups_stopped: Option<ContractLookupsStopped>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+    enum ContractLookupsStopped {
+        AtMost { left: u64 },
+        Failed { why: String, left: u64 },
     }
 
     #[derive(Serialize, Deserialize)]
@@ -480,6 +510,11 @@ mod tests {
         assert!(chrono::NaiveDate::parse_from_str(&typed.built, "%Y-%m-%d").is_ok(), "built is YYYY-MM-DD");
     }
 
+    /// What was asked of the fake besides arXiv's API (the lookups): the PDFs.
+    fn pdfs_asked(fake: &Fake) -> Vec<String> {
+        fake.asked().into_iter().filter(|address| !address.starts_with(crate::sources::arxiv::API)).collect()
+    }
+
     fn keys(works: &Value) -> Vec<String> {
         works.as_array().unwrap().iter().map(|work| work["key"].as_str().unwrap().to_owned()).collect()
     }
@@ -532,7 +567,10 @@ mod tests {
             [&json!(3), &json!(1), &json!(1)]
         );
         assert_eq!(network["papers_read"], 1);
-        assert!(fake.asked().is_empty(), "a kept PDF is not fetched");
+        assert!(pdfs_asked(&fake).is_empty(), "a kept PDF is not fetched");
+        // the fake has no answer for arXiv's API: the one lookup failed, and the answer says so
+        assert_eq!(network["lookups_stopped"]["kind"], "failed", "{network}");
+        assert_eq!(network["lookups_stopped"]["left"], 1);
 
         // mark the kept list: read again, it would lose the mark
         let library = Library::open(&data.path().join("library")).unwrap();
@@ -542,6 +580,7 @@ mod tests {
         let (status, again) = ask(&router, "POST", &format!("/api/papers/{SEED_PATH}/references")).await;
         assert_eq!(status, StatusCode::OK, "{again}");
         assert_eq!(again["references"], network["references"]);
+        assert_eq!(again["lookups_stopped"], Value::Null, "nothing left to ask about");
         let ReferencesReading::Kept { list, .. } = library.references_of(SEED).unwrap() else { panic!() };
         assert_eq!(list.entries[2].lookup, Lookup::NotFound, "kept: not read again");
 
@@ -560,10 +599,10 @@ mod tests {
         let router = serve(&data, fake.clone());
         let (status, citer) = ask(&router, "POST", "/api/papers/2601.00009/references").await;
         assert_eq!(status, StatusCode::OK, "{citer}");
-        assert_eq!(fake.asked(), [CITER_PDF]);
+        assert_eq!(pdfs_asked(&fake), [CITER_PDF]);
         assert_eq!(citer["references"][0]["link"], json!({"kind": "in_library", "paper": SEED}));
         ask(&router, "POST", "/api/papers/2601.00009/references").await;
-        assert_eq!(fake.asked(), [CITER_PDF], "fetched once, then kept");
+        assert_eq!(pdfs_asked(&fake), [CITER_PDF], "fetched once, then kept");
 
         let (_, around) = ask(&router, "GET", &format!("/api/papers/{SEED_PATH}/citations?run=r1")).await;
         as_contract(&around);
@@ -591,6 +630,56 @@ mod tests {
             let path = format!("/api/papers/{SEED_PATH}/references?run={run}");
             assert_eq!(ask(&router, "POST", &path).await.0, StatusCode::NOT_FOUND, "{run}");
         }
+    }
+
+    #[tokio::test]
+    async fn what_a_paper_cites_is_looked_up_on_arxiv_once_even_when_two_ask_at_once() {
+        let data = data();
+        let title = "A work that is not in the library";
+        let search = citations::url_for(crate::sources::arxiv::API, &citations::Ask::Title(title.to_owned()));
+        let feed = r#"<feed><entry><id>http://arxiv.org/abs/2205.00001v2</id><title>A Work That Is Not
+            in the Library</title><published>2022-05-01T00:00:00Z</published></entry></feed>"#;
+        let fake =
+            Arc::new(Fake::new().with(&search, ok("application/atom+xml", feed)).slow(Duration::from_millis(50)));
+        let router = serve(&data, fake.clone());
+        let path = format!("/api/papers/{SEED_PATH}/references");
+        let ((first_status, first), (second_status, second)) =
+            tokio::join!(ask(&router, "POST", &path), ask(&router, "POST", &path));
+        assert_eq!((first_status, second_status), (StatusCode::OK, StatusCode::OK), "{first} {second}");
+        as_contract(&first);
+        assert_eq!(
+            fake.asked(),
+            std::slice::from_ref(&search),
+            "asked once: the second waited for the first and found it"
+        );
+        for answer in [&first, &second] {
+            assert_eq!(answer["references"][2]["link"], json!({"kind": "on_arxiv", "arxiv": "2205.00001"}));
+            assert_eq!(answer["references"][2]["confidence"], "identified");
+            assert_eq!(answer["lookups_stopped"], Value::Null, "every entry worth asking about was asked");
+        }
+        assert_eq!(first["totals"]["references_on_arxiv"], 2);
+        let (_, again) = ask(&router, "POST", &path).await;
+        assert_eq!(again["references"], first["references"]);
+        assert_eq!(fake.asked().len(), 1, "an entry is never asked about twice");
+        let (_, kept) = ask(&router, "GET", &format!("/api/papers/{SEED_PATH}/citations")).await;
+        assert_eq!(kept["references"][2]["link"], json!({"kind": "on_arxiv", "arxiv": "2205.00001"}));
+    }
+
+    #[tokio::test]
+    async fn lookups_that_arxiv_refuses_stop_and_say_how_many_are_left() {
+        let data = data();
+        let title = "A work that is not in the library";
+        let search = citations::url_for(crate::sources::arxiv::API, &citations::Ask::Title(title.to_owned()));
+        let refused = crate::sources::Response { retry_after: Some(Duration::from_secs(40)), ..status(429) };
+        let fake = Arc::new(Fake::new().with(&search, refused));
+        let router = serve(&data, fake.clone());
+        let (status, network) = ask(&router, "POST", &format!("/api/papers/{SEED_PATH}/references")).await;
+        assert_eq!(status, StatusCode::OK, "the references read are answered all the same");
+        as_contract(&network);
+        let stopped = &network["lookups_stopped"];
+        assert_eq!((stopped["kind"].clone(), stopped["left"].clone()), (json!("failed"), json!(1)));
+        assert!(stopped["why"].as_str().unwrap().contains("40 seconds"), "{stopped}");
+        assert_eq!(network["references"][2]["link"], json!({"kind": "unresolved"}));
     }
 
     #[tokio::test]

@@ -250,7 +250,7 @@ fn estimate_of(
     let estimate = {
         let described = Run {
             name: run,
-            folder: &loaded.folder,
+            folder: Some(&loaded.folder),
             papers: &loaded.papers,
             embeddings: loaded.embeddings.as_ref().map(|rows| rows.view()),
             communities: &loaded.groups,
@@ -322,18 +322,21 @@ async fn describe_now(
         let budget = describe::budget_of_run(&estimate, accepted).map_err(invalid)?;
         let transport = Arc::clone(&engine.transport);
         let redo = request.redo;
+        let served = Arc::clone(&engine);
         let work = move |tracker: &Tracker<'_>| {
             tracker.log(&format!("Naming the communities of {run} with {chosen}."));
             let Loaded { folder, papers, embeddings, groups, .. } = loaded;
             let described = Run {
                 name: &run,
-                folder: &folder,
+                folder: Some(&folder),
                 papers: &papers,
                 embeddings: embeddings.as_ref().map(|rows| rows.view()),
                 communities: &groups,
                 redo,
             };
             let done = describe::describe_run(&library, &*transport, &described, &chosen, &budget, tracker);
+            // its communities.json was written again: the next read is of the new file, not of one kept in memory
+            served.runs.changed(&run);
             match done.outcome {
                 Outcome::Described { .. } | Outcome::Kept { .. } => Ok(Finished::Run { run: run.clone() }),
                 outcome => Err(outcome.told()),
@@ -851,11 +854,16 @@ mod tests {
         assert_eq!(call(&router, "POST", at, Some(other)).await.0, StatusCode::BAD_REQUEST);
         assert!(transport.sent().is_empty());
 
+        // the run is open, so kept in memory: what it is served as must follow its file once it is named
+        let (_, opened) = call(&router, "GET", "/api/runs/r1", None).await;
+        assert_eq!(opened["communities"][0]["name"], Value::Null);
         let (status, job) = call(&router, "POST", at, Some(accepting(&shown["estimate"], ACCEPTED))).await;
         assert_eq!(status, StatusCode::OK, "{job}");
         matches(&job, "DescribeStarted");
         let ended = finished(&router, &job["id"]).await;
         assert_eq!(ended["state"], "done", "{ended}");
+        let (_, opened) = call(&router, "GET", "/api/runs/r1", None).await;
+        assert_eq!(opened["communities"][0]["name"], "Topic tc1", "served as named, not as it was in memory");
         assert_eq!(ended["outcome"], json!({"kind": "run", "run": "r1"}));
         assert_eq!(transport.sent().len(), 3);
         sent_to(&transport.sent(), Picked::OpenAi);

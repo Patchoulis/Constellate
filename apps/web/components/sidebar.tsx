@@ -458,8 +458,10 @@ function CostLine({
 					{price}
 				</span>
 				<span className="shrink-0 text-foreground/80" title={detail}>
-					{cost(spent.usd)} spent
-					{spent.session_calls > 0 && <span className="text-muted-foreground"> · {cost(spent.session_usd)} this session</span>}
+					{spent.usd === null ? count(spent.calls, "call") : `${cost(spent.usd)} spent`}
+					{spent.session_calls > 0 && spent.session_usd !== null && (
+						<span className="text-muted-foreground"> · {cost(spent.session_usd)} this session</span>
+					)}
 				</span>
 			</div>
 		</div>

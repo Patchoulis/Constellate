@@ -9,30 +9,22 @@
 //! both pass are ambiguous and neither is taken.
 //!
 //! What to ask and how to read the answer are plain functions; the asking goes through a function the caller
-//! passes in ([`Get`]), and time through a [`Clock`], so every test runs on recorded answers and no test touches
-//! the network. The pace is an explicit state machine ([`Pace`]):
+//! passes in ([`Get`]), so every test runs on recorded answers and no test touches the network.
 //!
-//! ```text
-//!     ready ──request──▶ waiting (3 s) ──time passed──▶ ready
-//!     any ──429 or 503──▶ backing off (Retry-After, else 30 s doubling) ──time passed──▶ ready
-//!     backing off, a third time ──▶ gives up: RateLimited, saying when to try again
-//! ```
+//! The pace is not kept here: every request to arXiv the engine makes waits for its turn at arXiv's one pace
+//! ([`super::polite::ARXIV_PACE`], taken by the network), first come first served with the PDFs and the listings,
+//! and left alone after a refusal for as long as arXiv asks. A refusal ends the lookups at once ([`send`]): the
+//! entries not asked about are asked about next time, and the error says when to try again.
 //!
 //! The address asked is the one its caller passes ([`enrich`]'s `base`): arXiv's own API, [`super::arxiv::API`].
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::analysis::citations::{Link, LinkedReference, Linker, same_title};
 use crate::text::references::{Confidence, Reference, title_words};
 
 /// arXiv asks for no more than one request every three seconds.
 pub const PAUSE: Duration = Duration::from_secs(3);
-/// How long to wait after a refusal that says nothing about when to come back; doubled each time.
-const FIRST_BACK_OFF: Duration = Duration::from_secs(30);
-/// The longest wait a refusal is taken to ask for.
-const LONGEST_WAIT: Duration = Duration::from_secs(3600);
-/// Refusals in a row before giving up for now.
-const MOST_REFUSALS: u32 = 3;
 /// Answers asked for per title search: the same title is near the top or not there.
 const SEARCH_RESULTS: usize = 5;
 /// Words of a title put in a search: arXiv's phrase search needs no more to find it.
@@ -49,27 +41,6 @@ pub struct Response {
 
 /// How a request is sent: an address in, an answer or why there was none out.
 pub type Get<'a> = dyn FnMut(&str) -> Result<Response, String> + 'a;
-
-/// Time, as the pacing needs it: the real clock in the app, a pretend one in the tests.
-pub trait Clock {
-    fn now(&self) -> Instant;
-    fn sleep(&mut self, duration: Duration);
-}
-
-/// Where the pacing of requests is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Pace {
-    Ready,
-    /// A request was sent; the next may go at `until`.
-    Waiting {
-        until: Instant,
-    },
-    /// arXiv refused `refusals` times in a row; the next try may go at `until`.
-    BackingOff {
-        until: Instant,
-        refusals: u32,
-    },
-}
 
 /// What is asked about a reference.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -209,73 +180,33 @@ pub fn read_answer(ask: &Ask, reference: &Reference, feed: &str) -> Answer {
     }
 }
 
-/// Sends requests no faster than arXiv asks, and backs off when it refuses.
-pub struct Pacer {
-    pace: Pace,
-}
-
-impl Default for Pacer {
-    fn default() -> Self {
-        Self { pace: Pace::Ready }
-    }
-}
-
-impl Pacer {
-    pub fn pace(&self) -> Pace {
-        self.pace
-    }
-
-    /// Send one request when its time has come, retrying after a refusal.
-    pub fn send(&mut self, url: &str, get: &mut Get, clock: &mut dyn Clock) -> Result<String, LookupError> {
-        loop {
-            if let Pace::Waiting { until } | Pace::BackingOff { until, .. } = self.pace {
-                let now = clock.now();
-                if until > now {
-                    clock.sleep(until - now);
-                }
-            }
-            let response = get(url).map_err(LookupError::Unreachable)?;
-            let refusals = match self.pace {
-                Pace::BackingOff { refusals, .. } => refusals,
-                _ => 0,
-            };
-            let now = clock.now();
-            match response.status {
-                200 => {
-                    self.pace = Pace::Waiting { until: now + PAUSE };
-                    return Ok(response.body);
-                }
-                429 | 503 => {
-                    // the answer says how long; an hour at most, whatever it says
-                    let wait = response.retry_after.unwrap_or(FIRST_BACK_OFF * 2u32.pow(refusals)).min(LONGEST_WAIT);
-                    self.pace = Pace::BackingOff { until: now + wait, refusals: refusals + 1 };
-                    if refusals + 1 >= MOST_REFUSALS {
-                        return Err(LookupError::RateLimited { retry_after: wait });
-                    }
-                }
-                status => {
-                    self.pace = Pace::Waiting { until: now + PAUSE };
-                    return Err(LookupError::Failed(status));
-                }
-            }
+/// Send one request (at arXiv's pace, which `get` keeps) and answer its feed. A refusal (429, 503) is
+/// [`LookupError::RateLimited`], saying how long arXiv asked to be left alone (as long as it says, else
+/// [`super::polite::FIRST_BACK_OFF`]; an hour at most).
+pub fn send(url: &str, get: &mut Get) -> Result<String, LookupError> {
+    let response = get(url).map_err(LookupError::Unreachable)?;
+    match response.status {
+        200 => Ok(response.body),
+        429 | 503 => {
+            let wait = response.retry_after.unwrap_or(super::polite::FIRST_BACK_OFF).min(Duration::from_secs(3600));
+            Err(LookupError::RateLimited { retry_after: wait })
         }
+        status => Err(LookupError::Failed(status)),
     }
 }
 
 /// Look up on arXiv each reference of `paper` that is worth asking about, and link it again with what was found.
-/// Stops at the first refusal that lasts, keeping what was found so far; the error says when to try again.
+/// Stops at the first refusal, keeping what was found so far; the error says when to try again.
 pub fn enrich(
     paper: &mut [LinkedReference],
     library: &Linker,
     base: &str,
-    pacer: &mut Pacer,
     get: &mut Get,
-    clock: &mut dyn Clock,
 ) -> Result<usize, LookupError> {
     let mut found = 0;
     for linked in paper.iter_mut() {
         let Some(ask) = ask_for(linked) else { continue };
-        let feed = pacer.send(&url_for(base, &ask), get, clock)?;
+        let feed = send(&url_for(base, &ask), get)?;
         if let Answer::Found { arxiv, title, year } = read_answer(&ask, &linked.reference, &feed) {
             let reference = &mut linked.reference;
             reference.arxiv = Some(arxiv);
@@ -334,21 +265,6 @@ mod tests {
         }
     }
 
-    struct PretendClock {
-        now: Instant,
-        slept: Vec<Duration>,
-    }
-
-    impl Clock for PretendClock {
-        fn now(&self) -> Instant {
-            self.now
-        }
-        fn sleep(&mut self, duration: Duration) {
-            self.now += duration;
-            self.slept.push(duration);
-        }
-    }
-
     fn answer(status: u16, body: &str) -> Response {
         Response { status, retry_after: None, body: body.to_owned() }
     }
@@ -392,44 +308,35 @@ mod tests {
     }
 
     #[test]
-    fn requests_wait_their_turn_and_back_off_when_refused() {
-        let mut clock = PretendClock { now: Instant::now(), slept: vec![] };
+    fn a_refusal_ends_the_lookups_at_once_and_says_when_to_try_again() {
         let answers = RefCell::new(vec![
             answer(200, NOTHING),
             Response { retry_after: Some(Duration::from_secs(7)), ..answer(429, "") },
-            answer(200, NOTHING),
+            answer(503, ""),
         ]);
         let asked = RefCell::new(0);
         let mut get = |_: &str| -> Result<Response, String> {
             *asked.borrow_mut() += 1;
             Ok(answers.borrow_mut().remove(0))
         };
-        let mut pacer = Pacer::default();
-        pacer.send("first", &mut get, &mut clock).unwrap();
-        assert!(matches!(pacer.pace(), Pace::Waiting { .. }));
-        pacer.send("second", &mut get, &mut clock).unwrap();
-        assert_eq!(clock.slept, [PAUSE, Duration::from_secs(7)], "three seconds apart, then as long as arXiv said");
-        assert_eq!(*asked.borrow(), 3);
-    }
-
-    #[test]
-    fn a_refusal_that_lasts_gives_up_and_says_when_to_try_again() {
-        let mut clock = PretendClock { now: Instant::now(), slept: vec![] };
-        let mut get = |_: &str| -> Result<Response, String> { Ok(answer(503, "")) };
-        let mut pacer = Pacer::default();
-        let error = pacer.send("busy", &mut get, &mut clock).unwrap_err();
-        assert_eq!(error, LookupError::RateLimited { retry_after: Duration::from_secs(120) });
-        assert_eq!(clock.slept, [Duration::from_secs(30), Duration::from_secs(60)]);
-        assert!(matches!(pacer.pace(), Pace::BackingOff { refusals: 3, .. }));
+        assert_eq!(send("first", &mut get).unwrap(), NOTHING);
+        assert_eq!(send("second", &mut get), Err(LookupError::RateLimited { retry_after: Duration::from_secs(7) }));
+        assert_eq!(
+            send("third", &mut get),
+            Err(LookupError::RateLimited { retry_after: super::super::polite::FIRST_BACK_OFF }),
+            "a refusal that does not say how long"
+        );
+        assert_eq!(*asked.borrow(), 3, "nothing asked twice: the pace waits, not the lookup");
         let mut broken = |_: &str| -> Result<Response, String> { Ok(answer(500, "")) };
-        assert_eq!(Pacer::default().send("broken", &mut broken, &mut clock), Err(LookupError::Failed(500)));
+        assert_eq!(send("broken", &mut broken), Err(LookupError::Failed(500)));
+        let mut gone = |_: &str| -> Result<Response, String> { Err("no connection".to_owned()) };
+        assert_eq!(send("gone", &mut gone), Err(LookupError::Unreachable("no connection".to_owned())));
     }
 
     #[test]
     fn what_is_found_on_arxiv_is_linked_again() {
         let library: Vec<LibraryPaper> = vec![];
         let linker = Linker::new(&library);
-        let mut clock = PretendClock { now: Instant::now(), slept: vec![] };
         let mut get = |url: &str| -> Result<Response, String> {
             assert!(url.starts_with("https://export.arxiv.org/api/query?search_query="));
             Ok(answer(200, TITLE_SEARCH))
@@ -438,8 +345,7 @@ mod tests {
             unresolved("Solver-informed rl: Grounding large language models for authentic optimization modeling", 2025),
             LinkedReference { link: Link::InLibrary { paper: "x".to_owned() }, ..unresolved("Already known", 2020) },
         ];
-        let found =
-            enrich(&mut paper, &linker, super::super::arxiv::API, &mut Pacer::default(), &mut get, &mut clock).unwrap();
+        let found = enrich(&mut paper, &linker, super::super::arxiv::API, &mut get).unwrap();
         assert_eq!(found, 1);
         assert_eq!(paper[0].link, Link::OnArxiv { arxiv: "2505.11792".to_owned() });
         assert_eq!(paper[0].reference.confidence, Confidence::Identified);

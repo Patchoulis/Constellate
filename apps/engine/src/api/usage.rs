@@ -14,21 +14,21 @@
 //! A call to a model whose price is not known is counted (in calls, tokens and `unpriced_calls`) and never priced
 //! at nothing: a model or a purpose whose every call is unpriced has no `usd` at all (`null`), so that it cannot
 //! read as having cost 0. One with some priced calls has the cost of those, and its `unpriced_calls` says it is
-//! short.
+//! short. The same holds of the totals, in all and this session: `usd` and `session_usd` are `null` when calls
+//! were made and none had a price, and the cost of the priced ones when some had.
 //!
 //! This session's totals are the ledger's rows stamped at or after the moment the engine built its routes (its
 //! start; [`started`]): every row carries the instant it was recorded at, so nothing is counted twice or kept in
 //! memory beside the ledger, and an engine that restarts starts its session again at nothing. The rows moved in from
 //! the Python's ledger are stamped with the day it started, long before.
 //!
-//! The Python's ledger (`usage.json` in the library folder) is moved into the database the first time this is
-//! asked for in a library ([`Library::import_ledger`]): once, recorded as moved, so a later import of the whole
-//! library does not count it again. A failure to move it is written to the engine's error output and the answer is
-//! given without it; the move is tried again when the engine next starts.
+//! The Python's ledger (`usage.json` in the library folder) is moved into the database when the library is first
+//! opened, as a part of moving the earlier version's data in ([`crate::library::Library::import_old`]): once, recorded as moved,
+//! and on its own, so that a damaged file elsewhere does not keep it out. A failure to move it is told in
+//! `/api/library` and `/api/status`; the answer is given without it, and the move is tried again at the next start.
 
-use std::collections::{BTreeMap, HashSet};
-use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::collections::BTreeMap;
+use std::sync::OnceLock;
 use std::time::SystemTime;
 
 use axum::Json;
@@ -39,7 +39,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::routes::{ApiError, Shared, on_the_side};
-use crate::library::{Library, Spending, Totals};
+use crate::library::{Spending, Totals};
 use crate::model::chosen::Chosen;
 use crate::usage::{Rate, rate};
 
@@ -48,9 +48,6 @@ const LONGEST_CODE: usize = 8;
 
 /// When the engine started: set when its routes are built, before the first request.
 static STARTED: OnceLock<DateTime<Utc>> = OnceLock::new();
-
-/// The library folders whose old ledger this engine has tried to move in: once each.
-static LEDGERS_MOVED: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
 
 /// The routes of this module, for [`super::routes::table`]. Building them is the engine starting: the session's
 /// totals count from here.
@@ -78,12 +75,13 @@ pub struct Told {
     /// The day of the first call in the ledger; none when nothing has been spent.
     pub since: Option<String>,
     pub currency: Rate,
-    /// US dollars, of the priced calls only.
-    pub usd: f64,
+    /// US dollars, of the priced calls only; none when calls were made and none of them had a price (a cost that
+    /// cannot be known is not shown, never as 0).
+    pub usd: Option<f64>,
     pub calls: i64,
     pub unpriced_calls: i64,
-    /// US dollars spent since the engine started.
-    pub session_usd: f64,
+    /// US dollars spent since the engine started; none as `usd` is.
+    pub session_usd: Option<f64>,
     pub session_calls: i64,
     pub models: BTreeMap<String, Entry>,
     pub purposes: BTreeMap<String, Entry>,
@@ -164,10 +162,10 @@ pub fn told(spending: &Spending, session: &Totals, chosen: &Chosen, currency: Ra
         model: model_told(chosen),
         since: spending.since.clone(),
         currency,
-        usd: spending.total.usd(),
+        usd: known_usd(&spending.total),
         calls: spending.total.calls,
         unpriced_calls: spending.total.unpriced_calls,
-        session_usd: session.usd(),
+        session_usd: known_usd(session),
         session_calls: session.calls,
         models: entries(&spending.models),
         purposes: entries(&spending.purposes),
@@ -182,19 +180,6 @@ fn currency_of(asked: Option<&str>) -> Rate {
     }
 }
 
-/// Move the Python's ledger in, the first time this engine is asked about a library folder. Never fails: what went
-/// wrong is written to the error output, and the answer is given with what the database has.
-fn move_old_ledger(library: &Library, folder: PathBuf) {
-    let mut moved = LEDGERS_MOVED.lock().unwrap_or_else(PoisonError::into_inner);
-    // held while moving: a second request waits, then counts what was moved
-    if !moved.get_or_insert_with(HashSet::new).insert(folder.clone()) {
-        return;
-    }
-    if let Err(error) = library.import_ledger(&folder) {
-        eprintln!("usage: the old ledger in {} could not be moved in: {error}", folder.display());
-    }
-}
-
 async fn usage(
     State(engine): State<Shared>,
     asked: Result<Query<Asked>, QueryRejection>,
@@ -204,7 +189,6 @@ async fn usage(
     let answer = on_the_side(move || {
         let chosen = engine.chosen()?;
         let library = engine.library()?;
-        move_old_ledger(&library, engine.data.join("library"));
         let spending = library.spending()?;
         let session = library.spending_since(started())?;
         Ok(told(&spending, &session, &chosen, currency))
@@ -229,7 +213,7 @@ mod tests {
     use super::super::routes::Engine;
     use super::super::tests::served;
     use super::*;
-    use crate::library::Call;
+    use crate::library::{Call, Library};
     use crate::model::language::{Effort, Provider, Unavailable};
     use crate::settings::Choices;
     use crate::usage::bundled;
@@ -332,7 +316,7 @@ mod tests {
         let session = library.spending_since(started()).unwrap();
         let told = told(&library.spending().unwrap(), &session, &Chosen::claude("claude-opus-5-5"), Rate::dollar());
         assert_eq!((told.calls, told.session_calls, told.unpriced_calls), (3, 3, 1));
-        assert!((told.usd - (0.06 + 0.5)).abs() < 1e-12 && told.usd == told.session_usd);
+        assert!((told.usd.unwrap() - (0.06 + 0.5)).abs() < 1e-12 && told.usd == told.session_usd);
         assert_eq!(told.models["claude-opus-5-5"].input_tokens, 110_000);
         assert_eq!(told.purposes["naming communities"].calls, 2);
         assert_eq!(told.purposes["naming communities"].unpriced_calls, 1);
@@ -350,6 +334,27 @@ mod tests {
         assert_eq!(Entry::from(&totals(1, 0, 0)).usd, Some(0.0));
     }
 
+    #[test]
+    fn the_totals_of_someone_who_used_only_unpriced_models_have_no_cost_and_priced_calls_still_total() {
+        let data = tempfile::tempdir().unwrap();
+        let library = Library::open(&data.path().join("library")).unwrap();
+        let chosen = Chosen::claude("claude-opus-5-5");
+        let nothing =
+            told(&library.spending().unwrap(), &library.spending_since(started()).unwrap(), &chosen, Rate::dollar());
+        assert_eq!((nothing.usd, nothing.session_usd), (Some(0.0), Some(0.0)), "nothing spent is a known 0");
+        library.record_call(&call("some-other-model", "naming communities", 500, 500)).unwrap();
+        let unpriced =
+            told(&library.spending().unwrap(), &library.spending_since(started()).unwrap(), &chosen, Rate::dollar());
+        assert_eq!((unpriced.usd, unpriced.session_usd), (None, None));
+        let json = serde_json::to_value(&unpriced).unwrap();
+        assert_eq!((json["usd"].clone(), json["session_usd"].clone()), (Value::Null, Value::Null));
+        library.record_call(&call("claude-opus-5-5", "naming communities", 10_000, 1_000)).unwrap();
+        let both =
+            told(&library.spending().unwrap(), &library.spending_since(started()).unwrap(), &chosen, Rate::dollar());
+        assert!((both.usd.unwrap() - 0.06).abs() < 1e-12, "{:?}", both.usd);
+        assert_eq!((both.session_usd, both.unpriced_calls), (both.usd, 1));
+    }
+
     // test_many_tiny_calls_do_not_drift
     #[test]
     fn many_tiny_calls_do_not_drift() {
@@ -363,6 +368,7 @@ mod tests {
         // 320 * (70000 * 0.10 + 30000 * 0.50) dollars per million tokens: summed in whole millionths, exactly
         assert_eq!(told.models["claude-haiku-5-5"].usd, Some(7_040_000.0 / 1e6));
         assert_eq!(told.usd, told.session_usd);
+        assert!(told.usd.is_some());
     }
 
     // test_the_interface_is_told_who_provides_the_model

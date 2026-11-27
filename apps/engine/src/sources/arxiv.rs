@@ -1,6 +1,7 @@
 //! The arXiv API: every paper matching a search query, as library records (metadata and abstract, no PDF).
 //!
-//! arXiv asks programs for one request every three seconds, and a query is read in pages of [`PAGE`], oldest
+//! arXiv asks programs for one request every three seconds (kept by the network for every request to arXiv:
+//! [`super::polite::ARXIV_PACE`]), and a query is read in pages of [`PAGE`], oldest
 //! first. The API sometimes answers with an error or with an empty page that is not the end, so a page is asked
 //! for again, each time after a longer pause (or as long as a refusal's `Retry-After` asks, when that is longer),
 //! before the query is given up on.
@@ -17,7 +18,7 @@ use super::{Fetch, Limits, Origin, Paper, any_https, get_following};
 pub const API: &str = "https://export.arxiv.org/api/query";
 /// Papers per page: the most arXiv recommends asking for at once.
 pub const PAGE: usize = 500;
-/// The pause before a request; a retry waits this many times its attempt number.
+/// The pause before a page is asked for again, times the attempts so far: beyond arXiv's pace between requests.
 pub const DELAY: Duration = Duration::from_millis(3100);
 const ATTEMPTS: u32 = 6;
 /// A refusal's `Retry-After` is waited for, up to this long: arXiv asks for minutes at most, and an absurd value is
@@ -159,7 +160,11 @@ fn page(
     // how long the last refusal asked to be left alone (`Retry-After`), when it said
     let mut asked: Option<Duration> = None;
     for attempt in 1..=ATTEMPTS {
-        pause((DELAY * attempt).max(asked.take().unwrap_or_default().min(LONGEST_ASKED)));
+        // the pace between requests is arXiv's one pace, which the network keeps; this is the patience after a
+        // failure, growing with each, and at least what a refusal asked for
+        if attempt > 1 {
+            pause((DELAY * (attempt - 1)).max(asked.take().unwrap_or_default().min(LONGEST_ASKED)));
+        }
         let answer = match get_following(fetch, &page_url(search, start), LIMITS, &any_https) {
             Ok((_, response)) if response.status == 200 => parse(&response.text()).map_err(|error| error.to_string()),
             Ok((_, response)) => {
@@ -181,7 +186,8 @@ fn page(
 }
 
 /// Every paper matching an arXiv search query, oldest first. `pause` waits (a real sleep, outside the tests);
-/// it is called before every request, which keeps the requests at least [`DELAY`] apart.
+/// it is called before a page is asked for again. The requests themselves keep arXiv's one pace, which the
+/// network takes for every request to arXiv ([`super::polite::ARXIV_PACE`]).
 pub fn query(
     fetch: &dyn Fetch,
     pause: &dyn Fn(Duration),
@@ -302,7 +308,7 @@ pub(crate) mod tests {
         let papers = query(&fake, &|pause| pauses.borrow_mut().push(pause), "q", &quiet).unwrap();
         assert_eq!(papers.len(), PAGE + 1);
         assert_eq!(papers[PAGE].id, format!("2601.{PAGE:05}"));
-        assert_eq!(*pauses.borrow(), [DELAY, DELAY]);
+        assert!(pauses.borrow().is_empty(), "the pace is the network's: no pause of its own between pages");
     }
 
     #[test]
@@ -317,7 +323,7 @@ pub(crate) mod tests {
             failed,
             Err(ArxivError::KeptFailing { offset: 0, search: "q".to_owned(), last: "HTTP 503".to_owned() })
         );
-        assert_eq!(*pauses.borrow(), (1..=ATTEMPTS).map(|attempt| DELAY * attempt).collect::<Vec<_>>());
+        assert_eq!(*pauses.borrow(), (1..ATTEMPTS).map(|attempt| DELAY * attempt).collect::<Vec<_>>());
         assert_eq!(lines.borrow()[0], "    retry 1 at offset 0: HTTP 503");
     }
 
@@ -330,7 +336,9 @@ pub(crate) mod tests {
         let pauses = RefCell::new(Vec::new());
         let _ = query(&fake, &|pause| pauses.borrow_mut().push(pause), "q", &quiet);
         let pauses = pauses.borrow();
-        assert_eq!(pauses[..4], [DELAY, Duration::from_secs(40), LONGEST_ASKED, DELAY * 4], "{pauses:?}");
+        // no pause before the first ask (arXiv's one pace, kept by the network, spaces it); before each retry, the
+        // patience of that attempt or what the refusal asked for, whichever is longer
+        assert_eq!(pauses[..4], [Duration::from_secs(40), LONGEST_ASKED, DELAY * 3, DELAY * 4], "{pauses:?}");
     }
 
     #[test]

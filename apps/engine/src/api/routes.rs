@@ -71,6 +71,8 @@ pub struct Engine {
     library: Mutex<Option<Arc<Library>>>,
     /// The person's runs: the one being made, the list, the loaded ones ([`crate::pipeline::served`]).
     pub runs: crate::pipeline::served::Runs,
+    /// What of the earlier version's data folder could not be moved in when the library was opened, in words.
+    import_problems: Mutex<Vec<String>>,
 }
 
 pub type Shared = Arc<Engine>;
@@ -94,7 +96,14 @@ impl Engine {
             pdfs: crate::papers::pdf::Pdfs::default(),
             library: Mutex::new(None),
             runs: Default::default(),
+            import_problems: Mutex::new(Vec::new()),
         }
+    }
+
+    /// What of the earlier version's data folder could not be moved in, in words: empty when everything was (or
+    /// the library has not been opened yet).
+    pub fn import_problems(&self) -> Vec<String> {
+        self.import_problems.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     /// The library in the data folder, opened once and shared by every request.
@@ -108,12 +117,13 @@ impl Engine {
         if let Err(error) = library.read_stored_pages_again() {
             eprintln!("library: reviews pages could not be read again: {error}");
         }
-        // the Python backend's files-based library, moved in once (library/import.rs)
-        match library.import_once(&self.data.join("library")) {
-            Ok(Some(imported)) => eprintln!("library: the files-based library was moved in: {imported:?}"),
-            Ok(None) => {}
-            Err(error) => eprintln!("library: the files-based library could not be moved in yet: {error}"),
+        // the Python backend's data folder, moved in once, part by part (library/import.rs); what could not be is
+        // told in /api/library and as a warning in /api/status, and tried again at the next start
+        let moved = library.import_old(&self.data.join("library"));
+        if moved != crate::library::import::Moved::default() {
+            eprintln!("library: the earlier version's data folder: {moved:?}");
         }
+        *self.import_problems.lock().unwrap_or_else(PoisonError::into_inner) = moved.problems();
         // calls left with their outcome unknown by an earlier run (a crash after the provider billed): told, never
         // asked again by themselves
         match library.unsettled().map(|unsettled| unsettled.said()) {
@@ -453,6 +463,7 @@ async fn status(
         Mode::Network => "network",
     };
     let job = engine.job.snapshot(since.unwrap_or(0));
+    let warnings: Vec<String> = engine.warnings.iter().cloned().chain(engine.import_problems()).collect();
     let result = match &job.result {
         Some(Finished::Run { run }) => Some(run.clone()),
         Some(Finished::Feature { .. } | Finished::Nothing) | None => None,
@@ -475,7 +486,7 @@ async fn status(
         total: job.total,
         progress: job.progress,
         papers: job.papers,
-        warnings: &engine.warnings,
+        warnings: &warnings,
         mode,
         server_owned: server_owned(engine.mode),
         api_key_set: engine.endpoint().is_ok(),

@@ -334,8 +334,25 @@ impl Http {
     }
 }
 
+/// Every request of the network to arXiv waits for its turn at arXiv's one pace ([`polite::ARXIV_PACE`]),
+/// whoever sends it: a run's listings, a lookup, a PDF, a publisher's redirect to arXiv.
 impl Fetch for Http {
     fn get(&self, url: &str, limits: Limits) -> Result<Response, FetchError> {
+        polite::Paced { inner: Unpaced(self), pace: &polite::ARXIV_PACE }.get(url, limits)
+    }
+}
+
+/// The network without arXiv's pace: only ever asked through [`polite::Paced`].
+struct Unpaced<'a>(&'a Http);
+
+impl Fetch for Unpaced<'_> {
+    fn get(&self, url: &str, limits: Limits) -> Result<Response, FetchError> {
+        self.0.send(url, limits)
+    }
+}
+
+impl Http {
+    fn send(&self, url: &str, limits: Limits) -> Result<Response, FetchError> {
         let failed = |error: ureq::Error| match error {
             ureq::Error::Timeout(_) => FetchError::TimedOut(url.to_owned()),
             ureq::Error::BadUri(_) | ureq::Error::Http(_) => FetchError::BadAddress(url.to_owned()),

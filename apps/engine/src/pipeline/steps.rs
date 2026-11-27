@@ -85,8 +85,8 @@ impl Step {
 /// Why a step did nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Skip {
-    /// The module that does it is not part of this build (yet).
-    NotInThisBuild,
+    /// No cost was accepted for it with the run's request (naming the communities): nothing was sent.
+    NotAccepted,
     /// The settings switch it off.
     SwitchedOff,
     /// The language model's provider chosen has no key set.
@@ -100,7 +100,10 @@ pub enum Skip {
 impl fmt::Display for Skip {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Skip::NotInThisBuild => formatter.write_str("not available in this build"),
+            Skip::NotAccepted => formatter.write_str(
+                "no cost was accepted for naming this run, so nothing was sent; the run is made without names, which \
+                 can be added from it later",
+            ),
             Skip::SwitchedOff => formatter.write_str("switched off in the settings"),
             Skip::NoKey { provider } => write!(formatter, "no key is set for the chosen provider ({provider})"),
             Skip::DetectorNotTrained => formatter.write_str("the AI-text detector is not trained"),
@@ -306,7 +309,11 @@ mod tests {
             StepOutcome::Skipped(Skip::NoKey { provider: "OpenAI".into() }).to_string(),
             "skipped: no key is set for the chosen provider (OpenAI)"
         );
-        assert_eq!(StepOutcome::Skipped(Skip::NotInThisBuild).to_string(), "skipped: not available in this build");
+        assert!(StepOutcome::Skipped(Skip::NotAccepted).to_string().starts_with("skipped: no cost was accepted"));
+        assert_eq!(
+            StepOutcome::Skipped(Skip::DetectorNotTrained).to_string(),
+            "skipped: the AI-text detector is not trained"
+        );
         assert_eq!(StepOutcome::Failed("x".into()).to_string(), "failed: x");
     }
 }

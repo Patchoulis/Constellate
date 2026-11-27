@@ -180,6 +180,9 @@ export type RunRequest = (
 	/** name the run's communities within the most `GET /api/describe/estimate` showed (DescribeAccepted); absent: the
 	 *  run is made without names, which can be added from it later. */
 	describe?: DescribeAccepted;
+	/** make it again although a run of that name exists (a `rerun`, or the same selection anew): without it the
+	 *  engine answers 409 with `RunRefusedReplacing`, to be shown before the person confirms. Engine only */
+	replace?: boolean;
 };
 
 /** The engine's one background job (apps/engine/src/jobs.rs). */
@@ -394,6 +397,10 @@ export interface CitationNetwork {
 	papers_in_library: number;
 	/** the day it was built, YYYY-MM-DD */
 	built: string;
+	/** when reading the seed's references looked works up on arXiv and stopped before every one was asked about:
+	 *  at the most one reading asks, or because arXiv refused or could not be reached (`why`); `left` are asked
+	 *  about when the references are read again. Null when nothing was left, absent from older engines */
+	lookups_stopped?: { kind: "at_most"; left: number } | { kind: "failed"; why: string; left: number } | null;
 }
 
 export interface RunResult {
@@ -781,13 +788,14 @@ export interface Usage {
 	since: string | null;
 	/** the currency asked for and what a US dollar is worth in it; the dollar itself when no rate could be had */
 	currency: { code: string; rate: number; date: string | null };
-	/** everything below is in US dollars, the currency the API bills in */
-	usd: number;
+	/** everything below is in US dollars, the currency the API bills in; null when calls were made and none had a
+	 *  price (a cost that cannot be known is not shown, never as 0) */
+	usd: number | null;
 	calls: number;
 	/** calls to a model whose price is not known: counted in tokens only, so `usd` is short by them */
 	unpriced_calls: number;
-	/** since the app was started */
-	session_usd: number;
+	/** since the app was started; null as `usd` is */
+	session_usd: number | null;
 	session_calls: number;
 	models: Record<string, UsageEntry>;
 	/** what the calls were for: naming communities, overviews, ... */
@@ -912,6 +920,9 @@ export interface Library {
 		/** share of arXiv abstracts flagged in a week of each year, if that check was run */
 		by_year: Record<string, { abstracts: number; flagged: number }> | null;
 	} | null;
+	/** what of the earlier version's data folder could not be moved in, in words (tried again at the next start);
+	 *  empty when everything was. Engine only */
+	import_problems?: string[];
 }
 
 // ---- Weaknesses (critique) ----
@@ -1997,6 +2008,37 @@ export interface DetectorEstimate {
 export interface DetectorStarted {
 	outcome: "started";
 	job: number;
+}
+
+// ---- Making a run again in place (engine api/runs.rs, pipeline/files.rs `Replaced`) ----
+
+/** A setting that decides a run's communities, as the run was made with it and as it is now (`was` is null when
+ *  the run did not record it). */
+export interface SettingChanged {
+	setting: keyof Settings;
+	was: unknown;
+	now: unknown;
+}
+
+/** The run a `POST /api/runs` would make again in its folder, told before anything is done. */
+export interface RunReplaced {
+	run: string;
+	title: string;
+	/** its communities and sub-communities now, and how many of them have a name */
+	communities: number;
+	named: number;
+	/** "change": they will be cut otherwise (a setting below differs, or the run was cut by another clustering:
+	 *  the earlier version's k-means); "may_change": the same settings and clustering, so they come out the same
+	 *  unless its papers changed. Either way, names and what was asked about a community that changes no longer
+	 *  apply to it */
+	communities_will: "change" | "may_change";
+	changed: SettingChanged[];
+}
+
+/** `POST /api/runs` answered 409: the run exists; sending the request again with `replace: true` makes it again. */
+export interface RunRefusedReplacing {
+	error: string;
+	replaces: RunReplaced;
 }
 
 /**

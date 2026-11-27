@@ -2,7 +2,9 @@
 //! (the catalogue) and what the library holds.
 //!
 //! ```text
-//! POST   /api/runs               start a run (RunRequest): a selection, or `rerun` an earlier run; `redo` steps
+//! POST   /api/runs               start a run (RunRequest): a selection, or `rerun` an earlier run; `redo` steps;
+//!                                `describe`: what was accepted for naming it. One that would make an existing run
+//!                                again is refused (409, `{error, replaces: RunReplaced}`) unless `replace: true`
 //! GET    /api/runs               every run, the most recently made first (RunSummary[]); with any of
 //!                                ?offset=&limit=&sort=&search= one page of them (RunPage)
 //! GET    /api/runs/{name}        its communities (RunResult), as its communities.json has them
@@ -28,16 +30,20 @@ use serde_json::{Value, json};
 use super::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::analysis::cluster::Method;
 use crate::jobs::Finished;
+use crate::model::chosen::Accepted;
 use crate::model::embed::Device;
-use crate::pipeline::files::{self, RunFileError};
+use crate::model::language::Provider;
+use crate::pipeline::files::{self, Replaced, RunFileError};
 use crate::pipeline::gather::Sources;
+use crate::pipeline::seams::Naming;
 use crate::pipeline::served::{ServeError, Which};
-use crate::pipeline::{self, Context, Redo, RedoStep, Request, seams};
+use crate::pipeline::{self, Context, Redo, RedoStep, Request};
 use crate::runs::index;
 use crate::selection::Selection;
 use crate::settings;
 use crate::sources::acceptance::Acceptance;
 use crate::text::declarations::Flag;
+use crate::writing::describe;
 
 /// The most conferences or categories one run may name.
 pub const MOST_PICKED: usize = 100;
@@ -102,10 +108,81 @@ fn text<'a>(body: &'a Value, key: &str) -> Result<Option<&'a str>, ApiError> {
     }
 }
 
-/// What a run request asks for: a selection (or an earlier run's, for `rerun`) and the steps to redo.
-pub fn request(engine: &Shared, body: &Value) -> Result<Request, ApiError> {
+/// What a run request asks for: what to make, and what the person accepted for naming its communities.
+pub struct Asked {
+    pub request: Request,
+    pub naming: Naming,
+}
+
+/// Why a run request starts nothing.
+pub enum NotStarted {
+    Refused(ApiError),
+    /// It would make an existing run again in its folder, and `replace` was not sent: what would be replaced, to
+    /// be shown before the person confirms.
+    Replaces(Box<Replaced>),
+}
+
+impl From<ApiError> for NotStarted {
+    fn from(error: ApiError) -> Self {
+        NotStarted::Refused(error)
+    }
+}
+
+impl From<RunFileError> for NotStarted {
+    fn from(error: RunFileError) -> Self {
+        NotStarted::Refused(error.into())
+    }
+}
+
+/// The `describe` of a run request: the model whose estimate was shown, and what was accepted of it.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DescribeAccepted {
+    provider: Option<Provider>,
+    model: String,
+    accepted_usd: Option<f64>,
+    accepted_tokens: Option<u64>,
+}
+
+/// What naming the run may spend: what `describe` accepted of `GET /api/describe/estimate`, checked now so that a
+/// refusal is told before the run's work; with none, nothing is sent and only names kept before are given.
+fn naming(engine: &Shared, body: &Value, redo: &Redo) -> Result<Naming, ApiError> {
+    let invalid = |why: &dyn std::fmt::Display| ApiError::Invalid(why.to_string());
+    let Some(sent) = body.get("describe").filter(|value| !value.is_null()) else {
+        if redo.contains(&RedoStep::Descriptions) {
+            return Err(ApiError::Invalid(
+                "describing the communities again asks the language model: send what was accepted of its estimate \
+                 (`describe`)"
+                    .to_owned(),
+            ));
+        }
+        return Ok(match engine.chosen() {
+            Ok(chosen) => Naming::KeptOnly(chosen),
+            Err(why) => Naming::Unknown(why.to_string()),
+        });
+    };
+    let accepted: DescribeAccepted = serde_json::from_value(sent.clone())
+        .map_err(|_| invalid(&"`describe` must be {provider, model, accepted_usd | accepted_tokens}"))?;
+    if accepted.model.chars().count() > LONGEST_PICK {
+        return Err(invalid(&"`describe.model` is too long"));
+    }
+    let chosen = engine.chosen()?;
+    chosen.as_shown(accepted.provider, &accepted.model).map_err(|why| invalid(&why))?;
+    chosen.endpoint().map_err(|why| invalid(&why))?;
+    let settings = settings::load(&engine.settings_file(), &engine.choices)?;
+    let terms = Accepted::of(accepted.accepted_usd, accepted.accepted_tokens).map_err(|why| invalid(&why))?;
+    let budget = describe::budget_before_run(&chosen, &settings, terms).map_err(|why| invalid(&why))?;
+    Ok(Naming::Within { chosen, budget })
+}
+
+/// What a run request asks for: a selection (or an earlier run's, for `rerun`), the steps to redo, and what may be
+/// spent naming its communities. A request that would make an existing run again in its folder (a `rerun`, or the
+/// same selection anew) is not started unless it says `replace: true`: the person is first told what would be
+/// replaced ([`NotStarted::Replaces`]), since its communities may be cut otherwise and its names, and whatever was
+/// asked about its communities, would no longer apply.
+pub fn request(engine: &Shared, body: &Value) -> Result<Asked, NotStarted> {
     if !body.is_object() {
-        return Err(ApiError::Invalid("the request body must be a JSON object".to_owned()));
+        return Err(ApiError::Invalid("the request body must be a JSON object".to_owned()).into());
     }
     let redo: Redo = strings(body, "redo")?
         .iter()
@@ -116,7 +193,7 @@ pub fn request(engine: &Shared, body: &Value) -> Result<Request, ApiError> {
             let folder = files::folder_of(&engine.data, one_name(name)?)?;
             files::stored_selection(&folder)?
         }
-        Some(_) => return Err(ApiError::Invalid("`rerun` must be the name of a run".to_owned())),
+        Some(_) => return Err(ApiError::Invalid("`rerun` must be the name of a run".to_owned()).into()),
         None => Selection::parse(
             &strings(body, "venues")?,
             text(body, "start")?,
@@ -128,28 +205,57 @@ pub fn request(engine: &Shared, body: &Value) -> Result<Request, ApiError> {
     };
     // the name becomes the run's folder: one that could not be listed, opened or deleted is refused now, not
     // after the run's work
-    if one_name(&selection.name()).is_err() {
+    let name = selection.name();
+    if one_name(&name).is_err() {
         return Err(ApiError::Invalid(
             "the run's name made of these conferences or categories is too long; pick fewer, or shorter".to_owned(),
-        ));
+        )
+        .into());
     }
-    Ok(Request { selection, redo })
+    let replace = match body.get("replace") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(replace)) => *replace,
+        Some(_) => return Err(ApiError::Invalid("`replace` must be true or false".to_owned()).into()),
+    };
+    if !replace && let Ok(folder) = files::folder_of(&engine.data, &name) {
+        let settings = settings::load(&engine.settings_file(), &engine.choices).map_err(ApiError::from)?;
+        let now = serde_json::to_value(&settings).map_err(|_| ApiError::Internal)?;
+        let replaced = files::replacing(&folder, &name, &now, pipeline::CLUSTERING_VERSION)?;
+        return Err(NotStarted::Replaces(Box::new(replaced)));
+    }
+    let naming = naming(engine, body, &redo)?;
+    Ok(Asked { request: Request { selection, redo }, naming })
 }
 
-async fn start(
-    State(engine): State<Shared>,
-    body: Result<Json<Value>, JsonRejection>,
-) -> Result<Json<Value>, ApiError> {
+async fn start(State(engine): State<Shared>, body: Result<Json<Value>, JsonRejection>) -> Result<Response, ApiError> {
     let Json(body) = body?;
     let asked = Arc::clone(&engine);
-    let request = on_the_side(move || request(&asked, &body)).await?;
+    let asked = match on_the_side(move || Ok(request(&asked, &body))).await? {
+        Ok(asked) => asked,
+        Err(NotStarted::Refused(error)) => return Err(error),
+        Err(NotStarted::Replaces(replaced)) => {
+            let error = format!(
+                "{} is made already. Making it again replaces it: its communities {}, and their names and whatever \
+                 was asked about them would no longer apply. Send the request again with `replace: true` to make it \
+                 again.",
+                replaced.title,
+                match replaced.communities_will {
+                    files::Remade::Change => "will be cut otherwise",
+                    files::Remade::MayChange => "may be cut otherwise if its papers have changed",
+                }
+            );
+            let told = json!({ "error": error, "replaces": replaced });
+            return Ok((axum::http::StatusCode::CONFLICT, Json(told)).into_response());
+        }
+    };
     let working = Arc::clone(&engine);
-    engine.job.start_tracked("a run", move |tracker| make(&working, &request, tracker))?;
-    Ok(Json(json!({ "ok": true })))
+    engine.job.start_tracked("a run", move |tracker| make(&working, &asked, tracker))?;
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 /// The job of a run: made with the network's sources and the engine's model, then listed.
-fn make(engine: &Shared, request: &Request, tracker: &crate::jobs::Tracker<'_>) -> Result<Finished, String> {
+fn make(engine: &Shared, asked: &Asked, tracker: &crate::jobs::Tracker<'_>) -> Result<Finished, String> {
+    let request = &asked.request;
     let library = engine.library().map_err(|error| error.to_string())?;
     let settings = settings::load(&engine.settings_file(), &engine.choices).map_err(|error| error.to_string())?;
     let name = request.selection.name();
@@ -169,6 +275,8 @@ fn make(engine: &Shared, request: &Request, tracker: &crate::jobs::Tracker<'_>) 
         },
         embedding: engine.runs.embedding.as_ref(),
         board: &engine.runs.board,
+        transport: &*engine.transport,
+        naming: &asked.naming,
     };
     let made = pipeline::make(&context, request, tracker);
     drop(making);
@@ -304,8 +412,19 @@ async fn catalog() -> Json<Value> {
     Json(catalog_json())
 }
 
-/// What the engine says of this computer's way of embedding (`Library.machine` in the contracts).
+/// What the engine says of this computer's way of embedding (`Library.machine` in the contracts): how the model did
+/// embed, once it has; until then, what this computer offers it ([`crate::machine::summary`]).
 fn machine(device: Option<Device>) -> Value {
+    match device {
+        None => {
+            let offered = crate::machine::summary();
+            json!({ "gpu": offered.gpu, "embedding": offered.embedding })
+        }
+        loaded => machine_of(loaded),
+    }
+}
+
+fn machine_of(device: Option<Device>) -> Value {
     match device {
         Some(Device::GraphicsCard) => json!({
             "gpu": "the graphics card",
@@ -329,13 +448,15 @@ fn machine(device: Option<Device>) -> Value {
 async fn library(State(engine): State<Shared>) -> Result<Json<Value>, ApiError> {
     let answer = on_the_side(move || {
         let library = engine.library()?;
-        let settings = settings::load(&engine.settings_file(), &engine.choices)?;
+        let (detector, validation) = super::detector::library_part(&engine)?;
+        let problems = engine.import_problems();
         Ok(json!({
             "papers": library.paper_count()?,
             "embeddings": library.embedding_counts()?,
-            "ai_validation": seams::detector_validation(),
-            "ai_detector": seams::detector_state(settings.detect_ai),
+            "ai_validation": validation,
+            "ai_detector": detector,
             "machine": machine(engine.runs.embedding.loaded_device()),
+            "import_problems": problems,
         }))
     })
     .await?;
@@ -461,6 +582,144 @@ mod tests {
         assert_eq!(held["papers"], 36);
         let library = crate::library::Library::open(&data.path().join("library")).unwrap();
         assert_eq!(library.import_once(&data.path().join("library")).unwrap(), None, "moved in once only");
+    }
+
+    /// The job's status once it is no longer running.
+    async fn settled(router: &axum::Router) -> Value {
+        for _ in 0..600 {
+            let (_, status) = ask_json(router, "GET", "/api/status", None).await;
+            if status["state"] != "running" {
+                return status;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the job did not end");
+    }
+
+    #[tokio::test]
+    async fn making_an_existing_run_again_is_refused_with_what_it_replaces_until_it_is_confirmed() {
+        let data = tempfile::tempdir().unwrap();
+        python_data_folder(data.path());
+        let router = engine(data.path());
+        let before = std::fs::read(data.path().join("runs").join(PYTHON_RUN).join(files::COMMUNITIES)).unwrap();
+        // a rerun, and the same selection anew: neither starts anything
+        for body in [
+            json!({"rerun": PYTHON_RUN}),
+            json!({"venues": ["NeurIPS 2025"]}),
+            json!({"rerun": PYTHON_RUN, "replace": false}),
+        ] {
+            let (status, told) = ask_json(&router, "POST", "/api/runs", Some(body.clone())).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{body}");
+            assert_eq!(keys(&told), ["error".to_owned(), "replaces".to_owned()].into());
+            assert_eq!(keys(&told["replaces"]), contract("RunReplaced"));
+            let replaces = &told["replaces"];
+            assert_eq!(
+                (replaces["run"].clone(), replaces["title"].clone()),
+                (json!(PYTHON_RUN), json!("My conference run"))
+            );
+            assert_eq!((replaces["communities"].clone(), replaces["named"].clone()), (json!(1), json!(0)));
+            // made by the Python's spectral clustering (a k-means of one random start): cut otherwise
+            assert_eq!(replaces["communities_will"], "change");
+            let changed: Vec<&str> =
+                replaces["changed"].as_array().unwrap().iter().map(|one| one["setting"].as_str().unwrap()).collect();
+            assert!(changed.contains(&"max_communities") && !changed.contains(&"clustering"), "{changed:?}");
+            assert_eq!(keys(&replaces["changed"][0]), contract("SettingChanged"));
+            assert!(told["error"].as_str().unwrap().contains("replace: true"), "{told}");
+        }
+        let (_, status) = ask_json(&router, "GET", "/api/status", None).await;
+        assert_eq!(status["state"], "idle", "nothing was started");
+        let after = std::fs::read(data.path().join("runs").join(PYTHON_RUN).join(files::COMMUNITIES)).unwrap();
+        assert_eq!(after, before, "the run is as it was");
+        // `replace` must be a yes or a no
+        let (status, _) =
+            ask_json(&router, "POST", "/api/runs", Some(json!({"rerun": PYTHON_RUN, "replace": "yes"}))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // confirmed: made again, from the library alone (nothing fetched, nothing embedded), without names
+        let (status, told) =
+            ask_json(&router, "POST", "/api/runs", Some(json!({"rerun": PYTHON_RUN, "replace": true}))).await;
+        assert_eq!((status, told), (StatusCode::OK, json!({"ok": true})));
+        let status = settled(&router).await;
+        assert_eq!((status["state"].clone(), status["result"].clone()), (json!("done"), json!(PYTHON_RUN)), "{status}");
+        let log: Vec<&str> = status["log"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+        assert!(log.iter().any(|line| line.contains("skipped: the AI-text detector is not trained")), "{log:?}");
+        assert!(log.iter().any(|line| line.contains("1 of 1 already downloaded")), "{log:?}");
+        let (_, run) = ask_json(&router, "GET", &format!("/api/runs/{PYTHON_RUN}"), None).await;
+        assert_eq!(run["papers"], 36);
+        // made by this engine now, with the same settings: the communities come out the same unless papers changed
+        let (_, told) = ask_json(&router, "POST", "/api/runs", Some(json!({"rerun": PYTHON_RUN}))).await;
+        assert_eq!(
+            (told["replaces"]["communities_will"].clone(), told["replaces"]["changed"].clone()),
+            (json!("may_change"), json!([]))
+        );
+    }
+
+    #[tokio::test]
+    async fn naming_a_new_run_is_refused_for_another_model_or_without_a_key_and_a_redo_of_names_needs_an_accepted_cost()
+    {
+        let data = tempfile::tempdir().unwrap();
+        let router = engine(data.path());
+        let selection = json!({"venues": ["NeurIPS 2025"]});
+        let with = |describe: Value| {
+            let mut body = selection.clone();
+            body["describe"] = describe;
+            body
+        };
+        let asked = [
+            (with(json!({"provider": "openai", "model": "gpt-6.2-sol", "accepted_usd": 1.0})), "is now"),
+            (with(json!({"provider": "anthropic", "model": "claude-opus-5-5", "accepted_usd": 1.0})), "key"),
+            (with(json!({"model": "claude-opus-5-5", "accepted_usd": 1.0, "extra": 1})), "`describe` must be"),
+            (json!({"venues": ["NeurIPS 2025"], "redo": ["descriptions"]}), "accepted of its estimate"),
+        ];
+        for (body, said) in asked {
+            let (status, told) = ask_json(&router, "POST", "/api/runs", Some(body.clone())).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {told}");
+            assert!(told["error"].as_str().unwrap().contains(said), "{body}: {told}");
+        }
+        let (_, status) = ask_json(&router, "GET", "/api/status", None).await;
+        assert_eq!(status["state"], "idle");
+    }
+
+    #[tokio::test]
+    async fn the_library_tells_the_detectors_state_this_computer_and_what_could_not_be_moved_in() {
+        let data = tempfile::tempdir().unwrap();
+        python_data_folder(data.path());
+        // a damaged line in the middle of the old papers' file: that part cannot be moved, the ledger still is
+        let papers = data.path().join("library").join("papers.jsonl");
+        let text = std::fs::read_to_string(&papers).unwrap().replacen('\n', "\n{not json\n", 1);
+        std::fs::write(&papers, text).unwrap();
+        std::fs::write(
+            data.path().join("library").join("usage.json"),
+            r#"{"since": "2026-10-01", "models": {"claude-opus-5-5": {"calls": 2, "input_tokens": 10, "output_tokens": 5, "usd": 0.5}}}"#,
+        )
+        .unwrap();
+        let router = engine(data.path());
+        let (_, held) = ask_json(&router, "GET", "/api/library", None).await;
+        assert_eq!(keys(&held), contract("Library"));
+        let problems = held["import_problems"].as_array().unwrap();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].as_str().unwrap().contains("papers.jsonl, line 2"), "{problems:?}");
+        assert_eq!(held["papers"], 0, "nothing of that part was kept");
+        let (_, status) = ask_json(&router, "GET", "/api/status", None).await;
+        assert!(status["warnings"].as_array().unwrap().contains(&problems[0]), "{status}");
+        let (_, usage) = ask_json(&router, "GET", "/api/usage", None).await;
+        assert_eq!(usage["calls"], 2, "the ledger is moved on its own: {usage}");
+        // the detector: untrained, then off once switched off; and this computer, before anything was embedded
+        assert_eq!(held["ai_detector"]["state"], "untrained");
+        assert_eq!(held["ai_validation"], Value::Null);
+        let (status, _) = ask_json(&router, "PUT", "/api/settings", Some(json!({"detect_ai": false}))).await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, held) = ask_json(&router, "GET", "/api/library", None).await;
+        assert_eq!(held["ai_detector"]["state"], "off");
+        assert_eq!(keys(&held["machine"]), ["embedding".to_owned(), "gpu".to_owned()].into());
+        assert!(held["machine"]["embedding"].as_str().unwrap().contains("embedded again"));
+        // mended, and opened again: moved in then, and told no more
+        let text = std::fs::read_to_string(&papers).unwrap().replace("{not json\n", "");
+        std::fs::write(&papers, text).unwrap();
+        let again = engine(data.path());
+        let (_, held) = ask_json(&again, "GET", "/api/library", None).await;
+        assert_eq!((held["papers"].clone(), held["import_problems"].clone()), (json!(36), json!([])));
+        let (_, usage) = ask_json(&again, "GET", "/api/usage", None).await;
+        assert_eq!(usage["calls"], 2, "moved once only");
     }
 
     #[tokio::test]

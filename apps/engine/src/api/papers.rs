@@ -16,7 +16,7 @@
 //! here: the PDF's file is the library's own naming of it ([`crate::library::Library::pdf_file`]).
 
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Seek, SeekFrom};
 
 use axum::Json;
 use axum::body::Body;
@@ -66,9 +66,9 @@ struct Record {
     venues: Vec<String>,
     url: Option<String>,
     pdf_url: Option<String>,
-    /// The AI-text detector's verdict: given by the detector, which is not part of this module; null meanwhile,
-    /// as the contract says for a paper never scored.
-    ai: Option<Value>,
+    /// The AI-text detector's verdict (an estimate): null for a paper whose present text was never scored by the
+    /// present classifier, or too short to judge, as the Python's `Detector.verdict`.
+    ai: Option<crate::detector::AiVerdict>,
     acceptance: Acceptance,
     acceptance_term: Option<Term>,
     readable: bool,
@@ -85,6 +85,7 @@ fn record_of(engine: &Shared, id: &str) -> Result<Record, ApiError> {
         Some(Reading::NoPdf | Reading::Unreadable) | None => None,
     };
     let reviews = library.ratings(id)?;
+    let ai = crate::detector::verdict(&library, &paper)?;
     let told = accepted(&as_source(&paper));
     Ok(Record {
         id: paper.id,
@@ -98,7 +99,7 @@ fn record_of(engine: &Shared, id: &str) -> Result<Record, ApiError> {
         venues: paper.venues,
         url: paper.url,
         pdf_url: paper.pdf_url,
-        ai: None,
+        ai,
         acceptance: told.tier,
         acceptance_term: told.term,
         readable,
@@ -167,12 +168,15 @@ fn pdf_answer(path: &std::path::Path, id: &str, asked: Option<HeaderValue>) -> R
             return Ok((StatusCode::RANGE_NOT_SATISFIABLE, headers).into_response());
         }
     };
-    let mut bytes = Vec::new();
-    if size > 0 {
-        file.seek(SeekFrom::Start(start)).map_err(files)?;
-        file.take(end - start + 1).read_to_end(&mut bytes).map_err(files)?;
+    if size == 0 {
+        return Ok((status, headers, Body::empty()).into_response());
     }
-    Ok((status, headers, Body::from(bytes)).into_response())
+    // streamed from the file as the client reads it: a PDF of 80 MB is never held in memory, nor are many
+    file.seek(SeekFrom::Start(start)).map_err(files)?;
+    let length = end - start + 1;
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+    let reader = tokio::io::AsyncReadExt::take(tokio::fs::File::from_std(file), length);
+    Ok((status, headers, Body::from_stream(tokio_util::io::ReaderStream::new(reader))).into_response())
 }
 
 async fn pdf(State(engine): State<Shared>, Path(id): Path<String>, asked: HeaderMap) -> Result<Response, Refusal> {
@@ -389,6 +393,32 @@ mod tests {
         }
     }
 
+    /// The Python's `test_a_paper_comes_with_its_detector_verdict`.
+    #[tokio::test]
+    async fn a_paper_comes_with_the_detectors_verdict_once_its_abstract_was_scored_and_null_before() {
+        let (router, data, _) = engine();
+        let library = Library::open(&data.path().join("library")).unwrap();
+        let long = Paper {
+            r#abstract: crate::detector::tests::text(crate::detector::tests::MACHINE, 7),
+            ..paper("2601.00777")
+        };
+        library.add_papers(std::slice::from_ref(&long), None, Known::Keep).unwrap();
+        let (_, told) = json_of(ask(&router, "GET", "/api/papers/2601.00777", None).await).await;
+        assert_eq!(told["ai"], Value::Null, "no detector: never scored");
+        crate::detector::tests::build_in(&library);
+        let (_, told) = json_of(ask(&router, "GET", "/api/papers/2601.00777", None).await).await;
+        assert_eq!(told["ai"], Value::Null, "trained, but this abstract not scored yet");
+        let settings = crate::settings::Settings { detect_ai: true, ..Default::default() };
+        let cancel = crate::jobs::Cancel::new();
+        let (log, progress) = (|_: &str| {}, |_: crate::jobs::Progress| {});
+        let tracker = crate::jobs::Tracker::new(&log, &progress, &cancel);
+        crate::detector::score_run(&library, &settings, std::slice::from_ref(&long.id), &tracker);
+        let (_, told) = json_of(ask(&router, "GET", "/api/papers/2601.00777", None).await).await;
+        let fields: BTreeSet<String> = told["ai"].as_object().unwrap().keys().cloned().collect();
+        assert_eq!(fields, contract_fields("AiVerdict"));
+        assert_eq!(told["ai"]["flagged"], true, "written the way the machine texts are: {told}");
+    }
+
     #[tokio::test]
     async fn a_kept_pdf_is_served_inline_as_a_pdf_and_by_ranges() {
         let (router, _data, fake) = engine();
@@ -413,6 +443,26 @@ mod tests {
         let refused = ask(&router, "GET", "/api/papers/hep-th%2F9901001/pdf", Some(&outside)).await;
         assert_eq!(refused.status(), StatusCode::RANGE_NOT_SATISFIABLE);
         assert!(fake.asked().is_empty(), "a kept PDF asks nobody");
+    }
+
+    #[tokio::test]
+    async fn a_large_pdf_is_streamed_from_its_file_whole_or_by_its_range() {
+        let (router, data, _) = engine();
+        let library = Library::open(&data.path().join("library")).unwrap();
+        // larger than any one read of the stream: it comes in many pieces
+        let mut big = b"%PDF-1.4 ".to_vec();
+        big.extend((0..6 * 1024 * 1024u32).map(|n| (n % 251) as u8));
+        library.keep_pdf("hep-th/9901001", &big).unwrap();
+        let whole = ask(&router, "GET", "/api/papers/hep-th%2F9901001/pdf", None).await;
+        assert_eq!(whole.status(), StatusCode::OK);
+        assert_eq!(whole.headers()[header::CONTENT_LENGTH], big.len().to_string());
+        assert_eq!(to_bytes(whole.into_body(), usize::MAX).await.unwrap().as_ref(), big.as_slice());
+        let (from, to) = (3_000_001, 5_000_000);
+        let part = ask(&router, "GET", "/api/papers/hep-th%2F9901001/pdf", Some(&format!("bytes={from}-{to}"))).await;
+        assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(part.headers()[header::CONTENT_LENGTH], (to - from + 1).to_string());
+        assert_eq!(part.headers()[header::CONTENT_RANGE], format!("bytes {from}-{to}/{}", big.len()));
+        assert_eq!(to_bytes(part.into_body(), usize::MAX).await.unwrap().as_ref(), &big[from..=to]);
     }
 
     #[tokio::test]
