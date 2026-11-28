@@ -18,6 +18,7 @@ import type {
 	Ratings,
 	ReviewsRead,
 	ReviewSummary,
+	RunCitations,
 	RunRequest,
 	RunResult,
 	RunSummary,
@@ -85,6 +86,8 @@ export const api = {
 	runs: () => call<RunSummary[]>("/api/runs"),
 	run: (name: string) => call<RunResult>(run(name)),
 	graph: (name: string) => call<GraphData>(`${run(name)}/graph`),
+	/** what the run and each of its communities cite and are cited, counted from every reference list of the library read so far */
+	runCitations: (name: string) => reading<RunCitations>(`${run(name)}/citations`),
 	rename: (name: string, title: string) => call<{ title: string }>(run(name), send("PATCH", { title })),
 	remove: (name: string) => call<{ ok: true }>(run(name), { method: "DELETE" }),
 	/** where a community's overview stands; with `write`, write it within the most of the estimate shown */

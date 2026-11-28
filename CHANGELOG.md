@@ -10,9 +10,20 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Communities are ordered by "Uniqueness" in place of "Saturation" and "Tightness": how far a community's papers are,
   on average, from what the community is about (a cosine distance). Low means its papers all do much the same thing;
   high means the work in it is more varied.
+- "Cited by" now counts the citations from every paper of your library whose reference list Constellate has read,
+  not only from the papers of the run. A community's figures say how many come from its own papers, from the rest of
+  the run and from your library outside the run, and "Cites" says how many of the works cited are in the run, in
+  your library outside it, or not in your library (on arXiv or not found). The run's own figures are shown over the
+  list of communities when it is ordered by "Cited by" or "Cites". Papers that are not in your library still cannot
+  be counted, and the panel says so; no outside citation service is asked.
+- In a paper's Citations tab, a citing or cited paper of your library that is not in the run is tagged "Outside this
+  run", drawn faded in the picture, and opens in the reader like any other paper of your library.
+- The library's reference lists are linked once and kept while the app runs: only a list read since, or the
+  references a newly added paper might be, are linked again.
 
 ### Fixed
 
+- A community's details show its "Cited by" again, beside "Cites".
 - The graph no longer disappears while a side panel is dragged wider or narrower.
 
 ## [0.2.2] - 2026-11-28

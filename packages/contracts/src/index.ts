@@ -322,19 +322,57 @@ export interface Community {
 	citations?: CommunityCitations | null;
 }
 
-/** A community's citations, among the run's papers whose reference lists were read (engine analysis/citations.rs). */
+/**
+ * A community's citations, from the reference lists Constellate has read of the papers of the library (engine
+ * analysis/citations.rs). The splits are absent from figures saved before they were counted: such figures are
+ * "not counted yet" until `GET /api/runs/{name}/citations` counts them again.
+ */
 export interface CommunityCitations {
 	/** of its papers, how many have had their reference list read: `cites` is counted over these */
 	papers_read: number;
-	/** citations its papers receive from the run's read papers, inside the community and outside it (each citing
-	 *  and cited pair once) */
+	/** citations its papers receive from the read papers of the library, in the run or not (each citing and cited
+	 *  pair once); in figures saved before the splits, from the run's papers only */
 	cited_by: number;
 	/** of those, from its own papers */
 	cited_by_inside: number;
+	/** from the run's other papers */
+	cited_by_rest_of_run?: number | null;
+	/** from papers of the library that are not in the run; with the two above, adds up to `cited_by` */
+	cited_by_outside_run?: number | null;
 	/** distinct works its read papers cite, found or not */
 	cites: number;
-	/** of those, papers of the user's library */
+	/** of those, papers of the user's library: `cites_in_run` and `cites_outside_run` together */
 	cites_in_library: number;
+	/** papers of the run */
+	cites_in_run?: number | null;
+	/** papers of the library that are not in the run */
+	cites_outside_run?: number | null;
+	/** not in the library: on arXiv, and not found; the four add up to `cites` */
+	cites_on_arxiv?: number | null;
+	cites_unresolved?: number | null;
+}
+
+/** Every figure of `CommunityCitations`, each one counted. */
+export type CountedCitations = { [field in keyof CommunityCitations]-?: number };
+
+/** A community's figures as `GET /api/runs/{name}/citations` counts them, with its sub-communities'. */
+export interface CountedCommunity extends CountedCitations {
+	tree_path: string;
+	papers: number;
+	children: CountedCommunity[];
+}
+
+/**
+ * What a run and its communities cite and are cited (`GET /api/runs/{name}/citations`), counted from every
+ * reference list of the library Constellate has read. The run's own figures are its papers' as one group:
+ * `cited_by_inside` counts citations from the run's papers, `cited_by_rest_of_run` is 0.
+ */
+export interface RunCitations extends CountedCitations {
+	papers: number;
+	/** the papers of the library, and of those, how many have had their reference list read: whose citations are counted */
+	library_papers: number;
+	library_papers_read: number;
+	communities: CountedCommunity[];
 }
 
 /** What a reference was found to be. */
@@ -360,6 +398,9 @@ export interface CitationNeighbour {
 	confidence: ReferenceConfidence;
 	/** how many papers Constellate has read cite it */
 	cited_by: number;
+	/** is it a paper of the run asked about? null when no run was asked about, or it is not a paper of the library;
+	 *  absent from older engines */
+	in_run?: boolean | null;
 	/** the entry as written in the seed's reference list; null for a citing paper */
 	entry: string | null;
 }
@@ -384,13 +425,20 @@ export interface CitationNetwork {
 	totals: {
 		references: number;
 		references_in_library: number;
+		/** of those in the library, how many are papers of the run asked about, and how many are not (null when none
+		 *  was; absent from older engines) */
+		references_in_run?: number | null;
+		references_outside_run?: number | null;
 		references_on_arxiv: number;
 		references_unresolved: number;
+		/** read papers of the library that cite it, in the run asked about or not */
 		citations: number;
 		/** of those, how many are listed, the most cited first */
 		citations_shown: number;
 		/** of those, how many are papers of the run asked about (null when none was) */
 		citations_in_run: number | null;
+		/** and how many are papers of the library outside it (null when none was; absent from older engines) */
+		citations_outside_run?: number | null;
 	};
 	/** whose reference lists it comes from */
 	papers_read: number;
