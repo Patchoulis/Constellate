@@ -12,8 +12,15 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   at those words. A section is shown only when its quotes were found in at least two of the community's papers, and
   the panel says how many were left out.
 - Communities described before this keep their one-paragraph description and are not asked about again. "Rewrite
-  with sections and citations", under such a description and over the list of communities, shows what rewriting
-  them would cost first, then rewrites them, with its progress and a way to stop.
+  with sections and the model's own citations", under such a description and over the list of communities, shows
+  what rewriting them would cost first, then rewrites them, with its progress and a way to stop.
+- Under every sentence of a community's description (or every section), the community's papers closest to it in
+  meaning are listed, each with its sentence closest to the statement and how close it is: click one to open the
+  paper at that sentence. They are found with the embedding model on this computer, cost nothing, send nothing
+  anywhere and are kept, so opening the community again shows them at once. They show what is close in meaning, not
+  that a paper says the statement.
+- A community's details are in blocks, each with a small header and a line under it: Description, Characteristic
+  terms, At a glance, Sub-communities, Closest communities, Nearest to the mean embedding.
 
 ### Changed
 

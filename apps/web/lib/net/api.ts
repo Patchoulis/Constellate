@@ -94,6 +94,12 @@ export const api = {
 			`${run(name)}/overview/${encodeURIComponent(treePath)}`,
 			write === undefined ? { method: "GET" } : write === true ? { method: "POST" } : send("POST", write),
 		),
+	/** each statement of a community's description with its closest papers, when found (free: nothing is sent anywhere) */
+	closest: (name: string, treePath: string) =>
+		call<import("@rp/contracts").ClosestPapers>(`${run(name)}/closest/${encodeURIComponent(treePath)}`),
+	/** find them with the embedding model on this computer, as the one job; no job when they were found before */
+	findClosest: (name: string, treePath: string) =>
+		starting<import("@rp/contracts").ClosestStarted>(`${run(name)}/closest/${encodeURIComponent(treePath)}`, { method: "POST" }),
 	start: (request: RunRequest) => call<{ ok: true }>("/api/runs", send("POST", request)),
 	status: (since: number) => call<Status>(`/api/status?since=${since}`, undefined, POLLING),
 	settings: () => call<Settings>("/api/settings"),

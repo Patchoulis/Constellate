@@ -420,7 +420,7 @@ function Proposals({
 			{step.kind === "idle" && !running && (
 				<Button
 					variant="ghost"
-					className="self-start"
+					className="h-auto min-h-8 self-start py-1 text-left whitespace-normal"
 					disabled={elsewhere !== null}
 					title="The model reads the abstracts of the most central papers and proposes questions they take positions on. The cost is shown before anything is sent."
 					onClick={estimate}

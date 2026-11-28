@@ -20,6 +20,9 @@ import type { Community, GraphNode, RunResult } from "@rp/contracts";
 import { CommunityAsk } from "@/components/features/answers/ask";
 import { useAskNaming } from "@/components/shell/run-dialogs";
 import { EvidenceLink } from "@/components/reader/evidence-link";
+import { Block, ListLabel, SubBlock } from "@/components/community/block";
+import { ClosestLine, ClosestList, useClosest } from "@/components/community/closest-papers";
+import { CITED_LABEL, citedIn, quotesTitle, statementOf } from "@/lib/features/writing/closest";
 import { api } from "@/lib/net/api";
 import { isPlain, leftOutWords, namingRequest, plainOf, sectionsOf, unnamedOf } from "@/lib/features/writing/naming";
 import { elsewhereLine, useFollowedJob } from "@/lib/shell/use-followed-job";
@@ -29,7 +32,7 @@ import { CommunityReviews } from "@/components/community/review-summary";
 import { CommunityStances } from "@/components/features/stances/stances";
 import { ExtractionTable } from "@/components/features/extraction/extraction-table";
 import { CommunityCitationKinds } from "@/components/features/citation_contexts/citation-kinds";
-import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
+import { Button, RowButton, Segmented } from "@/components/ui/button";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { CITATIONS_NOTE, citationsNote, citedByFigure, citedByOf, citesFigure, citesOf } from "@/lib/reader/citations";
 import { communityLabel, type CommunityNode } from "@/lib/community/community";
@@ -205,42 +208,78 @@ function Line({ node, figure, onClick }: { node: CommunityNode; figure: string; 
 
 function Stat({ label, title, children }: { label: string; title?: string; children: React.ReactNode }) {
 	return (
-		<div className="flex justify-between" title={title}>
-			<dt className="text-muted-foreground">{label}</dt>
-			<dd>{children}</dd>
+		<div className="flex min-w-0 justify-between gap-3" title={title}>
+			<dt className="min-w-0 text-muted-foreground [overflow-wrap:anywhere]">{label}</dt>
+			<dd className="shrink-0 text-right">{children}</dd>
+		</div>
+	);
+}
+
+/** The figures of "At a glance", besides its venues and acceptance tiers. */
+const GLANCE = ["uniqueness", "cited", "cites"];
+
+/**
+ * A community's description in its sections: each a quieter sub-header with its own hairline, its text, then the
+ * papers the model cited (each the paper's title, which opens the reader at the quoted words, and the quote), then
+ * the papers closest to it in meaning, found with the embedding model (none cited above listed again).
+ */
+function Sections({ community, closest }: { community: Community; closest: ReturnType<typeof useClosest> }) {
+	const sections = sectionsOf(community);
+	const leftOut = leftOutWords(community.sections_left_out);
+	return (
+		<div className="flex min-w-0 flex-col gap-4">
+			{sections?.map((section) => {
+				const found = statementOf(closest.status, section.heading);
+				return (
+					<SubBlock key={section.heading} title={section.heading}>
+						<p className="font-sans text-base text-foreground">{section.text}</p>
+						<ListLabel>{CITED_LABEL}</ListLabel>
+						<ul className="flex flex-col gap-1.5" aria-label={`Papers cited for ${section.heading}`}>
+							{section.cites.map((cite, index) => (
+								<li key={`${cite.evidence.paper}-${index}`} className="min-w-0 border-l-2 pl-2 [overflow-wrap:anywhere]">
+									<EvidenceLink
+										evidence={cite.evidence}
+										label={cite.title.trim() || cite.evidence.paper}
+										className="flex items-start leading-snug [&_button]:text-left [&>button:first-child]:min-w-0 [&>button:first-child]:flex-1"
+									/>
+									{!quotesTitle(cite) && (
+										<p className="font-sans text-[0.8125rem] leading-snug text-muted-foreground italic">
+											&ldquo;{cite.evidence.quote}&rdquo;
+										</p>
+									)}
+								</li>
+							))}
+						</ul>
+						{found && closest.status && <ClosestList papers={found.papers} floor={closest.status.floor} cited={citedIn(section)} />}
+					</SubBlock>
+				);
+			})}
+			{!sections && <p className="text-xs text-muted-foreground">None of its description&apos;s sections could be shown.</p>}
+			{leftOut && <p className="text-xs text-muted-foreground">{leftOut}</p>}
+			<ClosestLine line={closest.line} />
 		</div>
 	);
 }
 
 /**
- * A community's description in its sections: each heading, its text, and under it the papers it cites, each a row
- * with the paper's title (a click opens the reader at the quoted words) and the quote, in the paper's own words.
+ * A plain description, written before sections were asked for: once its closest papers are found, each sentence is
+ * a short paragraph of its own with the papers closest to it under it; until then, the paragraph as written.
  */
-function Sections({ community }: { community: Community }) {
-	const sections = sectionsOf(community);
-	const leftOut = leftOutWords(community.sections_left_out);
+function PlainDescription({ community, closest }: { community: Community; closest: ReturnType<typeof useClosest> }) {
+	const statements = closest.status?.statements;
 	return (
-		<div className="flex min-w-0 flex-col gap-4">
-			{sections?.map((section) => (
-				<section key={section.heading} className="min-w-0">
-					<Heading className="mb-1">{section.heading}</Heading>
-					<p className="font-sans text-base text-foreground">{section.text}</p>
-					<ul className="mt-1.5 flex flex-col gap-1.5" aria-label={`Papers cited for ${section.heading}`}>
-						{section.cites.map((cite, index) => (
-							<li key={`${cite.evidence.paper}-${index}`} className="min-w-0 border-l-2 pl-2 [overflow-wrap:anywhere]">
-								<EvidenceLink
-									evidence={cite.evidence}
-									label={cite.title.trim() || cite.evidence.paper}
-									className="flex flex-wrap leading-snug [&_button]:text-left"
-								/>
-								<p className="text-xs leading-snug text-muted-foreground italic">&ldquo;{cite.evidence.quote}&rdquo;</p>
-							</li>
-						))}
-					</ul>
-				</section>
-			))}
-			{!sections && <p className="text-xs text-muted-foreground">None of its description&apos;s sections could be shown.</p>}
-			{leftOut && <p className="text-xs text-muted-foreground">{leftOut}</p>}
+		<div className="flex min-w-0 flex-col gap-3">
+			{statements && statements.length > 0 ? (
+				statements.map((statement, index) => (
+					<div key={`${index}-${statement.statement}`} className="min-w-0">
+						<p className="font-sans text-base text-foreground">{statement.statement}</p>
+						<ClosestList papers={statement.papers} floor={closest.status?.floor ?? 0} />
+					</div>
+				))
+			) : (
+				<p className="font-sans text-base text-foreground">{community.description}</p>
+			)}
+			<ClosestLine line={closest.line} />
 		</div>
 	);
 }
@@ -271,81 +310,85 @@ function Detail({
 	onOpenPaper: (id: string) => void;
 }) {
 	const { community, siblings, children } = node;
+	const closest = useClosest(described.run, community.tree_path);
+	const glance = SORTS.filter((sort) => GLANCE.includes(sort.value));
 	return (
-		<div className="flex flex-col gap-4 p-4">
-			<Button variant="outline" onClick={() => onOverview(node)}>
+		<div className="flex flex-col gap-5 p-4">
+			<Button variant="outline" className="h-auto min-h-8 py-1.5 whitespace-normal" onClick={() => onOverview(node)}>
 				<Telescope />
 				Overview: methods, findings, directions
 			</Button>
-			{community.sections !== undefined ? (
-				<Sections community={community} />
-			) : community.description ? (
-				<div className="flex flex-col items-start gap-1.5">
-					<p className="font-sans text-base text-foreground">{community.description}</p>
-					{isPlain(community) && <RewriteSections {...described} compact />}
-				</div>
-			) : (
-				<p className="text-xs text-muted-foreground">
-					No written description yet. &ldquo;Name the communities&rdquo;, over the list of all communities, names and describes them with
-					the chosen language model, and shows what that costs first. It needs that model&apos;s key (Settings, Language model, says which
-					variable to set).
-				</p>
-			)}
-			<div className="flex flex-wrap gap-1">
-				{community.keywords.map((keyword) => (
-					<span key={keyword} className="rounded-sm border px-1.5 py-0.5 text-xs text-muted-foreground">
-						{keyword}
-					</span>
-				))}
-			</div>
-			<dl className="flex flex-col gap-1 text-xs tabular-nums">
-				{Object.entries(community.mix).map(([tag, papers]) => (
-					<Stat key={tag} label={tag}>
-						{count(papers, "paper")}
-					</Stat>
-				))}
-				{SORTS.slice(1, 3).map((sort) => (
-					<Stat key={sort.value} label={sort.label} title={sort.title}>
-						{sort.show(community)}
-					</Stat>
-				))}
-				{SORTS.slice(4).map((sort) => (
-					<Stat key={sort.value} label={sort.label} title={`${sort.title} ${citationsNote(community)}`}>
-						{sort.show(community)}
-					</Stat>
-				))}
-				{(["oral", "spotlight"] as const).map(
-					(tier) =>
-						community.acceptance[tier] !== undefined && (
-							<Stat key={tier} label={tier === "oral" ? "Orals" : "Spotlights"}>
-								{count(community.acceptance[tier] ?? 0, "paper")}
-							</Stat>
-						),
+			<Block title="Description">
+				{community.sections !== undefined ? (
+					<Sections community={community} closest={closest} />
+				) : community.description ? (
+					<div className="flex flex-col items-start gap-2">
+						<PlainDescription community={community} closest={closest} />
+						{isPlain(community) && <RewriteSections {...described} compact />}
+					</div>
+				) : (
+					<p className="text-xs text-muted-foreground">
+						No written description yet. &ldquo;Name the communities&rdquo;, over the list of all communities, names and describes them with
+						the chosen language model, and shows what that costs first. It needs that model&apos;s key (Settings, Language model, says which
+						variable to set).
+					</p>
 				)}
-				<Stat label="Tagged AI detected" title="Papers the statistical AI-text detector flagged: an estimate">
-					{count(community.ai_flagged, "paper")}
-				</Stat>
-			</dl>
+			</Block>
+			<Block title="Characteristic terms" note={count(community.keywords.length, "term")}>
+				<div className="flex flex-wrap gap-1">
+					{community.keywords.map((keyword) => (
+						<span key={keyword} className="rounded-sm border px-1.5 py-0.5 text-xs text-muted-foreground [overflow-wrap:anywhere]">
+							{keyword}
+						</span>
+					))}
+				</div>
+			</Block>
+			<Block title="At a glance" note={count(community.size, "paper")}>
+				<dl className="flex flex-col gap-1 text-xs tabular-nums">
+					{Object.entries(community.mix).map(([tag, papers]) => (
+						<Stat key={tag} label={tag}>
+							{count(papers, "paper")}
+						</Stat>
+					))}
+					{glance.map((sort) => (
+						<Stat
+							key={sort.value}
+							label={sort.label}
+							title={sort.value === "cited" || sort.value === "cites" ? `${sort.title} ${citationsNote(community)}` : sort.title}
+						>
+							{sort.show(community)}
+						</Stat>
+					))}
+					{(["oral", "spotlight"] as const).map(
+						(tier) =>
+							community.acceptance[tier] !== undefined && (
+								<Stat key={tier} label={tier === "oral" ? "Orals" : "Spotlights"}>
+									{count(community.acceptance[tier] ?? 0, "paper")}
+								</Stat>
+							),
+					)}
+					<Stat label="Tagged AI detected" title="Papers the statistical AI-text detector flagged: an estimate">
+						{count(community.ai_flagged, "paper")}
+					</Stat>
+				</dl>
+			</Block>
 			{children.length > 0 && (
-				<section>
-					<Heading className="mb-1.5">Sub-communities</Heading>
+				<Block title="Sub-communities" note={count(children.length, "part")}>
 					{children.map((child) => (
 						<Line key={child.community.id} node={child} figure={count(child.community.size, "paper")} onClick={() => onSelect(child)} />
 					))}
-				</section>
+				</Block>
 			)}
-			<section>
-				<Heading className="mb-1.5">Closest {node.depth ? "sibling" : "communities"}</Heading>
+			<Block title={`Closest ${node.depth ? "sibling" : "communities"}`}>
 				{community.closest_communities.map((other) => (
 					<Line key={other.id} node={siblings[other.id]} figure={similarity(other.cosine)} onClick={() => onSelect(siblings[other.id])} />
 				))}
-			</section>
-			<section>
-				<Heading className="mb-1.5">Nearest to the mean embedding</Heading>
+			</Block>
+			<Block title="Nearest to the mean embedding">
 				{community.nearest_to_centroid.map((paper) => (
 					<div key={paper.id} className="flex items-start gap-1">
 						<RowButton className="items-baseline gap-2" onClick={() => onOpenPaper(paper.id)}>
-							<span className="flex-1 font-sans text-base leading-snug">
+							<span className="min-w-0 flex-1 font-sans text-base leading-snug [overflow-wrap:anywhere]">
 								<MathText>{paper.title}</MathText>
 							</span>
 							<span className="shrink-0 text-xs text-muted-foreground tabular-nums" title={SIMILARITY_NOTE}>
@@ -355,7 +398,7 @@ function Detail({
 						<MarkButton className="mt-0.5" marked={marks.has(paper.id)} onToggle={() => marks.toggle(paper.id)} />
 					</div>
 				))}
-			</section>
+			</Block>
 		</div>
 	);
 }
@@ -622,11 +665,11 @@ function RewriteSections({ run, title, communities, onNamed, compact = false }: 
 			variant={compact ? "ghost" : "outline"}
 			className="h-auto min-h-7 px-2 py-1 text-left text-xs whitespace-normal"
 			disabled={asking || job.state === "starting" || elsewhere !== null}
-			title={`Shows what rewriting the ${count(plain, "plain description")} of this run with sections and citations would cost, before anything is asked`}
+			title={`Shows what rewriting the ${count(plain, "plain description")} of this run with sections and the language model's own checked citations would cost, before anything is asked`}
 			onClick={() => void rewrite()}
 		>
 			{asking || job.state === "starting" ? <Loader2 className="animate-spin" /> : <ListTree />}
-			Rewrite with sections and citations
+			Rewrite with sections and the model&apos;s own citations
 		</Button>
 	);
 	return (
