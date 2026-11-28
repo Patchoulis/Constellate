@@ -13,6 +13,8 @@ import {
 	setPrefs,
 	type Prefs,
 } from "@/lib/ui/prefs";
+import { INTRO_WHENS } from "@/lib/graph/intro";
+import { INTRO_CHOICES } from "@/components/shell/settings-dialog";
 
 const keys = (held: Partial<Record<"ctrlKey" | "metaKey" | "shiftKey" | "altKey", boolean>>) => ({
 	ctrlKey: false,
@@ -46,7 +48,7 @@ test("a key is named as it is written on the keyboard in front of the person", (
 });
 
 test("the choices come back from storage as they were written", () => {
-	const chosen: Prefs = { selectKey: "alt", marksShown: false, showMarksOnMark: false };
+	const chosen: Prefs = { selectKey: "alt", marksShown: false, showMarksOnMark: false, intro: "never" };
 	assert.deepEqual(parsePrefs(serialisePrefs(chosen)), chosen);
 	assert.deepEqual(parsePrefs(serialisePrefs(INITIAL_PREFS)), INITIAL_PREFS);
 });
@@ -76,6 +78,30 @@ test("the initial choices are a key every keyboard has, with marks shown", () =>
 	assert.equal(INITIAL_PREFS.showMarksOnMark, true);
 });
 
+test("the constellation intro plays when a run is made unless chosen otherwise, and a choice that is not one is not kept", () => {
+	assert.equal(INITIAL_PREFS.intro, "made");
+	for (const intro of INTRO_WHENS) assert.equal(parsePrefs(serialisePrefs({ ...INITIAL_PREFS, intro })).intro, intro);
+	for (const intro of ["always", "", 1, null, true, { made: true }, ["opened"]]) {
+		const stored = JSON.stringify({ version: 1, prefs: { selectKey: "shift", intro } });
+		assert.deepEqual(parsePrefs(stored), { ...INITIAL_PREFS, selectKey: "shift" }, JSON.stringify(intro));
+	}
+	// choices stored before the intro existed keep what they were, and the intro gets its initial choice
+	const older = JSON.stringify({ version: 1, prefs: { selectKey: "alt", marksShown: false, showMarksOnMark: true } });
+	assert.deepEqual(parsePrefs(older), { selectKey: "alt", marksShown: false, showMarksOnMark: true, intro: "made" });
+});
+
+test("Settings offers every choice of the intro once, in words, the initial one first", () => {
+	assert.deepEqual(
+		INTRO_CHOICES.map((choice) => choice.value),
+		[...INTRO_WHENS],
+	);
+	assert.deepEqual(
+		INTRO_CHOICES.map((choice) => choice.label),
+		["When a run is made", "Whenever a run is opened", "Never"],
+	);
+	assert.equal(INTRO_CHOICES[0].value, INITIAL_PREFS.intro);
+});
+
 test("a change of the choices is laid over the ones remembered and remembered with them, even after storage refused one", () => {
 	const kept = new Map<string, string>([[PREFS_KEY, serialisePrefs({ ...INITIAL_PREFS, selectKey: "shift" })]]);
 	const working = {
@@ -93,13 +119,13 @@ test("a change of the choices is laid over the ones remembered and remembered wi
 	try {
 		global.window = { localStorage: working };
 		setPrefs({ marksShown: false });
-		assert.deepEqual(parsePrefs(kept.get(PREFS_KEY)), { selectKey: "shift", marksShown: false, showMarksOnMark: true });
+		assert.deepEqual(parsePrefs(kept.get(PREFS_KEY)), { ...INITIAL_PREFS, selectKey: "shift", marksShown: false });
 		// storage switched off: the change still holds in the window, and is written with the next one
 		global.window = { localStorage: refusing };
 		setPrefs({ showMarksOnMark: false });
 		global.window = { localStorage: working };
 		setPrefs({ selectKey: "alt" });
-		assert.deepEqual(parsePrefs(kept.get(PREFS_KEY)), { selectKey: "alt", marksShown: false, showMarksOnMark: false });
+		assert.deepEqual(parsePrefs(kept.get(PREFS_KEY)), { ...INITIAL_PREFS, selectKey: "alt", marksShown: false, showMarksOnMark: false });
 	} finally {
 		global.window = before;
 	}

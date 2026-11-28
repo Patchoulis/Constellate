@@ -5,6 +5,17 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- A run that has just been made comes up with a short constellation intro: its papers appear as stars, gather into
+  their communities, a constellation is traced through each community, and the communities then light up in their
+  colours and are named. A click, a key, the wheel or a drag ends it at once. Settings, under "The graph", say when
+  it plays: when a run is made (the default), whenever a run is opened, or never. It never plays when the system is
+  set to reduce motion.
+- While a run is loaded or made, a quiet night sky is shown behind the words, with a small constellation that draws
+  itself again and again, and the dots after "Loading the run" and "Working" come one by one. While a run is made, the share of its stars that are lit is how far the run has got:
+  the steps done, and the counted part of the step under way. With less motion the sky stands still.
+
 ### Changed
 
 - Communities are ordered by "Uniqueness" in place of "Saturation" and "Tightness": how far a community's papers are,

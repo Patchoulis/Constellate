@@ -12,6 +12,7 @@ import { Input, Label, SwitchRow } from "@/components/ui/field";
 import { Choice, GroupedPicker } from "@/components/ui/picker";
 import { splitByOwner } from "@/lib/net/engine";
 import { SELECT_KEYS, selectKeyName, setPrefs, usePrefs, useSelectKeyName } from "@/lib/ui/prefs";
+import type { IntroWhen } from "@/lib/graph/intro";
 import { cn } from "@/lib/utils";
 
 /** The whole dialog as data: every setting appears once here, with how it is edited. */
@@ -26,9 +27,16 @@ type Field = { key: keyof Settings; label: string; hint?: string } & (
 	| { kind: "model" }
 );
 
+/** When the constellation intro plays, as the choice is offered. */
+export const INTRO_CHOICES: readonly { value: IntroWhen; label: string }[] = [
+	{ value: "made", label: "When a run is made" },
+	{ value: "opened", label: "Whenever a run is opened" },
+	{ value: "never", label: "Never" },
+];
+
 /**
- * How the graph is used in this window: the key that selects papers, and whether marks are shown. Kept in this
- * browser (lib/ui/prefs.ts), applied at once, and nothing a run depends on.
+ * How the graph is used in this window: the key that selects papers, whether marks are shown, and when the intro
+ * plays. Kept in this browser (lib/ui/prefs.ts), applied at once, and nothing a run depends on.
  */
 function GraphChoices() {
 	const prefs = usePrefs();
@@ -62,6 +70,16 @@ function GraphChoices() {
 				checked={prefs.showMarksOnMark}
 				onCheckedChange={(showMarksOnMark) => setPrefs({ showMarksOnMark })}
 			/>
+			<div className="flex flex-col gap-1.5 py-1.5">
+				<span className="flex flex-col gap-0.5">
+					<span className="text-sm text-foreground">Play the constellation intro</span>
+					<span className="text-xs text-muted-foreground">
+						The papers gather as stars into their communities, which then light up. It lasts a few seconds; a click, a key or the wheel ends
+						it. It never plays when your system is set to reduce motion.
+					</span>
+				</span>
+				<Segmented options={INTRO_CHOICES} value={prefs.intro} onChange={(intro) => setPrefs({ intro })} />
+			</div>
 		</section>
 	);
 }

@@ -30,12 +30,33 @@
  *
  * Focus: an optional set of papers (one community or sub-community). Papers outside it are dim grey dots with
  * no glow, and cannot be picked.
+ *
+ * The intro (lib/graph/intro.ts): for a few seconds after a run is made, the same layers are drawn as a sky that
+ * becomes the graph. Pale stars gather to the papers' places, a line is traced through a few papers of each
+ * community, the glows and colours come up (the glow layer drawn fainter, the dots' paths in pale and then in their
+ * colours) and the labels last. Its last frame is the usual graph. While it plays, nothing is hovered, picked or
+ * marked; a press, a wheel or a key ends it at once.
  */
 import { select } from "d3-selection";
 import { zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from "d3-zoom";
 import { Glide, prefersLessMotion, type Size, type View } from "@/lib/graph/glide";
 import { GLOW_LAYER_MOST_PIXELS, glowLayerGeometry, inside, visibleWorld, type GlowLayerGeometry } from "@/lib/graph/glow-layer";
+import {
+	INTRO_MS,
+	LINE_ALPHA,
+	introFrame,
+	introPlan,
+	introProgress,
+	packConstellations,
+	paperGathered,
+	tracedTo,
+	unitHash,
+	type Constellations,
+	type IntroFrame,
+	type IntroPlan,
+} from "@/lib/graph/intro";
 import type { MarkedPlace } from "@/lib/graph/labels";
+import { STAR_COLOUR } from "@/lib/graph/sky";
 import type { Box } from "@/lib/graph/layout";
 import { LASSO_MIN, lassoed, reach, type Place } from "@/lib/graph/lasso";
 import { nearestPaper } from "@/lib/graph/pick";
@@ -121,6 +142,32 @@ const LABEL_MIN_CHARS = 24; // a label line may always be this long, however sma
 const LABEL_MIN_LINES = 3; // ... and a label may always have this many lines
 /** Zoom, relative to the whole graph fitting the view, at which each finer level takes over. */
 const LEVEL_ZOOM = [2.2, 4.6, 9, 16];
+/** The intro's stars: pale white-blue, as the loading sky's (components/graph/sky-loading.tsx). */
+const STAR = STAR_COLOUR;
+const STAR_LINE = "#ffffff";
+/** The same colour as one pixel's red, green and blue, as a little-endian word (every machine the app runs on). */
+const STAR_WORD = (255 << 16) | (226 << 8) | 214;
+/** A star is drawn as a square of the dot's area, a little smaller: a square is far cheaper than a disc. */
+const STAR_SIDE = 1.6;
+/** The stars twinkle in this many groups, each in its own time, so that a frame changes the opacity only that often. */
+const TWINKLE_GROUPS = 4;
+/** Faint dots behind the papers while the sky comes up, in screen pixels. */
+const DUST = 220;
+
+/** What the intro works out once, before its first frame. */
+interface Intro {
+	started: number;
+	duration: number;
+	plan: IntroPlan;
+	/** the papers in twinkle-group order, and where each group ends in it */
+	order: Uint32Array;
+	groupEnds: Uint32Array;
+	constellations: Constellations;
+	/** the dust's places, as shares of the canvas: [u0, v0, u1, v1, ...] */
+	dust: Float32Array;
+	/** the pixels the gathering stars are written into (starPixelsOf) */
+	pixels: { canvas: HTMLCanvasElement; context: CanvasRenderingContext2D; image: ImageData; words: Uint32Array } | null;
+}
 
 /** A label as whole words on at most `most` lines of about `chars` characters; only what still does not fit
  *  is cut, with an ellipsis. */
@@ -198,6 +245,12 @@ export class GraphCanvasRenderer {
 	/** told when the device pixel ratio stops being `dpr` (the window moved to another screen, the page was
 	 *  zoomed), which changes no CSS size and so tells the ResizeObserver nothing */
 	private dprQuery: MediaQueryList | null = null;
+	/** the intro, while it plays */
+	private intro: Intro | null = null;
+	/** the press that ended the intro: the click or right-click it ends in opens and marks nothing */
+	private skipPress = false;
+	/** where the intro draws the labels it fades in (labelLayerOf) */
+	private labelLayer: CanvasRenderingContext2D | null = null;
 
 	constructor(
 		private canvas: HTMLCanvasElement,
@@ -223,6 +276,10 @@ export class GraphCanvasRenderer {
 			})
 			// the person took hold of the graph (wheel, drag): a glide in progress gives way to them
 			.on("start", (event) => event.sourceEvent && this.stopGliding());
+		// Before anything else hears them: a press, a wheel or a key ends the intro, and then does what it always does.
+		canvas.addEventListener("pointerdown", this.onSkipPress, { capture: true });
+		canvas.addEventListener("wheel", this.onSkip, { capture: true, passive: true });
+		window.addEventListener("keydown", this.onSkip, { capture: true });
 		select(canvas).call(this.zoomBehavior).on("dblclick.zoom", null);
 		canvas.addEventListener("mousemove", this.onMove);
 		canvas.addEventListener("mouseleave", this.onLeave);
@@ -244,6 +301,10 @@ export class GraphCanvasRenderer {
 		this.dprQuery?.removeEventListener("change", this.onDprChange);
 		this.dprQuery = null;
 		select(this.canvas).on(".zoom", null);
+		this.endIntro();
+		this.canvas.removeEventListener("pointerdown", this.onSkipPress, { capture: true });
+		this.canvas.removeEventListener("wheel", this.onSkip, { capture: true });
+		window.removeEventListener("keydown", this.onSkip, { capture: true });
 		this.canvas.removeEventListener("mousemove", this.onMove);
 		this.canvas.removeEventListener("mouseleave", this.onLeave);
 		this.canvas.removeEventListener("click", this.onClick);
@@ -258,6 +319,7 @@ export class GraphCanvasRenderer {
 
 	setData(data: CanvasData | null) {
 		this.data = data;
+		this.endIntro(); // it was these papers' intro
 		this.hovered = null;
 		this.marked = [];
 		this.colouring = null; // its papers were the last data's
@@ -310,6 +372,83 @@ export class GraphCanvasRenderer {
 	setSelectKey(key: SelectKey) {
 		this.selectKey = key;
 	}
+
+	/**
+	 * Play the intro over the papers set last (lib/graph/intro.ts), `lines` being each community's constellation (its
+	 * papers in the order the line goes through them). The camera is fitted to the whole graph first. Not for someone
+	 * who asked their system for less motion: the graph is simply there.
+	 */
+	playIntro(lines: readonly (readonly number[])[], duration = INTRO_MS) {
+		const data = this.data;
+		if (!data || prefersLessMotion()) return;
+		if (this.whole) this.fit(this.whole, true, true);
+		const papers = data.points.length;
+		const plan = introPlan(papers);
+		// the papers by twinkle group, so that a frame sets the opacity once per group
+		const groupEnds = new Uint32Array(TWINKLE_GROUPS);
+		const groupOf = (index: number) => Math.min(TWINKLE_GROUPS - 1, Math.floor(plan.twinkle[index] * TWINKLE_GROUPS));
+		for (let index = 0; index < papers; index++) groupEnds[groupOf(index)]++;
+		for (let group = 1; group < TWINKLE_GROUPS; group++) groupEnds[group] += groupEnds[group - 1];
+		const order = new Uint32Array(papers);
+		const filled = new Uint32Array(TWINKLE_GROUPS);
+		for (let index = 0; index < papers; index++) {
+			const group = groupOf(index);
+			order[(group ? groupEnds[group - 1] : 0) + filled[group]++] = index;
+		}
+		const dust = new Float32Array(DUST * 2);
+		for (let index = 0; index < DUST; index++) {
+			dust[index * 2] = unitHash(index, 31);
+			dust[index * 2 + 1] = unitHash(index, 32);
+		}
+		this.hover(null);
+		this.stopGliding();
+		// what the communities light up into, made now rather than in the middle of the intro, where it would stall a frame
+		const level = data.levels[0];
+		this.glowLayerOf(level, data);
+		this.dotsOf(level, data, dotRadius(this.transform.k));
+		this.intro = {
+			started: performance.now(),
+			duration,
+			plan,
+			order,
+			groupEnds,
+			constellations: packConstellations(lines.map((line) => line.filter((index) => data.points[index]))),
+			dust,
+			pixels: null,
+		};
+		cancelAnimationFrame(this.frame);
+		this.frame = 0;
+		this.markDirty();
+	}
+
+	/** Whether the intro is playing. */
+	get introPlaying(): boolean {
+		return this.intro !== null;
+	}
+
+	/** End the intro where it would have ended: the usual graph, at once. */
+	skipIntro() {
+		if (!this.intro) return;
+		this.endIntro();
+		this.markDirty();
+	}
+
+	/** Nothing of the intro is kept once it is over: its layer's pixels are given back now. */
+	private endIntro() {
+		const pixels = this.intro?.pixels;
+		if (pixels) pixels.canvas.width = pixels.canvas.height = 0;
+		this.intro = null;
+		if (this.labelLayer) this.labelLayer.canvas.width = this.labelLayer.canvas.height = 0;
+		this.labelLayer = null;
+	}
+
+	private onSkip = () => this.skipIntro();
+
+	private onSkipPress = () => {
+		// a press that ends the intro still moves the graph or draws a lasso; its click opens nothing
+		this.skipPress = this.intro !== null;
+		this.skipIntro();
+	};
 
 	/** Move the camera so a paper is in the middle of the part of the canvas left of `right` px from its right
 	 *  edge (what a panel laid over the graph leaves free), zoomed in at least far enough to see its neighbours. */
@@ -584,12 +723,13 @@ export class GraphCanvasRenderer {
 		this.markDirty();
 	}
 
-	private onMove = (event: MouseEvent) => this.hover(this.pick(event));
+	private onMove = (event: MouseEvent) => this.hover(this.intro ? null : this.pick(event));
 
 	private onLeave = () => this.hover(null);
 
 	// d3-zoom swallows the click that ends a drag, so this only fires for a real click.
 	private onClick = (event: MouseEvent) => {
+		if (this.skipPress || this.intro) return void (this.skipPress = false); // the press that ended the intro
 		if (performance.now() - this.selectedAt < SAME_PRESS_MS) return; // the end of a lasso or of a select-click
 		this.callbacks.onPick(this.pick(event));
 	};
@@ -625,6 +765,7 @@ export class GraphCanvasRenderer {
 		if (!lasso || !this.data) return;
 		this.selectedAt = performance.now();
 		if (reach(lasso.line) < LASSO_MIN) {
+			if (this.skipPress) return; // the press that ended the intro marks nothing
 			const index = this.pick(event);
 			if (index !== null) this.callbacks.onMark(index);
 			return;
@@ -653,18 +794,179 @@ export class GraphCanvasRenderer {
 	// Right-click marks a paper. The browser's own menu has nothing to offer on the graph, so it never opens here.
 	private onContextMenu = (event: MouseEvent) => {
 		event.preventDefault();
+		if (this.skipPress || this.intro) return void (this.skipPress = false); // the press that ended the intro
 		const index = this.pick(event);
 		if (index !== null) this.callbacks.onMark(index);
 	};
+
+	/** The intro's frame now, or null when it is not playing (or has just ended: this frame is the usual graph). */
+	private introNow(): IntroFrame | null {
+		const intro = this.intro;
+		if (!intro) return null;
+		const p = introProgress(performance.now() - intro.started, intro.duration);
+		if (p >= 1) {
+			this.endIntro();
+			return null;
+		}
+		return introFrame(p);
+	}
+
+	/** The layer the intro fades the labels in with, as large as the canvas and empty: made once per intro. */
+	private labelLayerOf(): CanvasRenderingContext2D | null {
+		const { width, height } = this.canvas;
+		let layer = this.labelLayer;
+		if (!layer) {
+			layer = document.createElement("canvas").getContext("2d");
+			if (!layer) return null;
+			this.labelLayer = layer;
+		}
+		if (layer.canvas.width !== width) layer.canvas.width = width;
+		if (layer.canvas.height !== height) layer.canvas.height = height;
+		layer.setTransform(1, 0, 0, 1, 0, 0);
+		layer.clearRect(0, 0, width, height);
+		return layer;
+	}
+
+	/** The intro's dust: faint stars behind everything, in screen space. */
+	private drawDust(intro: Intro, frame: IntroFrame, now: number) {
+		const { ctx } = this;
+		const { dust } = intro;
+		const width = this.canvas.clientWidth;
+		const height = this.canvas.clientHeight;
+		ctx.fillStyle = STAR;
+		for (let group = 0; group < 3; group++) {
+			ctx.globalAlpha = frame.dust * (0.22 + 0.1 * Math.sin(now / 700 + group * 2.1));
+			for (let index = group; index < DUST; index += 3) ctx.fillRect(dust[index * 2] * width, dust[index * 2 + 1] * height, 1, 1);
+		}
+		ctx.globalAlpha = 1;
+	}
+
+	/** The pixels the gathering stars are written into: as large as the canvas, made once and kept while it keeps
+	 *  its size. */
+	private starPixelsOf(intro: Intro) {
+		const { width, height } = this.canvas;
+		const known = intro.pixels;
+		if (known && known.image.width === width && known.image.height === height) return known;
+		if (known) known.canvas.width = known.canvas.height = 0;
+		const canvas = document.createElement("canvas");
+		canvas.width = width;
+		canvas.height = height;
+		const context = canvas.getContext("2d");
+		if (!context) return null;
+		const image = context.createImageData(width, height);
+		intro.pixels = { canvas, context, image, words: new Uint32Array(image.data.buffer) };
+		return intro.pixels;
+	}
+
+	/**
+	 * The intro's papers on their way from where they started (somewhere in view) to their places: pale squares
+	 * written straight into pixels, then drawn as one image. Thousands of stars move every frame, and one canvas call
+	 * for each would cost more than a frame has.
+	 */
+	private drawGathering(intro: Intro, frame: IntroFrame, data: CanvasData, radius: number, now: number) {
+		const pixels = this.starPixelsOf(intro);
+		if (!pixels) return;
+		const { ctx, dpr } = this;
+		const { x: tx, y: ty, k } = this.transform;
+		const { width, height } = pixels.image;
+		const { words } = pixels;
+		words.fill(0);
+		const { start, delay } = intro.plan;
+		const { order, groupEnds } = intro;
+		const { points, sizes } = data;
+		const { gathered } = frame;
+		// a star's side in device pixels, before its paper's own size
+		const side = radius * STAR_SIDE * k * dpr;
+		let from = 0;
+		for (let group = 0; group < TWINKLE_GROUPS; group++) {
+			// a slight twinkle while they appear, steady once they are on their way
+			const twinkle = 1 - (1 - gathered) * 0.25 * (0.5 + 0.5 * Math.sin(now / 260 + group * 1.7));
+			const alpha = frame.stars * twinkle;
+			const to = groupEnds[group];
+			for (let at = from; at < to; at++) {
+				const index = order[at];
+				const along = paperGathered(gathered, delay[index]);
+				const point = points[index];
+				const sx = start[index * 2] * width;
+				const sy = start[index * 2 + 1] * height;
+				const x = sx + ((tx + point.x * k) * dpr - sx) * along;
+				const y = sy + ((ty + point.y * k) * dpr - sy) * along;
+				// whole pixels; a star smaller than one is fainter instead, by its area
+				const size = side * sizes[index];
+				const cells = size < 1 ? 1 : Math.round(size);
+				const strength = size < 1 ? alpha * size * size : alpha;
+				const word = ((Math.round(strength * 255) << 24) | STAR_WORD) >>> 0;
+				const left = Math.round(x - cells / 2);
+				const top = Math.round(y - cells / 2);
+				for (let row = top; row < top + cells; row++) {
+					if (row < 0 || row >= height) continue;
+					for (let column = left; column < left + cells; column++) if (column >= 0 && column < width) words[row * width + column] = word;
+				}
+			}
+			from = to;
+		}
+		pixels.context.putImageData(pixels.image, 0, 0);
+		ctx.setTransform(1, 0, 0, 1, 0, 0);
+		ctx.globalAlpha = 1; // each star's own strength is in its pixels
+		ctx.drawImage(pixels.canvas, 0, 0);
+		ctx.setTransform(dpr * k, 0, 0, dpr * k, dpr * tx, dpr * ty);
+	}
+
+	/** The constellations traced so far: one line per community, and a white dot on each paper it has reached. */
+	private drawConstellations(intro: Intro, frame: IntroFrame, data: CanvasData, radius: number) {
+		const { ctx } = this;
+		const { k } = this.transform;
+		const { papers, offsets } = intro.constellations;
+		const { points } = data;
+		const line = new Path2D();
+		const dots = new Path2D();
+		const dot = radius * 1.7;
+		for (let community = 0; community + 1 < offsets.length; community++) {
+			const first = offsets[community];
+			const count = offsets[community + 1] - first;
+			if (count === 0) continue;
+			const { whole, part } = tracedTo(frame.trace, count - 1);
+			const begin = points[papers[first]];
+			line.moveTo(begin.x, begin.y);
+			for (let step = 0; step <= whole && step < count; step++) {
+				const point = points[papers[first + step]];
+				if (step > 0) line.lineTo(point.x, point.y);
+				dots.moveTo(point.x + dot, point.y);
+				dots.arc(point.x, point.y, dot, 0, Math.PI * 2);
+			}
+			if (part > 0 && whole + 1 < count) {
+				const from = points[papers[first + whole]];
+				const to = points[papers[first + whole + 1]];
+				line.lineTo(from.x + (to.x - from.x) * part, from.y + (to.y - from.y) * part);
+			}
+		}
+		ctx.globalAlpha = frame.line;
+		ctx.strokeStyle = STAR_LINE;
+		ctx.lineWidth = 1 / k;
+		ctx.stroke(line);
+		ctx.globalAlpha = Math.min(1, frame.line / LINE_ALPHA) * 0.9;
+		ctx.fillStyle = STAR_LINE;
+		ctx.fill(dots);
+		ctx.globalAlpha = 1;
+	}
 
 	private draw() {
 		const { ctx, data, dpr } = this;
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		ctx.clearRect(0, 0, this.canvas.clientWidth, this.canvas.clientHeight);
 		if (!data) return;
+		const intro = this.intro;
+		const frame = this.introNow();
+		const now = performance.now();
 		const { x: tx, y: ty, k } = this.transform;
 		const level = data.levels[Math.min(this.level, data.levels.length - 1)];
 		const groupOf = (index: number) => level.groups[level.of[index]];
+		// how strongly each of the usual layers is drawn: in full, unless the intro is bringing it up
+		const lit = frame ? frame.light : 1;
+		const named = frame ? frame.names : 1;
+
+		// 0. The intro's dust, behind everything.
+		if (frame && intro && frame.dust > 0) this.drawDust(intro, frame, now);
 
 		// THE camera: one transform, then everything is world coordinates.
 		ctx.setTransform(dpr * k, 0, 0, dpr * k, dpr * tx, dpr * ty);
@@ -677,8 +979,11 @@ export class GraphCanvasRenderer {
 		// the level and the focus stay the same; when that layer would be too large, halo by halo, only those that
 		// reach the screen (the canvas would clip the others, after paying for them).
 		ctx.globalCompositeOperation = "lighter";
+		ctx.globalAlpha = lit;
 		const layer = this.glowLayerOf(level, data);
-		if (layer) {
+		if (lit <= 0) {
+			// the intro's communities have not lit up yet
+		} else if (layer) {
 			const { box } = layer.geometry;
 			ctx.drawImage(layer.canvas, box.minX, box.minY, box.maxX - box.minX, box.maxY - box.minY);
 		} else {
@@ -691,6 +996,8 @@ export class GraphCanvasRenderer {
 			});
 		}
 		ctx.globalCompositeOperation = "source-over";
+		// the marked papers, the hovered and the selected one come up with the names
+		ctx.globalAlpha = named;
 
 		// 1b. Links, under the papers: a line runs from a paper's centre to another's and crosses whatever lies between,
 		// so every dot is drawn over it. The marked papers' links (those in focus), then the hovered paper's.
@@ -726,16 +1033,33 @@ export class GraphCanvasRenderer {
 
 		// 2. Papers: one path per group (a community, or a feature's group) plus one for everything out of focus or
 		// in no group. Never under ~1px on screen.
+		// In the intro, pale stars on their way to their places, then the same dots as always, pale and then in their
+		// colours.
 		const radius = dotRadius(k);
-		const { dots, dimmed } = this.dotsOf(level, data, radius);
-		const { hues } = this.paintOf(level);
-		ctx.fillStyle = DIM;
-		ctx.fill(dimmed);
-		dots.forEach((path, group) => {
-			const hue = hues[group];
-			ctx.fillStyle = hue === null ? GREY : hsl(hue, 74);
-			ctx.fill(path);
-		});
+		if (frame && intro && !frame.settled) this.drawGathering(intro, frame, data, radius, now);
+		else {
+			const { dots, dimmed } = this.dotsOf(level, data, radius);
+			const { hues } = this.paintOf(level);
+			if (frame && lit < 1) {
+				ctx.globalAlpha = frame.stars * (1 - lit);
+				ctx.fillStyle = STAR;
+				ctx.fill(dimmed);
+				for (const path of dots) ctx.fill(path);
+			}
+			if (lit > 0) {
+				ctx.globalAlpha = lit;
+				ctx.fillStyle = DIM;
+				ctx.fill(dimmed);
+				dots.forEach((path, group) => {
+					const hue = hues[group];
+					ctx.fillStyle = hue === null ? GREY : hsl(hue, 74);
+					ctx.fill(path);
+				});
+			}
+		}
+		// 2b. The intro's constellations, over the papers they go through.
+		if (frame && intro && frame.trace > 0 && frame.line > 0) this.drawConstellations(intro, frame, data, radius);
+		ctx.globalAlpha = named;
 
 		// 3. Marked papers (those in focus): the papers their links (1b) end at, then a yellow ring on a dark rim. The
 		// ring sits outside where the selected paper's ring goes, so a paper that is both shows both.
@@ -792,19 +1116,25 @@ export class GraphCanvasRenderer {
 			ctx.stroke();
 		}
 
-		// 5. Labels of the groups that have a paper in focus, in screen space so they stay one size.
+		// 5. Labels of the groups that have a paper in focus, in screen space so they stay one size. While the intro
+		// fades them in, they are drawn whole into a layer of their own and the layer is faded: a label drawn faint
+		// would show its dark outline through its own letters.
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+		const fading = named > 0 && named < 1 ? this.labelLayerOf() : null;
+		const pen = fading ?? ctx;
+		pen.setTransform(dpr, 0, 0, dpr, 0, 0);
 		const shown = new Set<number>();
 		if (this.focus) for (const index of this.focus) shown.add(level.of[index]);
-		ctx.font = '600 11px "JetBrains Mono", ui-monospace, monospace';
-		ctx.textAlign = "center";
-		ctx.textBaseline = "middle";
-		ctx.lineJoin = "round";
-		ctx.lineWidth = 3;
+		pen.font = '600 11px "JetBrains Mono", ui-monospace, monospace';
+		pen.textAlign = "center";
+		pen.textBaseline = "middle";
+		pen.lineJoin = "round";
+		pen.lineWidth = 3;
 		// Biggest groups first; a label that would cover one already placed waits until there is room (zoom in).
 		const placed: { left: number; right: number; top: number; bottom: number }[] = [];
 		const order = level.groups.map((_, index) => index).sort((a, b) => level.groups[b].size - level.groups[a].size);
 		for (const index of order) {
+			if (named <= 0) break; // the intro has not come to the names
 			if (this.focus && !shown.has(index)) continue;
 			const group = level.groups[index];
 			// A label gets the room its group has on screen, and never less than the minimum: zoomed in, the
@@ -817,7 +1147,7 @@ export class GraphCanvasRenderer {
 			);
 			const x = group.x * k + tx;
 			const y = group.y * k + ty;
-			const half = Math.max(...lines.map((line) => ctx.measureText(line).width)) / 2 + 4;
+			const half = Math.max(...lines.map((line) => pen.measureText(line).width)) / 2 + 4;
 			const tall = (lines.length * LABEL_LINE) / 2 + 2;
 			const box = { left: x - half, right: x + half, top: y - tall, bottom: y + tall };
 			const covers = (other: typeof box) =>
@@ -826,12 +1156,22 @@ export class GraphCanvasRenderer {
 			placed.push(box);
 			lines.forEach((line, row) => {
 				const lineY = y + (row - (lines.length - 1) / 2) * LABEL_LINE;
-				ctx.strokeStyle = "rgba(20, 20, 20, 0.85)";
-				ctx.strokeText(line, x, lineY);
-				ctx.fillStyle = hsl(group.hue, 86);
-				ctx.fillText(line, x, lineY);
+				pen.strokeStyle = "rgba(20, 20, 20, 0.85)";
+				pen.strokeText(line, x, lineY);
+				pen.fillStyle = hsl(group.hue, 86);
+				pen.fillText(line, x, lineY);
 			});
 		}
+		if (fading) {
+			ctx.setTransform(1, 0, 0, 1, 0, 0);
+			ctx.globalAlpha = named;
+			ctx.drawImage(fading.canvas, 0, 0);
+			ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+		}
+
+		ctx.globalAlpha = 1;
+		// the intro's next frame; its last one was the usual graph, drawn just now
+		if (frame) this.markDirty();
 
 		// 6. The lasso being drawn, in screen space: the line the pointer took, closed back to where it began.
 		if (this.lasso && this.lasso.line.length > 1) {

@@ -6,6 +6,7 @@
  * holds the choices in React, shared by everything on the page.
  */
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { INTRO_WHENS, type IntroWhen } from "@/lib/graph/intro";
 
 /**
  * The key held to select papers on the graph: with it down, a click marks a paper and a drag draws a lasso.
@@ -20,9 +21,11 @@ export interface Prefs {
 	marksShown: boolean;
 	/** marking a paper while the marks are hidden shows them again */
 	showMarksOnMark: boolean;
+	/** when the constellation intro plays (lib/graph/intro.ts): when a run is made, whenever one is opened, or never */
+	intro: IntroWhen;
 }
 
-export const INITIAL_PREFS: Prefs = { selectKey: "primary", marksShown: true, showMarksOnMark: true };
+export const INITIAL_PREFS: Prefs = { selectKey: "primary", marksShown: true, showMarksOnMark: true, intro: "made" };
 
 export const SELECT_KEYS: readonly SelectKey[] = ["primary", "shift", "alt"];
 
@@ -71,6 +74,7 @@ export function parsePrefs(text: string | null | undefined): Prefs {
 		selectKey: SELECT_KEYS.includes(kept.selectKey as SelectKey) ? (kept.selectKey as SelectKey) : INITIAL_PREFS.selectKey,
 		marksShown: flag("marksShown"),
 		showMarksOnMark: flag("showMarksOnMark"),
+		intro: INTRO_WHENS.includes(kept.intro as IntroWhen) ? (kept.intro as IntroWhen) : INITIAL_PREFS.intro,
 	};
 }
 

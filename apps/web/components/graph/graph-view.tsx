@@ -18,6 +18,7 @@ import { countKinds, kindNotes, PAPER_KINDS, shownPapers, type PaperKind } from 
 import { canvasColouring, legendNote, useGraphColouring } from "@/lib/graph/graph-colouring";
 import { cn, hsl } from "@/lib/utils";
 import { boxOf, layoutGraph, type Layout } from "@/lib/graph/layout";
+import { constellationPicks } from "@/lib/graph/intro";
 
 /** A paper's halo shrinks with the level, so the glows of smaller groups stay separate. */
 const GLOW = [48, 34, 24, 17];
@@ -62,6 +63,21 @@ function canvasData(graph: GraphData, roots: CommunityNode[], layout: Layout): C
 	return { points: layout.points, sizes, links: graph.edges, levels };
 }
 
+/** Each community's constellation for the intro (lib/graph/intro.ts): from its paper nearest its centre, through
+ *  its central and best-linked papers. */
+export function introLines(graph: GraphData, roots: CommunityNode[], layout: Layout): number[][] {
+	const links = new Int32Array(graph.nodes.length);
+	for (const [a, b] of graph.edges) {
+		links[a]++;
+		links[b]++;
+	}
+	const indexOf = new Map(graph.nodes.map((node, index) => [node.id, index]));
+	return roots.map((node) => {
+		const central = node.community.nearest_to_centroid.flatMap((paper) => (paper.in_community ? (indexOf.get(paper.id) ?? []) : []));
+		return constellationPicks(node.community.members, layout.points, central, links, layout.discs.get(node)?.r ?? 0);
+	});
+}
+
 /** A paper's title with its formulas set. Kept between renders: a label follows its paper as the camera moves,
  *  many times a second, and setting formulas again each time would be wasted work. */
 const Title = memo(function Title({ text }: { text: string }) {
@@ -78,6 +94,7 @@ export function GraphView({
 	marksShown,
 	selectKey,
 	goTo,
+	intro = false,
 	onPickPaper,
 	onMarkPaper,
 	onMarkPapers,
@@ -98,6 +115,8 @@ export function GraphView({
 	selectKey: SelectKey;
 	/** a paper to move the camera to; each new request moves it again, even to the same paper */
 	goTo: { id: string } | null;
+	/** play the constellation intro when the graph is first drawn (once: not again when the communities are renamed) */
+	intro?: boolean;
 	onPickPaper: (id: string | null) => void;
 	/** mark the paper, or unmark it */
 	onMarkPaper: (id: string) => void;
@@ -123,6 +142,9 @@ export function GraphView({
 	const layout = useMemo(() => layoutGraph(graph, roots), [graph, roots]);
 	const indexOf = useMemo(() => new Map(graph.nodes.map((node, index) => [node.id, index])), [graph]);
 
+	// The intro plays the first time this graph is drawn, and never again for it.
+	const introRef = useRef(intro);
+
 	// The renderer lives as long as this graph does.
 	useEffect(() => {
 		const canvas = canvasRef.current;
@@ -144,7 +166,13 @@ export function GraphView({
 		rendererRef.current = renderer;
 		renderer.setData(canvasData(graph, roots, layout));
 		renderer.fit(layout.bounds, true, true); // a graph's first view: there is nowhere to glide from
+		if (introRef.current) {
+			introRef.current = false;
+			renderer.playIntro(introLines(graph, roots, layout));
+		}
 		return () => {
+			// gone before its intro ended (React mounting it twice in development): the next renderer plays it
+			if (renderer.introPlaying) introRef.current = true;
 			renderer.destroy();
 			rendererRef.current = null;
 		};
