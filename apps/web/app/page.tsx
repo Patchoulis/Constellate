@@ -4,6 +4,7 @@ import { useEffect, useReducer, useRef, useState } from "react";
 import { REDO_STEPS, type RunRequest, type Settings } from "@rp/contracts";
 import { useAskNaming, useAskRun } from "@/components/shell/run-dialogs";
 import { SettingsDialog } from "@/components/shell/settings-dialog";
+import { TitleBar } from "@/components/shell/title-bar";
 import { Sidebar } from "@/components/shell/sidebar";
 import { ActivityLog, Notice, Workspace } from "@/components/shell/workspace";
 import { SkyLoading } from "@/components/graph/sky-loading";
@@ -117,10 +118,10 @@ export default function Home() {
 		setTold(null);
 		setFailed(null);
 		try {
-			const estimate = await api.describeEstimate(name, true);
+			const estimate = await api.describeEstimate(name, "again");
 			const title = ready(runs)?.find((run) => run.name === name)?.title ?? name;
-			if (!(await askNaming(estimate, true, title))) return;
-			await api.describeRun(name, namingRequest(estimate, true));
+			if (!(await askNaming(estimate, "again", title))) return;
+			await api.describeRun(name, namingRequest(estimate, "again"));
 			follow();
 		} catch (error) {
 			setFailed((error as Error).message);
@@ -138,79 +139,82 @@ export default function Home() {
 	const busy = running || starting;
 	const log = <ActivityLog job={job} />;
 	return (
-		<div className="flex h-dvh">
-			<Sidebar
-				runs={known}
-				current={current}
-				running={running} // a start being asked about is refused in `start`, not disabled: its button gets the focus back
-				library={ready(library)}
-				choosable={choosable}
-				settings={settings}
-				providerOwned={owned.has("describe_provider")}
-				onChange={(changes) => void change(changes)}
-				catalog={ready(catalog)}
-				error={
-					job.error ??
-					failed ??
-					// until that setting is saved; while the settings dialog is open it says so beside the setting instead
-					(refused && !settingsOpen ? `Not saved: ${refused.error}` : null) ??
-					(runs.status === "failed" ? runs.error : null)
-				}
-				onSelect={open}
-				onRename={(name, title) => {
-					setFailed(null);
-					void api.rename(name, title).then(runs.reload, (error: Error) => setFailed(error.message));
-				}}
-				onDelete={(name) => {
-					setFailed(null);
-					void api.remove(name).then(
-						() => {
-							forgetMarks(name); // a run made later under the same name starts with none
-							if (name === current) open(null); // fall back to the most recent run that is left
-							runs.reload();
-						},
-						(error: Error) => setFailed(error.message),
-					);
-				}}
-				onStart={start}
-				onRedoAll={(name) => start({ rerun: name, redo: REDO_STEPS })}
-				told={told}
-				warnings={ready(engine)?.warnings}
-				onOpenSettings={() => setSettingsOpen(true)}
-			/>
-			{current ? (
-				// every estimate on screen is for the model chosen now (lib/chosen-model.ts)
-				<ChosenModelContext value={chosenModelsOf(settings, choosable.source === "engine" ? choosable.catalog : undefined)}>
-					{/* the model that reads papers can be chosen in each section that reads them, beside its estimate */}
-					<ModelChoosingContext
-						value={{ choosable, settings, providerOwned: owned.has("reading_provider"), onChange: (changes) => void change(changes) }}
-					>
-						<Workspace
-							key={`${current}#${finishedRuns}`}
-							name={current}
-							title={known.find((run) => run.name === current)?.title ?? current}
-							catalog={ready(catalog)}
-							model={settings?.describe_model}
-							opening={opening}
+		<div className="flex h-dvh flex-col">
+			<TitleBar onOpenSettings={() => setSettingsOpen(true)} />
+			<div className="flex min-h-0 flex-1">
+				<Sidebar
+					runs={known}
+					current={current}
+					running={running} // a start being asked about is refused in `start`, not disabled: its button gets the focus back
+					library={ready(library)}
+					choosable={choosable}
+					settings={settings}
+					providerOwned={owned.has("describe_provider")}
+					onChange={(changes) => void change(changes)}
+					catalog={ready(catalog)}
+					error={
+						job.error ??
+						failed ??
+						// until that setting is saved; while the settings dialog is open it says so beside the setting instead
+						(refused && !settingsOpen ? `Not saved: ${refused.error}` : null) ??
+						(runs.status === "failed" ? runs.error : null)
+					}
+					onSelect={open}
+					onRename={(name, title) => {
+						setFailed(null);
+						void api.rename(name, title).then(runs.reload, (error: Error) => setFailed(error.message));
+					}}
+					onDelete={(name) => {
+						setFailed(null);
+						void api.remove(name).then(
+							() => {
+								forgetMarks(name); // a run made later under the same name starts with none
+								if (name === current) open(null); // fall back to the most recent run that is left
+								runs.reload();
+							},
+							(error: Error) => setFailed(error.message),
+						);
+					}}
+					onStart={start}
+					onRedoAll={(name) => start({ rerun: name, redo: REDO_STEPS })}
+					told={told}
+					warnings={ready(engine)?.warnings}
+					onOpenSettings={() => setSettingsOpen(true)}
+				/>
+				{current ? (
+					// every estimate on screen is for the model chosen now (lib/chosen-model.ts)
+					<ChosenModelContext value={chosenModelsOf(settings, choosable.source === "engine" ? choosable.catalog : undefined)}>
+						{/* the model that reads papers can be chosen in each section that reads them, beside its estimate */}
+						<ModelChoosingContext
+							value={{ choosable, settings, providerOwned: owned.has("reading_provider"), onChange: (changes) => void change(changes) }}
 						>
-							{log}
-						</Workspace>
-					</ModelChoosingContext>
-				</ChosenModelContext>
-			) : (
-				<main className="relative min-w-0 flex-1">
-					{/* while the first run is made, a sky whose lit stars are how far it has got, where the engine says */}
-					{running && <SkyLoading share={runShare(job.step)} />}
-					<Notice>
-						{running ? (
-							<LoadingWords words="Working" after=" the graph appears when the run finishes." />
-						) : (
-							"Pick a date range or a conference and press Run."
-						)}
-					</Notice>
-					{log}
-				</main>
-			)}
+							<Workspace
+								key={`${current}#${finishedRuns}`}
+								name={current}
+								title={known.find((run) => run.name === current)?.title ?? current}
+								catalog={ready(catalog)}
+								model={settings?.describe_model}
+								opening={opening}
+							>
+								{log}
+							</Workspace>
+						</ModelChoosingContext>
+					</ChosenModelContext>
+				) : (
+					<main className="relative min-w-0 flex-1">
+						{/* while the first run is made, a sky whose lit stars are how far it has got, where the engine says */}
+						{running && <SkyLoading share={runShare(job.step)} />}
+						<Notice>
+							{running ? (
+								<LoadingWords words="Working" after=" the graph appears when the run finishes." />
+							) : (
+								"Pick a date range or a conference and press Run."
+							)}
+						</Notice>
+						{log}
+					</main>
+				)}
+			</div>
 			<SettingsDialog
 				open={settingsOpen}
 				settings={settings}

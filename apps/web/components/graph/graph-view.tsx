@@ -244,7 +244,9 @@ export function GraphView({
 	useEffect(() => {
 		const renderer = rendererRef.current;
 		if (!renderer) return;
-		renderer.fit(focus ? boxOf(layout.discs.get(focus)!) : layout.bounds);
+		// a community that is not in this layout (the tree was made again a moment ago) is no focus: the whole graph
+		const disc = focus ? layout.discs.get(focus) : undefined;
+		renderer.fit(disc ? boxOf(disc) : layout.bounds);
 	}, [layout, focus]);
 
 	// What is shown in full: the focused community's papers (or all), minus the kinds switched off above the graph.
@@ -320,7 +322,10 @@ export function GraphView({
 			: focus
 				? {
 						title: `Bring ${communityLabel(focus.community)} back into view`,
-						go: () => rendererRef.current?.fit(boxOf(layout.discs.get(focus)!)),
+						go: () => {
+							const disc = layout.discs.get(focus);
+							rendererRef.current?.fit(disc ? boxOf(disc) : layout.bounds, !disc);
+						},
 					}
 				: { title: "Bring the whole graph back into view", go: () => rendererRef.current?.fit(layout.bounds, true) };
 
