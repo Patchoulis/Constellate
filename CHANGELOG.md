@@ -5,6 +5,24 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-28
+
+### Added
+
+- The activity log can be made wider or narrower by dragging its right edge, as well as taller.
+
+### Fixed
+
+- In a narrow paper reader, the tabs show their icons only, and the mark, open and close buttons stay inside the
+  reader instead of lying over the communities panel.
+- A tab whose label wraps onto two lines in a narrow panel ("Marked · 0 papers") keeps room above and below it.
+- The sidebar's line of what was spent wraps inside the sidebar instead of running past its edge.
+- On the graph, a paper's links are drawn under the papers, so a line no longer crosses a paper's dot.
+- Spectral clustering (on nearest neighbours, and on all papers) gives the same communities on every computer when
+  the papers' similarity graph falls apart into more separate pieces than the communities asked for: the pieces
+  are now joined by how similar they are, where before which pieces ended up together could differ between two
+  computers. Runs on such graphs can come out with other communities when made again; others are unchanged.
+
 ## [0.2.0] - 2026-11-27
 
 ### Known issues
@@ -340,6 +358,7 @@ The first release.
   limited to the sites papers are published on.
 - PDFs are fetched only from the publishers' hosts, with a size and time limit.
 
-[Unreleased]: https://github.com/Patchoulis/Constellate/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Patchoulis/Constellate/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Patchoulis/Constellate/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Patchoulis/Constellate/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Patchoulis/Constellate/releases/tag/v0.1.0

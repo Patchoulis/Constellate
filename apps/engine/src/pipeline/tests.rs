@@ -23,9 +23,10 @@
 //! * **Terms**: the same, in the same order, except where two terms weigh exactly the same (then the Rust puts
 //!   them in alphabetical order, NumPy in no defined one): compared as the same terms with equal weights grouped.
 //! * **spectral-knn**: on this fixture the nearest-neighbour graph is in 7 pieces, more than the 4 communities,
-//!   so its 4 leading eigenvectors are any 4 of a 7-dimensional space and the grouping of pieces depends on the
-//!   solver. The engine's run keeps every piece whole; the Python's cut through two (its one-start k-means stopped
-//!   in a worse optimum). See that test.
+//!   so its 4 leading eigenvectors are any 4 of a 7-dimensional space, and in the Python (and the engine before)
+//!   the grouping of pieces depended on the solver's rounding. The engine now cuts such a graph along its pieces,
+//!   joined by their similarity (`analysis::graph::spectral::joined_pieces`), so every piece is kept whole; the
+//!   Python's run cut through two (its one-start k-means stopped in a worse optimum). See that test.
 //!
 //! The halves of a cut may come in the other order, with the other names (`.0` for `.1`): in the spectral and
 //! k-means runs of this fixture 3 of the 4 cuts do (which half k-means labels 0 is a matter of its start); in the
@@ -439,8 +440,9 @@ fn a_bisection_run_has_the_communities_and_cuts_the_python_made_of_the_same_pape
 fn a_spectral_run_on_nearest_neighbours_cuts_along_the_pieces_of_the_graph_as_the_python_did() {
     // On this fixture the nearest-neighbour graph falls apart into 7 pieces (each sub-topic's papers link only
     // among themselves), more than the 4 communities asked for, so its normalised matrix has the eigenvalue 1 seven
-    // times and the 4 leading eigenvectors are any 4 of that space: which pieces end up together depends on the
-    // solver. What a good answer must do is cut only between pieces, never through one, and the engine's does. The
+    // times and the 4 leading eigenvectors are any 4 of that space: which pieces end up together depended on the
+    // solver's rounding, so the engine now joins the pieces by their similarity instead of embedding them. What a
+    // good answer must do is cut only between pieces, never through one, and the engine's does. The
     // Python's did not: its k-means ran from one random start (scikit-learn, n_init=1) and stopped in a worse local
     // optimum (objective 55.1, where ten starts all reach 50.7), cutting through two pieces. That is the difference,
     // and it is the Python's: the engine's k-means keeps the best of several starts and then improves it.

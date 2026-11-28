@@ -29,6 +29,36 @@ impl Graph<'_> {
         }
     }
 
+    /// Which connected piece each paper is in, the pieces numbered in order of their lowest-numbered paper; and how
+    /// many pieces there are.
+    pub fn pieces(&self) -> (Vec<usize>, usize) {
+        match self {
+            Self::Dense(matrix) => components(*matrix),
+            Self::Sparse(graph) => {
+                let papers = graph.papers();
+                let mut piece = vec![usize::MAX; papers];
+                let mut count = 0;
+                for start in 0..papers {
+                    if piece[start] != usize::MAX {
+                        continue;
+                    }
+                    piece[start] = count;
+                    let mut waiting = vec![start];
+                    while let Some(paper) = waiting.pop() {
+                        for (other, weight) in graph.links(paper) {
+                            if weight > 0.0 && piece[other] == usize::MAX {
+                                piece[other] = count;
+                                waiting.push(other);
+                            }
+                        }
+                    }
+                    count += 1;
+                }
+                (piece, count)
+            }
+        }
+    }
+
     fn degrees(&self) -> Array1<f64> {
         match self {
             Self::Dense(matrix) => degrees(*matrix),
@@ -146,6 +176,111 @@ pub fn leading_eigenvectors(graph: Graph, count: usize) -> Result<Spectrum, Eige
         graph.product(scaled.view()) * column
     })?;
     Ok(Spectrum { values: eigen.values, vectors: eigen.vectors, scale })
+}
+
+/// `count` communities made of whole pieces of `graph`, when it falls apart into more pieces of linked papers
+/// than that; `None` when it does not, and spectral clustering is well defined on it.
+///
+/// Why: a graph in `p` pieces has the eigenvalue 1 `p` times, and when `p` is more than `count` the `count`
+/// leading eigenvectors are not determined by the graph: any `count` directions of that `p`-dimensional space are
+/// as good, and which ones the solver returns is decided by rounding. k-means on the rows then groups the pieces
+/// one way on one processor and another way on the next (the nearest-neighbour graph of two topics of two
+/// sub-topics each is in 4 pieces, one per sub-topic; asked for 2 communities, the grouping changed under noise of
+/// 1e-7 in the embeddings in 13 runs of 20). With `p` at most `count` the eigenvectors span every piece's own
+/// direction plus well-defined others, and k-means, which only measures distances, does not depend on which basis
+/// of that space it is given: such graphs, connected ones above all, are cut exactly as before.
+///
+/// The pieces are joined by their mutual similarity in the whole similarity graph `similarity` (not in
+/// `graph`, whose pieces have no links between them): again and again the two groups of pieces with the highest
+/// average similarity between their papers are joined (average linkage), the first such pair in the order of
+/// their lowest-numbered papers on a tie, until `count` remain. That uses every similarity between two pieces, not
+/// a few links, so the answer moves only where two joins are within rounding of each other. The communities are
+/// numbered in the order of their lowest-numbered paper. Papers linked to nobody (no similarity above 0 to any
+/// paper) are not a piece of their own, which would make them a community: they join the smallest community, the
+/// first of equal ones.
+pub fn joined_pieces(graph: Graph, similarity: ArrayView2<f32>, count: usize) -> Option<Vec<usize>> {
+    let (piece, pieces) = graph.pieces();
+    let mut sizes = vec![0_usize; pieces];
+    for &one in &piece {
+        sizes[one] += 1;
+    }
+    let linked: Vec<usize> = (0..pieces).filter(|&one| sizes[one] > 1).collect();
+    if linked.len() <= count || similarity.dim() != (piece.len(), piece.len()) {
+        return None;
+    }
+    // each piece of linked papers by its place in `linked`; papers linked to nobody have none
+    let mut place = vec![usize::MAX; pieces];
+    for (index, &one) in linked.iter().enumerate() {
+        place[one] = index;
+    }
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); linked.len()];
+    for (paper, &one) in piece.iter().enumerate() {
+        if place[one] != usize::MAX {
+            members[place[one]].push(paper);
+        }
+    }
+    // the similarity between every two pieces, summed in 64 bits: each piece's row on one thread, its papers and
+    // their similarities in order, so that it is the same on one thread or many
+    let mut between: Vec<Vec<f64>> = members
+        .par_iter()
+        .map(|papers| {
+            let mut row = vec![0.0; linked.len()];
+            for &paper in papers {
+                for (other, value) in similarity.row(paper).iter().enumerate() {
+                    if let Some(sum) = row.get_mut(place[piece[other]]) {
+                        *sum += f64::from(*value);
+                    }
+                }
+            }
+            row
+        })
+        .collect();
+    let mut size: Vec<f64> = members.iter().map(|papers| papers.len() as f64).collect();
+    // the groups still open, by their first piece, in order; each piece's group
+    let mut open: Vec<usize> = (0..linked.len()).collect();
+    let mut group: Vec<usize> = (0..linked.len()).collect();
+    while open.len() > count {
+        let mut best = (0, 0, f64::NEG_INFINITY);
+        for (index, &first) in open.iter().enumerate() {
+            for &second in &open[index + 1..] {
+                let average = between[first][second] / (size[first] * size[second]);
+                if average > best.2 {
+                    best = (first, second, average);
+                }
+            }
+        }
+        let (kept, joined, _) = best;
+        for other in 0..linked.len() {
+            let moved = between[joined][other];
+            between[kept][other] += moved;
+            let moved = between[other][joined];
+            between[other][kept] += moved;
+        }
+        size[kept] += size[joined];
+        open.retain(|&one| one != joined);
+        for one in &mut group {
+            if *one == joined {
+                *one = kept;
+            }
+        }
+    }
+    let mut labels = vec![usize::MAX; piece.len()];
+    let mut community_sizes = vec![0_usize; open.len()];
+    for (index, papers) in members.iter().enumerate() {
+        let label = open.iter().position(|&one| one == group[index]).unwrap_or(0);
+        community_sizes[label] += papers.len();
+        for &paper in papers {
+            labels[paper] = label;
+        }
+    }
+    let smallest =
+        (0..open.len()).fold(0, |best, one| if community_sizes[one] < community_sizes[best] { one } else { best });
+    for label in &mut labels {
+        if *label == usize::MAX {
+            *label = smallest;
+        }
+    }
+    Some(labels)
 }
 
 /// Which connected piece each paper is in (links of weight above 0), the pieces numbered in order of their

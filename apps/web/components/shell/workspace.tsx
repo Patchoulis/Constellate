@@ -23,6 +23,7 @@ import { stepLine } from "@/lib/shell/run-step";
 export function ActivityLog({ job }: { job: Job }) {
 	const [open, setOpen] = useState(false);
 	const { ref: box, style, handle } = useResizable<HTMLPreElement>("log"); // the height of its text, when open
+	const wide = useResizable<HTMLDivElement>("logWidth"); // its width, open or folded
 	const running = job.state === "running";
 	useEffect(() => setOpen(running), [running]);
 	useEffect(() => {
@@ -30,8 +31,13 @@ export function ActivityLog({ job }: { job: Job }) {
 	}, [box, job.log, open]);
 	if (job.log.length === 0) return null;
 	return (
-		<div className="enter-from-bottom absolute bottom-3 left-3 z-10 w-[min(34rem,calc(100%-4.5rem))] rounded-md border bg-card/95 shadow-lg">
+		<div
+			ref={wide.ref}
+			style={wide.style}
+			className="enter-from-bottom absolute bottom-3 left-3 z-10 w-[min(var(--panel-size),calc(100%-4.5rem))] rounded-md border bg-card/95 shadow-lg"
+		>
 			{open && <ResizeHandle {...handle} />}
+			<ResizeHandle {...wide.handle} />
 			<button
 				type="button"
 				aria-expanded={open}

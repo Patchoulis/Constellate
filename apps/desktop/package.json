@@ -1,7 +1,7 @@
 {
 	"name": "@rp/desktop",
 	"productName": "Constellate",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"private": true,
 	"description": "arXiv and conference papers, embedded and split into communities by Fiedler vectors.",
 	"author": "Constellate",

@@ -458,16 +458,27 @@ export function PaperReader({
 			className="enter-from-right absolute inset-y-0 right-0 z-20 flex w-[min(var(--panel-size),100%)] flex-col border-l bg-card shadow-2xl"
 		>
 			<ResizeHandle {...resizable.handle} />
-			<div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
-				{tabs.length > 1 && <Segmented options={tabs} value={view} onChange={setView} />}
+			{/* a container: in a narrow reader the tabs show their icons only, and nothing is pushed out of the panel */}
+			<div className="@container flex h-11 shrink-0 items-center gap-2 overflow-hidden border-b px-3">
+				{tabs.length > 1 && (
+					<div className="min-w-0 shrink overflow-x-auto [scrollbar-width:none]">
+						<Segmented compact options={tabs} value={view} onChange={setView} />
+					</div>
+				)}
 				<span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{found ? found.title : id}</span>
-				<MarkButton marked={marked} onToggle={onToggleMark} />
+				<MarkButton marked={marked} onToggle={onToggleMark} className="shrink-0" />
 				{safeLink(found?.url) && (
-					<Button variant="ghost" size="icon" title="Open the paper's page in the browser" onClick={() => openOutside(found?.url)}>
+					<Button
+						variant="ghost"
+						size="icon"
+						className="shrink-0"
+						title="Open the paper's page in the browser"
+						onClick={() => openOutside(found?.url)}
+					>
 						<ExternalLink />
 					</Button>
 				)}
-				<Button variant="ghost" size="icon" title="Close (Esc)" onClick={onClose}>
+				<Button variant="ghost" size="icon" className="shrink-0" title="Close (Esc)" onClick={onClose}>
 					<X />
 				</Button>
 			</div>

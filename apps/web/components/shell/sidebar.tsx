@@ -479,15 +479,16 @@ function CostLine({
 	return (
 		<div className="flex flex-col gap-0.5">
 			{choice}
-			<div className="flex items-center justify-between gap-2">
-				<span className="min-w-0 truncate" title={price ?? undefined}>
+			{/* what was spent goes onto lines of its own when the sidebar is too narrow: never past its edge */}
+			<div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
+				<span className="max-w-full min-w-0 truncate" title={price ?? undefined}>
 					{price}
 				</span>
-				<span className="shrink-0 text-foreground/80" title={detail}>
+				<span className="flex max-w-full min-w-0 flex-wrap gap-x-1 text-foreground/80" title={detail}>
 					{/* no priced call: no amount at all, only the calls and their tokens */}
-					{spent.usd === null ? `${count(spent.calls, "call")}, ${tokens(allTokens)}` : `${cost(spent.usd)} spent`}
+					<span>{spent.usd === null ? `${count(spent.calls, "call")}, ${tokens(allTokens)}` : `${cost(spent.usd)} spent`}</span>
 					{spent.session_calls > 0 && spent.session_usd !== null && (
-						<span className="text-muted-foreground"> · {cost(spent.session_usd)} this session</span>
+						<span className="text-muted-foreground">· {cost(spent.session_usd)} this session</span>
 					)}
 				</span>
 			</div>

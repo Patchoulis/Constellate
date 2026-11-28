@@ -132,3 +132,17 @@ test("anything in storage that cannot be trusted gives the initial sizes", () =>
 	});
 	assert.deepEqual(parsePanelSizes(stored), { ...initialSizes(), log: 150 });
 });
+
+test("the activity log's width goes from its minimum to what the graph's width leaves beside it", () => {
+	const frame = { width: 1400, height: 900 };
+	const fitted = fitSizes(initialSizes(), frame);
+	const graphWidth = frame.width - fitted.sidebar - fitted.communities;
+	assert.deepEqual(limitsOf("logWidth", fitted, frame), { min: PANELS.logWidth.min, max: graphWidth - 72 });
+	// a width chosen in a wide window gives way in a narrow one, and never below its minimum
+	const wide = fitSizes({ ...initialSizes(), logWidth: 1600 }, frame);
+	assert.equal(wide.logWidth, graphWidth - 72);
+	assert.equal(fitSizes({ ...initialSizes(), logWidth: 1600 }, { width: 700, height: 900 }).logWidth, PANELS.logWidth.min);
+	// sizes kept before the log had a width read as before, with the initial width
+	const kept = JSON.stringify({ version: 1, sizes: { log: 300 } });
+	assert.deepEqual(parsePanelSizes(kept), { ...initialSizes(), log: 300 });
+});

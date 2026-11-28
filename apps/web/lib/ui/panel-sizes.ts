@@ -11,8 +11,8 @@
  * This module is pure; `useResizable` (lib/ui/use-resizable.ts) holds the sizes and the window's size in React.
  */
 
-/** The panels a user can resize. */
-export type PanelId = "sidebar" | "communities" | "reader" | "overview" | "log";
+/** The panels a user can resize; the activity log both ways ("log" is its height, "logWidth" its width). */
+export type PanelId = "sidebar" | "communities" | "reader" | "overview" | "log" | "logWidth";
 
 /** The edge of a panel its handle is on: the one facing the graph. */
 export type Edge = "left" | "right" | "top";
@@ -33,7 +33,8 @@ export const PANELS: Record<PanelId, PanelSpec> = {
 	communities: { label: "Resize the communities panel", edge: "left", initial: 352, min: 320, max: 720 },
 	reader: { label: "Resize the paper reader", edge: "left", initial: 896, min: 400, max: 1800 },
 	overview: { label: "Resize the overview", edge: "left", initial: 832, min: 400, max: 1800 },
-	log: { label: "Resize the activity log", edge: "top", initial: 224, min: 80, max: 900 },
+	log: { label: "Resize the activity log's height", edge: "top", initial: 224, min: 80, max: 900 },
+	logWidth: { label: "Resize the activity log's width", edge: "right", initial: 544, min: 320, max: 1800 },
 };
 
 const IDS = Object.keys(PANELS) as PanelId[];
@@ -56,6 +57,8 @@ export const GRAPH_MIN_WIDTH = 320;
 export const GRAPH_MIN_HEIGHT = 200;
 /** The log's own line and its distance from the bottom of the window: what it takes beyond the height of its text. */
 const LOG_CHROME = 46;
+/** What the log leaves of the graph's width beside it: its own distance from the left edge, and the graph's buttons. */
+const LOG_MARGIN = 72;
 
 /** One step of an arrow key, and of an arrow key with Shift. */
 export const KEY_STEP = 16;
@@ -90,7 +93,7 @@ export function fitSizes(wanted: Sizes, frame: Frame | null): Sizes {
 		sizes.sidebar -= Math.ceil((cut * room.sidebar) / spare);
 		sizes.communities -= Math.ceil((cut * room.communities) / spare);
 	}
-	for (const id of ["reader", "overview", "log"] as const) sizes[id] = clamp(sizes[id], limitsOf(id, sizes, frame));
+	for (const id of ["reader", "overview", "log", "logWidth"] as const) sizes[id] = clamp(sizes[id], limitsOf(id, sizes, frame));
 	return sizes;
 }
 
@@ -115,6 +118,8 @@ export function limitsOf(id: PanelId, fitted: Sizes, frame: Frame | null): Limit
 			return range(min, Math.min(max, graphWidth - GRAPH_MIN_WIDTH));
 		case "log":
 			return range(min, Math.min(max, frame.height - GRAPH_MIN_HEIGHT - LOG_CHROME));
+		case "logWidth":
+			return range(min, Math.min(max, graphWidth - LOG_MARGIN));
 	}
 }
 

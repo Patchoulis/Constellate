@@ -190,8 +190,10 @@ test("the real changelog takes a new version", () => {
 	const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
 	const written = withChangelogVersion(changelog, "9.9.9", "2026-12-03", ["Rates."]);
 	assert.ok(written.indexOf("## [Unreleased]") < written.indexOf("## [9.9.9]"));
-	assert.ok(written.indexOf("## [9.9.9]") < written.indexOf("## [0.1.0]"));
-	assert.equal(written.replace(/## \[9\.9\.9\][^]*?(?=## \[0\.1\.0\])/, ""), changelog);
+	// whichever release is the newest one in the file
+	const last = changelog.match(/^## \[\d+\.\d+\.\d+\]/m)[0];
+	assert.ok(written.indexOf("## [9.9.9]") < written.indexOf(last));
+	assert.equal(written.replace(/## \[9\.9\.9\][^]*?(?=## \[\d)/, ""), changelog);
 });
 
 test("a model's prices are set by hand, checked, and its cache and long-prompt rates are kept", () => {
