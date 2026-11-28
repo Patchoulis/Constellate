@@ -341,6 +341,23 @@ fn download_file(
     fs::rename(&part, place).map_err(file_error(place))
 }
 
+/// The folder holding the repository's files when every one of them is on this computer already (in the data
+/// folder, or in the Hugging Face cache), at its expected size; `None` otherwise. Nothing is downloaded or hashed:
+/// what needs the model without making a run (finding a community's closest papers) asks this first.
+pub fn present(repo: &ModelRepo, data: &Path) -> Option<PathBuf> {
+    let complete = |folder: &Path| {
+        repo.files.iter().all(|file| {
+            let place = folder.join(file.path);
+            place.is_file() && size_of_file(&place) == file.bytes
+        })
+    };
+    let folder = repo.folder(data);
+    if complete(&folder) {
+        return Some(folder);
+    }
+    in_hugging_face_cache(repo).filter(|cached| complete(cached))
+}
+
 /// The folder holding the repository's files, downloading what is missing. Answers what the step came to.
 pub fn ensure(
     repo: &ModelRepo,

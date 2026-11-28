@@ -41,13 +41,16 @@ pub enum Feature {
     Describing,
     /// A community's overview, with every point's quotes ([`crate::features::writing::overview`]).
     Overview,
+    /// A community's papers closest in meaning to each statement of its description, found with the embedding
+    /// model on this computer (no language model, no cost: [`crate::features::writing::closest`]).
+    Closest,
     /// What a model wrote for the AI-text detector's training set (a 2019 abstract written from its title, or
     /// polished): kept here as it arrives, so that none is paid for twice (`crate::features::detector`).
     Detector,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 10] = [
+    pub const ALL: [Feature; 11] = [
         Feature::Extraction,
         Feature::CitationKinds,
         Feature::Stances,
@@ -57,6 +60,7 @@ impl Feature {
         Feature::ClaimTree,
         Feature::Describing,
         Feature::Overview,
+        Feature::Closest,
         Feature::Detector,
     ];
 
@@ -72,6 +76,7 @@ impl Feature {
             Feature::ClaimTree => "claim_tree",
             Feature::Describing => "describing",
             Feature::Overview => "overview",
+            Feature::Closest => "closest_papers",
             Feature::Detector => "ai_detector",
         }
     }

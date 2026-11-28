@@ -16,7 +16,7 @@
 //! Either may fail ([`StepOutcome::Failed`]): the run goes on without what it would have added.
 
 use crate::features::detector::{self, Scoring, Skipped};
-use crate::features::writing::describe::{self, Group, Outcome, Run};
+use crate::features::writing::describe::{self, Again, Group, Outcome, Run};
 use crate::jobs::Tracker;
 use crate::library::Library;
 use crate::model::chosen::Chosen;
@@ -66,7 +66,8 @@ pub fn describe(
         papers: &run.papers,
         embeddings: Some(run.embeddings.view()),
         communities: &tree,
-        redo,
+        // a community described before sections keeps its plain description, unless all is described again
+        again: if redo { Again::All } else { Again::Nothing },
     };
     let done = match naming {
         Naming::Unknown(why) => return StepOutcome::Failed(why.clone()),
@@ -83,6 +84,8 @@ pub fn describe(
             if let Some(named) = done.names.get(&record.tree_path) {
                 record.name = Some(named.name.clone());
                 record.description = Some(named.description.clone());
+                record.sections = named.sections.as_ref().and_then(|sections| serde_json::to_value(sections).ok());
+                record.sections_left_out = record.sections.as_ref().map(|_| named.left_out);
             }
         });
     }

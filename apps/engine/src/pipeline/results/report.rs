@@ -96,6 +96,13 @@ pub struct Record {
     pub size: usize,
     pub name: Option<String>,
     pub description: Option<String>,
+    /// Its description's sections with their checked citations (`CommunitySection[]` in the contracts), as the
+    /// describer made them; absent until it is described with sections. Kept as written, never read as evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sections: Option<serde_json::Value>,
+    /// How many sections were left out, their quotes not found in enough of its papers; with `sections`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sections_left_out: Option<usize>,
     pub keywords: Vec<String>,
     pub mix: Counted,
     pub mean_inner_similarity: f64,
@@ -223,6 +230,8 @@ pub fn community_tree(corpus: &Corpus, level: &[Community], parent: Option<&Comm
                 size: group.len(),
                 name: None,
                 description: None,
+                sections: None,
+                sections_left_out: None,
                 keywords: corpus.vocabulary.keywords(group, within, KEYWORDS),
                 mix: Counted::of(tags).most_common(MIX),
                 mean_inner_similarity: inner,
