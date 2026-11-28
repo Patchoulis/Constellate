@@ -18,7 +18,7 @@ use serde::Serialize;
 
 use super::routes::{ApiError, Shared, on_the_side};
 use crate::model::language::{self, Effort, Https, Listed, Provider, Providers};
-use crate::settings::{self, ModelRole, Settings};
+use crate::settings::{self, ModelRole, ReadingState, Settings};
 
 /// The routes of this module, for [`super::routes::table`].
 pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
@@ -43,12 +43,12 @@ pub struct Chosen {
     pub effort: Effort,
 }
 
-/// The model the settings choose to read papers, and whether that is the naming one by not being chosen on its own.
+/// The model the settings choose to read papers, and how it is chosen: by default, as the naming model, or its own.
 #[derive(Serialize)]
 pub struct Reading {
     #[serde(flatten)]
     pub chosen: Chosen,
-    pub same_as_naming: bool,
+    pub state: ReadingState,
 }
 
 impl Chosen {
@@ -63,10 +63,7 @@ pub fn told(providers: &Providers, settings: &Settings) -> Told {
     Told {
         providers: providers.listing(),
         chosen: Chosen::of(settings, ModelRole::Naming),
-        reading: Reading {
-            chosen: Chosen::of(settings, ModelRole::Reading),
-            same_as_naming: settings.reads_with_naming_model(),
-        },
+        reading: Reading { chosen: Chosen::of(settings, ModelRole::Reading), state: settings.reading_state() },
     }
 }
 
@@ -122,14 +119,22 @@ mod tests {
     }
 
     #[test]
-    fn the_model_that_reads_papers_is_told_from_the_same_providers_and_whether_it_is_the_naming_one() {
+    fn the_model_that_reads_papers_is_told_from_the_same_providers_and_how_it_is_chosen() {
         let providers = Providers::from_lookup(|_| None);
-        let same = serde_json::to_value(told(&providers, &Settings::default())).unwrap();
+        let default = serde_json::to_value(told(&providers, &Settings::default())).unwrap();
+        assert_eq!(
+            default["reading"],
+            serde_json::json!({"provider": "anthropic", "model": "claude-haiku-5-5", "effort": "medium", "state": "default"})
+        );
+        // the Claude API's row says it reads with Haiku by default; another provider's says nothing
+        let rows = default["providers"].as_array().unwrap();
+        assert_eq!(rows[0]["reading_default"], serde_json::json!({"model": "claude-haiku-5-5", "effort": "medium"}));
+        assert!(rows.iter().skip(1).all(|row| row["reading_default"].is_null()));
+        let same = Settings { reading_same_as_naming: true, ..Settings::default() };
+        let same = serde_json::to_value(told(&providers, &same)).unwrap();
         assert_eq!(
             same["reading"],
-            serde_json::json!({
-                "provider": "anthropic", "model": "claude-opus-5-5", "effort": "medium", "same_as_naming": true,
-            })
+            serde_json::json!({"provider": "anthropic", "model": "claude-opus-5-5", "effort": "medium", "state": "same_as_naming"})
         );
         let own = Settings {
             reading_provider: Some(Provider::Compatible),
@@ -140,7 +145,7 @@ mod tests {
         let own = serde_json::to_value(told(&providers, &own)).unwrap();
         assert_eq!(
             own["reading"],
-            serde_json::json!({"provider": "compatible", "model": "qwen3:32b", "effort": "low", "same_as_naming": false})
+            serde_json::json!({"provider": "compatible", "model": "qwen3:32b", "effort": "low", "state": "chosen"})
         );
         assert_eq!(own["chosen"]["model"], "claude-opus-5-5", "the naming model is told as it was");
         crate::api::contract::assert_fits("ModelCatalog", &own, &["providers"]);

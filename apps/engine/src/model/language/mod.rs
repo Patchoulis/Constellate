@@ -77,11 +77,11 @@ mod schema;
 
 use anthropic::{Block, Message, Usage, failure};
 pub use provider::{
-    About, Address, Answers, Caching, Capabilities, EffortControl, Key, ModelIds, Offered, Provider, TokenCount,
-    variables,
+    About, Address, Answers, CLAUDE_READING_DEFAULT, Caching, Capabilities, EffortControl, Key, ModelIds, Offered,
+    Provider, READING_DEFAULT_EFFORT, TokenCount, variables,
 };
 use provider::{Api, effort_for};
-pub use providers::{AddressState, Availability, KeyState, Listed, ListedModel, Place, Providers};
+pub use providers::{AddressState, Availability, KeyState, Listed, ListedModel, Place, Providers, ReadingDefault};
 pub use schema::strict_ready;
 
 /// The version of the API this speaks (`anthropic-version`).

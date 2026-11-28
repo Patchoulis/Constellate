@@ -428,6 +428,12 @@ async fn the_embedding_model_belongs_to_the_server_and_is_refused_from_the_inter
     // sent as it is (null, or the naming provider it means) changes nothing and is fine
     let (status, told, _) = answer(&served.router, put(json!({ "reading_provider": null }))).await;
     assert_eq!((status, told["reading_provider"].clone()), (StatusCode::OK, Value::Null));
+    // the default (the Claude API's Haiku) or the naming model: both read with the server's provider, so a window
+    // may move between them
+    let (status, told, _) = answer(&served.router, put(json!({ "reading_same_as_naming": true }))).await;
+    assert_eq!((status, told["reading_same_as_naming"].clone()), (StatusCode::OK, json!(true)));
+    let (status, told, _) = answer(&served.router, put(json!({ "reading_same_as_naming": false }))).await;
+    assert_eq!((status, told["reading_same_as_naming"].clone()), (StatusCode::OK, json!(false)));
     // the owner chose another provider to read papers, in the server's own file: a window may pick its effort, but
     // neither set it back to the naming model (papers would go elsewhere) nor move it
     let file = served._data.path().join("settings.json");
@@ -440,7 +446,11 @@ async fn the_embedding_model_belongs_to_the_server_and_is_refused_from_the_inter
     std::fs::write(&file, Value::Object(stored).to_string()).unwrap();
     let (status, told, _) = answer(&served.router, put(json!({ "reading_effort": "low" }))).await;
     assert_eq!((status, told["reading_provider"].clone()), (StatusCode::OK, json!("openai")));
-    for moving in [json!({ "reading_provider": null }), json!({ "reading_provider": "anthropic" })] {
+    for moving in [
+        json!({ "reading_provider": null }),
+        json!({ "reading_provider": "anthropic" }),
+        json!({ "reading_same_as_naming": true }),
+    ] {
         let (status, _, _) = answer(&served.router, put(moving.clone())).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{moving}");
     }

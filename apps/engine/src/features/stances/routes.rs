@@ -1171,6 +1171,7 @@ pub(super) mod tests {
     /// (p1, p2), and c1 (p4).
     fn engine(key: bool) -> (axum::Router, tempfile::TempDir) {
         let data = tempfile::tempdir().unwrap();
+        crate::api::other_providers::reads_with_naming(data.path());
         {
             let library = crate::library::Library::open(&data.path().join("library")).unwrap();
             let abstracts = [

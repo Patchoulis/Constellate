@@ -339,6 +339,7 @@ mod tests {
         for id in ["iclr-2024-1", "iclr-2024-3"] {
             library.keep_reviews(id, FORUM, ICLR_2024, &read_discussion(ICLR_2024).unwrap(), ratings.clone()).unwrap();
         }
+        crate::api::other_providers::reads_with_naming(data.path());
         data
     }
 
@@ -395,6 +396,29 @@ mod tests {
         assert_eq!((model["estimate"]["to_ask"].clone(), model["points_asked"].clone()), (json!(1), json!(3)));
         assert!(model["estimate"]["usd"].as_f64().unwrap() > 0.0);
         assert_eq!(model["estimate"]["counting"]["kind"], "assumed");
+    }
+
+    #[tokio::test]
+    async fn on_the_claude_api_papers_are_read_by_its_haiku_by_default_and_an_opus_estimate_is_not_taken_for_it() {
+        let data = data();
+        // no model chosen to read papers, as in a settings file written before there was one
+        let default: serde_json::Map<String, Value> =
+            json!({"reading_same_as_naming": false}).as_object().cloned().unwrap();
+        crate::settings::save(&data.path().join("settings.json"), &default, &choices()).unwrap();
+        let (router, _) = served(&listen(), AT, with_key(&data));
+        let (_, told) = ask(&router, "GET", "/api/papers/iclr-2024-1/critique", None).await;
+        let model = &told["model"];
+        assert_eq!(
+            (model["provider"].clone(), model["model"].clone(), model["estimate"]["model"].clone()),
+            (json!("anthropic"), json!("claude-haiku-5-5"), json!("claude-haiku-5-5"))
+        );
+        let haiku = model["estimate"]["usd"].as_f64().unwrap();
+        assert!(haiku > 0.0, "priced from the catalogue: {model}");
+        // what was shown for the naming model before is refused, naming the model that reads now
+        let opus = json!({"provider": "anthropic", "model": "claude-opus-5-5", "budget_usd": 1.0}).to_string();
+        let (status, refused) = ask(&router, "POST", "/api/papers/iclr-2024-1/critique", Some(opus)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        assert!(refused["error"].as_str().unwrap().contains("claude-haiku-5-5"), "{refused}");
     }
 
     #[tokio::test]

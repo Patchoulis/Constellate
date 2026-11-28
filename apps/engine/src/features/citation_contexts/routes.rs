@@ -783,6 +783,7 @@ mod tests {
             {"tree_path": "c0", "members": [0], "children": []},
             {"tree_path": "c1", "members": [1, 2], "children": []}]});
         std::fs::write(run.join("communities.json"), tree.to_string()).unwrap();
+        crate::api::other_providers::reads_with_naming(data.path());
         data
     }
 

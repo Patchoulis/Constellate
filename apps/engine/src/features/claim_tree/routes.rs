@@ -264,6 +264,7 @@ mod tests {
     /// [`engine`], the reviews kept or not.
     fn engine_with(language: bool, reviews: bool) -> (Engine, tempfile::TempDir) {
         let data = tempfile::tempdir().unwrap();
+        crate::api::other_providers::reads_with_naming(data.path());
         {
             let library = Library::open(&data.path().join("library")).unwrap();
             let mut with_pdf = paper(PAPER);

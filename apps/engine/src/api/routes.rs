@@ -40,7 +40,7 @@ use crate::jobs::{Busy, Counted, Finished, Job, Phase, Progress};
 use crate::library::{Library, LibraryError};
 use crate::model::chosen::Chosen;
 use crate::model::language::{Endpoint, Provider, Transport, Unavailable};
-use crate::settings::{self, Choices, ModelRole, Settings, SettingsError};
+use crate::settings::{self, Choices, ModelRole, ReadingState, Settings, SettingsError};
 
 /// How long a request may take from its first byte to its answer: a client that sends its body slowly (to hold
 /// the engine's connections) is cut off.
@@ -594,12 +594,19 @@ async fn change_settings(
                 return Err(ApiError::ServerOwned(key));
             }
         }
-        // while the server reads papers with its naming model, a model or effort chosen from a window would pin
-        // the reading provider to the naming one as it is now, and keep sending papers there once the owner moved
-        // the naming model elsewhere: only the owner chooses the model that reads papers on its own
+        // while no model is chosen to read papers (the default, or the naming model), a model or effort chosen
+        // from a window would pin the reading provider to the naming one as it is now, and keep sending papers
+        // there once the owner moved the naming model elsewhere: only the owner chooses the model that reads papers
+        // on its own. And no change may move where papers are read (the naming model again, from the owner's own
+        // reading provider)
         if owned.contains(&"reading_provider") {
+            let now = settings::load(&engine.settings_file(), &engine.choices)?;
             let picks = READING_PICKS.iter().any(|key| changes.get(*key).is_some_and(|value| !value.is_null()));
-            if picks && settings::load(&engine.settings_file(), &engine.choices)?.reads_with_naming_model() {
+            if picks && now.reading_state() != ReadingState::Chosen {
+                return Err(ApiError::ServerOwned("reading_provider"));
+            }
+            let after = now.apply(&changes, &engine.choices)?;
+            if after.model_for(ModelRole::Reading).provider != now.model_for(ModelRole::Reading).provider {
                 return Err(ApiError::ServerOwned("reading_provider"));
             }
         }

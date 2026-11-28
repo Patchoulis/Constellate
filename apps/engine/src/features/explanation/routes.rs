@@ -624,6 +624,7 @@ mod tests {
         let tree = json!({"communities": [{"tree_path": "c0", "members": [0, 1, 2, 3], "children": [
             {"tree_path": "c0.0", "members": [0, 3], "children": []}]}]});
         std::fs::write(run.join("communities.json"), tree.to_string()).unwrap();
+        crate::api::other_providers::reads_with_naming(data.path());
         data
     }
 

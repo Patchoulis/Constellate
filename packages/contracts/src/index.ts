@@ -28,13 +28,17 @@ export interface Settings {
 	/** how hard the model thinks */
 	describe_effort?: Effort;
 	/** the provider of the model that reads papers (tables, agree / disagree, questions, claims, weaknesses,
-	 *  explanations, citation kinds); null (or absent, from an older engine): that model is the naming one above.
-	 *  Sent as null, the model that reads papers is set back to the naming one */
+	 *  explanations, citation kinds); null (or absent): none chosen, so the default reads them (the naming provider's
+	 *  ModelProvider.reading_default, the Claude API's Haiku; else the naming model), or the naming model when
+	 *  `reading_same_as_naming`. Sent as null, the model that reads papers is set back to the default */
 	reading_provider?: ProviderId | null;
 	/** one of that provider's models, or an id typed for a provider that takes one; null with reading_provider */
 	reading_model?: string | null;
 	/** how hard the model that reads papers thinks; null with reading_provider */
 	reading_effort?: Effort | null;
+	/** true: no model is chosen to read papers, and the naming model reads them rather than the default. Sent as
+	 *  true, it sets the reading model to the naming one; absent (an older engine or file): false */
+	reading_same_as_naming?: boolean;
 }
 
 /** How hard a language model thinks before it answers (apps/engine/src/model/language). */
@@ -106,6 +110,9 @@ export interface ModelProvider {
 	price_of_typed: ModelPrice;
 	/** where the facts about it were read */
 	docs: string;
+	/** the model (one of `models`) that reads papers by default while this provider names communities; null: the
+	 *  naming model reads them. Absent from an older engine */
+	reading_default?: { model: string; effort: Effort } | null;
 }
 
 /** `GET /api/models` (apps/engine/src/api/models.rs). */
@@ -113,10 +120,13 @@ export interface ModelCatalog {
 	providers: ModelProvider[];
 	/** the model the settings choose to name communities and write overviews */
 	chosen: { provider: ProviderId; model: string; effort: Effort };
-	/** the model the settings choose to read papers, from the same providers; `same_as_naming` while it has not been
-	 *  chosen on its own (it is then `chosen`). Absent from an older engine, which reads papers with `chosen` */
-	reading?: { provider: ProviderId; model: string; effort: Effort; same_as_naming: boolean };
+	/** the model the settings choose to read papers, from the same providers, and how: by default, as the naming
+	 *  model, or a model chosen. Absent from an older engine, which reads papers with `chosen` */
+	reading?: { provider: ProviderId; model: string; effort: Effort; state: ReadingState };
 }
+
+/** How the model that reads papers is chosen (engine settings.rs `ReadingState`). */
+export type ReadingState = "default" | "same_as_naming" | "chosen";
 
 /** Tokens of a call or a batch, by how they are billed (engine usage/prices.rs `Tokens`). */
 export interface BilledTokens {

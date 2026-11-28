@@ -167,6 +167,13 @@ pub(crate) fn choose_reading(data: &Path, chosen: Chosen) {
     settings::save(&data.join("settings.json"), &changes, &choices()).unwrap_or_else(|why| panic!("{why}"));
 }
 
+/// Read papers with the naming model in the settings of `data` (`reading_same_as_naming`), rather than the default:
+/// for the features' tests written for the model the settings name, the Claude API's Opus.
+pub(crate) fn reads_with_naming(data: &Path) {
+    let changes: Map<String, Value> = json!({"reading_same_as_naming": true}).as_object().cloned().unwrap_or_default();
+    settings::save(&data.join("settings.json"), &changes, &choices()).unwrap_or_else(|why| panic!("{why}"));
+}
+
 /// [`router`], with `chosen` as the model that reads papers and the other provider naming communities.
 pub(crate) fn reading_router(data: &Path, chosen: Chosen, transport: &Arc<Scripted>) -> Router {
     let router = router(data, other(chosen), transport);
@@ -283,7 +290,7 @@ async fn naming_keeps_the_naming_model_and_both_models_are_told_apart() {
         (catalogue["chosen"]["provider"].clone(), catalogue["reading"]["provider"].clone()),
         (json!("compatible"), json!("openai"))
     );
-    assert_eq!(catalogue["reading"]["same_as_naming"], false);
+    assert_eq!(catalogue["reading"]["state"], "chosen");
     let (_, usage) = call(&router, "GET", "/api/usage", None).await;
     assert_eq!(
         (usage["model"]["name"].clone(), usage["reading"]["model"]["name"].clone()),
