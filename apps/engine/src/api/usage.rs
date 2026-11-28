@@ -70,8 +70,11 @@ struct Asked {
 /// What `GET /api/usage` answers: `Usage` in the contracts.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Told {
+    /// Who answers and with which model, for naming communities and writing overviews.
     pub provider: Answerer,
     pub model: ModelTold,
+    /// The same, for reading papers: the naming model's while it has not been chosen on its own.
+    pub reading: Reader,
     /// The day of the first call in the ledger; none when nothing has been spent.
     pub since: Option<String>,
     pub currency: Rate,
@@ -100,6 +103,19 @@ pub struct Answerer {
 pub struct ModelTold {
     pub name: String,
     pub label: String,
+}
+
+/// Who answers the features that read papers, and with which model.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Reader {
+    pub provider: Answerer,
+    pub model: ModelTold,
+}
+
+impl Reader {
+    fn of(chosen: &Chosen) -> Self {
+        Reader { provider: answerer(chosen), model: model_told(chosen) }
+    }
 }
 
 /// `UsageEntry` in the contracts: one model's or one purpose's calls.
@@ -153,13 +169,15 @@ fn model_told(chosen: &Chosen) -> ModelTold {
     ModelTold { name, label }
 }
 
-/// The answer, from the ledger's totals, this session's, the chosen model and the currency.
+/// The answer, from the ledger's totals, this session's, the chosen model (which reads papers too, until
+/// [`Told::read_by`] says another does) and the currency.
 pub fn told(spending: &Spending, session: &Totals, chosen: &Chosen, currency: Rate) -> Told {
     let entries =
         |table: &BTreeMap<String, Totals>| table.iter().map(|(key, totals)| (key.clone(), totals.into())).collect();
     Told {
         provider: answerer(chosen),
         model: model_told(chosen),
+        reading: Reader::of(chosen),
         since: spending.since.clone(),
         currency,
         usd: known_usd(&spending.total),
@@ -169,6 +187,13 @@ pub fn told(spending: &Spending, session: &Totals, chosen: &Chosen, currency: Ra
         session_calls: session.calls,
         models: entries(&spending.models),
         purposes: entries(&spending.purposes),
+    }
+}
+
+impl Told {
+    /// The same answer, with `reading` as the model that reads papers.
+    pub fn read_by(self, reading: &Chosen) -> Told {
+        Told { reading: Reader::of(reading), ..self }
     }
 }
 
@@ -188,10 +213,11 @@ async fn usage(
     let currency = currency_of(asked.ok().and_then(|Query(asked)| asked.currency).as_deref());
     let answer = on_the_side(move || {
         let chosen = engine.chosen()?;
+        let reading = engine.reading()?;
         let library = engine.library()?;
         let spending = library.spending()?;
         let session = library.spending_since(started())?;
-        Ok(told(&spending, &session, &chosen, currency))
+        Ok(told(&spending, &session, &chosen, currency).read_by(&reading))
     })
     .await?;
     Ok(Json(answer))
@@ -301,6 +327,8 @@ mod tests {
         let names = |fields: &[&str]| fields.iter().map(|field| (*field).to_owned()).collect::<BTreeSet<_>>();
         assert_eq!(keys(&told["provider"]), names(&["name", "ready"]));
         assert_eq!(keys(&told["model"]), names(&["name", "label"]));
+        assert_eq!(keys(&told["reading"]), names(&["provider", "model"]));
+        assert_eq!(told["reading"]["model"], told["model"], "the naming model reads papers until another is chosen");
         assert_eq!(keys(&told["currency"]), names(&["code", "rate", "date"]));
         assert_eq!(told["currency"]["date"], json!(bundled().unwrap().rates_date.to_string()));
     }
@@ -383,6 +411,12 @@ mod tests {
         );
         let typed = Chosen::of(Provider::Anthropic, "claude-next", Effort::Medium, Err(Unavailable::NoKey));
         assert_eq!(model_told(&typed).label, "claude-next");
+        // another model reads papers: told apart, the naming one as it was
+        let local = Chosen::of(Provider::Compatible, "qwen3:32b", Effort::Medium, Err(Unavailable::NoKey));
+        let apart = without.clone().read_by(&local);
+        assert_eq!((apart.model.clone(), apart.provider.clone()), (without.model.clone(), without.provider.clone()));
+        assert_eq!(apart.reading.model, ModelTold { name: "qwen3:32b".to_owned(), label: "qwen3:32b".to_owned() });
+        assert_eq!(apart.reading.provider.name, "OpenAI-compatible endpoint");
         // a gateway set in place of the provider's own address is named by its host
         let gateway = Environment::from_pairs([
             ("ANTHROPIC_API_KEY", "test-key-not-real-0123456789"),

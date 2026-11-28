@@ -48,6 +48,7 @@ import { accepting, shownModel } from "@/lib/cost";
 import { useColouringBy } from "@/lib/graph/graph-colouring";
 import { ready, useAsync } from "@/lib/use-async";
 import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
+import { ReadingModel } from "@/components/shell/model-choice";
 import { elsewhereLine, notAskedLine, runSubject, useFollowedJob, type FollowedJob } from "@/lib/shell/use-followed-job";
 import { cn, hsl } from "@/lib/utils";
 import { count, currencyOf, money, type Currency } from "@/lib/units";
@@ -323,6 +324,7 @@ function PlanView({
 					Include the {count(plan.filter.unrelated, "skipped paper")} too
 				</label>
 			)}
+			<ReadingModel />
 			<p className="text-muted-foreground tabular-nums">
 				{count(plan.all.papers, "paper")} to ask with {plan.model}: {plan.all.with_pdf} read from their PDF, {plan.all.abstract_only} from
 				the abstract only. One call per paper.
@@ -382,7 +384,7 @@ function Proposals({
 		);
 	};
 	// another model chosen while a cost is shown: that one's cost is worked out
-	const chosen = useChosenModel();
+	const chosen = useChosenModel("reading");
 	const shownPlan = step.kind === "estimated" ? step.plan : null;
 	useEffect(() => {
 		if (shownPlan && !isFor(shownPlan, chosen)) estimate();
@@ -435,6 +437,7 @@ function Proposals({
 			)}
 			{step.kind === "estimated" && isFor(step.plan, chosen) && (
 				<div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+					<ReadingModel className="w-full" />
 					<span className="w-full tabular-nums">
 						One call over the abstracts of {count(step.plan.papers, "paper")} with {step.plan.model}:{" "}
 						{costLine(step.plan.estimate, currency, locale)}
@@ -507,7 +510,7 @@ export function CommunityStances({ run, scope, onOpenPaper }: { run: string; sco
 	);
 	const running = job.state === "running" || job.state === "starting";
 	// another model chosen while a cost is shown: that one's cost is worked out, the old one goes
-	const chosen = useChosenModel();
+	const chosen = useChosenModel("reading");
 	const shownPlan = step.kind === "estimated" ? step : null;
 	useEffect(() => {
 		if (shownPlan && !isFor(shownPlan.plan, chosen)) estimate(shownPlan.plan.question, shownPlan.includeUnrelated);

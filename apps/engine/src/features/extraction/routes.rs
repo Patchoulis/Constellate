@@ -315,7 +315,7 @@ fn year_of(published: &str, id: &str) -> Option<u16> {
 fn table_of(engine: &Shared, run: &str, scope: &Scope) -> Result<Table, ApiError> {
     let (graph, ordered) = papers_of(engine, run, scope)?;
     let library = engine.library()?;
-    let chosen = engine.chosen()?;
+    let chosen = engine.reading()?;
     let columns = columns_of(&library, run)?;
     let ids = borrowed(&ordered);
     let records = library.papers(&ids)?;
@@ -433,7 +433,7 @@ fn length(text: &str) -> u64 {
 fn costing(engine: &Shared, run: &str, scope: &Scope, part: Part) -> Result<Costing, ApiError> {
     let (_, ordered) = papers_of(engine, run, scope)?;
     let library = engine.library()?;
-    let chosen = engine.chosen()?;
+    let chosen = engine.reading()?;
     let columns = columns_of(&library, run)?;
     let sample = borrowed(part_of(&ordered, Part::Sample));
     let readings = library.paper_texts(&sample)?;
@@ -548,7 +548,7 @@ async fn start(
     };
     let Started { scope, part, model, provider, .. } = started;
     let id = on_the_side(move || {
-        let chosen = engine.chosen()?;
+        let chosen = engine.reading()?;
         let endpoint = chosen.endpoint().map_err(|why| ApiError::Invalid(why.to_string()))?;
         // the estimate accepted was for one model: without its name, nothing says it was this one's
         let model = model.ok_or_else(|| ApiError::Invalid("say which model's estimate was shown".to_owned()))?;
@@ -623,7 +623,7 @@ async fn forget(
         papers_of(&engine, &run, &Scope::Papers(papers.clone()))?;
         let library = engine.library()?;
         let columns = columns_of(&library, &run)?;
-        let chosen = engine.chosen()?;
+        let chosen = engine.reading()?;
         let ids = borrowed(&papers);
         Ok(extraction::forget_cells(&library, &chosen, &columns, &ids)?)
     })
@@ -697,6 +697,7 @@ mod tests {
                 {"tree_path": "c0.0", "members": [0, 1, 2], "children": []}]},
             {"tree_path": "c1", "members": [12], "children": []}]});
         std::fs::write(run.join("communities.json"), tree.to_string()).unwrap();
+        crate::api::other_providers::reads_with_naming(data.path());
         data
     }
 
@@ -770,7 +771,8 @@ mod tests {
     #[tokio::test]
     async fn another_provider_is_priced_asked_in_its_own_shape_kept_and_asked_again_when_the_provider_changes() {
         use crate::api::other_providers::{
-            BUDGET, Chosen as Asked, MODEL, Scripted, accepting, call, choose, finished, priced_for, router, sent_to,
+            BUDGET, Chosen as Asked, MODEL, Scripted, accepting, call, choose_reading as choose, finished, priced_for,
+            reading_router as router, sent_to,
         };
 
         let data = data();
