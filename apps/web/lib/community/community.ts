@@ -53,3 +53,15 @@ export function treeDepth(roots: CommunityNode[]): number {
 export function communityLabel(community: Community): string {
 	return community.name ?? titleCase(community.keywords.slice(0, 2).join(" · "));
 }
+
+/**
+ * How far a community's papers are, on average, from what the community is about: 1 minus the mean cosine
+ * similarity of its papers to its mean embedding, a cosine distance. Near 0: its papers all do much the same thing.
+ * Higher: its papers differ more from each other. Never below 0 (a similarity above 1 is rounding).
+ */
+export function uniqueness(community: Pick<Community, "similarity_to_mean">): number {
+	return Math.max(0, 1 - community.similarity_to_mean);
+}
+
+export const UNIQUENESS_NOTE =
+	"How much its papers differ from each other: the mean cosine distance of its papers from the community's mean embedding (1 minus their cosine similarity to it). Low: its papers are all doing much the same thing. High: the work in it is more varied.";

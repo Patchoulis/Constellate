@@ -16,6 +16,16 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   costs nothing.
 - When the two models differ, the sidebar says which one names and which one reads papers, each with its price.
 
+### Changed
+
+- Communities are ordered by "Uniqueness" in place of "Saturation" and "Tightness": how far a community's papers are,
+  on average, from what the community is about (a cosine distance). Low means its papers all do much the same thing;
+  high means the work in it is more varied.
+
+### Fixed
+
+- The graph no longer disappears while a side panel is dragged wider or narrower.
+
 ## [0.2.2] - 2026-11-28
 
 ### Added
