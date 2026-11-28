@@ -6,6 +6,7 @@ import type { Passage, PassageAddress, PassageKind } from "@rp/contracts";
 import { PassageExplainer, type AskedOnce, type ExplainMode } from "@/components/features/explanation/passage-explainer";
 import { Button } from "@/components/ui/button";
 import { FigureView, useFigureRenderer } from "@/components/reader/figure-view";
+import { SectionBoundary } from "@/components/ui/section-boundary";
 import { api } from "@/lib/net/api";
 import { highlighted, pages, passageAt, unreadableParts, whollyUnreadable } from "@/lib/reader/evidence";
 import { explainable, placeKey, resolveSelection, selectionQuote } from "@/lib/features/explanation/explanation";
@@ -356,13 +357,16 @@ export function PaperText({
 								</button>
 							)}
 							{figure ? (
-								<FigureView
-									figure={figure}
-									renderer={renderer}
-									inside={figure.inside.map((at) => passages.passages[at]?.text ?? "")}
-									onOpenPdf={onOpenPdf}
-									caption={shown}
-								/>
+								// a figure that stops while drawn says so in its place; the reader and the rest of the text go on
+								<SectionBoundary what={figure.label} keys={[figure]}>
+									<FigureView
+										figure={figure}
+										renderer={renderer}
+										inside={figure.inside.map((at) => passages.passages[at]?.text ?? "")}
+										onOpenPdf={onOpenPdf}
+										caption={shown}
+									/>
+								</SectionBoundary>
 							) : (
 								shown
 							)}
