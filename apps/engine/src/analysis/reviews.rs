@@ -22,6 +22,12 @@
 //! where it was said, as (paper, review, section, character span of the sentence), so the interface can show
 //! the reviewer's own words.
 //!
+//! For one paper ([`in_common`]) the same terms are counted by reviewer instead of by paper: a term is a point
+//! the reviewers have in common when at least two of them use it in a praising (criticising) section. These are
+//! ranked by how many reviewers use it, then by how much more it is used in that tone than in the paper's review
+//! sections overall, then alphabetically. Every term that at least two reviewers share is kept, however common it
+//! is elsewhere: with four reviews, being shared is what makes it worth showing.
+//!
 //! # Threads and the same answer every time
 //!
 //! The per-paper work (figures, the terms of each review) runs on every core with rayon. Nothing that is
@@ -39,7 +45,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::text::reviews::Field;
-use crate::text::reviews::discussion::{Discussion, Kind, Section, Signer, Span, Venue};
+use crate::text::reviews::discussion::{Discussion, Kind, Note, Section, Signer, Span, Venue};
 use crate::text::{CharIndex, first_chars, floor_boundary, squash};
 
 /// Papers listed among the most and least agreed-upon, and the highest rated.
@@ -48,8 +54,8 @@ pub const RANKED: usize = 5;
 pub const THEMES: usize = 12;
 /// Where a theme was said: at most this many places are listed with it.
 pub const SOURCES: usize = 40;
-/// A theme is said in sections of at least this many papers.
-const LEAST_PAPERS: u32 = 2;
+/// A theme is said in sections of at least this many papers (of a set) or reviewers (of one paper).
+const LEAST_VOTERS: u32 = 2;
 /// A section with fewer words than this (a score, "None.") says nothing to count.
 const LEAST_WORDS: usize = 4;
 /// How far (in bytes) from a theme's word the ends of its sentence are looked for.
@@ -382,6 +388,57 @@ pub struct ReviewSummary {
     pub criticism: Vec<Theme>,
 }
 
+/// A term at least two of one paper's reviewers use when they praise (or criticise) it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PaperTheme {
+    pub term: String,
+    /// Of the paper's reviewers, how many use it in praising (criticising) sections.
+    pub reviewers: u32,
+    /// The paper's reviewers in all.
+    pub all_reviewers: u32,
+    /// How many times more often it is in the paper's praising (criticising) sections than in its review
+    /// sections overall.
+    pub distinctiveness: f64,
+    /// The first sentence of each review that uses it, in the order of the notes, at most [`SOURCES`].
+    pub sources: Vec<ThemeSource>,
+    /// Places left out of `sources`.
+    pub more_sources: u32,
+}
+
+/// What one paper's reviewers have in common: none when it has fewer than two reviewers.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct InCommon {
+    pub praise: Vec<PaperTheme>,
+    pub criticism: Vec<PaperTheme>,
+}
+
+/// Who counts as one voice for a term: across a set, a paper (however many of its reviewers use it); within a
+/// paper, a reviewer (however many times they use it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Voter {
+    Paper,
+    Reviewer,
+}
+
+/// One voice, as [`Voter`] says what one is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Voice<'a> {
+    Paper,
+    /// A reviewer by their id: two reviews signed by the same reviewer are one voice.
+    Reviewer(&'a str),
+    /// A review whose reviewer is not shown, by its index among the notes.
+    Review(usize),
+}
+
+impl Voter {
+    fn voice(self, note_index: usize, note: &Note) -> Voice<'_> {
+        match self {
+            Self::Paper => Voice::Paper,
+            Self::Reviewer => note.reviewer().map_or(Voice::Review(note_index), Voice::Reviewer),
+        }
+    }
+}
+
 /// Praise or criticism.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Tone {
@@ -514,13 +571,14 @@ fn parts<'a>(index: usize, section: &'a Section) -> Vec<Part<'a>> {
 /// span in the page's characters). Small, since a term may be used in tens of thousands of reviews.
 type Place = (u32, u32, u32, Span);
 
-/// One term's counts over a set of papers.
+/// One term's counts over a set of papers, or over one paper's reviews.
 #[derive(Default)]
 struct Counted {
     /// Sections of any tone, and of praise and of criticism, that use it.
     sections: u32,
     toned: [u32; 2],
-    papers: [u32; 2],
+    /// Voices ([`Voter`]: papers, or reviewers) that use it in praise and in criticism.
+    voters: [u32; 2],
     /// Places of praise and of criticism, at most [`SOURCES`] each, the first by place; and how many in all.
     places: [Vec<Place>; 2],
     said: [u32; 2],
@@ -531,7 +589,7 @@ impl Counted {
         self.sections += other.sections;
         for tone in 0..2 {
             self.toned[tone] += other.toned[tone];
-            self.papers[tone] += other.papers[tone];
+            self.voters[tone] += other.voters[tone];
             self.said[tone] += other.said[tone];
             let mut places = std::mem::take(&mut self.places[tone]);
             places.extend(other.places[tone].iter().copied());
@@ -575,11 +633,12 @@ fn sentence(text: &str, at: usize) -> (usize, usize) {
     (start, start.max(end - (text[start..end].len() - text[start..end].trim_end().len())))
 }
 
-/// The terms of one paper's reviews.
-fn tally(place: u32, paper: &Reviewed<'_>) -> Tally {
+/// The terms of one paper's reviews, each voice ([`Voter`]) counted once per term and tone.
+fn tally(place: u32, paper: &Reviewed<'_>, voter: Voter) -> Tally {
     let mut tally = Tally::default();
-    let mut toned_here: [HashSet<String>; 2] = [HashSet::new(), HashSet::new()];
+    let mut voted: [HashSet<(Voice<'_>, String)>; 2] = [HashSet::new(), HashSet::new()];
     for (note_index, note) in paper.discussion.reviews() {
+        let voice = voter.voice(note_index, note);
         let mut said_in_review: [HashSet<String>; 2] = [HashSet::new(), HashSet::new()];
         for (index, section) in note.sections.iter().enumerate() {
             let in_section = CharIndex::new(&section.text);
@@ -612,8 +671,8 @@ fn tally(place: u32, paper: &Reviewed<'_>) -> Tally {
                         counted.places[tone].push(place);
                         counted.said[tone] += 1;
                     }
-                    if toned_here[tone].insert(term) {
-                        counted.papers[tone] += 1;
+                    if voted[tone].insert((voice, term)) {
+                        counted.voters[tone] += 1;
                     }
                 }
             }
@@ -628,40 +687,62 @@ fn tally(place: u32, paper: &Reviewed<'_>) -> Tally {
     tally
 }
 
-/// The themes of one tone, most telling first.
-fn themes(tally: &Tally, tone: Tone, papers: &[Reviewed<'_>]) -> Vec<Theme> {
+/// A term chosen as a theme of one tone, with its counts.
+struct Chosen<'t> {
+    term: &'t str,
+    counted: &'t Counted,
+    distinctiveness: f64,
+}
+
+/// The themes of one tone, most telling first: at most [`THEMES`], each said by at least [`LEAST_VOTERS`] voices.
+/// Across papers, a term is kept when it is more often in that tone than overall, and ranked by how many
+/// sections of that tone use it, weighed by how distinctive it is; within one paper, every term enough reviewers
+/// share is kept, ranked by how many do, then by how distinctive it is. Ties go alphabetically.
+fn choose(tally: &Tally, tone: Tone, voter: Voter) -> Vec<Chosen<'_>> {
     let index = tone.index();
     let (toned, all) = (f64::from(tally.toned[index]), f64::from(tally.sections));
-    let mut scored: Vec<(f64, &str, &Counted, f64)> = tally
+    // how much a term weighs against the words it is part of or holds: in sections, or in reviewers
+    let weight = |counted: &Counted| match voter {
+        Voter::Paper => counted.toned[index],
+        Voter::Reviewer => counted.voters[index],
+    };
+    // (first key, second key, term, counts, distinctiveness), the keys highest first
+    let mut scored: Vec<(f64, f64, &str, &Counted, f64)> = tally
         .terms
         .iter()
-        .filter(|(_, counted)| counted.papers[index] >= LEAST_PAPERS)
+        .filter(|(_, counted)| counted.voters[index] >= LEAST_VOTERS)
         .filter_map(|(term, counted)| {
             let here = (f64::from(counted.toned[index]) + 0.5) / (toned + 1.0);
             let anywhere = (f64::from(counted.sections) + 0.5) / (all + 1.0);
             let distinctiveness = here / anywhere;
-            (distinctiveness > 1.0).then(|| {
-                (f64::from(counted.toned[index]) * distinctiveness.ln(), term.as_str(), counted, distinctiveness)
-            })
+            match voter {
+                Voter::Paper => (distinctiveness > 1.0).then(|| {
+                    let score = f64::from(counted.toned[index]) * distinctiveness.ln();
+                    (score, 0.0, term.as_str(), counted, distinctiveness)
+                }),
+                Voter::Reviewer => {
+                    Some((f64::from(counted.voters[index]), distinctiveness, term.as_str(), counted, distinctiveness))
+                }
+            }
         })
         .collect();
-    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| b.1.total_cmp(&a.1)).then_with(|| a.2.cmp(b.2)));
     // a word said mostly as part of one two-word term ("small" in "small models") is that term, not a theme
     let mut in_phrases: HashMap<&str, u32> = HashMap::new();
-    for (_, term, counted, _) in &scored {
+    for (_, _, term, counted, _) in &scored {
         if let Some((first, second)) = term.split_once(' ') {
             for word in [first, second] {
                 let most = in_phrases.entry(word).or_default();
-                *most = (*most).max(counted.toned[index]);
+                *most = (*most).max(weight(counted));
             }
         }
     }
-    let mut chosen: Vec<Theme> = Vec::new();
-    for (_, term, counted, distinctiveness) in scored {
+    let mut chosen: Vec<Chosen<'_>> = Vec::new();
+    for (_, _, term, counted, distinctiveness) in scored {
         if chosen.len() == THEMES {
             break;
         }
-        if !term.contains(' ') && in_phrases.get(term).is_some_and(|most| 4 * most >= 3 * counted.toned[index]) {
+        if !term.contains(' ') && in_phrases.get(term).is_some_and(|most| 4 * most >= 3 * weight(counted)) {
             continue;
         }
         // a word already said by a chosen two-word term (or the other way round) is not a theme of its own
@@ -672,37 +753,87 @@ fn themes(tally: &Tally, tone: Tone, papers: &[Reviewed<'_>]) -> Vec<Theme> {
         }) {
             continue;
         }
-        let sources = counted.places[index]
-            .iter()
-            .filter_map(|(paper, note, section, span)| {
-                let paper = papers.get(usize::try_from(*paper).ok()?)?;
-                let note_index = usize::try_from(*note).ok()?;
-                let note = paper.discussion.notes.get(note_index)?;
-                let section = note.sections.get(usize::try_from(*section).ok()?)?;
-                let from = span.start.checked_sub(section.span.start)?;
-                let said: String = section.text.chars().skip(from).take(span.end - span.start).collect();
-                Some(ThemeSource {
-                    paper_id: paper.paper_id.to_owned(),
-                    note: note_index,
-                    signer: note.signer.clone(),
-                    section: section.name.clone(),
-                    span: *span,
-                    excerpt: first_chars(&squash(&said), EXCERPT).to_owned(),
-                })
-            })
-            .collect::<Vec<_>>();
-        let listed = u32::try_from(sources.len()).unwrap_or(u32::MAX);
-        chosen.push(Theme {
-            term: term.to_owned(),
-            sections: counted.toned[index],
-            papers: counted.papers[index],
-            share: f64::from(counted.toned[index]) / toned.max(1.0),
-            distinctiveness,
-            sources,
-            more_sources: counted.said[index].saturating_sub(listed),
-        });
+        chosen.push(Chosen { term, counted, distinctiveness });
     }
     chosen
+}
+
+/// Where a chosen term was said in `tone`, as the reviewers' sentences, and how many places are left out.
+fn sources_of(chosen: &Chosen<'_>, tone: Tone, papers: &[Reviewed<'_>]) -> (Vec<ThemeSource>, u32) {
+    let index = tone.index();
+    let sources: Vec<ThemeSource> = chosen.counted.places[index]
+        .iter()
+        .filter_map(|(paper, note, section, span)| {
+            let paper = papers.get(usize::try_from(*paper).ok()?)?;
+            let note_index = usize::try_from(*note).ok()?;
+            let note = paper.discussion.notes.get(note_index)?;
+            let section = note.sections.get(usize::try_from(*section).ok()?)?;
+            let from = span.start.checked_sub(section.span.start)?;
+            let said: String = section.text.chars().skip(from).take(span.end - span.start).collect();
+            Some(ThemeSource {
+                paper_id: paper.paper_id.to_owned(),
+                note: note_index,
+                signer: note.signer.clone(),
+                section: section.name.clone(),
+                span: *span,
+                excerpt: first_chars(&squash(&said), EXCERPT).to_owned(),
+            })
+        })
+        .collect();
+    let listed = u32::try_from(sources.len()).unwrap_or(u32::MAX);
+    let more = chosen.counted.said[index].saturating_sub(listed);
+    (sources, more)
+}
+
+/// The themes of one tone over a set of papers, most telling first.
+fn themes(tally: &Tally, tone: Tone, papers: &[Reviewed<'_>]) -> Vec<Theme> {
+    let index = tone.index();
+    let toned = f64::from(tally.toned[index]);
+    choose(tally, tone, Voter::Paper)
+        .iter()
+        .map(|chosen| {
+            let (sources, more_sources) = sources_of(chosen, tone, papers);
+            Theme {
+                term: chosen.term.to_owned(),
+                sections: chosen.counted.toned[index],
+                papers: chosen.counted.voters[index],
+                share: f64::from(chosen.counted.toned[index]) / toned.max(1.0),
+                distinctiveness: chosen.distinctiveness,
+                sources,
+                more_sources,
+            }
+        })
+        .collect()
+}
+
+/// What one paper's reviewers have in common: the terms at least two of them use when they praise it, and when
+/// they criticise it, most widely shared first. A paper with fewer than two reviewers has none.
+pub fn in_common(paper: &Reviewed<'_>) -> InCommon {
+    let voices: HashSet<Voice<'_>> =
+        paper.discussion.reviews().map(|(note_index, note)| Voter::Reviewer.voice(note_index, note)).collect();
+    let all_reviewers = u32::try_from(voices.len()).unwrap_or(u32::MAX);
+    if all_reviewers < LEAST_VOTERS {
+        return InCommon::default();
+    }
+    let tally = tally(0, paper, Voter::Reviewer);
+    let papers = std::slice::from_ref(paper);
+    let points = |tone: Tone| -> Vec<PaperTheme> {
+        choose(&tally, tone, Voter::Reviewer)
+            .iter()
+            .map(|chosen| {
+                let (sources, more_sources) = sources_of(chosen, tone, papers);
+                PaperTheme {
+                    term: chosen.term.to_owned(),
+                    reviewers: chosen.counted.voters[tone.index()],
+                    all_reviewers,
+                    distinctiveness: chosen.distinctiveness,
+                    sources,
+                    more_sources,
+                }
+            })
+            .collect()
+    };
+    InCommon { praise: points(Tone::Praise), criticism: points(Tone::Criticism) }
 }
 
 fn ranked(
@@ -780,7 +911,7 @@ pub fn summarise(papers: usize, reviewed: &[Reviewed<'_>]) -> ReviewSummary {
     let tally = reviewed
         .par_iter()
         .enumerate()
-        .map(|(place, paper)| tally(u32::try_from(place).unwrap_or(u32::MAX), paper))
+        .map(|(place, paper)| tally(u32::try_from(place).unwrap_or(u32::MAX), paper, Voter::Paper))
         .reduce(Tally::default, Tally::merge);
     let with_reviews: Vec<PaperFigures> = figures.into_iter().filter(|paper| paper.reviews > 0).collect();
     let agreement = |paper: &PaperFigures| paper.disagreement.map(|disagreement| disagreement.normalised_spread);
@@ -966,7 +1097,7 @@ mod tests {
         assert!(criticised.contains(&"small models") && !criticised.contains(&"small"), "{criticised:?}");
         assert!(praised.iter().all(|term| !criticised.contains(term)));
         for theme in summary.praise.iter().chain(&summary.criticism) {
-            assert!(theme.papers >= LEAST_PAPERS && theme.distinctiveness > 1.0);
+            assert!(theme.papers >= LEAST_VOTERS && theme.distinctiveness > 1.0);
             assert!(!theme.sources.is_empty() && theme.sources.len() <= SOURCES);
             for source in &theme.sources {
                 let (_, discussion) = papers.iter().find(|(id, _)| *id == source.paper_id).unwrap();
@@ -986,6 +1117,118 @@ mod tests {
                 assert!(source.section == "Strengths" || source.section == "Weaknesses");
             }
         }
+    }
+
+    /// A made-up ICLR-style page of one paper with one review per (reviewer, strengths, weaknesses).
+    fn page_of(reviews: &[(&str, &str, &str)]) -> String {
+        let mut page = "Go to ICLR 2024 Conference homepage\nPaper 1\n".to_owned();
+        for (reviewer, strengths, weaknesses) in reviews {
+            page.push_str(&format!(
+                "Official Review of Submission1 by Reviewer {reviewer}\nSummary:\nThe paper studies routing in \
+                 sparse experts.\nSoundness: 3 good\nStrengths:\n{strengths}\nWeaknesses:\n{weaknesses}\n\
+                 Questions:\nNone.\nRating: 6: a rating\nConfidence: 3: a confidence\n"
+            ));
+        }
+        page
+    }
+
+    fn in_common_of(page: &str) -> InCommon {
+        let discussion = read_discussion(page).unwrap();
+        in_common(&Reviewed::new("iclr-2024-1", discussion.venue.as_ref(), &discussion))
+    }
+
+    const FOUR_REVIEWS: [(&str, &str, &str); 4] = [
+        (
+            "aB1c",
+            "The routing rule is elegant. The writing is easy to follow.",
+            "The baselines are weak and dated. Compute cost is never reported.",
+        ),
+        (
+            "dE2f",
+            "An elegant routing rule with a short proof.",
+            "Only two benchmarks are tried. The compute cost is not reported.",
+        ),
+        (
+            "gH3i",
+            "Strong benchmarks. The routing rule is elegant and cheap.",
+            "The notation in the second part is confusing, and the notation is never defined.",
+        ),
+        ("jK4l", "Thorough experiments on many tasks.", "Weak baselines throughout the experiments."),
+    ];
+
+    #[test]
+    fn what_most_of_a_papers_reviewers_praise_and_criticise_is_counted_by_reviewer() {
+        let common = in_common_of(&page_of(&FOUR_REVIEWS));
+        let praised: Vec<(&str, u32, u32)> =
+            common.praise.iter().map(|theme| (theme.term.as_str(), theme.reviewers, theme.all_reviewers)).collect();
+        // three of four praise the elegant routing rule: the two-word term, not its words again on their own; both
+        // are only ever said in praise, so they tie and go alphabetically
+        assert_eq!(praised[..2], [("elegant", 3, 4), ("routing rule", 3, 4)], "{praised:?}");
+        assert!(praised.iter().all(|(term, _, _)| !["routing", "rule"].contains(term)), "{praised:?}");
+        let criticised: Vec<(&str, u32)> =
+            common.criticism.iter().map(|theme| (theme.term.as_str(), theme.reviewers)).collect();
+        assert!(criticised.contains(&("compute cost", 2)), "{criticised:?}");
+        assert!(criticised.contains(&("baselines", 2)), "{criticised:?}");
+        // one reviewer saying "notation" twice is not a point in common
+        assert!(criticised.iter().all(|(term, _)| !term.contains("notation")), "{criticised:?}");
+        for theme in common.praise.iter().chain(&common.criticism) {
+            assert!(theme.reviewers >= LEAST_VOTERS);
+            assert_eq!(theme.sources.len() as u32, theme.reviewers); // one sentence of each reviewer who says it
+        }
+    }
+
+    #[test]
+    fn a_papers_points_in_common_are_ranked_by_reviewers_then_distinctiveness_then_term() {
+        let common = in_common_of(&page_of(&FOUR_REVIEWS));
+        for themes in [&common.praise, &common.criticism] {
+            for pair in themes.windows(2) {
+                let (a, b) = (&pair[0], &pair[1]);
+                let in_order = a.reviewers > b.reviewers
+                    || (a.reviewers == b.reviewers && a.distinctiveness > b.distinctiveness)
+                    || (a.reviewers == b.reviewers && a.distinctiveness == b.distinctiveness && a.term < b.term);
+                assert!(in_order, "{} before {}", a.term, b.term);
+            }
+        }
+        // the same answer every time, and whichever order the reviews are read in counts the same reviewers
+        let again = in_common_of(&page_of(&FOUR_REVIEWS));
+        assert_eq!(serde_json::to_string(&common).unwrap(), serde_json::to_string(&again).unwrap());
+        let mut reversed = FOUR_REVIEWS;
+        reversed.reverse();
+        let backwards = in_common_of(&page_of(&reversed));
+        let terms = |common: &InCommon| -> Vec<(String, u32)> {
+            common.praise.iter().chain(&common.criticism).map(|theme| (theme.term.clone(), theme.reviewers)).collect()
+        };
+        assert_eq!(terms(&common), terms(&backwards));
+    }
+
+    #[test]
+    fn a_points_sources_are_the_reviewers_own_sentences_in_the_kept_page() {
+        let page = page_of(&FOUR_REVIEWS);
+        let discussion = read_discussion(&page).unwrap();
+        let common = in_common(&Reviewed::new("iclr-2024-1", None, &discussion));
+        let rule = common.praise.iter().find(|theme| theme.term == "routing rule").unwrap();
+        let signers: Vec<Signer> = rule.sources.iter().map(|source| source.signer.clone()).collect();
+        let reviewer = |id: &str| Signer::Reviewer { id: id.to_owned() };
+        assert_eq!(signers, [reviewer("aB1c"), reviewer("dE2f"), reviewer("gH3i")]);
+        assert_eq!(rule.sources[0].excerpt, "The routing rule is elegant.");
+        assert_eq!(rule.sources[1].excerpt, "An elegant routing rule with a short proof.");
+        for source in common.praise.iter().chain(&common.criticism).flat_map(|theme| &theme.sources) {
+            let said: String = page.chars().skip(source.span.start).take(source.span.end - source.span.start).collect();
+            assert_eq!(said, source.excerpt);
+            let note = &discussion.notes[source.note];
+            assert_eq!(note.signer, source.signer);
+            assert!(note.sections.iter().any(|section| section.name == source.section && section.text.contains(&said)));
+            assert!(source.section == "Strengths" || source.section == "Weaknesses");
+        }
+    }
+
+    #[test]
+    fn a_paper_with_one_review_has_no_points_in_common() {
+        let one = in_common_of(&page_of(&FOUR_REVIEWS[..1]));
+        assert_eq!(one, InCommon::default());
+        // two reviews by the same reviewer are one voice
+        let twice = in_common_of(&page_of(&[FOUR_REVIEWS[0], ("aB1c", FOUR_REVIEWS[0].1, FOUR_REVIEWS[0].2)]));
+        assert_eq!(twice, InCommon::default());
     }
 
     #[test]
