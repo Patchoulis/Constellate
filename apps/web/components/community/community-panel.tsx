@@ -626,16 +626,23 @@ export function CommunityPanel({
 			{tab === "marked" ? (
 				markedPapers.length > 0 ? (
 					<>
-						<MarkedList papers={markedPapers} marks={marks} onOpen={onGoToPaper} />
+						{/* each section stops on its own: odd data in one leaves the others working */}
+						<SectionBoundary what="the list of marked papers" keys={[markedPapers, marks.hidden, marks.noLinks]} className="min-h-0 flex-1">
+							<MarkedList papers={markedPapers} marks={marks} onOpen={onGoToPaper} />
+						</SectionBoundary>
 						<div className="max-h-[60%] shrink-0 overflow-y-auto border-t pt-3">
-							{/* mounted afresh when the marked papers change: what it shows is for exactly these papers */}
-							<CommunityStances
-								key={`${result.name}/marked/${sortedMarked.join(",")}`}
-								run={result.name}
-								scope={{ papers: sortedMarked }}
-								onOpenPaper={onGoToPaper}
-							/>
-							<ExtractionTable run={result.name} scope={{ papers: markedIds }} onOpenPaper={onGoToPaper} />
+							<SectionBoundary what="the agree / disagree section" keys={[sortedMarked.join(",")]}>
+								{/* mounted afresh when the marked papers change: what it shows is for exactly these papers */}
+								<CommunityStances
+									key={`${result.name}/marked/${sortedMarked.join(",")}`}
+									run={result.name}
+									scope={{ papers: sortedMarked }}
+									onOpenPaper={onGoToPaper}
+								/>
+							</SectionBoundary>
+							<SectionBoundary what="the table of papers" keys={[markedIds.join(",")]}>
+								<ExtractionTable run={result.name} scope={{ papers: markedIds }} onOpenPaper={onGoToPaper} />
+							</SectionBoundary>
 						</div>
 					</>
 				) : (
