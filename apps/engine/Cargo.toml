@@ -60,7 +60,7 @@ tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros", "time", "sync", "fs", "io-util"] }
 # a PDF (or the range of it asked for) streamed from its file, never read whole into memory (src/api/papers/mod.rs)
 tokio-util = { version = "0.7", default-features = false, features = ["io"] }
-tower-http = { version = "0.6", features = ["limit", "timeout"] }
+tower-http = { version = "0.7", features = ["limit", "timeout"] }
 # text out of a PDF carries ligatures and odd spaces, and titles are compared without accents: both need Unicode
 # normal forms
 unicode-normalization = "0.1"
