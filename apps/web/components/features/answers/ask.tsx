@@ -151,8 +151,8 @@ export function AskBox({
 		(question: string) => {
 			dispatch({ type: "asked", question });
 			Promise.all([api.passagesFound(run, question, community), api.answerEstimate(run, question, community)]).then(
-				([found, estimate]) => dispatch({ type: "searched", found, estimate }),
-				(error: Error) => dispatch({ type: "failed", error: error.message }),
+				([found, estimate]) => dispatch({ type: "searched", question, found, estimate }),
+				(error: Error) => dispatch({ type: "failed", error: error.message, searched: question }),
 			);
 		},
 		[run, community],

@@ -146,12 +146,12 @@ test("the Ask box sends nothing to the model until it is started, and waits for 
 	let state: AskState = { kind: "idle" };
 	state = reduceAsk(state, { type: "asked", question: "q" });
 	assert.equal(state.kind, "searching");
-	const indexing = reduceAsk(state, { type: "searched", found: { state: "indexing", done: 3, of: 9 }, estimate });
+	const indexing = reduceAsk(state, { type: "searched", question: "q", found: { state: "indexing", done: 3, of: 9 }, estimate });
 	assert.deepEqual(indexing, { kind: "indexing", question: "q", done: 3, of: 9 });
-	state = reduceAsk(state, { type: "searched", found, estimate });
+	state = reduceAsk(state, { type: "searched", question: "q", found, estimate });
 	assert.equal(state.kind, "found");
 	// an answer arriving for a search no longer wanted changes nothing
-	assert.equal(reduceAsk(state, { type: "searched", found, estimate }), state);
+	assert.equal(reduceAsk(state, { type: "searched", question: "q", found, estimate }), state);
 	assert.equal(reduceAsk({ kind: "idle" }, { type: "started", id: "x", job: 1 }).kind, "idle", "only a found question is started");
 	state = reduceAsk(state, { type: "started", id: "a".repeat(64), job: 7 });
 	assert.deepEqual(state, { kind: "asking", question: "q", id: "a".repeat(64), job: 7 });
@@ -166,6 +166,16 @@ test("the Ask box sends nothing to the model until it is started, and waits for 
 	assert.equal(reduceAsk(opening, { type: "viewed", view: view("answered") }).kind, "answer");
 	// two quick clicks: the answer of the first one, arriving late, does not replace the second
 	assert.equal(reduceAsk(opening, { type: "viewed", view: { ...view("answered"), id: "first" } }), opening);
+});
+
+test("a search still under way when another question is asked does not answer that question, nor fail it", () => {
+	const found: PassagesFound = { state: "ready", query: "first", coverage, passages: [passage("p1", false)] };
+	let state: AskState = reduceAsk({ kind: "idle" }, { type: "asked", question: "first" });
+	state = reduceAsk(state, { type: "asked", question: "second" }); // a question asked before, picked from the list
+	assert.equal(reduceAsk(state, { type: "searched", question: "first", found, estimate }), state, "the first's passages are not the second's");
+	assert.equal(reduceAsk(state, { type: "failed", error: "refused", searched: "first" }), state, "the first's failure is not the second's");
+	assert.equal(reduceAsk(state, { type: "searched", question: "second", found, estimate }).kind, "found");
+	assert.equal(reduceAsk(state, { type: "failed", error: "refused", searched: "second" }).kind, "failed");
 });
 
 test("a paper's text is said to be unavailable only when the engine has no PDF it can read", () => {
