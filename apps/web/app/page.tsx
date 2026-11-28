@@ -1,6 +1,6 @@
 "use client";
 
-import { useReducer, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { REDO_STEPS, type RunRequest, type Settings } from "@rp/contracts";
 import { useAskNaming, useAskRun } from "@/components/shell/run-dialogs";
 import { SettingsDialog } from "@/components/shell/settings-dialog";
@@ -8,6 +8,9 @@ import { SectionBoundary } from "@/components/ui/section-boundary";
 import { TitleBar } from "@/components/shell/title-bar";
 import { Sidebar } from "@/components/shell/sidebar";
 import { ActivityLog, Notice, Workspace } from "@/components/shell/workspace";
+import { SkyLoading } from "@/components/graph/sky-loading";
+import { LoadingWords } from "@/components/ui/loading-dots";
+import { runShare } from "@/lib/graph/sky";
 import { api } from "@/lib/net/api";
 import { ChosenModelContext, chosenModelsOf } from "@/lib/chosen-model";
 import { ModelChoosingContext } from "@/components/shell/model-choice";
@@ -18,6 +21,7 @@ import { namingRequest } from "@/lib/features/writing/naming";
 import { NO_SAVES, saveStep, type SaveEvent, type Saves } from "@/lib/shell/settings-saves";
 import { ready, useAsync } from "@/lib/use-async";
 import { useJob } from "@/lib/shell/use-job";
+import { openingOf, type Opening } from "@/lib/graph/intro";
 
 /** Said when a run is made again without naming its communities again. */
 const NAMES_KEPT = "The communities were not named again: their names are kept as they are.";
@@ -73,18 +77,27 @@ export default function Home() {
 	const [told, setTold] = useState<string | null>(null);
 	// Counts finished runs. A run done again keeps its name, so the name alone would not show the new result.
 	const [finishedRuns, setFinishedRuns] = useState(0);
+	// why the run on screen is shown (made, opened, or only shown again): whether its graph comes up with the intro
+	const [opening, setOpening] = useState<Opening>("opened");
+	// the run on screen, for a job that finishes: the same run shown again is not an opening
+	const shown = useRef<string | null>(null);
 	const askRun = useAskRun(ready(catalog));
 	const askNaming = useAskNaming();
 	const {
 		job,
 		start: startJob,
 		follow,
-	} = useJob((finished) => {
+	} = useJob((finished, madeNow) => {
 		runs.reload();
 		library.reload();
 		setChosen(finished);
+		setOpening(openingOf(finished, madeNow, shown.current));
 		setFinishedRuns((count) => count + 1);
 	}, askRun);
+	const open = (name: string | null) => {
+		setChosen(name);
+		setOpening("opened");
+	};
 	// a start being asked about or sent: nothing else is started meanwhile (a second click would queue a second
 	// question about the same run, answered on what was true before the first)
 	const [starting, setStarting] = useState(false);
@@ -120,6 +133,9 @@ export default function Home() {
 
 	const known = ready(runs) ?? [];
 	const current = chosen ?? known[0]?.name ?? null; // until one is picked, the most recent run is shown
+	useEffect(() => {
+		shown.current = current;
+	}, [current]);
 	const running = job.state === "running";
 	const busy = running || starting;
 	const log = <ActivityLog job={job} />;
@@ -144,7 +160,7 @@ export default function Home() {
 						(refused && !settingsOpen ? `Not saved: ${refused.error}` : null) ??
 						(runs.status === "failed" ? runs.error : null)
 					}
-					onSelect={setChosen}
+					onSelect={open}
 					onRename={(name, title) => {
 						setFailed(null);
 						void api.rename(name, title).then(runs.reload, (error: Error) => setFailed(error.message));
@@ -154,7 +170,7 @@ export default function Home() {
 						void api.remove(name).then(
 							() => {
 								forgetMarks(name); // a run made later under the same name starts with none
-								if (name === current) setChosen(null); // fall back to the most recent run that is left
+								if (name === current) open(null); // fall back to the most recent run that is left
 								runs.reload();
 							},
 							(error: Error) => setFailed(error.message),
@@ -179,6 +195,7 @@ export default function Home() {
 								title={known.find((run) => run.name === current)?.title ?? current}
 								catalog={ready(catalog)}
 								model={settings?.describe_model}
+								opening={opening}
 							>
 								{log}
 							</Workspace>
@@ -186,8 +203,14 @@ export default function Home() {
 					</ChosenModelContext>
 				) : (
 					<main className="relative min-w-0 flex-1">
+						{/* while the first run is made, a sky whose lit stars are how far it has got, where the engine says */}
+						{running && <SkyLoading share={runShare(job.step)} />}
 						<Notice>
-							{running ? "Working… the graph appears when the run finishes." : "Pick a date range or a conference and press Run."}
+							{running ? (
+								<LoadingWords words="Working" after=" the graph appears when the run finishes." />
+							) : (
+								"Pick a date range or a conference and press Run."
+							)}
 						</Notice>
 						{log}
 					</main>

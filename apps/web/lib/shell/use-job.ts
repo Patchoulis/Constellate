@@ -24,6 +24,9 @@ export interface Job {
 	error: string | null;
 	/** the step of the run being made and how far it has got, while one is (engine `Status.step`) */
 	step?: RunStep | null;
+	/** whether this job was seen making a run (it reported a step): naming a run's communities again, or reading its
+	 *  declarations, finishes as that run too, but does not make it */
+	making?: boolean;
 }
 
 export type Event =
@@ -41,6 +44,11 @@ export function finishedRun(before: Job, status: Status): string | null {
 	return status.outcome?.kind === "run" ? status.outcome.run : null;
 }
 
+/** Whether the run that `finishedRun` opens was made by the job that finished, not only named again or re-read. */
+export function madeRun(before: Job, status: Status): boolean {
+	return finishedRun(before, status) !== null && (before.making === true || status.step != null);
+}
+
 /**
  * Is this a feature's job rather than a run (or the declarations of one)? A feature shows its own job's progress
  * and failure beside the button that started it (lib/shell/use-followed-job.ts); the run's log keeps its lines, but its
@@ -54,15 +62,18 @@ export function isFeatureJob(status: Pick<Status, "feature" | "outcome">): boole
 export function reduce(job: Job, event: Event): Job {
 	switch (event.type) {
 		case "started":
-			return { state: "running", log: [], error: null };
+			return { state: "running", log: [], error: null, making: false };
 		case "reported": {
 			const status = event.status;
 			// a feature's failure is said by its own section, not under "New run" as if a run had failed
 			const said = isFeatureJob(status) ? null : status.error;
 			// the step of the run being made, while it is made (shown by the folded log, components/shell/workspace.tsx)
 			const step = status.state === "running" ? (status.step ?? null) : null;
+			// a job seen running and reporting a step makes a run; what a job did before this page saw it run is unknown
+			const going = job.state === "running" && job.making === true;
+			const making = status.state === "running" ? going || step !== null : going;
 			// the poller's look carries the job's whole log (lib/shell/use-followed-job.ts `createPoller`)
-			return { state: status.state, log: status.log, error: said, step };
+			return { state: status.state, log: status.log, error: said, step, making };
 		}
 		case "unanswered":
 			return { ...job, error: event.error };
@@ -74,7 +85,7 @@ export function reduce(job: Job, event: Event): Job {
  * which the features' sections share: the engine is asked once however many of them look, and an engine that does
  * not answer is asked less and less often (the poller's backoff).
  */
-export function useJob(onDone: (run: string) => void, ask: StartDeps["ask"]) {
+export function useJob(onDone: (run: string, made: boolean) => void, ask: StartDeps["ask"]) {
 	const [job, dispatch] = useReducer(reduce, { state: "idle", log: [], error: null });
 	// the job as this page last saw it, for telling a finish it watched from one it only heard of
 	const last = useRef<Job>(job);
@@ -85,8 +96,9 @@ export function useJob(onDone: (run: string) => void, ask: StartDeps["ask"]) {
 	const listen = useCallback((look: Look) => {
 		if (!("seen" in look)) return dispatch({ type: "unanswered", error: look.unanswered });
 		const run = finishedRun(last.current, look.seen);
+		const made = madeRun(last.current, look.seen);
 		dispatch({ type: "reported", status: look.seen });
-		if (run) done.current(run);
+		if (run) done.current(run, made);
 	}, []);
 
 	// Pick up a job that was already running when the page opened.

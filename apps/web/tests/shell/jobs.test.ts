@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Status } from "@rp/contracts";
-import { type Job, finishedRun, isFeatureJob, reduce } from "@/lib/shell/use-job";
+import { type Job, finishedRun, isFeatureJob, madeRun, reduce } from "@/lib/shell/use-job";
 import { claims, runSubject, started, step } from "@/lib/shell/use-followed-job";
 
 const status = (state: Status["state"], more: Partial<Status> = {}): Status => ({
@@ -26,6 +26,30 @@ test("a run is opened only when this page saw its job go from running to done", 
 	// the page opens, sees the run under way, then sees it finish
 	const seen = reduce(idle, { type: "reported", status: status("running") });
 	assert.equal(finishedRun(seen, made), "neurips2025");
+});
+
+test("a run is said to be made only by a job seen making it, not by naming its communities again", () => {
+	const made = status("done", { outcome: { kind: "run", run: "neurips2025" } });
+	const embedding = { step: "embed" as const, title: "Embed", number: 3, of: 10, count: null, detail: null };
+	// started here, seen at a step of the run, then done
+	const making = reduce(reduce(idle, { type: "started" }), { type: "reported", status: status("running", { step: embedding }) });
+	assert.equal(making.making, true);
+	// a step that no longer says where it is does not undo it
+	const later = reduce(making, { type: "reported", status: status("running", { step: null }) });
+	assert.equal(madeRun(later, made), true);
+	// naming again (or reading declarations): running, never at a step of the run
+	const naming = reduce(reduce(idle, { type: "started" }), { type: "reported", status: status("running", { kind: "naming" }) });
+	assert.equal(madeRun(naming, made), false);
+	assert.equal(finishedRun(naming, made), "neurips2025", "it still opens the run");
+	// a job that had finished before this page looked made nothing this page saw
+	assert.equal(madeRun(idle, made), false);
+	// the next job starts knowing nothing of the last one
+	const done = reduce(later, { type: "reported", status: made });
+	assert.equal(done.making, true);
+	assert.equal(reduce(done, { type: "started" }).making, false);
+	assert.equal(reduce(done, { type: "reported", status: status("running") }).making, false, "another window's job, not seen making a run");
+	// a feature's job opens nothing, so makes nothing
+	assert.equal(madeRun(making, status("done", { outcome: { kind: "nothing" } })), false);
 });
 
 test("a feature's finished job, or one that made nothing, opens no run", () => {
