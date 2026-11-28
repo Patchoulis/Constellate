@@ -527,7 +527,7 @@ export function CommunityStances({ run, scope, onOpenPaper }: { run: string; sco
 
 	const found = ready(listing);
 	if (listing.status === "failed")
-		return <p className="font-ui text-xs text-destructive">The questions could not be read: {listing.error}</p>;
+		return <p className="px-4 pb-4 font-ui text-xs leading-relaxed text-destructive">The questions could not be read: {listing.error}</p>;
 	if (!found) return null; // not loaded yet
 	return (
 		<section className="flex flex-col gap-3 px-4 pb-4">
