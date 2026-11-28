@@ -103,10 +103,10 @@ export default function Home() {
 		setTold(null);
 		setFailed(null);
 		try {
-			const estimate = await api.describeEstimate(name, true);
+			const estimate = await api.describeEstimate(name, "again");
 			const title = ready(runs)?.find((run) => run.name === name)?.title ?? name;
-			if (!(await askNaming(estimate, true, title))) return;
-			await api.describeRun(name, namingRequest(estimate, true));
+			if (!(await askNaming(estimate, "again", title))) return;
+			await api.describeRun(name, namingRequest(estimate, "again"));
 			follow();
 		} catch (error) {
 			setFailed((error as Error).message);

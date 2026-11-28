@@ -5,7 +5,7 @@ import type { Catalog, CatalogItem, DescribeEstimate, Settings } from "@rp/contr
 import { SETTING_LABELS } from "@/components/shell/settings-dialog";
 import { useChoose } from "@/components/shell/confirm";
 import { costTitle, costWords } from "@/lib/cost";
-import { namingWords } from "@/lib/features/writing/naming";
+import { type NamingMode, namingWords } from "@/lib/features/writing/naming";
 import type { Answer, Asking, NamingOffer } from "@/lib/shell/run-replace";
 import { acceptedWords, replaceWords } from "@/lib/shell/run-replace";
 
@@ -90,27 +90,36 @@ export function useAskRun(catalog: Catalog | undefined): (asking: Asking) => Pro
 	);
 }
 
-/** Ask before naming a made run's communities: how many there are, how many are named, and the cost. */
-export function useAskNaming(): (estimate: DescribeEstimate, redo: boolean, title: string) => Promise<boolean> {
+/** The dialog's title and its paid button, for what is asked. */
+const NAMING_ASKED: Record<NamingMode, { title: (run: string) => string; go: string }> = {
+	name: { title: (run) => `Name the communities of "${run}"?`, go: "Name them" },
+	sections: { title: (run) => `Rewrite the plain descriptions of "${run}" with sections and citations?`, go: "Rewrite them" },
+	again: { title: (run) => `Name every community of "${run}" again?`, go: "Name them again" },
+};
+
+/**
+ * Ask before naming a made run's communities (or rewriting their plain descriptions with sections, or naming all
+ * again): how many there are, how many are named or plain, and the cost.
+ */
+export function useAskNaming(): (estimate: DescribeEstimate, mode: NamingMode, title: string) => Promise<boolean> {
 	const choose = useChoose();
 	return useCallback(
-		async (estimate: DescribeEstimate, redo: boolean, title: string) => {
-			const words = namingWords(estimate);
+		async (estimate: DescribeEstimate, mode: NamingMode, title: string) => {
+			const words = namingWords(estimate, undefined, undefined, mode);
 			if (!estimate.api_key_set) {
 				await choose({
-					title: `The communities of "${title}" cannot be named now`,
+					title: `The communities of "${title}" cannot be ${mode === "sections" ? "rewritten" : "named"} now`,
 					cancel: "Close",
 					choices: [],
 					body: <p>No key is set for {estimate.model}&apos;s provider. Settings, Language model, says which variable to set.</p>,
 				});
 				return false;
 			}
+			const asked = NAMING_ASKED[mode];
 			const answer = await choose({
-				title: redo ? `Name every community of "${title}" again?` : `Name the communities of "${title}"?`,
+				title: asked.title(title),
 				cancel: words.nothing ? "Close" : "Cancel",
-				choices: words.nothing
-					? []
-					: [{ value: "yes", label: redo ? "Name them again" : "Name them", title: costTitle(estimate.estimate) }],
+				choices: words.nothing ? [] : [{ value: "yes", label: asked.go, title: costTitle(estimate.estimate) }],
 				body: (
 					<>
 						<p className="text-foreground">{words.counted}</p>
@@ -120,7 +129,13 @@ export function useAskNaming(): (estimate: DescribeEstimate, redo: boolean, titl
 								It costs {words.cost} (an estimate): no call is started that could pass the most shown.
 							</p>
 						)}
-						{redo && !words.nothing && <p>The names and descriptions they have now are replaced by the new ones.</p>}
+						{mode === "again" && !words.nothing && <p>The names and descriptions they have now are replaced by the new ones.</p>}
+						{mode === "sections" && !words.nothing && (
+							<p>
+								Each plain description is replaced by three sections (Problem, Shared methods, What sets it apart), each citing the papers
+								it rests on. A section is shown only when its quotes are found in at least 2 of the community&apos;s papers.
+							</p>
+						)}
 					</>
 				),
 			});

@@ -7,6 +7,7 @@ import {
 	ChevronLeft,
 	Eye,
 	EyeOff,
+	ListTree,
 	Loader2,
 	Square,
 	Star,
@@ -18,8 +19,9 @@ import {
 import type { Community, GraphNode, RunResult } from "@rp/contracts";
 import { CommunityAsk } from "@/components/features/answers/ask";
 import { useAskNaming } from "@/components/shell/run-dialogs";
+import { EvidenceLink } from "@/components/reader/evidence-link";
 import { api } from "@/lib/net/api";
-import { namingRequest, unnamedOf } from "@/lib/features/writing/naming";
+import { isPlain, leftOutWords, namingRequest, plainOf, sectionsOf, unnamedOf } from "@/lib/features/writing/naming";
 import { elsewhereLine, useFollowedJob } from "@/lib/shell/use-followed-job";
 import { AcceptanceTag, AiTag } from "@/components/brand";
 import { MathText } from "@/components/math-text";
@@ -216,15 +218,60 @@ function Stat({ label, title, children }: { label: string; title?: string; child
 	);
 }
 
+/**
+ * A community's description in its sections: each heading, its text, and under it the papers it cites, each a row
+ * with the paper's title (a click opens the reader at the quoted words) and the quote, in the paper's own words.
+ */
+function Sections({ community }: { community: Community }) {
+	const sections = sectionsOf(community);
+	const leftOut = leftOutWords(community.sections_left_out);
+	return (
+		<div className="flex min-w-0 flex-col gap-4">
+			{sections?.map((section) => (
+				<section key={section.heading} className="min-w-0">
+					<Heading className="mb-1">{section.heading}</Heading>
+					<p className="font-sans text-base text-foreground">{section.text}</p>
+					<ul className="mt-1.5 flex flex-col gap-1.5" aria-label={`Papers cited for ${section.heading}`}>
+						{section.cites.map((cite, index) => (
+							<li key={`${cite.evidence.paper}-${index}`} className="min-w-0 border-l-2 pl-2 [overflow-wrap:anywhere]">
+								<EvidenceLink
+									evidence={cite.evidence}
+									label={cite.title.trim() || cite.evidence.paper}
+									className="flex flex-wrap leading-snug [&_button]:text-left"
+								/>
+								<p className="text-xs leading-snug text-muted-foreground italic">&ldquo;{cite.evidence.quote}&rdquo;</p>
+							</li>
+						))}
+					</ul>
+				</section>
+			))}
+			{!sections && <p className="text-xs text-muted-foreground">None of its description&apos;s sections could be shown.</p>}
+			{leftOut && <p className="text-xs text-muted-foreground">{leftOut}</p>}
+		</div>
+	);
+}
+
+/** What the run is, for what describing it again asks first. */
+interface Described {
+	run: string;
+	/** the run's title, said in what is asked first */
+	title: string;
+	communities: Community[];
+	/** the run's communities were described again: read them again */
+	onNamed: () => void;
+}
+
 function Detail({
 	node,
 	marks,
+	described,
 	onSelect,
 	onOverview,
 	onOpenPaper,
 }: {
 	node: CommunityNode;
 	marks: MarksOf;
+	described: Described;
 	onSelect: (node: CommunityNode) => void;
 	onOverview: (node: CommunityNode) => void;
 	onOpenPaper: (id: string) => void;
@@ -236,8 +283,13 @@ function Detail({
 				<Telescope />
 				Overview: methods, findings, directions
 			</Button>
-			{community.description ? (
-				<p className="font-sans text-base text-foreground">{community.description}</p>
+			{community.sections !== undefined ? (
+				<Sections community={community} />
+			) : community.description ? (
+				<div className="flex flex-col items-start gap-1.5">
+					<p className="font-sans text-base text-foreground">{community.description}</p>
+					{isPlain(community) && <RewriteSections {...described} compact />}
+				</div>
 			) : (
 				<p className="text-xs text-muted-foreground">
 					No written description yet. &ldquo;Name the communities&rdquo;, over the list of all communities, names and describes them with
@@ -489,9 +541,9 @@ function NameCommunities({
 		setRefused(null);
 		setAsking(true);
 		try {
-			const estimate = await api.describeEstimate(run);
-			if (!(await askNaming(estimate, false, title))) return;
-			await start(async () => (await api.describeRun(run, namingRequest(estimate, false))).id);
+			const estimate = await api.describeEstimate(run, "name");
+			if (!(await askNaming(estimate, "name", title))) return;
+			await start(async () => (await api.describeRun(run, namingRequest(estimate, "name"))).id);
 		} catch (error) {
 			setRefused((error as Error).message);
 		} finally {
@@ -544,6 +596,81 @@ function NameCommunities({
 	);
 }
 
+/**
+ * "Rewrite with sections and citations", for a run with communities described before sections were asked for: a
+ * small button under such a description (`compact`), and a line over the list of all communities. What rewriting
+ * them would cost is shown first (the naming dialog, lib/features/writing/naming.ts), the click starts the job,
+ * which is followed with its progress and can be stopped, and the run's communities are read again when it ends.
+ */
+function RewriteSections({ run, title, communities, onNamed, compact = false }: Described & { compact?: boolean }) {
+	const askNaming = useAskNaming();
+	const [asking, setAsking] = useState(false);
+	const [refused, setRefused] = useState<string | null>(null);
+	const { job, elsewhere, start } = useFollowedJob(() => onNamed(), `sectioning:${run}`);
+	const { communities: all, plain } = plainOf(communities);
+	const running = job.state === "running" ? job : null;
+	if (plain === 0 && !running && job.state !== "failed") return null;
+	const rewrite = async () => {
+		setRefused(null);
+		setAsking(true);
+		try {
+			const estimate = await api.describeEstimate(run, "sections");
+			if (!(await askNaming(estimate, "sections", title))) return;
+			await start(async () => (await api.describeRun(run, namingRequest(estimate, "sections"))).id);
+		} catch (error) {
+			setRefused((error as Error).message);
+		} finally {
+			setAsking(false);
+		}
+	};
+	const button = (
+		<Button
+			variant={compact ? "ghost" : "outline"}
+			className="h-auto min-h-7 px-2 py-1 text-left text-xs whitespace-normal"
+			disabled={asking || job.state === "starting" || elsewhere !== null}
+			title={`Shows what rewriting the ${count(plain, "plain description")} of this run with sections and citations would cost, before anything is asked`}
+			onClick={() => void rewrite()}
+		>
+			{asking || job.state === "starting" ? <Loader2 className="animate-spin" /> : <ListTree />}
+			Rewrite with sections and citations
+		</Button>
+	);
+	return (
+		<div className={cn("flex min-w-0 flex-col items-start gap-1.5 text-xs", !compact && "border-b px-3 py-2")}>
+			{running ? (
+				<div className="flex w-full items-center gap-2 text-muted-foreground" role="status">
+					<Loader2 className="size-3.5 shrink-0 animate-spin" />
+					<span className="min-w-0 flex-1">
+						Rewriting with sections and citations
+						{running.progress ? `: ${running.progress.done.toLocaleString()} of ${count(running.progress.of, "call")} done` : "…"}
+					</span>
+					<Button
+						variant="ghost"
+						size="icon"
+						title="Stop: what is under way is finished, nothing new is asked; what was rewritten stays"
+						onClick={() => void api.cancelJob(running.id).catch(() => undefined)}
+					>
+						<Square />
+					</Button>
+				</div>
+			) : (
+				<>
+					{!compact && (
+						<span className="text-muted-foreground">
+							{plain.toLocaleString()} of {count(all, "community", "communities")} {plain === 1 ? "has" : "have"} a plain description,
+							written before sections and citations.
+						</span>
+					)}
+					{button}
+				</>
+			)}
+			{job.state === "failed" && <p className="text-destructive">They were not all rewritten: {job.error}</p>}
+			{refused && <p className="text-destructive">{refused}</p>}
+			{elsewhere && !running && <p className="text-muted-foreground">{elsewhereLine(elsewhere)}</p>}
+		</div>
+	);
+}
+
 /** The Communities tab: the list of communities, or one community in detail. */
 function Communities({
 	result,
@@ -571,6 +698,7 @@ function Communities({
 	onOverview: (node: CommunityNode) => void;
 	onOpenPaper: (id: string) => void;
 }) {
+	const described: Described = { run: result.name, title, communities: result.communities, onNamed };
 	return (
 		<>
 			<div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
@@ -600,7 +728,14 @@ function Communities({
 			{selected ? (
 				// one community's sections start afresh for another: nothing of the last one is shown under its name
 				<div key={`${result.name}/${selected.community.tree_path}`} className="min-h-0 flex-1 overflow-y-auto">
-					<Detail node={selected} marks={marks} onSelect={onSelect} onOverview={onOverview} onOpenPaper={onOpenPaper} />
+					<Detail
+						node={selected}
+						marks={marks}
+						described={described}
+						onSelect={onSelect}
+						onOverview={onOverview}
+						onOpenPaper={onOpenPaper}
+					/>
 					<CommunityReviews run={result.name} treePath={selected.community.tree_path} onOpenPaper={onOpenPaper} />
 					<CommunityStances
 						key={`${result.name}/${selected.community.tree_path}`}
@@ -632,6 +767,7 @@ function Communities({
 						</Button>
 					</div>
 					<NameCommunities run={result.name} title={title} communities={result.communities} onNamed={onNamed} />
+					<RewriteSections {...described} />
 					<div className="min-h-0 flex-1 overflow-y-auto p-2">
 						<List nodes={roots} sort={sort} onSelect={onSelect} />
 					</div>

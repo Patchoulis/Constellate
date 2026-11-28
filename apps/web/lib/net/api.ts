@@ -35,6 +35,7 @@ import type {
 	ClassifyCitationsRequest,
 	PaperCitationContexts,
 } from "@rp/contracts";
+import { estimateQuery, type NamingMode } from "@/lib/features/writing/naming";
 import { changesSomething, csrfOf, signInRedirect, withCsrf } from "@/lib/net/engine";
 import { answered, currentSignal, POLLING, QUICK, READS_PAPERS, request, STARTS_JOB, type Patience } from "@/lib/net/request";
 
@@ -292,9 +293,10 @@ export const api = {
 		call<{ ok: true; forgotten: boolean }>(`${run(name)}/answers/${encodeURIComponent(id)}/redo`, { method: "POST" }),
 	/** what naming a run made with the settings would cost at most, before it is made: nothing is sent */
 	describeBeforeRun: () => call<import("@rp/contracts").DescribeBeforeRun>("/api/describe/estimate"),
-	/** what naming a made run's communities (all again with `redo`) would cost: nothing is sent */
-	describeEstimate: (name: string, redo = false) =>
-		call<import("@rp/contracts").DescribeEstimate>(`${run(name)}/describe/estimate${redo ? "?redo=true" : ""}`),
+	/** what naming a made run's communities would cost (`mode`: as usual, the plain descriptions again with sections,
+	 *  or all again): nothing is sent */
+	describeEstimate: (name: string, mode: NamingMode = "name") =>
+		call<import("@rp/contracts").DescribeEstimate>(`${run(name)}/describe/estimate${estimateQuery(mode)}`),
 	/** name them within the most shown, as the one job */
 	describeRun: (name: string, request: import("@rp/contracts").DescribeRequest) =>
 		starting<import("@rp/contracts").DescribeStarted>(`${run(name)}/describe`, send("POST", request)),

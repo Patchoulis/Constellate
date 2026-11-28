@@ -5,6 +5,16 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- A community's description is now in three sections with headings: Problem, Shared methods and What sets it
+  apart. Under each, the papers it rests on are listed with the words quoted from them: click one to open the paper
+  at those words. A section is shown only when its quotes were found in at least two of the community's papers, and
+  the panel says how many were left out.
+- Communities described before this keep their one-paragraph description and are not asked about again. "Rewrite
+  with sections and citations", under such a description and over the list of communities, shows what rewriting
+  them would cost first, then rewrites them, with its progress and a way to stop.
+
 ## [0.2.2] - 2026-11-28
 
 ### Added
