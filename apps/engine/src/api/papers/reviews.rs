@@ -31,7 +31,7 @@ use crate::analysis::reviews::{
 use crate::api::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::library::core::store::read_json;
 use crate::library::{Keeping, KeptReviews, Library, Ratings};
-use crate::text::reviews::discussion::{Discussion, read_discussion};
+use crate::text::reviews::discussion::{Discussion, Venue, read_discussion};
 use crate::text::reviews::{MAX_TEXT, forum, read_ratings};
 
 /// The routes of this module, for [`crate::api::routes::table`].
@@ -131,6 +131,12 @@ async fn read(
         let paper = library.paper(&paper_id)?.ok_or(ApiError::NotFound)?;
         let as_it_is = |outcome| -> Result<Read, ApiError> {
             let (ratings, reviews) = library.ratings_and_reviews(&paper_id)?;
+            // the scale of each field as the venue scores it: the paper id's venue, else the kept page's
+            let venue = match &reviews {
+                Some(kept) => venue_of(&paper_id, &kept.discussion),
+                None => Venue::of_paper(&paper_id),
+            };
+            let ratings = ratings.map(|ratings| ratings.with_scales(venue.as_ref()));
             Ok(Read { outcome, ratings, reviews: reviews.map(PaperReviews::of) })
         };
         let discussion = paper.url.as_deref().and_then(forum);
@@ -347,6 +353,12 @@ mod tests {
         assert_eq!(read["outcome"], "kept");
         assert_eq!(read["ratings"]["reviews"], 2); // the old route's answer, unchanged
         assert_eq!(read["ratings"]["ratings"]["Rating"]["values"], json!([8, 6]));
+        // with the scale of the venue the paper's id names, added as served
+        assert_eq!(
+            read["ratings"]["ratings"]["Rating"]["scale"],
+            json!({"minimum": 1, "maximum": 10, "source": "assumed"})
+        );
+        crate::api::contract::assert_fits("FieldRatings", &read["ratings"]["ratings"]["Rating"], &[]);
         let (_, kept) = ask(&router, "GET", "/api/papers/iclr-2024-1/reviews", None).await;
         assert_eq!(kept["address"], FORUM);
         assert_eq!(kept["notes"].as_array().unwrap().len(), 5);

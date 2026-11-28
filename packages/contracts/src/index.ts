@@ -471,7 +471,19 @@ export interface Ratings {
 	/** were the reviews told apart by their headings? If not, the count is a guess and the scores may include quoted ones */
 	exact: boolean;
 	/** field ("Rating", "Quality", "Soundness", ...) -> one score per review; overall judgement first */
-	ratings: Record<string, { values: number[]; mean: number; /** what each score means, e.g. "fair" */ meanings: string[] }>;
+	ratings: Record<string, FieldRatings>;
+}
+
+/** One field's scores in `Ratings`. */
+export interface FieldRatings {
+	/** one score per review */
+	values: number[];
+	mean: number;
+	/** what each score means, e.g. "fair" */
+	meanings: string[];
+	/** the scale the venue scores the field on, added by the engine as it serves the ratings (never kept); absent for
+	 *  a field the engine does not know */
+	scale?: Scale;
 }
 
 /** A stretch of a kept reviews page's text, in characters (Unicode code points, as `Array.from(text)` counts
