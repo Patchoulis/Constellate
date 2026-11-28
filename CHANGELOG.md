@@ -7,6 +7,7 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Menu entries and warnings that stand alone begin with a capital: "Medium effort", "Set ANTHROPIC_API_KEY", "No filter".
 - Communities are ordered by "Uniqueness" in place of "Saturation" and "Tightness": how far a community's papers are,
   on average, from what the community is about (a cosine distance). Low means its papers all do much the same thing;
   high means the work in it is more varied.

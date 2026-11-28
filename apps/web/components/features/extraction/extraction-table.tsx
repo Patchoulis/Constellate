@@ -294,7 +294,7 @@ function Grid({
 					value={filter?.column ?? ""}
 					onChange={(event) => setFilter(event.target.value === "" ? null : { column: Number(event.target.value), key: "stated" })}
 				>
-					<option value="">no filter</option>
+					<option value="">No filter</option>
 					{columns.map((column, index) => (
 						<option key={column.id} value={index}>
 							{column.label}
