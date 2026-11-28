@@ -250,7 +250,7 @@ export function citationsNote(community: Community): string {
 	if (!read) return "None of its papers' reference lists has been read yet.";
 	return (
 		`${count(read.cited_by_inside, "citation")} of the ${count(read.cited_by, "citation")} come from its own papers. ` +
-		`${count(read.cites_in_library, "work")} of the ${count(read.cites, "work")} it cites are in your library.`
+		`${count(read.cites_in_library, "work")} of the ${count(read.cites, "work")} it cites ${read.cites_in_library === 1 ? "is" : "are"} in your library.`
 	);
 }
 

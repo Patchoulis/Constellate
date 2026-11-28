@@ -1046,6 +1046,68 @@ pub(crate) mod tests {
         assert!(fake.count("/gone") >= 1, "the keys were asked for again");
     }
 
+    /// Google as the provider: its discovery document and keys at its own addresses.
+    struct Google(Vec<Jwk>);
+
+    impl Provider for Google {
+        fn get(&self, url: &Url) -> Result<Answer, Unreachable> {
+            let body = match url.as_str() {
+                "https://accounts.google.com/.well-known/openid-configuration" => json!({
+                    "issuer": "https://accounts.google.com",
+                    "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+                    "token_endpoint": "https://oauth2.googleapis.com/token",
+                    "jwks_uri": "https://www.googleapis.com/oauth2/v3/certs",
+                    "code_challenge_methods_supported": ["plain", "S256"],
+                }),
+                "https://www.googleapis.com/oauth2/v3/certs" => json!({ "keys": self.0 }),
+                _ => return Ok(Answer { status: 404, body: Vec::new() }),
+            };
+            Ok(Answer { status: 200, body: body.to_string().into_bytes() })
+        }
+
+        fn post_form(&self, _: &Url, _: &[(&str, &str)]) -> Result<Answer, Unreachable> {
+            Ok(Answer { status: 404, body: Vec::new() })
+        }
+    }
+
+    #[test]
+    fn the_sign_in_button_says_google_for_google_and_the_issuers_host_otherwise() {
+        let named = |issuer: &str| {
+            let client = Client { issuer: issuer.to_owned(), ..client() };
+            Oidc::new(client, REDIRECT.to_owned(), Arc::new(Fake::new(&[]))).name()
+        };
+        assert_eq!(named("https://accounts.google.com"), "Google");
+        assert_eq!(named("https://accounts.google.com/"), "Google");
+        assert_eq!(named(ISSUER), "provider.test");
+        assert_eq!(named("https://login.example.org/realms/papers"), "login.example.org");
+        assert_eq!(named("not an address"), "");
+    }
+
+    #[test]
+    fn googles_tokens_may_name_the_issuer_without_its_scheme_and_its_addresses_are_compared_in_any_case() {
+        let signer = rsa_signer(0, "g1");
+        let client = Client { issuer: super::super::GOOGLE.to_owned(), ..client() };
+        let google = Oidc::new(client, REDIRECT.to_owned(), Arc::new(Google(vec![signer.public.clone()])));
+        let now = Instant::now();
+        let with = |issuer: &str, email: &str| {
+            let mut claims = claims("n");
+            claims["iss"] = json!(issuer);
+            claims["email"] = json!(email);
+            google.validate(&signer.sign(&claims), "n", now)
+        };
+        assert_eq!(with("https://accounts.google.com", "Owner.Name@example.org"), Ok("Owner.Name@example.org".into()));
+        assert_eq!(with("accounts.google.com", "Owner.Name@example.org"), Ok("Owner.Name@example.org".into()));
+        // Gmail addresses are not case sensitive: the owner in another case is the owner, as Google sends it
+        assert_eq!(with("accounts.google.com", "owner.name@EXAMPLE.org"), Ok("owner.name@EXAMPLE.org".into()));
+        assert_eq!(with("https://accounts.google.com", "ownername@example.org"), Err(OidcError::NotTheOwner));
+        for other in ["google.com", "http://accounts.google.com", "https://accounts.google.com.evil.test"] {
+            assert_eq!(with(other, "Owner.Name@example.org"), Err(OidcError::Issuer), "{other}");
+        }
+        // and the discovered authorization endpoint is Google's
+        let begun = google.begin(now).unwrap();
+        assert!(begun.location.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"), "{}", begun.location);
+    }
+
     #[test]
     fn the_owners_address_is_compared_exactly_but_for_the_case_of_its_domain() {
         let owner = Owner::parse(" Owner.Name@Example.ORG ").unwrap();

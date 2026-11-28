@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Evidence, StanceCostEstimate, StanceFilter, StancePlaced, StanceResult, StanceRow } from "@rp/contracts";
 import {
+	abstractOnlyLine,
 	breakdown,
 	costLine,
 	countsLine,
 	coverageLine,
+	rowsOf,
 	skippedLine,
 	stanceColouring,
 	starter,
@@ -111,4 +113,24 @@ test("each group's papers are found on the graph by id, in the group's hue", () 
 	assert.deepEqual(contradicts && [contradicts.shown, contradicts.hue], [0, 0], "a paper not in the run is not drawn, and counted apart");
 	assert.equal(drawn.legend.find((entry) => entry.name === "Not verified")?.hue, null, "grey: not counted for or against");
 	assert.equal(starter("synthetic data"), "Does synthetic data help?");
+});
+
+test("the papers read from their abstract alone are counted as a weaker reading, and none is said as nothing", () => {
+	assert.equal(abstractOnlyLine(rows), '6 papers read from the abstract only (no PDF kept): a weaker reading, marked "abstract".');
+	const one = [{ ...rows[0] }, { ...rows[1], read: "pdf" as const }];
+	assert.equal(abstractOnlyLine(one), '1 paper read from the abstract only (no PDF kept): a weaker reading, marked "abstract".');
+	assert.equal(abstractOnlyLine(rows.map((each) => ({ ...each, read: "pdf" as const }))), null);
+	assert.equal(abstractOnlyLine([]), null);
+});
+
+test("a group's rows are the papers placed in it, in their order", () => {
+	assert.deepEqual(
+		rowsOf(rows, "supports").map((each) => each.paper),
+		["a", "b"],
+	);
+	assert.deepEqual(
+		rowsOf(rows, "not_verified").map((each) => each.paper),
+		["f"],
+	);
+	assert.deepEqual(rowsOf(rows.slice(0, 2), "contradicts"), []);
 });

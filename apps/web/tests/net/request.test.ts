@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import {
 	answered,
+	idempotent,
+	problemMessage,
+	problemOf,
 	POLLING,
 	QUICK,
 	READS_PAPERS,
@@ -248,4 +251,48 @@ test("a failed load keeps the request's problem beside its words", async () => {
 	);
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.deepEqual(events, [{ kind: "refuse", error: "not found", problem: { kind: "refused", status: 404, error: "not found" } }]);
+});
+
+test("every problem is said in words a person reads, with its seconds or its status", () => {
+	assert.equal(
+		problemMessage({ kind: "unreachable" }),
+		"Constellate could not be reached: it may have stopped. Close it and open it again.",
+	);
+	assert.equal(problemMessage({ kind: "timeout", seconds: 60 }), "Constellate did not answer within 60 seconds.");
+	assert.equal(problemMessage({ kind: "aborted" }), "The request was called off.");
+	assert.equal(
+		problemMessage({ kind: "refused", status: 408, error: null }),
+		"Constellate stopped working on this request: it took too long.",
+	);
+	// the engine's own words win over the status's
+	assert.equal(
+		problemMessage({ kind: "refused", status: 408, error: "the request took too long to arrive" }),
+		"the request took too long to arrive",
+	);
+	assert.equal(problemMessage({ kind: "refused", status: 500, error: null }), "Constellate answered with error 500.");
+	assert.equal(
+		problemMessage({ kind: "unreadable", status: 200, why: "cut_off" }),
+		"Constellate's answer was cut off before its end (status 200).",
+	);
+	assert.equal(
+		problemMessage({ kind: "unreadable", status: 200, why: "not_json" }),
+		"Constellate's answer could not be read: it is not JSON (status 200).",
+	);
+});
+
+test("a request's problem is read back from what was thrown, and nothing else is taken for one", () => {
+	const problem: RequestProblem = { kind: "refused", status: 409, error: "busy" };
+	const error = new RequestError(problem);
+	assert.deepEqual(problemOf(error), problem);
+	assert.equal(error.status, 409);
+	assert.equal(error.name, "RequestError");
+	assert.equal(new RequestError({ kind: "timeout", seconds: 20 }).status, null, "no status when nothing came");
+	assert.equal(problemOf(new Error("busy")), null);
+	assert.equal(problemOf("busy"), null);
+	assert.equal(problemOf(undefined), null);
+});
+
+test("only reading methods may be sent twice, whatever their case, and no method means GET", () => {
+	for (const method of ["GET", "get", "HEAD", "head", undefined]) assert.equal(idempotent(method), true, String(method));
+	for (const method of ["POST", "PUT", "DELETE", "PATCH", "post", "OPTIONS"]) assert.equal(idempotent(method), false, method);
 });

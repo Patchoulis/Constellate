@@ -1,7 +1,18 @@
 /** The interface's own choices: the key that selects papers, whether marks are shown, and what storage gives back. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { INITIAL_PREFS, onMac, parsePrefs, SELECT_KEYS, selectKeyHeld, selectKeyName, serialisePrefs, type Prefs } from "@/lib/ui/prefs";
+import {
+	INITIAL_PREFS,
+	onMac,
+	parsePrefs,
+	PREFS_KEY,
+	SELECT_KEYS,
+	selectKeyHeld,
+	selectKeyName,
+	serialisePrefs,
+	setPrefs,
+	type Prefs,
+} from "@/lib/ui/prefs";
 
 const keys = (held: Partial<Record<"ctrlKey" | "metaKey" | "shiftKey" | "altKey", boolean>>) => ({
 	ctrlKey: false,
@@ -63,4 +74,33 @@ test("the initial choices are a key every keyboard has, with marks shown", () =>
 	assert.ok(SELECT_KEYS.includes(INITIAL_PREFS.selectKey));
 	assert.equal(INITIAL_PREFS.marksShown, true);
 	assert.equal(INITIAL_PREFS.showMarksOnMark, true);
+});
+
+test("a change of the choices is laid over the ones remembered and remembered with them, even after storage refused one", () => {
+	const kept = new Map<string, string>([[PREFS_KEY, serialisePrefs({ ...INITIAL_PREFS, selectKey: "shift" })]]);
+	const working = {
+		getItem: (key: string) => kept.get(key) ?? null,
+		setItem: (key: string, value: string) => void kept.set(key, value),
+	};
+	const refusing = {
+		getItem: () => null,
+		setItem: () => {
+			throw new Error("the quota is exceeded");
+		},
+	};
+	const global = globalThis as { window?: unknown };
+	const before = global.window;
+	try {
+		global.window = { localStorage: working };
+		setPrefs({ marksShown: false });
+		assert.deepEqual(parsePrefs(kept.get(PREFS_KEY)), { selectKey: "shift", marksShown: false, showMarksOnMark: true });
+		// storage switched off: the change still holds in the window, and is written with the next one
+		global.window = { localStorage: refusing };
+		setPrefs({ showMarksOnMark: false });
+		global.window = { localStorage: working };
+		setPrefs({ selectKey: "alt" });
+		assert.deepEqual(parsePrefs(kept.get(PREFS_KEY)), { selectKey: "alt", marksShown: false, showMarksOnMark: false });
+	} finally {
+		global.window = before;
+	}
 });

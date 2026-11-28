@@ -12,6 +12,7 @@ import {
 	byPart,
 	costLine,
 	costNote,
+	explainable,
 	garbledNote,
 	leftOutNote,
 	placeKey,
@@ -170,4 +171,11 @@ test("an explanation shows the paper's statements with their places and backgrou
 	assert.doesNotMatch(background, /<button/);
 	// the paper's words are what a citation shows on hover
 	assert.match(html, /where ∆Wi is the update of task i/);
+});
+
+test("passages of text, equations, captions, footnotes and fragments can be explained; titles and headings cannot", () => {
+	for (const kind of ["text", "equation", "figure_caption", "table_caption", "footnote", "fragment"] as const) {
+		assert.equal(explainable(kind), true, kind);
+	}
+	for (const kind of ["title", "heading"] as const) assert.equal(explainable(kind), false, kind);
 });

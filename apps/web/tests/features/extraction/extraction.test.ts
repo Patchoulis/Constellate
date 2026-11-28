@@ -6,6 +6,7 @@ import {
 	cellText,
 	columnId,
 	coverage,
+	evidencePlace,
 	filterOptions,
 	filterRows,
 	LEFT_OUT,
@@ -15,6 +16,7 @@ import {
 	paperGroups,
 	sortRows,
 	toCsv,
+	valueText,
 } from "@/lib/features/extraction/extraction";
 
 const evidence = (paper: string, quote: string, page = 3): Evidence => ({
@@ -173,4 +175,36 @@ test("a new column gets an id of its own, and columns move within the list", () 
 	assert.deepEqual(moved(["a", "b", "c"], 0, 1), ["b", "a", "c"]);
 	assert.deepEqual(moved(["a", "b", "c"], 0, -1), ["a", "b", "c"]);
 	assert.deepEqual(moved(["a", "b", "c"], 2, 5), ["a", "b", "c"]);
+});
+
+test("a value is said with only what it has: a number without unit or context is the number as written", () => {
+	// the engine sends an empty unit or context when the paper gives none
+	assert.equal(valueText({ kind: "number", written: "1.2e3", value: 1200, unit: "", context: "" }), "1.2e3");
+	assert.equal(valueText({ kind: "number", written: "7", value: 7, unit: "GPU hours", context: "" }), "7 GPU hours");
+	assert.equal(valueText({ kind: "number", written: "7", value: 7, unit: "", context: "on 8 GPUs" }), "7 (on 8 GPUs)");
+	assert.equal(valueText({ kind: "text", text: "a transformer" }), "a transformer");
+	assert.equal(valueText({ kind: "yes_no", answer: "yes" }), "yes");
+	assert.equal(valueText({ kind: "list", items: [] }), "");
+});
+
+test("a piece of evidence is placed by its page, its pages when it runs over, or the part of the abstract it is in", () => {
+	assert.equal(evidencePlace(evidence("a", "one page", 4)), "p. 4");
+	const over: Evidence = {
+		paper: "a",
+		quote: "runs over a page",
+		established: {
+			kind: "verified",
+			address: { page: 4, section: "5. Discussion", paragraph: 9, start: 0, end_page: 5, end: 30 },
+			matched: { kind: "close", differences: 1 },
+		},
+	};
+	assert.equal(evidencePlace(over), "pp. 4-5");
+	for (const field of ["title", "abstract"] as const) {
+		const fromAbstract: Evidence = {
+			paper: "a",
+			quote: "in the abstract",
+			established: { kind: "abstract", field, start: 0, end: 15, matched: { kind: "exact" } },
+		};
+		assert.equal(evidencePlace(fromAbstract), field);
+	}
 });

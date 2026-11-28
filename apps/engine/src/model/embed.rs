@@ -262,6 +262,88 @@ mod tests {
         assert_eq!(error.to_string(), "the embedding model answered with 7 numbers where 8 were expected");
     }
 
+    /// A tokenizer laid out as the model's `tokenizer.json` is (NFC, the model's split pattern, byte-level BPE, and
+    /// `<|endoftext|>` appended to every text), with a vocabulary of a few words: made here, so that no model file
+    /// is needed. The ids it gives were worked out by the Python `tokenizers` from the same file.
+    const SMALL_TOKENIZER: &str = r#"{
+        "version": "1.0", "truncation": null, "padding": null,
+        "added_tokens": [{"id": 29, "content": "<|endoftext|>", "single_word": false, "lstrip": false, "rstrip": false,
+                          "normalized": false, "special": true}],
+        "normalizer": {"type": "NFC"},
+        "pre_tokenizer": {"type": "Sequence", "pretokenizers": [
+            {"type": "Split", "pattern": {"Regex": "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"},
+             "behavior": "Isolated", "invert": false},
+            {"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": false, "use_regex": false}]},
+        "post_processor": {"type": "Sequence", "processors": [
+            {"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": false, "use_regex": false},
+            {"type": "TemplateProcessing",
+             "single": [{"Sequence": {"id": "A", "type_id": 0}}, {"SpecialToken": {"id": "<|endoftext|>", "type_id": 0}}],
+             "pair": [{"Sequence": {"id": "A", "type_id": 0}}, {"Sequence": {"id": "B", "type_id": 0}},
+                      {"SpecialToken": {"id": "<|endoftext|>", "type_id": 0}}],
+             "special_tokens": {"<|endoftext|>": {"id": "<|endoftext|>", "ids": [29], "tokens": ["<|endoftext|>"]}}}]},
+        "decoder": {"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": false, "use_regex": false},
+        "model": {"type": "BPE", "dropout": null, "unk_token": null, "continuing_subword_prefix": "",
+                  "end_of_word_suffix": "", "fuse_unk": false, "byte_fallback": false, "ignore_merges": false,
+                  "vocab": {"H": 0, "e": 1, "l": 2, "o": 3, "Ġ": 4, "w": 5, "r": 6, "d": 7, "2": 8, "0": 9, "6": 10,
+                            "c": 11, "a": 12, "f": 13, "Ã": 14, "©": 15, "He": 16, "ll": 17, "Hell": 18, "Hello": 19,
+                            "Ġw": 20, "or": 21, "Ġwor": 22, "Ġworl": 23, "Ġworld": 24, "Ã©": 25, "ca": 26, "caf": 27,
+                            "cafÃ©": 28},
+                  "merges": ["H e", "l l", "He ll", "Hell o", "Ġ w", "o r", "Ġw or", "Ġwor l", "Ġworl d", "Ã ©", "c a",
+                             "ca f", "caf Ã©"]}
+    }"#;
+
+    #[test]
+    fn a_tokenizer_file_of_the_models_kind_splits_texts_into_the_ids_the_python_gives() {
+        // read from a file, as `Encoder::open` reads the model's, and encoded with its special tokens, as
+        // `Encoder::tokens` does
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(folder.path().join("tokenizer.json"), SMALL_TOKENIZER).unwrap();
+        let tokenizer = Tokenizer::from_file(folder.path().join("tokenizer.json")).unwrap();
+        let ids = |text: &str| tokenizer.encode(text, true).unwrap().get_ids().to_vec();
+        // a word with the space before it is one token; the text ends with <|endoftext|>, whose output is the
+        // text's vector
+        assert_eq!(ids("Hello world"), [19, 24, 29]);
+        // digits one by one, and the space before them a token of its own
+        assert_eq!(ids("Hello world 2026"), [19, 24, 4, 8, 9, 8, 10, 29]);
+        // a letter and its combining accent are composed first (NFC), then read as their UTF-8 bytes
+        assert_eq!(ids("cafe\u{301}"), [28, 29]);
+        assert_eq!(ids("caf\u{e9}"), [28, 29]);
+        // an empty text still has its end token, so no text is ever without a last position
+        assert_eq!(ids(""), [29]);
+        // without the special tokens there is no end token
+        assert_eq!(tokenizer.encode("Hello world", false).unwrap().get_ids(), [19, 24]);
+        assert_eq!(tokenizer.decode(&[19, 24, 4, 8, 9, 8, 10, 29], true).unwrap(), "Hello world 2026");
+    }
+
+    #[test]
+    fn a_tokenizer_file_that_cannot_be_read_is_an_error_naming_the_folder() {
+        let folder = tempfile::tempdir().unwrap();
+        let Err(missing) = Encoder::open(folder.path()) else { panic!("an encoder without its files") };
+        let said = missing.to_string();
+        assert!(said.starts_with("the embedding model could not be loaded from "), "{said}");
+        assert!(said.contains(&folder.path().display().to_string()), "{said}");
+        std::fs::write(folder.path().join("tokenizer.json"), "{ not json").unwrap();
+        assert!(matches!(Encoder::open(folder.path()), Err(EmbedError::Load { .. })));
+    }
+
+    /// The model's own tokenizer, when it is on this computer (`CONSTELLATE_MODEL`, as below): the ids the Python
+    /// `tokenizers` 0.23 gives with the model's `tokenizer.json`.
+    #[test]
+    #[ignore = "needs the model's tokenizer.json: set CONSTELLATE_MODEL to its folder"]
+    fn the_models_tokenizer_gives_the_ids_the_python_gives() {
+        let folder = std::path::PathBuf::from(std::env::var("CONSTELLATE_MODEL").unwrap());
+        let tokenizer = Tokenizer::from_file(folder.join("tokenizer.json")).unwrap();
+        let ids = |text: &str| tokenizer.encode(text, true).unwrap().get_ids().to_vec();
+        assert_eq!(ids("Hello world"), [9707, 1879, 151_643]);
+        assert_eq!(ids("Hello world 2026"), [9707, 1879, 220, 17, 15, 17, 21, 151_643]);
+        assert_eq!(ids("cafe\u{301} papers"), [924, 58858, 15689, 151_643]);
+        assert_eq!(ids(""), [151_643]);
+        assert_eq!(
+            ids("Graph neural networks for 3D point clouds."),
+            [11212, 29728, 14155, 369, 220, 18, 35, 1459, 29514, 13, 151_643]
+        );
+    }
+
     /// The real model, when it is on this computer: point `CONSTELLATE_MODEL` at its folder (with the reference
     /// file the Python backend's vectors were exported to) and run `cargo test -- --ignored`.
     #[test]

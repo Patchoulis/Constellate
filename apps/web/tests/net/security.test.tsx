@@ -14,6 +14,7 @@ import {
 	fromAnotherSite,
 	hostName,
 	isBackendPath,
+	newNonce,
 	WINDOW_COOKIE,
 	windowAdmitted,
 } from "@/lib/net/page-policy";
@@ -130,4 +131,15 @@ test("a link in a title or abstract is a web address or no link at all", () => {
 	for (const hostile of ["\\url{javascript:alert(1)}", "\\href{javascript:alert(1)}{click}", "\\href{data:text/html,x}{x}"])
 		assert.ok(!shown(hostile).includes("<a "), hostile);
 	assert.ok(!shown('https://example.org/"onmouseover="alert(1)').includes('onmouseover="'));
+});
+
+test("a page's nonce is 128 random bits in base64, a new one for every page", () => {
+	const nonces = Array.from({ length: 50 }, () => newNonce());
+	for (const nonce of nonces) {
+		assert.match(nonce, /^[A-Za-z0-9+/]{22}==$/, nonce);
+		assert.equal(Buffer.from(nonce, "base64").length, 16, `${nonce} is 16 bytes`);
+	}
+	assert.equal(new Set(nonces).size, nonces.length, "no two pages share a nonce");
+	// a nonce goes into the policy as it is: base64 has no character that would end the source expression
+	assert.ok(contentSecurityPolicy(nonces[0], false).includes(`'nonce-${nonces[0]}'`));
 });

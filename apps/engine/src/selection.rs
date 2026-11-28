@@ -241,6 +241,19 @@ mod tests {
     }
 
     #[test]
+    fn a_long_list_of_conferences_is_told_apart_by_the_first_hex_digits_of_the_sha1_of_its_sorted_names() {
+        // hashlib.sha1(",".join(sorted(names)).encode()).hexdigest()[:6]: these folders exist on people's disks, so
+        // a change in the hash would lose them
+        let many = conferences(&["NeurIPS 2025", "ICML 2026", "ICLR 2026", "CVPR 2026", "AISTATS 2026"]);
+        assert_eq!(many.name(), "neurips2025_icml2026_iclr2026_and2more_8f38f2");
+        let twelve: Vec<String> = (0..12).map(|index| format!("Conf{index} 2026")).collect();
+        let named = Selection::parse(&twelve, None, None, &[], false).unwrap().name();
+        assert_eq!(named, "conf02026_conf12026_conf22026_and9more_27634e");
+        // three are spelled out in full, with no hash
+        assert_eq!(conferences(&["NeurIPS 2025", "ICML 2026", "ICLR 2026"]).name(), "neurips2025_icml2026_iclr2026");
+    }
+
+    #[test]
     fn a_selection_is_read_back_from_what_it_stores() {
         let back = |selection: &Selection| {
             let stored = selection.to_json();

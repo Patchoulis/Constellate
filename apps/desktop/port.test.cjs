@@ -5,7 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
 
-const { interfacePort, remembered } = require("./port.cjs");
+const { interfacePort, probe, remembered } = require("./port.cjs");
 
 function scratch() {
 	return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "constellate-port-")), "kept", "interface-port");
@@ -55,4 +55,17 @@ test("a file that names no port is ignored and corrected", async () => {
 	fs.writeFileSync(file, "not a port");
 	const port = await interfacePort(file);
 	assert.equal(remembered(fs.readFileSync(file, "utf8")), port);
+});
+
+test("probing a free port answers that port, any port answers a real one, and a held port answers null", async () => {
+	const any = await probe(0);
+	assert.ok(Number.isInteger(any) && any > 0 && any <= 65535, `port ${any}`);
+	assert.equal(await probe(any), any, `port ${any} is free again once probed`);
+	const holder = net.createServer();
+	await new Promise((resolve) => holder.listen(0, "127.0.0.1", resolve));
+	try {
+		assert.equal(await probe(holder.address().port), null);
+	} finally {
+		await new Promise((resolve) => holder.close(resolve));
+	}
 });

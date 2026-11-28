@@ -648,6 +648,152 @@ mod tests {
     }
 
     #[test]
+    fn every_answer_is_protected_and_any_cors_header_a_route_added_is_taken_off() {
+        let mut headers = HeaderMap::new();
+        headers.insert("access-control-allow-origin", HeaderValue::from_static("*"));
+        headers.insert("access-control-allow-credentials", HeaderValue::from_static("true"));
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        protect(&mut headers, false);
+        assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+        assert_eq!(headers[header::REFERRER_POLICY], "no-referrer");
+        assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY");
+        assert_eq!(headers[header::CONTENT_SECURITY_POLICY], "default-src 'none'; frame-ancestors 'none'");
+        assert_eq!(headers[header::CONTENT_TYPE], "application/json", "what the route said is kept");
+        assert!(!headers.contains_key(header::STRICT_TRANSPORT_SECURITY), "no HSTS unless asked for");
+        assert!(headers.keys().all(|name| !name.as_str().starts_with("access-control-")));
+
+        let mut secure = HeaderMap::new();
+        protect(&mut secure, true);
+        assert_eq!(secure[header::STRICT_TRANSPORT_SECURITY], "max-age=31536000"); // 365 days in seconds
+    }
+
+    #[test]
+    fn a_route_may_let_its_own_site_frame_it_and_set_its_own_policy_but_nothing_more() {
+        let mut framed = HeaderMap::new();
+        framed.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("SAMEORIGIN"));
+        framed.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("default-src 'self'"));
+        protect(&mut framed, false);
+        assert_eq!(framed[header::X_FRAME_OPTIONS], "SAMEORIGIN");
+        assert_eq!(framed[header::CONTENT_SECURITY_POLICY], "default-src 'self'");
+        // anything looser than its own site is not kept
+        let mut loose = HeaderMap::new();
+        loose.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("ALLOW-FROM https://evil.example"));
+        protect(&mut loose, false);
+        assert_eq!(loose[header::X_FRAME_OPTIONS], "DENY");
+    }
+
+    #[tokio::test]
+    async fn an_empty_refusal_of_the_router_or_its_layers_is_told_as_json_and_others_are_left_alone() {
+        let told = |status: StatusCode, content_type: Option<&'static str>| {
+            let mut response = Response::new(Body::from(if content_type.is_some() { "kept" } else { "" }));
+            *response.status_mut() = status;
+            if let Some(content_type) = content_type {
+                response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+            }
+            response.headers_mut().insert(header::CONTENT_LENGTH, HeaderValue::from(0));
+            told_as_json(&mut response);
+            response
+        };
+        let body = |response: Response| async move {
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            String::from_utf8(bytes.to_vec()).unwrap()
+        };
+        for (status, said) in [
+            (StatusCode::METHOD_NOT_ALLOWED, r#"{"error":"this request is not taken here"}"#),
+            (StatusCode::REQUEST_TIMEOUT, r#"{"error":"the request took too long to arrive"}"#),
+        ] {
+            let response = told(status, None);
+            assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json", "{status}");
+            assert!(!response.headers().contains_key(header::CONTENT_LENGTH), "the old length is not kept");
+            assert_eq!(body(response).await, said);
+        }
+        // a body the route wrote itself is not replaced, nor any other status
+        let own = told(StatusCode::METHOD_NOT_ALLOWED, Some("text/plain"));
+        assert_eq!(body(own).await, "kept");
+        let other = told(StatusCode::NOT_FOUND, None);
+        assert!(!other.headers().contains_key(header::CONTENT_TYPE));
+        assert_eq!(body(other).await, "");
+    }
+
+    #[tokio::test]
+    async fn the_timeout_layer_answers_an_empty_408_that_is_then_told_as_json() {
+        use axum::Router;
+        use axum::routing::get;
+        use tower::ServiceExt;
+        use tower_http::timeout::TimeoutLayer;
+        // the layers in the order `routes::secured` puts them, with a patience of 50 milliseconds instead of 30
+        // seconds: what tower-http answers when a request takes too long is what is rewritten here
+        let router = Router::new()
+            .route("/slow", get(|| async { tokio::time::sleep(Duration::from_secs(5)).await }))
+            .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_millis(50)))
+            .layer(axum::middleware::from_fn(|request: Request, next: Next| async move {
+                let mut response = next.run(request).await;
+                told_as_json(&mut response);
+                response
+            }));
+        let started = Instant::now();
+        let response = router.oneshot(Request::get("/slow").body(Body::empty()).unwrap()).await.unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "answered after {:?}, not at the timeout",
+            started.elapsed()
+        );
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&bytes[..], br#"{"error":"the request took too long to arrive"}"#);
+    }
+
+    #[test]
+    fn the_token_is_a_bearer_token_sent_once_and_compared_as_sent() {
+        let token = digest(b"0123456789abcdef0123456789abcdef");
+        let with = |values: &[&str]| {
+            let mut headers = HeaderMap::new();
+            for value in values {
+                headers.append(header::AUTHORIZATION, HeaderValue::from_str(value).unwrap());
+            }
+            carries_the_token(&headers, &token)
+        };
+        assert!(with(&["Bearer 0123456789abcdef0123456789abcdef"]));
+        assert!(with(&["bearer 0123456789abcdef0123456789abcdef"]), "the scheme in any case");
+        for refused in [
+            &[][..],
+            &["Bearer 0123456789ABCDEF0123456789ABCDEF"][..],
+            &["Bearer  0123456789abcdef0123456789abcdef"][..],
+            &["Basic 0123456789abcdef0123456789abcdef"][..],
+            &["0123456789abcdef0123456789abcdef"][..],
+            &["Bearer 0123456789abcdef0123456789abcdef", "Bearer 0123456789abcdef0123456789abcdef"][..],
+        ] {
+            assert!(!with(refused), "{refused:?}");
+        }
+    }
+
+    #[test]
+    fn reading_changes_nothing_and_a_page_opened_by_a_browser_is_a_navigation() {
+        for reading in [Method::GET, Method::HEAD, Method::OPTIONS] {
+            assert!(!changes_something(&reading), "{reading}");
+        }
+        for changing in [Method::POST, Method::PUT, Method::PATCH, Method::DELETE] {
+            assert!(changes_something(&changing), "{changing}");
+        }
+        let request = |method: Method, headers: &[(&str, &'static str)]| {
+            let mut request = Request::builder().method(method).uri("/").body(Body::empty()).unwrap();
+            for (name, value) in headers {
+                request
+                    .headers_mut()
+                    .insert(HeaderName::from_bytes(name.as_bytes()).unwrap(), HeaderValue::from_static(value));
+            }
+            request
+        };
+        assert!(is_navigation(&request(Method::GET, &[("sec-fetch-mode", "navigate")])));
+        assert!(is_navigation(&request(Method::GET, &[("accept", "text/html,application/xhtml+xml")])));
+        assert!(!is_navigation(&request(Method::GET, &[("accept", "application/json")])));
+        assert!(!is_navigation(&request(Method::GET, &[("sec-fetch-mode", "cors")])));
+        assert!(!is_navigation(&request(Method::POST, &[("sec-fetch-mode", "navigate")])), "only a GET");
+    }
+
+    #[test]
     fn pages_from_this_computer_are_told_apart_from_others() {
         for local in ["http://localhost:3000", "http://127.0.0.1:1", "https://[::1]:8443"] {
             assert!(from_this_computer(&Origin::parse(local).unwrap()), "{local}");

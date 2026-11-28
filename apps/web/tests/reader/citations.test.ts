@@ -6,9 +6,13 @@ import {
 	authorLine,
 	citedByFigure,
 	citedByOf,
+	citationsNote,
+	citedByLine,
 	citesFigure,
 	citesOf,
+	confidenceNote,
 	layoutNetwork,
+	linkTag,
 	outsideLink,
 	showing,
 	shownWorks,
@@ -188,4 +192,40 @@ test("a community's citation figures say how much of it was read, and nothing re
 		assert.equal(citedByFigure(unread), "not read yet");
 		assert.equal(citesOf(unread), null);
 	}
+});
+
+test("a work's link says where clicking it goes: the reader, its arXiv page by its id, or a search for its title", () => {
+	assert.equal(linkTag({ kind: "in_library", paper: "2401.00001" }).label, "In your library");
+	assert.match(linkTag({ kind: "in_library", paper: "2401.00001" }).note, /open it in the reader/);
+	const arxiv = linkTag({ kind: "on_arxiv", arxiv: "2312.04567" });
+	assert.equal(arxiv.label, "On arXiv");
+	assert.equal(arxiv.note, "Not in your library, but on arXiv as 2312.04567: click it to open its arXiv page in the browser.");
+	const unresolved = linkTag({ kind: "unresolved" });
+	assert.equal(unresolved.label, "Not found");
+	assert.match(unresolved.note, /searches for its title in the browser/);
+});
+
+test("a reference read only partly says so, and one identified says nothing", () => {
+	assert.equal(confidenceNote("identified"), null);
+	assert.match(confidenceNote("title_parsed") ?? "", /read from the paper's reference list by a program/);
+	assert.match(confidenceNote("raw_only") ?? "", /^Only the entry as written could be read/);
+});
+
+test("how often a work is cited says of which papers, one in the singular", () => {
+	assert.equal(citedByLine(1), "cited by 1 paper Constellate has read");
+	assert.equal(citedByLine(1204), "cited by 1,204 papers Constellate has read");
+	assert.equal(citedByLine(0), "cited by 0 papers Constellate has read");
+});
+
+test("a community's citation note says how many citations come from inside it and how many cited works are kept", () => {
+	const read = community({ papers_read: 212, cited_by: 1204, cited_by_inside: 300, cites: 3410, cites_in_library: 1 });
+	assert.equal(
+		citationsNote(read),
+		"300 citations of the 1,204 citations come from its own papers. 1 work of the 3,410 works it cites is in your library.",
+	);
+	const several = community({ papers_read: 212, cited_by: 1204, cited_by_inside: 300, cites: 3410, cites_in_library: 57 });
+	assert.match(citationsNote(several), /57 works of the 3,410 works it cites are in your library\.$/);
+	const unread = community({ papers_read: 0, cited_by: 4, cited_by_inside: 0, cites: 0, cites_in_library: 0 });
+	assert.equal(citationsNote(unread), "None of its papers' reference lists has been read yet.");
+	assert.equal(citationsNote(community(null)), "None of its papers' reference lists has been read yet.");
 });

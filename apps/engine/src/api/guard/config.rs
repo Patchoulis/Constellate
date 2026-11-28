@@ -972,6 +972,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_certificate_made_by_rcgen_is_served_with_http2_offered_before_http1_and_a_file_without_one_is_refused() {
+        let folder = tempfile::tempdir().unwrap();
+        let (certificate, key) = certificate_in(folder.path());
+        let tls = Tls::load(&certificate, &key).unwrap();
+        assert_eq!(tls.server_config().alpn_protocols, [b"h2".to_vec(), b"http/1.1".to_vec()]);
+        // a PEM file with only a key in it holds no certificate
+        let refused = Tls::load(&key, &key).unwrap_err();
+        assert!(refused.to_string().contains("it holds no certificate"), "{refused}");
+        assert!(matches!(refused, ConfigError::Certificate { variable: TLS_CERT, .. }));
+        // and a certificate given as the key is not a key
+        assert!(matches!(
+            Tls::load(&certificate, &certificate),
+            Err(ConfigError::Certificate { variable: TLS_KEY, .. })
+        ));
+    }
+
+    #[test]
+    fn an_origin_is_its_scheme_and_authority_in_lower_case_and_https_is_told_apart() {
+        let origin = Origin::parse(" HTTPS://Papers.Test:8443/ ").unwrap();
+        assert_eq!((origin.as_str(), origin.is_https()), ("https://papers.test:8443", true));
+        assert!(!Origin::parse("http://[::1]:3000").unwrap().is_https());
+        for refused in ["papers.test", "ftp://papers.test", "https://", "https://papers.test/path", "https://a b"] {
+            assert_eq!(Origin::parse(refused), None, "{refused}");
+        }
+    }
+
+    #[test]
     fn every_address_needs_names_when_it_is_every_network() {
         let base = [(BIND, "0.0.0.0"), (TOKEN, STRONG), (USE_HTTPS, "false")];
         assert_eq!(listen(&base).unwrap_err(), ConfigError::NamesNeeded);

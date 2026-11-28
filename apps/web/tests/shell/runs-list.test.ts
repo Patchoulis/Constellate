@@ -4,6 +4,7 @@ import { test } from "node:test";
 import type { RunPage, RunSummary } from "@rp/contracts";
 import {
 	FIRST,
+	listedOfSummary,
 	RUNS_PAGE,
 	matchesSearch,
 	offsetAsked,
@@ -156,4 +157,14 @@ test("the open run stays in sight, first, when it is not among the rows shown", 
 	);
 	assert.equal(withOpenRun(rows, "run-77", undefined).rows[0].title, "run-77", "known by its name alone");
 	assert.deepEqual(withOpenRun(rows, null, undefined), { rows, pinned: null });
+});
+
+test("a run's summary is listed with its papers and communities counted, one in the singular", () => {
+	assert.deepEqual(listedOfSummary({ name: "neurips2025", title: "NeurIPS 2025", papers: 1204, communities: 1, modularity: 0.5 }), {
+		name: "neurips2025",
+		title: "NeurIPS 2025",
+		papers: 1204,
+		details: "1,204 papers · 1 community",
+		problem: null,
+	});
 });
