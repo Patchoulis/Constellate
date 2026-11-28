@@ -14,6 +14,7 @@ import {
 	priceLabel,
 	priceOf,
 	endpointIds,
+	unavailableBecause,
 } from "@/lib/shell/models";
 
 const USD = { code: "USD", rate: 1, date: null };
@@ -155,4 +156,9 @@ test("a server's list of models keeps only the ids that can be used, and says ho
 	assert.equal(endpointIds({ data: [{ id: "x" }] }), null, "an answer that is not a list of models");
 	assert.equal(endpointIds("<html>"), null);
 	assert.equal(endpointIds(null), null);
+});
+
+test("a provider that cannot be asked says why, and one that can says nothing", () => {
+	assert.equal(unavailableBecause(provider("anthropic", "Anthropic", true)), null);
+	assert.equal(unavailableBecause(provider("openai", "OpenAI", false)), "set OPENAI_API_KEY");
 });

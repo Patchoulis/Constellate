@@ -2,7 +2,7 @@
  *  (lib/reader/pdf-frame.ts). */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isOpenReviewPage, safeLink } from "@/lib/net/links";
+import { isOpenReviewPage, openOutside, safeLink } from "@/lib/net/links";
 import { framedPdf, pageFailed } from "@/lib/reader/pdf-frame";
 import { outsideLink } from "@/lib/reader/citations";
 
@@ -67,4 +67,23 @@ test("a page of the embedded view failed only when its main frame did, and not w
 	assert.equal(pageFailed(failed), true);
 	assert.equal(pageFailed({ ...failed, isMainFrame: false }), false, "a frame inside the page");
 	assert.equal(pageFailed({ ...failed, errorCode: -3 }), false, "called off by the next navigation");
+});
+
+test("an address is opened outside in a new tab that cannot reach back to the window, and a refused one is not opened", () => {
+	const opened: string[][] = [];
+	const global = globalThis as { window?: unknown };
+	const before = global.window;
+	try {
+		global.window = { open: (...args: string[]) => void opened.push(args) };
+		assert.equal(openOutside("  https://arxiv.org/abs/2401.00001  "), true);
+		assert.deepEqual(opened, [["https://arxiv.org/abs/2401.00001", "_blank", "noopener,noreferrer"]]);
+		for (const refused of ["javascript:alert(1)", "http://example.org/", "https://user@example.org/", "", null, undefined]) {
+			assert.equal(openOutside(refused), false, String(refused));
+		}
+		assert.equal(opened.length, 1, "nothing refused was opened");
+		assert.equal(openOutside("http://127.0.0.1:3210/papers", { local: true }), true);
+		assert.equal(opened[1][0], "http://127.0.0.1:3210/papers");
+	} finally {
+		global.window = before;
+	}
 });

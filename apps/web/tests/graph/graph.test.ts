@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Community, GraphData } from "@rp/contracts";
 import { wrapLabel } from "@/components/graph/graph-canvas";
-import { communityLabel, communityTree, groupsAt, treeDepth } from "@/lib/community/community";
+import { communityHue, communityLabel, communityTree, groupsAt, treeDepth } from "@/lib/community/community";
 import { pickMarkedLabels, placeLabels, type LabelBox, type MarkedPlace } from "@/lib/graph/labels";
 import { countKinds, shownPapers } from "@/lib/graph/paper-filter";
 import { layoutGraph } from "@/lib/graph/layout";
@@ -298,4 +298,16 @@ test("a run of one paper places it at the centre of its community's disc", () =>
 	assert.equal(points.length, 1);
 	for (const value of [...Object.values(bounds), points[0].x, points[0].y, discs.get(tree[0])!.r]) assert.ok(Number.isFinite(value));
 	assert.ok(bounds.maxX > bounds.minX && bounds.maxY > bounds.minY, "the box has a size");
+});
+
+test("each community's hue turns by the golden angle from the one before, so neighbours never look alike", () => {
+	assert.equal(communityHue(0), 210);
+	assert.ok(Math.abs(communityHue(1) - 347.508) < 1e-9, `${communityHue(1)} degrees`);
+	assert.ok(Math.abs(communityHue(2) - 125.016) < 1e-9, `${communityHue(2)} degrees`);
+	for (let id = 0; id < 500; id++) {
+		const hue = communityHue(id);
+		assert.ok(hue >= 0 && hue < 360, `community ${id}: ${hue} degrees`);
+		const apart = Math.abs(hue - communityHue(id + 1));
+		assert.ok(Math.min(apart, 360 - apart) > 137, `communities ${id} and ${id + 1}: ${apart} degrees apart`);
+	}
 });

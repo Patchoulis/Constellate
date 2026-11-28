@@ -6,6 +6,7 @@ import {
 	MOST_POLL_MS,
 	POLL_MS,
 	createPoller,
+	elsewhereLine,
 	jobStep,
 	notAskedLine,
 	pollDelay,
@@ -229,4 +230,8 @@ test("a job just started is looked at after the usual wait, whatever the engine'
 	poller.restart();
 	poller.watch(() => undefined);
 	assert.equal(waits.at(-1)?.ms, POLL_MS);
+});
+
+test("a job running for another part of the app is named, and nothing new is offered until it ends", () => {
+	assert.equal(elsewhereLine({ kind: "a run" }), "Something else is being done (a run): nothing new can be asked until it ends.");
 });

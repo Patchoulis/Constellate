@@ -5,6 +5,7 @@ import type { ClaimNode, ClaimNodeReviews, ClaimsEstimate, Evidence, PointMappin
 import { batchCost } from "../../costs";
 import {
 	allOpen,
+	childrenOf,
 	budgetFor,
 	byReviewers,
 	estimateLine,
@@ -15,6 +16,9 @@ import {
 	outline,
 	pointsAt,
 	ratingLabel,
+	ratingNote,
+	reviewsAt,
+	stanceTone,
 	stanceWords,
 	unplacedWhy,
 } from "@/lib/features/claim_tree/claim-tree";
@@ -160,4 +164,39 @@ test("a point's justifying words are marked in the reviewer's own text, counted 
 	assert.equal(pointsAt("n1", mapping, [point]).length, 1);
 	assert.equal(pointsAt(null, mapping, [point]).length, 0);
 	assert.equal(pointsAt("n2", mapping, [point]).length, 0);
+});
+
+test("a node's children are those that name it as their parent, in the tree's order; the roots name none", () => {
+	assert.deepEqual(
+		childrenOf(nodes, null).map((child) => child.id),
+		["n1", "n5"],
+	);
+	assert.deepEqual(
+		childrenOf(nodes, "n1").map((child) => child.id),
+		["n2", "n4"],
+	);
+	assert.deepEqual(childrenOf(nodes, "n3"), []);
+	const reviews = [at("n2", true), at(null, false)];
+	assert.equal(reviewsAt(reviews, "n2")?.contested, true);
+	assert.equal(reviewsAt(reviews, null)?.node, null, "the points about the paper as a whole are found under null");
+	assert.equal(reviewsAt(reviews, "n6"), undefined);
+});
+
+test("a rating says whether its scale was published by the venue or assumed", () => {
+	assert.equal(
+		ratingNote({ field: "Rating", value: 6, scale: { minimum: 1, maximum: 10, source: "published" } }),
+		"On the 1 to 10 scale, as the venue published it for that year.",
+	);
+	assert.equal(
+		ratingNote({ field: "Rating", value: 3, scale: { minimum: 1, maximum: 5, source: "assumed" } }),
+		"On the 1 to 5 scale, assumed: the venue's form for that year is not known, so the scale is an estimate.",
+	);
+});
+
+test("each stance is drawn in its own tone, and the ones about no claim in the muted one", () => {
+	assert.equal(stanceTone("supports"), "text-success");
+	assert.equal(stanceTone("challenges"), "text-warning");
+	assert.equal(stanceTone("asks"), "text-primary");
+	assert.equal(stanceTone("presentation"), "text-muted-foreground");
+	assert.equal(stanceTone("whole_paper"), "text-muted-foreground");
 });
