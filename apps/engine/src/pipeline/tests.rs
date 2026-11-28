@@ -849,7 +849,7 @@ fn a_budget_reached_part_way_stops_the_naming_and_the_run_is_made_with_the_names
         papers: &papers,
         embeddings: Some(embeddings.view()),
         communities: &groups,
-        redo: false,
+        again: crate::features::writing::describe::Again::Nothing,
     };
     let estimate = crate::features::writing::describe::estimate_run(&library, &made, &chosen).unwrap();
     let worst = estimate.cost.most_tokens / u64::try_from(estimate.to_ask).unwrap();

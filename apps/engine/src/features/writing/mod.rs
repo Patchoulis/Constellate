@@ -1,5 +1,6 @@
-//! What the language model writes about a run's communities: a name and a description for each community and
-//! sub-community when the run is made ([`describe`]), and, on request, a longer overview of one community whose
+//! What the language model writes about a run's communities: a name and a description in three sections, each
+//! shown with quotes found in the papers it cites, for each community and sub-community when the run is made
+//! ([`describe`]), and, on request, a longer overview of one community whose
 //! every point is shown with quotes found in the papers it names ([`overview`]).
 //!
 //! Both ask through [`crate::model::batch`] (kept answers skipped, the budget the user accepted, progress, cancel,
@@ -91,6 +92,10 @@ pub struct Stored {
     pub name: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+    /// Its description's sections, as [`describe::write_names`] wrote them (read as they are, never as evidence);
+    /// `None` in a run described before sections were asked for, or never described.
+    #[serde(default)]
+    pub sections: Option<Vec<serde_json::Value>>,
     #[serde(default)]
     pub keywords: Vec<String>,
     /// Indices into the run's papers (its graph's nodes).
@@ -111,6 +116,11 @@ pub struct StoredNearest {
 }
 
 impl Stored {
+    /// Whether it is named with a plain description only: described before sections were asked for.
+    pub fn plainly_described(&self) -> bool {
+        self.name.as_deref().is_some_and(|name| !name.trim().is_empty()) && self.sections.is_none()
+    }
+
     /// What it is called: its name, else its first three terms (as `overview.py`'s `_label`).
     pub fn label(&self) -> String {
         match self.name.as_deref().map(str::trim) {

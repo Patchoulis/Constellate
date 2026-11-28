@@ -5,14 +5,18 @@
 //! GET  /api/describe/estimate                 what naming a run made with the settings would cost at most, before
 //!                                             it is made (`DescribeBeforeRun`); nothing is sent
 //! GET  /api/runs/{run}/describe/estimate      what naming a made run's communities would cost (`DescribeEstimate`);
+//!      ?add_sections=true                     ... those described plainly before sections, again with sections
 //!      ?redo=true                             ... all of them again ("Describe all again")
-//! POST /api/runs/{run}/describe               {provider, model, accepted_usd | accepted_tokens, redo?}: name them,
-//!                                             as the one job (`DescribeStarted`)
+//! POST /api/runs/{run}/describe               {provider, model, accepted_usd | accepted_tokens, add_sections?,
+//!                                             redo?}: name them, as the one job (`DescribeStarted`)
 //! GET  /api/runs/{run}/overview/{path}        where the community's overview stands for the model chosen
 //!                                             (`OverviewStatus`, with its estimate when it is to be written)
 //! POST /api/runs/{run}/overview/{path}        {provider, model, accepted_usd | accepted_tokens}: write it, as the
 //!                                             one job (`OverviewStatus`)
 //! ```
+//!
+//! A community described before sections (a plain description) is never asked again by an ordinary naming:
+//! only by one with `add_sections` (or `redo`), whose own estimate the interface shows first.
 //!
 //! Money is spent only by the two POSTs, which the interface sends when the user clicks a button showing the
 //! estimate, and which carry the most the user was shown: if that has grown since (the papers or the model
@@ -34,7 +38,7 @@ use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 
 use crate::api::routes::{ApiError, Shared, on_the_side, one_name};
-use crate::features::writing::describe::{self, Group, Outcome, Run};
+use crate::features::writing::describe::{self, Again, Group, Outcome, Run};
 use crate::features::writing::overview::{self, Community, Graph, NotWritten, Overview, Prepared, Standing};
 use crate::features::writing::{Stored, StoredTree, read_tree, tree_path};
 use crate::jobs::{Finished, Phase, Tracker};
@@ -144,6 +148,8 @@ struct Loaded {
     groups: Vec<Group>,
     /// Communities with a name in the run's files now.
     named: usize,
+    /// Of those, with a plain description and no sections.
+    plain: usize,
     count: usize,
 }
 
@@ -180,17 +186,14 @@ fn loaded(engine: &Shared, library: &Library, run: &str) -> Result<Loaded, ApiEr
     let index_of: HashMap<&str, usize> =
         file.paper_ids.iter().enumerate().map(|(index, id)| (id.as_str(), index)).collect();
     let groups = ordered(&tree.communities, &Group::from_stored(&tree.communities), &index_of);
-    fn named_in(stored: &[Stored]) -> usize {
-        stored
-            .iter()
-            .map(|community| {
-                usize::from(community.name.as_deref().is_some_and(|name| !name.trim().is_empty()))
-                    + named_in(&community.children)
-            })
-            .sum()
+    fn counted(stored: &[Stored], of: &dyn Fn(&Stored) -> bool) -> usize {
+        stored.iter().map(|community| usize::from(of(community)) + counted(&community.children, of)).sum()
     }
+    let named =
+        counted(&tree.communities, &|community| community.name.as_deref().is_some_and(|name| !name.trim().is_empty()));
+    let plain = counted(&tree.communities, &Stored::plainly_described);
     let count = tree.paths().len();
-    Ok(Loaded { folder, papers, embeddings, groups, named: named_in(&tree.communities), count })
+    Ok(Loaded { folder, papers, embeddings, groups, named, plain, count })
 }
 
 /// `groups` with each one's members ordered as its file lists them nearest its mean embedding, then the rest in
@@ -219,10 +222,22 @@ fn ordered(stored: &[Stored], groups: &[Group], index_of: &HashMap<&str, usize>)
         .collect()
 }
 
+/// What an estimate is asked for: naming as usual, or asking again those described plainly, or all.
 #[derive(Deserialize)]
-struct Again {
+struct Asked {
     #[serde(default)]
     redo: bool,
+    #[serde(default)]
+    add_sections: bool,
+}
+
+/// What `redo` and `add_sections` ask again: all of it wins over the plain ones.
+fn again_of(redo: bool, add_sections: bool) -> Again {
+    match (redo, add_sections) {
+        (true, _) => Again::All,
+        (false, true) => Again::Plain,
+        (false, false) => Again::Nothing,
+    }
 }
 
 /// `DescribeEstimate` in the contracts.
@@ -234,6 +249,8 @@ pub struct RunEstimate {
     pub communities: usize,
     /// Of those, with a name in its files now.
     pub named: usize,
+    /// Of those named, with a plain description and no sections: described before sections were asked for.
+    pub plain: usize,
     /// Calls kept from before cost nothing (`kept`); an estimate.
     pub estimate: BatchEstimate,
     pub api_key_set: bool,
@@ -244,7 +261,7 @@ fn estimate_of(
     library: &Library,
     chosen: &Chosen,
     run: &str,
-    redo: bool,
+    again: Again,
 ) -> Result<(Loaded, BatchEstimate), ApiError> {
     let loaded = loaded(engine, library, run)?;
     let estimate = {
@@ -254,7 +271,7 @@ fn estimate_of(
             papers: &loaded.papers,
             embeddings: loaded.embeddings.as_ref().map(|rows| rows.view()),
             communities: &loaded.groups,
-            redo,
+            again,
         };
         describe::estimate_run(library, &described, chosen)?
     };
@@ -264,18 +281,19 @@ fn estimate_of(
 async fn run_estimate(
     State(engine): State<Shared>,
     Path(run): Path<String>,
-    query: Result<Query<Again>, QueryRejection>,
+    query: Result<Query<Asked>, QueryRejection>,
 ) -> Result<Json<RunEstimate>, ApiError> {
-    let Query(Again { redo }) = query?;
+    let Query(Asked { redo, add_sections }) = query?;
     let told = on_the_side(move || {
         let library = engine.library()?;
         let chosen = engine.chosen()?;
-        let (loaded, estimate) = estimate_of(&engine, &library, &chosen, &run, redo)?;
+        let (loaded, estimate) = estimate_of(&engine, &library, &chosen, &run, again_of(redo, add_sections))?;
         Ok(RunEstimate {
             provider: chosen.provider(),
             model: chosen.model().to_owned(),
             communities: loaded.count,
             named: loaded.named,
+            plain: loaded.plain,
             estimate,
             api_key_set: chosen.can_ask(),
         })
@@ -293,6 +311,9 @@ struct Accepting {
     accepted_tokens: Option<u64>,
     #[serde(default)]
     redo: bool,
+    /// Describe again, with sections, those described plainly before (at the estimate `?add_sections=true` showed).
+    #[serde(default)]
+    add_sections: bool,
 }
 
 /// `DescribeStarted` in the contracts: the job's number, for following it in `/api/status`.
@@ -317,14 +338,17 @@ async fn describe_now(
         let chosen = engine.chosen()?;
         chosen.as_shown(request.provider, &request.model).map_err(invalid)?;
         chosen.endpoint().map_err(invalid)?;
-        let (loaded, estimate) = estimate_of(&engine, &library, &chosen, &run, request.redo)?;
+        let again = again_of(request.redo, request.add_sections);
+        let (loaded, estimate) = estimate_of(&engine, &library, &chosen, &run, again)?;
         let accepted = Accepted::of(request.accepted_usd, request.accepted_tokens).map_err(invalid)?;
         let budget = describe::budget_of_run(&estimate, accepted).map_err(invalid)?;
         let transport = Arc::clone(&engine.transport);
-        let redo = request.redo;
         let served = Arc::clone(&engine);
         let work = move |tracker: &Tracker<'_>| {
-            tracker.log(&format!("Naming the communities of {run} with {chosen}."));
+            tracker.log(&match again {
+                Again::Plain => format!("Describing the communities of {run} again with sections, with {chosen}."),
+                Again::Nothing | Again::All => format!("Naming the communities of {run} with {chosen}."),
+            });
             let Loaded { folder, papers, embeddings, groups, .. } = loaded;
             let described = Run {
                 name: &run,
@@ -332,7 +356,7 @@ async fn describe_now(
                 papers: &papers,
                 embeddings: embeddings.as_ref().map(|rows| rows.view()),
                 communities: &groups,
-                redo,
+                again,
             };
             let done = describe::describe_run(&library, &*transport, &described, &chosen, &budget, tracker);
             // its communities.json was written again: the next read is of the new file, not of one kept in memory
@@ -532,9 +556,10 @@ mod tests {
     };
     use crate::api::routes::Engine;
     use crate::api::tests::served;
-    use crate::features::writing::describe::tests::answering;
+    use crate::features::writing::describe::tests::{answering, described_before_sections};
     use crate::library::papers::tests::paper;
     use crate::library::{Known, Library};
+    use crate::model::language::Effort;
     use crate::model::language::{ApiKey, KeyHeader, Providers, Reply, Transport, TransportError};
 
     const AT: &str = "127.0.0.1:8765";
@@ -871,11 +896,25 @@ mod tests {
             serde_json::from_slice(&std::fs::read(data.path().join("runs/r1/communities.json")).unwrap()).unwrap();
         assert_eq!(file["communities"][0]["name"], "Topic tc1");
         assert_eq!(file["communities"][0]["children"][1]["name"], "Topic tc1.1");
-        assert_eq!(file["communities"][1]["description"], "Papers on tc10.");
+        let c10 = &file["communities"][1];
+        assert_eq!(c10["description"], "Papers on tc10. They share one method.", "the shown sections' texts");
+        assert_eq!(c10["sections"][0]["heading"], "Problem");
+        assert_eq!(c10["sections"][1]["heading"], "Shared methods");
+        matches(&c10["sections"][0], "CommunitySection");
+        let cite = &c10["sections"][0]["cites"][0];
+        matches(cite, "CommunityCite");
+        matches(&cite["evidence"], "Evidence");
+        assert_eq!(cite["title"], "Title 3");
+        assert_eq!(cite["evidence"]["paper"], "p3");
+        assert_eq!(cite["evidence"]["established"]["kind"], "abstract");
+        assert_eq!(c10["sections_left_out"], 1, "what sets it apart cited one paper");
         assert_eq!(file["modularity"], 0.1, "the rest of the file as it was");
 
         let (_, now) = call(&router, "GET", &format!("{at}/estimate"), None).await;
         assert_eq!((now["named"].clone(), now["estimate"]["to_ask"].clone()), (json!(4), json!(0)));
+        assert_eq!(now["plain"], 0, "described with sections");
+        let (_, sections) = call(&router, "GET", &format!("{at}/estimate?add_sections=true"), None).await;
+        assert_eq!(sections["estimate"]["to_ask"], 0, "nothing described plainly: nothing to rewrite");
         let (_, again) = call(&router, "GET", &format!("{at}/estimate?redo=true"), None).await;
         assert_eq!(again["estimate"]["to_ask"], 3);
         let mut redo = accepting(&again["estimate"], ACCEPTED);
@@ -883,6 +922,76 @@ mod tests {
         let (_, job) = call(&router, "POST", at, Some(redo)).await;
         assert_eq!(finished(&router, &job["id"]).await["state"], "done");
         assert_eq!(transport.sent().len(), 6, "described all again, as asked");
+    }
+
+    #[tokio::test]
+    async fn a_run_described_before_sections_is_rewritten_only_when_asked_and_at_the_cost_shown() {
+        use crate::features::writing::describe::{self, Again, Group, Run};
+        use crate::features::writing::read_tree;
+        use crate::library::Paper;
+        use crate::model::chosen::Chosen;
+        use crate::model::language::Provider;
+        let data = data();
+        let transport = Scripted::new(model);
+        let router = router(data.path(), Picked::OpenAi, transport.clone());
+        let at = "/api/runs/r1/describe";
+        // described by the plain version: its answers kept, its names and descriptions in the run's files
+        let (_, shown) = call(&router, "GET", &format!("{at}/estimate"), None).await;
+        let chosen = Chosen::of(
+            Provider::OpenAi,
+            shown["model"].as_str().unwrap(),
+            Effort::Medium,
+            Err(crate::model::language::Unavailable::NoKey),
+        );
+        let library = Library::open(&data.path().join("library")).unwrap();
+        let folder = data.path().join("runs/r1");
+        let tree = read_tree(&folder).unwrap().unwrap();
+        let groups = Group::from_stored(&tree.communities);
+        let ids: Vec<String> = (0..6).map(|index| format!("p{index}")).collect();
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let papers: Vec<Paper> = library.papers(&ids).unwrap().into_iter().map(Option::unwrap).collect();
+        let run = Run {
+            name: "r1",
+            folder: Some(&folder),
+            papers: &papers,
+            embeddings: None,
+            communities: &groups,
+            again: Again::Nothing,
+        };
+        let names = described_before_sections(&library, &run, &chosen);
+        describe::write_names(&folder, &names).unwrap();
+        drop(library);
+
+        let (_, plain) = call(&router, "GET", &format!("{at}/estimate"), None).await;
+        assert_eq!((plain["named"].clone(), plain["plain"].clone()), (json!(4), json!(4)));
+        assert_eq!(plain["estimate"]["to_ask"], 0, "an ordinary naming asks nothing of them");
+        let (_, job) = call(&router, "POST", at, Some(accepting(&plain["estimate"], ACCEPTED))).await;
+        assert_eq!(finished(&router, &job["id"]).await["state"], "done");
+        assert!(transport.sent().is_empty());
+
+        // the rewrite: its own estimate, and nothing sent without its cost accepted
+        let (_, rewrite) = call(&router, "GET", &format!("{at}/estimate?add_sections=true"), None).await;
+        matches(&rewrite, "DescribeEstimate");
+        assert_eq!((rewrite["estimate"]["to_ask"].clone(), rewrite["estimate"]["kept"].clone()), (json!(3), json!(0)));
+        priced_for(&rewrite["estimate"], Picked::OpenAi);
+        let unaccepted = json!({"provider": "openai", "model": rewrite["model"], "add_sections": true});
+        assert_eq!(call(&router, "POST", at, Some(unaccepted)).await.0, StatusCode::BAD_REQUEST);
+        // the ordinary estimate's most (nothing) does not pay for the rewrite
+        let mut too_little = accepting(&plain["estimate"], ACCEPTED);
+        too_little["add_sections"] = json!(true);
+        assert_eq!(call(&router, "POST", at, Some(too_little)).await.0, StatusCode::BAD_REQUEST);
+        assert!(transport.sent().is_empty());
+        let mut accepted = accepting(&rewrite["estimate"], ACCEPTED);
+        accepted["add_sections"] = json!(true);
+        let (status, job) = call(&router, "POST", at, Some(accepted)).await;
+        assert_eq!(status, StatusCode::OK, "{job}");
+        assert_eq!(finished(&router, &job["id"]).await["state"], "done");
+        assert_eq!(transport.sent().len(), 3);
+        let file: Value = serde_json::from_slice(&std::fs::read(folder.join("communities.json")).unwrap()).unwrap();
+        assert_eq!(file["communities"][1]["name"], "Topic tc10");
+        assert_eq!(file["communities"][1]["sections"][0]["heading"], "Problem");
+        let (_, after) = call(&router, "GET", &format!("{at}/estimate?add_sections=true"), None).await;
+        assert_eq!((after["plain"].clone(), after["estimate"]["to_ask"].clone()), (json!(0), json!(0)));
     }
 
     #[tokio::test]
