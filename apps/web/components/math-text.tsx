@@ -59,8 +59,19 @@ export function plainText(text: string): string {
  */
 const KATEX = { throwOnError: false, output: "html", trust: false, strict: "ignore", maxSize: 20, maxExpand: 1000 } as const;
 
+/** A formula as KaTeX sets it; null when KaTeX could not (`throwOnError: false` only covers its parse errors). */
+export function formulaHtml(source: string): string | null {
+	try {
+		return katex.renderToString(source.replaceAll(DOLLAR, "\\$"), KATEX);
+	} catch (error) {
+		return null;
+	}
+}
+
 function Formula({ source }: { source: string }) {
-	const html = katex.renderToString(source.replaceAll(DOLLAR, "\\$"), KATEX);
+	const html = formulaHtml(source);
+	// what KaTeX could not set is shown as written: a paper's odd TeX never takes the page down
+	if (html === null) return <span>{`$${source.replaceAll(DOLLAR, "$")}$`}</span>;
 	// KaTeX builds this markup itself from the parsed expression; nothing of the source is passed through as HTML.
 	return <span dangerouslySetInnerHTML={{ __html: html }} />;
 }
@@ -123,8 +134,10 @@ function Text({ text }: { text: string }) {
 }
 
 export function MathText({ children }: { children: string }) {
-	if (!/[\\$`~*]|--|''|https?:/.test(children)) return children; // nothing to do for most titles
-	return children
+	// a title or abstract missing from what the engine sent (an older version's record) is no text, not a throw
+	const text = typeof children === "string" ? children : children == null ? "" : String(children);
+	if (!/[\\$`~*]|--|''|https?:/.test(text)) return text; // nothing to do for most titles
+	return text
 		.replaceAll("\\$", DOLLAR)
 		.replace(/\\\((.+?)\\\)/g, "$$$1$$") // \( ... \) is $ ... $
 		.split(MATH)
