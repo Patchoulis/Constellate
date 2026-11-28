@@ -328,4 +328,60 @@ mod tests {
         assert!(flow.starts_with("__Host-constellate-flow=xyz;") && flow.contains("SameSite=Lax"));
         assert!(flow.contains("Secure"));
     }
+
+    #[test]
+    fn a_random_id_is_43_characters_of_base64url_that_decode_to_32_bytes() {
+        let ids: Vec<String> = (0..20).map(|_| random_id().unwrap()).collect();
+        for id in &ids {
+            assert_eq!(id.len(), 43, "{id}");
+            assert!(id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'), "{id}");
+            assert_eq!(URL_SAFE_NO_PAD.decode(id).unwrap().len(), 32, "{id}");
+        }
+        let distinct: std::collections::HashSet<&String> = ids.iter().collect();
+        assert_eq!(distinct.len(), 20, "every id is new");
+    }
+
+    #[test]
+    fn the_digest_is_sha256_and_secrets_are_the_same_only_when_equal_whatever_their_lengths() {
+        // FIPS 180-2's test vector, and the digest of nothing
+        let hex = |bytes: [u8; 32]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        assert_eq!(hex(digest("abc")), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(hex(digest("")), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert!(same_secret("a-secret", "a-secret"));
+        assert!(same_secret("", ""));
+        for (sent, kept) in [("a-secret", "a-secreT"), ("a-secret", "a-secret "), ("", "a-secret"), ("a", "")] {
+            assert!(!same_secret(sent, kept), "{sent:?} against {kept:?}");
+        }
+    }
+
+    #[test]
+    fn under_the_https_opt_out_cookies_have_no_prefix_and_no_secure_attribute() {
+        use crate::api::guard::config::{Access, Environment, Listen};
+        let opted_out = Listen::from_environment(&Environment::from_pairs([
+            ("CONSTELLATE_BIND", "192.168.1.20"),
+            ("CONSTELLATE_USE_HTTPS", "false"),
+            ("CONSTELLATE_ALLOW_PASSWORD", "true"),
+            ("CONSTELLATE_ORIGIN", "http://papers.test"),
+        ]))
+        .unwrap();
+        let Access::SignIn { sign_in, .. } = opted_out.access() else { panic!("network mode") };
+        let plain = sign_in.cookie();
+        assert!(matches!(plain, Cookie::Plain(_)));
+        assert_eq!((plain.session_name(), plain.flow_name()), ("constellate", "constellate-flow"));
+        assert_eq!(plain.session("abc"), "constellate=abc; HttpOnly; Path=/; SameSite=Strict; Max-Age=43200");
+        assert_eq!(plain.session_ended(), "constellate=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0");
+        assert_eq!(
+            plain.flow("xyz", Duration::from_secs(600)),
+            "constellate-flow=xyz; HttpOnly; Path=/; SameSite=Lax; Max-Age=600"
+        );
+        assert_eq!(plain.flow_ended(), "constellate-flow=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0");
+        assert_eq!(
+            Cookie::Secure.session("abc"),
+            "__Host-constellate=abc; HttpOnly; Secure; Path=/; SameSite=Strict; Max-Age=43200"
+        );
+        assert_eq!(
+            Cookie::Secure.flow_ended(),
+            "__Host-constellate-flow=; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=0"
+        );
+    }
 }

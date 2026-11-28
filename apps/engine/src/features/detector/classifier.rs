@@ -423,6 +423,18 @@ mod tests {
     }
 
     #[test]
+    fn the_corpus_version_is_the_pythons_sha1_of_sorted_sha1s_whatever_the_order() {
+        // the first ten hex digits of sha1("|".join(sorted(sha1(text) for text in texts))), worked out by hashlib
+        assert_eq!(corpus_version(&["abc"]), "9ef2bdeea2");
+        assert_eq!(corpus_version(&["a human abstract", "a machine abstract"]), "fba6b2c787");
+        assert_eq!(corpus_version(&["a machine abstract", "a human abstract"]), "fba6b2c787");
+        // UTF-8 bytes are hashed, not characters
+        assert_eq!(corpus_version(&["café", "naïve"]), "b892f4faec");
+        // no texts: the SHA-1 of nothing
+        assert_eq!(corpus_version(&[]), "da39a3ee5e");
+    }
+
+    #[test]
     fn the_quantile_and_the_auc_are_numpys_and_scikit_learns() {
         let sorted = [1.0, 2.0, 3.0, 4.0, 10.0];
         assert_eq!(quantile(&sorted, 0.5), 3.0);
