@@ -13,6 +13,11 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - An eye beside the Marked tab hides and shows the marked papers' rings, links and names on the graph; the papers
   stay marked and listed. Settings say whether marking a paper while they are hidden shows them again.
 
+### Changed
+
+- The dependencies are updated: TypeScript 7, KaTeX 0.19, jsonwebtoken 11, tower-http 0.7, tokenizers 0.23, sha1
+  0.11 and others, and the GitHub Actions the checks and releases run on.
+
 ### Fixed
 
 - A community whose papers hold composed characters (a fraction such as "½", a ligature, "™") no longer stops its
