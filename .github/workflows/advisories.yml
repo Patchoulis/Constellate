@@ -33,15 +33,15 @@ jobs:
       # the versions of the checking tools themselves, raised by hand
       CARGO_DENY_VERSION: "0.22.1"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
       # restored and saved apart, so that a run that fails (a new advisory: what this job is for) keeps the build of
       # cargo-deny too, rather than building it again every time until a run passes
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cargo-deny
         with:
           path: ~/.cargo/bin/cargo-deny
@@ -49,7 +49,7 @@ jobs:
       - name: Install cargo-deny
         if: steps.cargo-deny.outputs.cache-hit != 'true'
         run: cargo install cargo-deny --version "$CARGO_DENY_VERSION" --locked
-      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.cargo-deny.outputs.cache-hit != 'true'
         with:
           path: ~/.cargo/bin/cargo-deny
