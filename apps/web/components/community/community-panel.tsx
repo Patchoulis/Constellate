@@ -45,6 +45,7 @@ import {
 	citesOf,
 } from "@/lib/reader/citations";
 import { CommunityCitationFigures, RunCitationFigures } from "@/components/community/citation-figures";
+import { SectionBoundary } from "@/components/ui/section-boundary";
 import { communityLabel, type CommunityNode } from "@/lib/community/community";
 import type { MarksOf } from "@/lib/community/marks";
 import { useResizable } from "@/lib/ui/use-resizable";
@@ -395,7 +396,9 @@ function Detail({
 				{/* by Community.id among its siblings; one the tree does not have (a file written halfway) is not listed */}
 				{community.closest_communities.flatMap((other) => {
 					const sibling = siblings.find((one) => one.community.id === other.id && one !== node);
-					return sibling ? [<Line key={other.id} node={sibling} figure={similarity(other.cosine)} onClick={() => onSelect(sibling)} />] : [];
+					return sibling
+						? [<Line key={other.id} node={sibling} figure={similarity(other.cosine)} onClick={() => onSelect(sibling)} />]
+						: [];
 				})}
 			</Block>
 			<Block title="Nearest to the mean embedding">
@@ -426,7 +429,8 @@ function List({ nodes, sort, onSelect }: { nodes: CommunityNode[]; sort: Sort; o
 	// a figure not known yet goes last whichever way the list is ordered
 	const ordered = [...nodes].sort((a, b) => {
 		const [x, y] = [sort.by.of(a.community), sort.by.of(b.community)];
-		if (x === null || y === null || Number.isNaN(x) || Number.isNaN(y)) return (x === null || Number.isNaN(x) ? 1 : 0) - (y === null || Number.isNaN(y) ? 1 : 0);
+		if (x === null || y === null || Number.isNaN(x) || Number.isNaN(y))
+			return (x === null || Number.isNaN(x) ? 1 : 0) - (y === null || Number.isNaN(y) ? 1 : 0);
 		return (sort.descending ? -1 : 1) * (x - y);
 	});
 	return (
@@ -778,7 +782,8 @@ function Communities({
 					<>
 						<span className="flex-1 px-1 text-sm font-semibold">All communities</span>
 						<span className="text-xs text-muted-foreground tabular-nums">
-							{count(roots.length, "community", "communities")} · {Number.isFinite(result.modularity) ? `modularity ${result.modularity.toFixed(2)} of 1` : "modularity not known"}
+							{count(roots.length, "community", "communities")} ·{" "}
+							{Number.isFinite(result.modularity) ? `modularity ${result.modularity.toFixed(2)} of 1` : "modularity not known"}
 						</span>
 					</>
 				)}
@@ -786,24 +791,37 @@ function Communities({
 			{selected ? (
 				// one community's sections start afresh for another: nothing of the last one is shown under its name
 				<div key={`${result.name}/${selected.community.tree_path}`} className="min-h-0 flex-1 overflow-y-auto">
-					<Detail
-						node={selected}
-						marks={marks}
-						described={described}
-						onSelect={onSelect}
-						onOverview={onOverview}
-						onOpenPaper={onOpenPaper}
-					/>
-					<CommunityReviews run={result.name} treePath={selected.community.tree_path} onOpenPaper={onOpenPaper} />
-					<CommunityStances
-						key={`${result.name}/${selected.community.tree_path}`}
-						run={result.name}
-						scope={{ community: selected.community.tree_path }}
-						onOpenPaper={onOpenPaper}
-					/>
-					<ExtractionTable run={result.name} scope={{ community: selected.community.tree_path }} onOpenPaper={onOpenPaper} />
-					<CommunityCitationKinds run={result.name} treePath={selected.community.tree_path} onOpenPaper={onOpenPaper} />
-					<CommunityAsk run={result.name} treePath={selected.community.tree_path} papers={selected.community.size} />
+					{/* each section stops on its own: one whose answer is odd leaves the others readable */}
+					<SectionBoundary what="this community's details" keys={[selected]}>
+						<Detail
+							node={selected}
+							marks={marks}
+							described={described}
+							onSelect={onSelect}
+							onOverview={onOverview}
+							onOpenPaper={onOpenPaper}
+						/>
+					</SectionBoundary>
+					<SectionBoundary what="the reviews section">
+						<CommunityReviews run={result.name} treePath={selected.community.tree_path} onOpenPaper={onOpenPaper} />
+					</SectionBoundary>
+					<SectionBoundary what="the agree / disagree section">
+						<CommunityStances
+							key={`${result.name}/${selected.community.tree_path}`}
+							run={result.name}
+							scope={{ community: selected.community.tree_path }}
+							onOpenPaper={onOpenPaper}
+						/>
+					</SectionBoundary>
+					<SectionBoundary what="the table of papers">
+						<ExtractionTable run={result.name} scope={{ community: selected.community.tree_path }} onOpenPaper={onOpenPaper} />
+					</SectionBoundary>
+					<SectionBoundary what="the citation kinds section">
+						<CommunityCitationKinds run={result.name} treePath={selected.community.tree_path} onOpenPaper={onOpenPaper} />
+					</SectionBoundary>
+					<SectionBoundary what="asking about this community">
+						<CommunityAsk run={result.name} treePath={selected.community.tree_path} papers={selected.community.size} />
+					</SectionBoundary>
 				</div>
 			) : (
 				<>
@@ -828,7 +846,9 @@ function Communities({
 					<RewriteSections {...described} />
 					{(sort.by.value === "cited" || sort.by.value === "cites") && <RunCitationFigures citations={citations} />}
 					<div className="min-h-0 flex-1 overflow-y-auto p-2">
-						<List nodes={roots} sort={sort} onSelect={onSelect} />
+						<SectionBoundary what="the list of communities" keys={[roots, sort]}>
+							<List nodes={roots} sort={sort} onSelect={onSelect} />
+						</SectionBoundary>
 					</div>
 				</>
 			)}
