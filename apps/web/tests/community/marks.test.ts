@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
 	addMark,
+	addMarks,
 	forgetMarks,
 	isMarked,
 	keepKnown,
@@ -143,4 +144,13 @@ test("deleting a run forgets its marks and no other run's, and storage switched 
 	} finally {
 		global.window = before;
 	}
+});
+
+test("several papers marked at once (a lasso's) become the newest, each once, and those marked already stay put", () => {
+	const marks: Marks = ["b", "a"];
+	assert.deepEqual(addMarks(marks, ["c", "d"]), ["c", "d", "b", "a"]);
+	assert.deepEqual(addMarks(marks, ["a", "c", "c"]), ["c", "b", "a"], "a is where it was, c is added once");
+	assert.equal(addMarks(marks, ["a", "b"]), marks, "nothing new: the same list, so nothing is rendered or written again");
+	assert.equal(addMarks(marks, []), marks);
+	assert.deepEqual(addMarks([], ["x"]), ["x"]);
 });

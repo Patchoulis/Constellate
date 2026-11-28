@@ -7,10 +7,11 @@ import { DetectorTraining } from "@/components/features/detector/detector-traini
 import { ModelChoice } from "@/components/shell/model-choice";
 import { IMPORT_ADVICE } from "@/lib/shell/notices";
 import { groupsOf, type Choosable } from "@/lib/shell/models";
-import { Button, Heading } from "@/components/ui/button";
+import { Button, Heading, Segmented } from "@/components/ui/button";
 import { Input, Label, SwitchRow } from "@/components/ui/field";
 import { Choice, GroupedPicker } from "@/components/ui/picker";
 import { splitByOwner } from "@/lib/net/engine";
+import { SELECT_KEYS, selectKeyName, setPrefs, usePrefs, useSelectKeyName } from "@/lib/ui/prefs";
 import { cn } from "@/lib/utils";
 
 /** The whole dialog as data: every setting appears once here, with how it is edited. */
@@ -24,6 +25,46 @@ type Field = { key: keyof Settings; label: string; hint?: string } & (
 	// the language model: a provider and one of its models, and the effort (model-choice.tsx)
 	| { kind: "model" }
 );
+
+/**
+ * How the graph is used in this window: the key that selects papers, and whether marks are shown. Kept in this
+ * browser (lib/ui/prefs.ts), applied at once, and nothing a run depends on.
+ */
+function GraphChoices() {
+	const prefs = usePrefs();
+	const held = useSelectKeyName(prefs.selectKey);
+	// the names as on this keyboard: Ctrl is Command on a Mac, Alt is Option
+	const mac = useSelectKeyName("primary") !== "Ctrl";
+	const keys = SELECT_KEYS.map((key) => ({ value: key, label: selectKeyName(key, mac) }));
+	return (
+		<section className="flex flex-col gap-2">
+			<Heading>The graph</Heading>
+			<div className="flex items-start justify-between gap-4 py-1.5">
+				<span className="flex flex-col gap-0.5">
+					<span className="text-sm text-foreground">Key that selects papers</span>
+					<span className="text-xs text-muted-foreground">
+						Hold {held} on the graph: a click marks a paper (or unmarks it), and a drag draws a lasso that marks every paper inside it.
+						Without the key, a drag moves the graph as before. All three keys work on Windows, macOS and Linux; some Linux desktops use Alt
+						with a drag to move windows, so pick another there.
+					</span>
+				</span>
+				<Segmented className="shrink-0" options={keys} value={prefs.selectKey} onChange={(selectKey) => setPrefs({ selectKey })} />
+			</div>
+			<SwitchRow
+				label="Show marked papers on the graph"
+				hint="Their yellow rings, links and names. The eye beside the Marked tab does the same. Hidden marks stay marked and listed."
+				checked={prefs.marksShown}
+				onCheckedChange={(marksShown) => setPrefs({ marksShown })}
+			/>
+			<SwitchRow
+				label="Show marks again when a paper is marked"
+				hint="Marking a paper while the marks are hidden shows them. Off: marks stay hidden until the eye is clicked."
+				checked={prefs.showMarksOnMark}
+				onCheckedChange={(showMarksOnMark) => setPrefs({ showMarksOnMark })}
+			/>
+		</section>
+	);
+}
 
 /** How a provider's address is shown: its host, and where that is. */
 function where(provider: ModelProvider): string {
@@ -355,6 +396,7 @@ export function SettingsDialog({
 									</div>
 								))}
 							</section>
+							<GraphChoices />
 							{GROUPS.map((group) => ({ group, ...splitByOwner(group.fields, serverOwned) })).map(({ group, shown, decided }) => (
 								<section key={group.title} className="flex flex-col gap-2">
 									<Heading>{group.title}</Heading>

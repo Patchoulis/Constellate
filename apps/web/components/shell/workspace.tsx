@@ -16,6 +16,7 @@ import { ANSWER_OWNER, GraphColouringContext, colouringStep, type GraphColouring
 import { useMarks } from "@/lib/community/marks";
 import type { Job } from "@/lib/shell/use-job";
 import { ready, useAsync } from "@/lib/use-async";
+import { setPrefs, usePrefs } from "@/lib/ui/prefs";
 import { useResizable } from "@/lib/ui/use-resizable";
 import { stepLine } from "@/lib/shell/run-step";
 
@@ -99,7 +100,24 @@ export function Workspace({
 	const onRatings = useCallback((id: string, read: Ratings) => setFresh((before) => ({ ...before, [id]: read })), []);
 	// the papers marked in this run; none are shown until the graph says which papers the run has
 	const known = useMemo(() => (graph ? new Set(graph.nodes.map((node) => node.id)) : null), [graph]);
-	const marks = useMarks(name, known);
+	const stored = useMarks(name, known);
+	const prefs = usePrefs();
+	// Marking while the marks are hidden shows them again, where the person chose that (Settings).
+	const { showMarksOnMark } = prefs;
+	const marks = useMemo(() => {
+		const show = () => showMarksOnMark && setPrefs({ marksShown: true });
+		return {
+			...stored,
+			toggle: (id: string) => {
+				if (!stored.has(id)) show();
+				stored.toggle(id);
+			},
+			addMany: (ids: readonly string[]) => {
+				show();
+				stored.addMany(ids);
+			},
+		};
+	}, [stored, showMarksOnMark]);
 	const [goTo, setGoTo] = useState<{ id: string } | null>(null);
 	// where in the open paper a citation asked the reader to land; any other way of opening a paper clears it
 	const [place, setPlace] = useState<ReaderTarget | null>(null);
@@ -185,9 +203,12 @@ export function Workspace({
 						selectedPaper={paper}
 						ratings={ratings}
 						marked={marks.marked}
+						marksShown={prefs.marksShown}
+						selectKey={prefs.selectKey}
 						goTo={goTo}
 						onPickPaper={openPaper}
 						onMarkPaper={marks.toggle}
+						onMarkPapers={marks.addMany}
 					/>
 					{children}
 					<RunAsk run={name} papers={graph.nodes.length} onCitedPapers={onCitedPapers} />
@@ -227,6 +248,8 @@ export function Workspace({
 					onOpenPaper={openPaper}
 					marks={marks}
 					markedPapers={markedPapers}
+					marksShown={prefs.marksShown}
+					onMarksShown={(marksShown) => setPrefs({ marksShown })}
 					onGoToPaper={goToPaper}
 					onNamed={run.reload}
 					title={title ?? name}
