@@ -581,6 +581,24 @@ mod tests {
     }
 
     #[test]
+    fn a_paper_read_before_its_figures_were_placed_is_read_again_when_next_opened() {
+        // version 2 read no figures: what it kept has none, and is read again
+        const BEFORE_FIGURES: i64 = 2;
+        assert!(i64::from(READER) > BEFORE_FIGURES);
+        let (_folder, library) = library_with(&["2502.10158"]);
+        library.keep_pdf("2502.10158", format!("%PDF {PAGE}").as_bytes()).unwrap();
+        let reader = Counting::default();
+        texts(&library, &reader, &["2502.10158"]);
+        library.connection().execute("UPDATE paper_passages SET reader = ?1", [BEFORE_FIGURES]).unwrap();
+        texts(&library, &reader, &["2502.10158"]);
+        assert_eq!(reader.times()[PAGE], 2);
+        // a reading kept without the figures' fields at all reads back with none
+        let old = r#"{"reader":2,"pages":[{"number":1,"text":"x"}],"passages":[]}"#;
+        let passages: Passages = serde_json::from_str(old).unwrap();
+        assert!(passages.figures.is_empty() && passages.figures_missed == 0);
+    }
+
+    #[test]
     fn a_paper_read_before_math_fonts_were_read_right_is_read_again_when_next_opened() {
         // version 1 read the codes of TeX's math fonts through a text encoding ("pk, uq P rKs")
         const BEFORE_MATH_FONTS: i64 = 1;

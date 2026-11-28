@@ -45,7 +45,8 @@ use crate::text::pattern;
 ///
 /// 2: the characters of math fonts are read through the fonts' own encodings (`super::fonts`), what cannot be read
 /// is marked [`super::UNREADABLE`], and the pieces of one displayed formula are kept together.
-pub const READER: u32 = 2;
+/// 3: where each figure and table is drawn ([`Passages::figures`]).
+pub const READER: u32 = 3;
 
 /// Top and bottom lines of a page looked at for running headers, footers and page numbers.
 const EDGE_LINES: usize = 3;
@@ -156,6 +157,29 @@ pub struct Passages {
     pub pages: Vec<Page>,
     /// In reading order; the reference list is not among them.
     pub passages: Vec<Passage>,
+    /// Where its figures and tables are drawn, each with its caption ([`attach_figures`]).
+    #[serde(default)]
+    pub figures: Vec<Figure>,
+    /// How many of its captions got no figure: the rules found nothing sound to show ([`super::figures`]).
+    #[serde(default)]
+    pub figures_missed: u32,
+}
+
+/// A figure or a table of a paper, where the reader can draw it: `PaperFigure` in the contracts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Figure {
+    /// "Figure 1", "Table 2".
+    pub label: String,
+    pub kind: super::figures::FigureKind,
+    /// The PDF's page number, from 1.
+    pub page: u32,
+    /// Its rectangle on the page, in PDF points from the origin of the page's user space (y up).
+    pub rect: super::figures::Rect,
+    pub page_box: super::figures::PageBox,
+    /// The passage that is its caption.
+    pub caption: usize,
+    /// The passages of text drawn inside it (its "figure or table text"), which the picture shows.
+    pub inside: Vec<usize>,
 }
 
 /// How a quote was found in a paper.
@@ -366,7 +390,7 @@ fn join_lines<S: AsRef<str>>(lines: &[S]) -> String {
 
 /// Words of the text that are ordinary lower-case words, as a share of all its words: high for prose, low for
 /// math, tables, figure labels and lists of names.
-fn prose_share(text: &str) -> f64 {
+pub(crate) fn prose_share(text: &str) -> f64 {
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.is_empty() {
         return 0.0;
@@ -637,7 +661,62 @@ pub fn sentence_spans(text: &str) -> Vec<(usize, usize)> {
 /// A paper's passages, from its PDF: what `GET /api/papers/<id>/passages` answers (kept by paper id and
 /// [`READER`], since reading a PDF takes a moment and its addresses must not change under stored evidence).
 pub fn passages_of_pdf(bytes: &[u8]) -> Result<Passages, crate::text::pdf::Unreadable> {
-    crate::text::pdf::pdf_pages(bytes).map(|pages| read_passages(&pages))
+    crate::text::pdf::pdf_reading(bytes).map(|reading| {
+        let mut passages = read_passages(&reading.pages);
+        attach_figures(&mut passages, &reading.figures);
+        passages
+    })
+}
+
+/// Give each figure placed on a page ([`super::figures`]) the caption passage that labels it, and the passages of
+/// text drawn inside it: a fragment on its page whose every word is among the words of the lines inside its
+/// rectangle. A figure whose caption is not among the passages is not kept (and counted as missed).
+pub fn attach_figures(passages: &mut Passages, figures: &super::figures::Figures) {
+    let mut missed = figures.missed;
+    let mut attached = Vec::new();
+    for placed in &figures.placed {
+        let caption = passages.passages.iter().position(|passage| {
+            passage.address.page == placed.page
+                && matches!(passage.kind, Kind::FigureCaption | Kind::TableCaption)
+                && super::figures::caption_label(&passage.text).is_some_and(|(label, _)| label == placed.label)
+        });
+        let Some(caption) = caption else {
+            missed += 1;
+            continue;
+        };
+        let mut words: HashMap<String, usize> = HashMap::new();
+        for word in placed.inside.iter().flat_map(|line| line.split_whitespace()) {
+            *words.entry(word.to_owned()).or_default() += 1;
+        }
+        let inside = passages
+            .passages
+            .iter()
+            .enumerate()
+            .filter(|(_, passage)| passage.address.page == placed.page && passage.kind == Kind::Fragment)
+            .filter(|(_, passage)| {
+                let mut left = words.clone();
+                passage.text.split_whitespace().all(|word| match left.get_mut(word) {
+                    Some(count) if *count > 0 => {
+                        *count -= 1;
+                        true
+                    }
+                    _ => false,
+                })
+            })
+            .map(|(at, _)| at)
+            .collect();
+        attached.push(Figure {
+            label: placed.label.clone(),
+            kind: placed.kind,
+            page: placed.page,
+            rect: placed.rect,
+            page_box: placed.page_box,
+            caption,
+            inside,
+        });
+    }
+    passages.figures = attached;
+    passages.figures_missed = missed;
 }
 
 /// Read a paper's passages from the text of its pages, as [`crate::text::pdf::pdf_pages`] gives it.
@@ -714,7 +793,7 @@ pub fn read_passages(pages: &[String]) -> Passages {
         }
         built_pages.push(Page { number, text });
     }
-    Passages { reader: READER, pages: built_pages, passages }
+    Passages { reader: READER, pages: built_pages, passages, figures: Vec::new(), figures_missed: 0 }
 }
 
 /// The characters `start..end` of `text`.
@@ -1299,6 +1378,37 @@ We prove that the bound holds for every task.\n\n3\n",
         // nothing garbled stands in the text to be matched: only the equation number is left of the formula
         assert!(read.locate("pk, uq P rKs ˆ rH ´ 1s").is_none());
         assert_eq!(letters_in(&formula.text), 2);
+    }
+
+    #[test]
+    fn a_placed_figure_takes_its_caption_and_the_words_drawn_inside_it_and_nothing_else() {
+        use super::super::figures::{FigureKind, Figures, PageBox, Placed, Rect};
+        let pages = vec![
+            "1. Introduction\n\nWe study how agents talk to one another through protocols of several kinds.\n\n\
+             A2A ACP\n\nANP\n\nFigure 1. Left: Prominent protocols for collaborative agentic AI.\n\n\
+             incompatible\n\nThe rest of the paper compares them on three tasks of increasing difficulty."
+                .to_owned(),
+        ];
+        let mut read = read_passages(&pages);
+        let rect = Rect { x0: 72.0, y0: 400.0, x1: 300.0, y1: 600.0 };
+        let page_box = PageBox { crop: Rect { x0: 0.0, y0: 0.0, x1: 612.0, y1: 792.0 }, rotation: 0 };
+        let placed = |label: &str| Placed {
+            label: label.to_owned(),
+            kind: FigureKind::Figure,
+            page: 1,
+            rect,
+            page_box,
+            inside: vec!["A2A ACP".to_owned(), "ANP".to_owned()],
+        };
+        attach_figures(&mut read, &Figures { placed: vec![placed("Figure 1"), placed("Figure 9")], missed: 2 });
+        let [figure] = read.figures.as_slice() else { panic!("{:?}", read.figures) };
+        assert!(read.passages[figure.caption].text.starts_with("Figure 1. Left"));
+        let inside: Vec<&str> = figure.inside.iter().map(|at| read.passages[*at].text.as_str()).collect();
+        assert_eq!(inside, ["A2A ACP", "ANP"], "\"incompatible\" is not drawn inside it");
+        assert_eq!(read.figures_missed, 3, "Figure 9 has no caption in the text");
+        // kept and read back as it was
+        let kept: Passages = serde_json::from_str(&serde_json::to_string(&read).unwrap()).unwrap();
+        assert_eq!(kept, read);
     }
 
     #[test]

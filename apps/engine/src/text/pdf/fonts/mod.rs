@@ -357,13 +357,21 @@ pub(crate) mod fixtures {
 
     /// A one-page PDF with these fonts (`/F0`, `/F1`, ...) and this content stream.
     pub(crate) fn pdf_with_content(fonts: &[Font<'_>], content: &str) -> Vec<u8> {
+        pdf_with_page(fonts, "/MediaBox [0 0 612 792]", content)
+    }
+
+    /// [`pdf_with_content`] with the page's own entries (its boxes, a rotation) as `page`, and a one-pixel image
+    /// it may draw as `/Im0`.
+    pub(crate) fn pdf_with_page(fonts: &[Font<'_>], page: &str, content: &str) -> Vec<u8> {
         let first_font = 5;
+        let streams_count: usize = fonts.iter().map(|font| font.streams.len()).sum();
+        let image = first_font + fonts.len() + streams_count;
         let mut next_stream = first_font + fonts.len();
         let mut objects: Vec<Vec<u8>> = vec![
             b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
             b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
             format!(
-                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << {} >> >> >>",
+                "<< /Type /Page /Parent 2 0 R {page} /Contents 4 0 R /Resources << /Font << {} >> /XObject << /Im0 {image} 0 R >> >> >>",
                 (0..fonts.len()).map(|at| format!("/F{at} {} 0 R", first_font + at)).collect::<Vec<_>>().join(" ")
             )
             .into_bytes(),
@@ -386,6 +394,11 @@ pub(crate) mod fixtures {
             );
         }
         objects.extend(streams);
+        objects.push(
+            b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 \
+              /Length 1 >>\nstream\n\x80\nendstream"
+                .to_vec(),
+        );
         let mut pdf = b"%PDF-1.4\n".to_vec();
         let mut offsets = Vec::new();
         for (number, object) in objects.iter().enumerate() {
@@ -441,7 +454,7 @@ mod tests {
 
     /// The lines of the one page a test PDF has, as the engine reads them.
     fn lines(fonts: &[Font<'_>], written: &[(usize, &str)]) -> Vec<String> {
-        let pages = read_in_this_process(&pdf_with_fonts(fonts, written)).unwrap();
+        let pages = read_in_this_process(&pdf_with_fonts(fonts, written)).unwrap().pages;
         pages[0].lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_owned).collect()
     }
 

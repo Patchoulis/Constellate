@@ -44,9 +44,10 @@
 //!
 //! # This folder
 //!
-//! What is read from a paper's PDF: this text, page by page, its passages ([`passages`]) and its reference list
-//! ([`references`]).
+//! What is read from a paper's PDF: this text, page by page, its passages ([`passages`]), its reference list
+//! ([`references`]), where its figures are drawn ([`figures`]), and what its fonts' codes are ([`fonts`]).
 
+pub mod figures;
 pub mod fonts;
 pub mod passages;
 pub mod references;
@@ -151,6 +152,11 @@ pub fn pdf_texts<B: AsRef<[u8]> + Sync>(pdfs: &[B], progress: &Progress) -> Vec<
 ///
 /// Read in a child process once the engine's program is known ([`read_in_children`]), else here.
 pub fn pdf_pages(bytes: &[u8]) -> Result<Vec<String>, Unreadable> {
+    pdf_reading(bytes).map(|reading| reading.pages)
+}
+
+/// [`pdf_pages`], with where the PDF's figures and tables are drawn ([`figures`]).
+pub fn pdf_reading(bytes: &[u8]) -> Result<Reading, Unreadable> {
     if bytes.len() > MAX_PDF_BYTES {
         return Err(Unreadable::TooLarge(bytes.len()));
     }
@@ -163,23 +169,30 @@ pub fn pdf_pages(bytes: &[u8]) -> Result<Vec<String>, Unreadable> {
 /// The reading itself, in whatever process runs it. A panic of the PDF library is caught and told as
 /// [`Unreadable::Unhandled`]; an abort (memory, stack) is not catchable, which is why the engine runs this in a
 /// child. Public for the child and for measuring what the process costs; everything else calls [`pdf_pages`].
-pub fn read_in_this_process(bytes: &[u8]) -> Result<Vec<String>, Unreadable> {
+pub fn read_in_this_process(bytes: &[u8]) -> Result<Reading, Unreadable> {
     if bytes.len() > MAX_PDF_BYTES {
         return Err(Unreadable::TooLarge(bytes.len()));
     }
-    let pages = catch_unwind(AssertUnwindSafe(|| read_pages(bytes)))
+    let reading = catch_unwind(AssertUnwindSafe(|| read_pages(bytes)))
         .map_err(|_| Unreadable::Unhandled)?
         .map_err(|error| Unreadable::Damaged(error.to_string()))?;
-    if pages.iter().all(|page| page.trim().is_empty()) {
+    if reading.pages.iter().all(|page| page.trim().is_empty()) {
         return Err(Unreadable::NoText);
     }
-    Ok(pages)
+    Ok(reading)
+}
+
+/// What is read of a PDF: its pages' text, and where its figures and tables are drawn.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Reading {
+    pub pages: Vec<String>,
+    pub figures: figures::Figures,
 }
 
 /// The pages' text as `pdf-extract` reads it once the fonts say what their codes are ([`fonts::mend`]): what
 /// `pdf_extract::extract_text_from_mem_by_pages` does, with that step between loading the document and reading it.
 /// Pages are read from the first until one cannot be, as there.
-fn read_pages(bytes: &[u8]) -> Result<Vec<String>, pdf_extract::OutputError> {
+fn read_pages(bytes: &[u8]) -> Result<Reading, pdf_extract::OutputError> {
     let mut document = pdf_extract::Document::load_mem(bytes)?;
     if document.is_encrypted() {
         // as pdf-extract does: a PDF encrypted with an empty password is read, any other is not
@@ -187,14 +200,18 @@ fn read_pages(bytes: &[u8]) -> Result<Vec<String>, pdf_extract::OutputError> {
     }
     fonts::mend(&mut document);
     let mut pages = Vec::new();
+    let mut lines = Vec::new();
     for number in 1.. {
         let mut output = PageText::default();
         if pdf_extract::output_doc_page(&document, &mut output, number).is_err() {
             break;
         }
         pages.push(unreadable_marked(&output.text));
+        lines.push(output.lines);
     }
-    Ok(pages)
+    // where the figures are is worth having, not worth the text: a panic finding them loses only them
+    let figures = catch_unwind(AssertUnwindSafe(|| figures::find(&document, &lines))).unwrap_or_default();
+    Ok(Reading { pages, figures })
 }
 
 /// A page's text laid out as `pdf_extract::PlainTextOutput` lays it out (a space where the next glyph starts
@@ -207,6 +224,8 @@ fn read_pages(bytes: &[u8]) -> Result<Vec<String>, pdf_extract::OutputError> {
 /// around it, so it is still set apart as before.
 struct PageText {
     text: String,
+    /// Its lines with the boxes they take, as its text breaks them.
+    lines: Vec<figures::Line>,
     last_end: f64,
     /// Where the glyph before began, and its baseline and size.
     last_x: f64,
@@ -223,6 +242,7 @@ impl Default for PageText {
     fn default() -> Self {
         Self {
             text: String::new(),
+            lines: Vec::new(),
             last_end: 100_000.0,
             last_x: 0.0,
             last_y: 0.0,
@@ -271,6 +291,7 @@ impl pdf_extract::OutputDev for PageText {
         let along = (font_size * trm.m11 + font_size * trm.m21, font_size * trm.m12 + font_size * trm.m22);
         // NaN for rotated text, as there: every comparison with it is false, so it breaks no line
         let size = (along.0 * along.1).sqrt();
+        let mut new_line = self.lines.is_empty();
         if self.first_char {
             // the largest glyph of the line so far (an operator whose limits are being set) or this one
             let large = size.max(self.line_size);
@@ -283,16 +304,39 @@ impl pdf_extract::OutputDev for PageText {
             if drop > gap {
                 self.text.push('\n');
                 self.line_size = 0.0;
+                new_line = true;
             }
             // moved to the left and down
             if x < self.last_end && drop > size * 0.5 {
                 self.text.push('\n');
+                new_line = true;
             }
             if x > self.last_end + size * 0.1 {
                 self.text.push(' ');
+                if let Some(line) = self.lines.last_mut().filter(|_| !new_line) {
+                    line.text.push(' ');
+                }
             }
         }
         self.text.push_str(char);
+        // the box the glyph takes, in the page's own coordinates, for finding where figures are (figures.rs)
+        if size.is_finite() && size > 0.0 {
+            let (left, baseline) = (trm.m31, trm.m32);
+            let glyph = figures::Rect {
+                x0: left,
+                y0: baseline - size * 0.25,
+                x1: left + (width * size).max(0.0),
+                y1: baseline + size * 0.8,
+            };
+            match self.lines.last_mut().filter(|_| !new_line) {
+                Some(line) => {
+                    line.text.push_str(char);
+                    line.rect = line.rect.union(&glyph);
+                    line.size = line.size.max(size);
+                }
+                None => self.lines.push(figures::Line { text: char.to_owned(), rect: glyph, size }),
+            }
+        }
         self.first_char = false;
         self.last_x = x;
         self.last_y = y;
@@ -351,7 +395,7 @@ fn unreadable_marked(page: &str) -> String {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ChildAnswer {
-    Pages(Vec<String>),
+    Read(Reading),
     Unreadable(Unreadable),
 }
 
@@ -367,7 +411,7 @@ pub fn serve_one_reading() -> ExitCode {
     // on a thread of its own, for a stack of a known size whatever the system gives the main thread
     let reading = std::thread::Builder::new().stack_size(CHILD_STACK).spawn(move || read_in_this_process(&bytes));
     let answer = match reading.map(std::thread::JoinHandle::join) {
-        Ok(Ok(Ok(pages))) => ChildAnswer::Pages(pages),
+        Ok(Ok(Ok(reading))) => ChildAnswer::Read(reading),
         Ok(Ok(Err(why))) => ChildAnswer::Unreadable(why),
         Ok(Err(_)) => ChildAnswer::Unreadable(Unreadable::Unhandled),
         Err(_) => return ExitCode::from(CHILD_TROUBLE),
@@ -483,7 +527,7 @@ static PLACES: LazyLock<Places> = LazyLock::new(|| {
 
 /// Read `bytes` in a child process of `program` within `time`: the pages, or why not. Waits first for a place
 /// among the children ([`readers_at_once`]); `time` runs from when the child starts.
-pub fn read_in_child(program: &Path, bytes: &[u8], time: Duration) -> Result<Vec<String>, Unreadable> {
+pub fn read_in_child(program: &Path, bytes: &[u8], time: Duration) -> Result<Reading, Unreadable> {
     let _place = PLACES.take();
     let mut command = crate::api::guard::config::child_process(program);
     command.arg(CHILD_ARGUMENT).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -523,7 +567,7 @@ pub fn read_in_child(program: &Path, bytes: &[u8], time: Duration) -> Result<Vec
         return Err(why_it_stopped(status, &String::from_utf8_lossy(&said)));
     }
     match serde_json::from_slice(&answer) {
-        Ok(ChildAnswer::Pages(pages)) => Ok(pages),
+        Ok(ChildAnswer::Read(reading)) => Ok(reading),
         Ok(ChildAnswer::Unreadable(why)) => Err(why),
         Err(_) => Err(Unreadable::Crashed("its answer could not be read".to_owned())),
     }
@@ -618,7 +662,7 @@ mod tests {
                        BT /F0 7 Tf 92 680 Td (k=1) Tj ET\n\
                        BT /F0 10 Tf 108 690 Td (r) Tj ET\n\
                        BT /F0 10 Tf 72 660 Td (which is what we wanted.) Tj ET";
-        let pages = read_in_this_process(&pdf_with_content(&[helvetica], content)).unwrap();
+        let pages = read_in_this_process(&pdf_with_content(&[helvetica], content)).unwrap().pages;
         let blocks: Vec<Vec<&str>> = pages[0]
             .split("\n\n")
             .map(|block| block.lines().map(str::trim).filter(|line| !line.is_empty()).collect::<Vec<_>>())
@@ -718,7 +762,10 @@ mod tests {
     #[test]
     fn the_reasons_survive_the_trip_from_the_child_as_json() {
         for answer in [
-            ChildAnswer::Pages(vec!["one".into(), String::new()]),
+            ChildAnswer::Read(Reading {
+                pages: vec!["one".into(), String::new()],
+                figures: figures::Figures::default(),
+            }),
             ChildAnswer::Unreadable(Unreadable::Damaged("bad xref".into())),
         ] {
             let told = serde_json::to_string(&answer).unwrap();
