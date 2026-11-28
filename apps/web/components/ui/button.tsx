@@ -68,7 +68,9 @@ export function Segmented<T extends string>({
 					aria-pressed={value === option.value}
 					onClick={() => onChange(option.value)}
 					className={cn(
-						"flex h-6 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-sm px-2.5 text-xs transition-colors [&_svg]:size-3 [&_svg]:shrink-0",
+						// at least one line high; a label that wraps in a narrow panel keeps room above and below it
+						"flex min-h-6 flex-1 items-center justify-center gap-1.5 rounded-sm px-2.5 py-1 text-center text-xs leading-tight transition-colors [&_svg]:size-3 [&_svg]:shrink-0",
+						compact && "whitespace-nowrap",
 						value === option.value ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
 					)}
 				>
