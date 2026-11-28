@@ -74,8 +74,10 @@ export function attachmentNote(attachment: ReplyAttachment): string {
 
 /** A point's section in three parts: before the point, the point, after it (characters are code points). */
 export function pointInSection(section: CritiqueSection, point: CritiquePoint): [string, string, string] {
-	const from = point.span.start - section.span.start;
-	const to = point.span.end - section.span.start;
+	// kept inside the section: a point whose span starts before its section's (a page kept by an older version) would
+	// otherwise be cut from the section's end
+	const from = Math.max(0, point.span.start - section.span.start);
+	const to = Math.max(from, point.span.end - section.span.start);
 	return [codePoints(section.text, 0, from), codePoints(section.text, from, to), codePoints(section.text, to)];
 }
 

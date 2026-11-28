@@ -136,11 +136,13 @@ export type AskState =
 
 export type AskEvent =
 	| { type: "asked"; question: string }
-	| { type: "searched"; found: PassagesFound; estimate: AnswerEstimate }
+	/** what was found for `question`: an answer to a search since replaced by another question's is not this one's */
+	| { type: "searched"; question: string; found: PassagesFound; estimate: AnswerEstimate }
 	| { type: "started"; id: string; job: number }
 	| { type: "opened"; id: string }
 	| { type: "viewed"; view: AnswerView }
-	| { type: "failed"; error: string }
+	/** `searched`: the question whose search failed, when it was a search */
+	| { type: "failed"; error: string; searched?: string }
 	| { type: "reset" };
 
 function questionOf(state: AskState): string | null {
@@ -152,7 +154,8 @@ export function reduceAsk(state: AskState, event: AskEvent): AskState {
 		case "asked":
 			return { kind: "searching", question: event.question };
 		case "searched": {
-			if (state.kind !== "searching") return state; // an answer to a search no longer wanted
+			// an answer to a search no longer wanted, or to the search of a question asked before the one searched now
+			if (state.kind !== "searching" || state.question !== event.question) return state;
 			const { found, estimate } = event;
 			if (found.state === "indexing") return { kind: "indexing", question: state.question, done: found.done, of: found.of };
 			if (estimate.state === "indexing") return { kind: "indexing", question: state.question, done: estimate.done, of: estimate.of };
@@ -171,6 +174,8 @@ export function reduceAsk(state: AskState, event: AskEvent): AskState {
 			if (state.kind !== "asking" && state.kind !== "opening" && state.kind !== "answer") return state;
 			return { kind: "answer", view: event.view };
 		case "failed":
+			// the search of an earlier question failing says nothing of the one searched now
+			if (event.searched !== undefined && (state.kind !== "searching" || state.question !== event.searched)) return state;
 			return { kind: "failed", question: questionOf(state), error: event.error };
 		case "reset":
 			return { kind: "idle" };

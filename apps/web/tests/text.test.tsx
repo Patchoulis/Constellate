@@ -2,7 +2,28 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MathText, plainText } from "@/components/math-text";
+import { formulaHtml, MathText, plainText } from "@/components/math-text";
+
+test("odd TeX from a paper is shown, never thrown on: unbalanced braces, unknown macros, an enormous title, no text at all", () => {
+	for (const odd of [
+		"$\\frac{a}{$ and $}{$",
+		"$\\begin{array}$",
+		"$\\ours{x$",
+		"$" + "{".repeat(5000) + "$",
+		"$x$".repeat(2000),
+		"\\textbf{unclosed",
+	]) {
+		assert.doesNotThrow(() => shown(odd), odd.slice(0, 40));
+	}
+	assert.equal(shown(undefined as unknown as string), "");
+	assert.equal(shown(42 as unknown as string), "42");
+});
+
+test("a formula KaTeX cannot parse is KaTeX's own to show; what it cannot set at all comes back as nothing to set", () => {
+	assert.equal(typeof formulaHtml("x^2"), "string");
+	assert.equal(typeof formulaHtml("\\frac{"), "string");
+	assert.equal(formulaHtml(undefined as unknown as string), null);
+});
 
 const shown = (text: string) => renderToStaticMarkup(<MathText>{text}</MathText>);
 /** What a reader sees: the markup without its tags. */

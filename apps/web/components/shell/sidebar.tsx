@@ -326,10 +326,14 @@ function RunsSection({
 	useEffect(() => {
 		if (offset === null) return;
 		const controller = new AbortController();
-		withSignal(controller.signal, () => api.runsPage({ offset, limit: RUNS_PAGE, sort: "created", search: search || undefined })).then(
-			(answer) => dispatch({ kind: "page", asked, offset, ...pageOf(answer as RunPage) }),
-			(error: Error) => controller.signal.aborted || dispatch({ kind: "refused", asked, error: error.message }),
-		);
+		// read into a page inside the chain: an answer that is not one is refused like a request that failed, rather than
+		// thrown where nothing catches it and the list says "Listing the runs…" for ever
+		withSignal(controller.signal, () => api.runsPage({ offset, limit: RUNS_PAGE, sort: "created", search: search || undefined }))
+			.then((answer) => pageOf(answer as RunPage))
+			.then(
+				(page) => dispatch({ kind: "page", asked, offset, ...page }),
+				(error: Error) => controller.signal.aborted || dispatch({ kind: "refused", asked, error: error.message }),
+			);
 		return () => controller.abort();
 	}, [offset, search, asked]);
 

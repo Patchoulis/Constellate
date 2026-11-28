@@ -80,6 +80,9 @@ test("a point is marked in its section, counting characters as the engine does",
 	assert.deepEqual([before, marked, after], ["Résumé: ", "the experiments are limited to small models.", ""]);
 	const wide = { ...reviewer.sections[0], text: "𝐖 x: the point. Rest", span: { start: 0, end: 20 } };
 	assert.deepEqual(pointInSection(wide, { ...reviewer.points[0], span: { start: 5, end: 15 } }), ["𝐖 x: ", "the point.", " Rest"]);
+	// a point whose span starts before its section's is marked from the section's start, never from its end
+	const later = { ...wide, span: { start: 10, end: 30 } };
+	assert.deepEqual(pointInSection(later, { ...reviewer.points[0], span: { start: 4, end: 12 } }), ["", "𝐖 ", "x: the point. Rest"]);
 });
 
 test("what was left out is counted, never said, and nothing is said when nothing was", () => {

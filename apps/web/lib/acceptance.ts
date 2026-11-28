@@ -21,15 +21,18 @@ const GENERIC: Record<Acceptance, { called: string; means: string }> = {
 
 const AS = { oral: "an oral", spotlight: "a spotlight", poster: "an ordinary acceptance (a poster)" } satisfies Record<Acceptance, string>;
 
+/** A tier this version does not know (a newer engine), named as the engine names it. */
+const capitalisedTier = (tier: string) => String(tier).charAt(0).toUpperCase() + String(tier).slice(1);
+
 /** The tag's words: the conference's term, or the tier's name. */
 export function tagText(tier: Acceptance, term?: AcceptanceTerm | null): string {
-	return term?.called || GENERIC[tier].called;
+	return term?.called || (GENERIC[tier]?.called ?? capitalisedTier(tier));
 }
 
 /** The tag's hover text: "CVPR 2024's Highlight: 11.9% of the papers in its list; ... Counted as a spotlight." */
 export function tagTitle(tier: Acceptance, term?: AcceptanceTerm | null): string {
-	if (!term) return GENERIC[tier].means;
-	return `${term.conference}'s ${term.called}: ${term.means}. Constellate counts it as ${AS[tier]}.`;
+	if (!term) return GENERIC[tier]?.means ?? `Accepted as ${String(tier)}.`;
+	return `${term.conference}'s ${term.called}: ${term.means}. Constellate counts it as ${AS[tier] ?? String(tier)}.`;
 }
 
 /**
