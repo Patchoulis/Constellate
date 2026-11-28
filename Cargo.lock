@@ -400,7 +400,7 @@ checksum = "be95d4a884358a21a199689323c29e9256b4a1b315e22f183d155422041d3a9a"
 
 [[package]]
 name = "constellate"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "adobe-cmap-parser",
  "argon2",
