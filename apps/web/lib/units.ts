@@ -13,6 +13,11 @@ export function similarity(value: number, digits = 2): string {
 	return `${value.toFixed(digits)} cosine similarity`;
 }
 
+/** A cosine distance (1 minus a cosine similarity), said with what it is: "0.29 cosine distance". */
+export function distance(value: number, digits = 2): string {
+	return `${value.toFixed(digits)} cosine distance`;
+}
+
 export const SIMILARITY_NOTE =
 	"Cosine similarity of the embeddings: 1 means the same direction (as alike as two texts can be), 0 means unrelated.";
 

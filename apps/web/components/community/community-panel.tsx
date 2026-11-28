@@ -34,7 +34,8 @@ import { communityLabel, type CommunityNode } from "@/lib/community/community";
 import type { MarksOf } from "@/lib/community/marks";
 import { useResizable } from "@/lib/ui/use-resizable";
 import { cn, hsl } from "@/lib/utils";
-import { count, percent, similarity, SIMILARITY_NOTE } from "@/lib/units";
+import { UNIQUENESS_NOTE, uniqueness } from "@/lib/community/community";
+import { count, distance, percent, similarity, SIMILARITY_NOTE } from "@/lib/units";
 
 /** How a user marks a paper, said wherever marking is offered. */
 export const MARK_HINT = "Right-click a paper to mark it";
@@ -55,18 +56,11 @@ const SORTS: readonly {
 		show: (c: Community) => count(c.size, "paper"),
 	},
 	{
-		value: "saturation",
-		label: "Saturation",
-		title: `How densely packed it is: the mean cosine similarity between two of its papers. ${SIMILARITY_NOTE}`,
-		of: (c: Community) => c.mean_inner_similarity,
-		show: (c: Community) => similarity(c.mean_inner_similarity, 3),
-	},
-	{
-		value: "tightness",
-		label: "Tightness",
-		title: `Mean cosine similarity of its papers to its mean embedding. ${SIMILARITY_NOTE}`,
-		of: (c: Community) => c.similarity_to_mean,
-		show: (c: Community) => similarity(c.similarity_to_mean, 3),
+		value: "uniqueness",
+		label: "Uniqueness",
+		title: UNIQUENESS_NOTE,
+		of: (c: Community) => uniqueness(c),
+		show: (c: Community) => distance(uniqueness(c), 3),
 	},
 	{
 		value: "highlights",
@@ -316,8 +310,8 @@ function Detail({
 
 function List({ nodes, sort, onSelect }: { nodes: CommunityNode[]; sort: Sort; onSelect: (node: CommunityNode) => void }) {
 	const values = nodes.map((node) => sort.by.of(node.community)).filter((value): value is number => value !== null);
-	// Counts are bars from zero; similarities sit in a narrow band, so their bars start just under the lowest.
-	const low = sort.by.value === "saturation" || sort.by.value === "tightness" ? Math.min(...values) * 0.9 : 0;
+	// Counts are bars from zero; uniqueness sits in a narrow band, so its bars start just under the lowest.
+	const low = sort.by.value === "uniqueness" ? Math.min(...values) * 0.9 : 0;
 	const span = Math.max(...values) - low || 1;
 	// a figure not known yet goes last whichever way the list is ordered
 	const ordered = [...nodes].sort((a, b) => {
