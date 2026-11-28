@@ -5,6 +5,11 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The dependencies are updated: TypeScript 7, KaTeX 0.19, jsonwebtoken 11, tower-http 0.7, tokenizers 0.23, sha1
+  0.11 and others, and the GitHub Actions the checks and releases run on.
+
 ## [0.2.1] - 2026-11-28
 
 ### Added
