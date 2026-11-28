@@ -1,6 +1,7 @@
 /** Which estimate may be accepted: only the one answered for what is asked now and the model chosen now. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { ModelCatalog, ModelProvider } from "@rp/contracts";
 import { choiceKey, chosenModelOf, chosenModelsOf, currentEstimate, isFor } from "@/lib/chosen-model";
 import type { Async } from "@/lib/use-async";
 import { askingCost } from "./costs";
@@ -51,9 +52,45 @@ test("the choice is read from the settings, and is not known before them", () =>
 	});
 });
 
+/** A catalogue of two providers as the engine tells their defaults for reading: the Claude API's Haiku, none for OpenAI. */
+function catalogue(): ModelCatalog {
+	const row = (id: "anthropic" | "openai", reading_default: ModelProvider["reading_default"]): ModelProvider => ({
+		id,
+		label: id,
+		key: { variable: "", needed: true, set: true },
+		address: { variable: null, host: null, place: "provider" },
+		available: { state: "ready" },
+		ids: "listed",
+		capabilities: { answers: "enforced", effort: "by_model", caching: "marked", counting: "endpoint" },
+		limits: [],
+		models: [],
+		price_of_typed: { kind: "not_known" },
+		docs: "",
+		reading_default,
+	});
+	return {
+		providers: [row("anthropic", { model: "claude-haiku-5-5", effort: "medium" }), row("openai", null)],
+		chosen: { provider: "anthropic", model: "claude-opus-5-5", effort: "medium" },
+	};
+}
+
+test("by default the Claude API's Haiku reads papers, known only from the engine's catalogue", () => {
+	const claude = { describe_provider: "anthropic" as const, describe_model: "claude-opus-5-5", describe_effort: "high" as const };
+	const both = chosenModelsOf(claude, catalogue());
+	assert.deepEqual(both.reading, { provider: "anthropic", model: "claude-haiku-5-5", effort: "medium" });
+	assert.deepEqual(both.naming, { provider: "anthropic", model: "claude-opus-5-5", effort: "high" });
+	// an estimate shown for the naming model is not the one for the default
+	const opus = askingCost(0.12, 0.25, { provider: "anthropic", model: "claude-opus-5-5" });
+	assert.equal(currentEstimate({ status: "ready", data: opus }, both.reading), undefined);
+	// the catalogue not told yet: not known (any estimate the engine answers is its own), never guessed
+	assert.equal(chosenModelsOf(claude).reading, null);
+	const same = chosenModelsOf({ ...claude, reading_same_as_naming: true }, catalogue());
+	assert.deepEqual(same.reading, { provider: "anthropic", model: "claude-opus-5-5", effort: "high" });
+});
+
 test("the features that read papers follow the model that reads papers, the naming one until another is chosen", () => {
 	const naming = { describe_provider: "openai" as const, describe_model: "gpt", describe_effort: "high" as const };
-	assert.deepEqual(chosenModelOf(naming, "reading"), { provider: "openai", model: "gpt", effort: "high" });
+	assert.deepEqual(chosenModelOf(naming, "reading", catalogue()), { provider: "openai", model: "gpt", effort: "high" });
 	const own = { ...naming, reading_provider: "compatible" as const, reading_model: "qwen3:32b", reading_effort: null };
 	const both = chosenModelsOf(own);
 	assert.deepEqual(both.reading, { provider: "compatible", model: "qwen3:32b", effort: "high" }, "no effort of its own: the naming one's");

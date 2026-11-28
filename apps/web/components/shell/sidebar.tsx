@@ -12,7 +12,16 @@ import { GroupedPicker } from "@/components/ui/picker";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/net/api";
 import { accepting, costWords, shownModel } from "@/lib/cost";
-import { READING_TITLE, chosenLabel, chosenOf, modelsApart, unavailableBecause, type Choosable, type ModelRole } from "@/lib/shell/models";
+import {
+	READING_TITLE,
+	chosenLabel,
+	chosenOf,
+	modelsApart,
+	readingStateOf,
+	unavailableBecause,
+	type Choosable,
+	type ModelRole,
+} from "@/lib/shell/models";
 import { engineWarnings, IMPORT_ADVICE, keepDismissed, notDismissed, readDismissed } from "@/lib/shell/notices";
 import { withSignal } from "@/lib/net/request";
 import {
@@ -455,7 +464,7 @@ function CostLine({
 	const choice = apart ? (
 		<>
 			{line("naming", "The model that names communities and writes overviews, and who provides it", "Names:")}
-			{line("reading", READING_TITLE, "Reads papers:")}
+			{line("reading", READING_TITLE, readingStateOf(settings) === "default" ? "Reads papers (default):" : "Reads papers:")}
 		</>
 	) : (
 		line(

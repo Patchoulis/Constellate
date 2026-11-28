@@ -6,7 +6,7 @@ import { REDO_STEPS, type Catalog, type Library, type ModelProvider, type RedoSt
 import { DetectorTraining } from "@/components/features/detector/detector-training";
 import { ModelChoice } from "@/components/shell/model-choice";
 import { IMPORT_ADVICE } from "@/lib/shell/notices";
-import { READING_TITLE, ROLE_FIELDS, groupsOf, readsWithNaming, type Choosable, type ModelRole } from "@/lib/shell/models";
+import { READING_TITLE, ROLE_FIELDS, groupsOf, readingStateWords, type Choosable, type ModelRole } from "@/lib/shell/models";
 import { Button, Heading, Segmented } from "@/components/ui/button";
 import { Input, Label, SwitchRow } from "@/components/ui/field";
 import { Choice, GroupedPicker } from "@/components/ui/picker";
@@ -234,7 +234,7 @@ const GROUPS: { title: string; note?: string; columns?: number; fields: Field[] 
 				role: "reading",
 				key: "reading_model",
 				label: "Model that reads papers",
-				hint: "Tables, agree / disagree, questions, claims, weaknesses, explanations and citation kinds; one setting for all of them, also chosen beside their estimates. Its menu sets it back to the same as the naming model",
+				hint: "Tables, agree / disagree, questions, claims, weaknesses, explanations and citation kinds; one setting for all of them, also chosen beside their estimates. Its menu sets it back to the default (on the Claude API its Haiku, elsewhere the naming model) or to the same as the naming model",
 			},
 		],
 	},
@@ -279,7 +279,7 @@ function Editor({
 }) {
 	const set = (value: Settings[keyof Settings]) => onChange({ [field.key]: value });
 	if (field.kind === "model") {
-		const same = field.role === "reading" && readsWithNaming(settings);
+		const state = field.role === "reading" ? readingStateWords(choosable.catalog, settings) : null;
 		return (
 			<Label>
 				{field.label}
@@ -297,7 +297,7 @@ function Editor({
 						onChange={onChange}
 					/>
 				</span>
-				{field.hint && <span>{same ? `The same as the naming model. ${field.hint}` : field.hint}</span>}
+				{field.hint && <span>{state ? `${state} ${field.hint}` : field.hint}</span>}
 			</Label>
 		);
 	}

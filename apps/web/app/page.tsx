@@ -164,7 +164,7 @@ export default function Home() {
 			/>
 			{current ? (
 				// every estimate on screen is for the model chosen now (lib/chosen-model.ts)
-				<ChosenModelContext value={chosenModelsOf(settings)}>
+				<ChosenModelContext value={chosenModelsOf(settings, choosable.source === "engine" ? choosable.catalog : undefined)}>
 					{/* the model that reads papers can be chosen in each section that reads them, beside its estimate */}
 					<ModelChoosingContext
 						value={{ choosable, settings, providerOwned: owned.has("reading_provider"), onChange: (changes) => void change(changes) }}

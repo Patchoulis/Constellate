@@ -4,7 +4,17 @@
  * (`GET /api/models`). Until it has answered (or when asking failed), the model the settings name is all there is
  * to show, and nothing can be picked.
  */
-import type { CatalogItem, Effort, ModelCatalog, ModelEntry, ModelPrice, ModelProvider, ProviderId, Settings } from "@rp/contracts";
+import type {
+	CatalogItem,
+	Effort,
+	ModelCatalog,
+	ModelEntry,
+	ModelPrice,
+	ModelProvider,
+	ProviderId,
+	ReadingState,
+	Settings,
+} from "@rp/contracts";
 import { money, type Currency } from "@/lib/units";
 
 /**
@@ -26,31 +36,125 @@ export const READING_TITLE =
 
 /** The settings that choose the models, as far as they are known. */
 export type ModelSettings = Partial<
-	Pick<Settings, "describe_provider" | "describe_model" | "describe_effort" | "reading_provider" | "reading_model" | "reading_effort">
+	Pick<
+		Settings,
+		| "describe_provider"
+		| "describe_model"
+		| "describe_effort"
+		| "reading_provider"
+		| "reading_model"
+		| "reading_effort"
+		| "reading_same_as_naming"
+	>
 >;
 
-/** Is the model that reads papers the naming one, by not being chosen on its own? */
-export function readsWithNaming(settings: ModelSettings | undefined): boolean {
-	return settings?.reading_provider === undefined || settings.reading_provider === null;
+/** How the model that reads papers is chosen: by default (an older engine or file says nothing: the default), as
+ *  the naming model, or a model of its own. */
+export function readingStateOf(settings: ModelSettings | undefined): ReadingState {
+	if (settings?.reading_provider !== undefined && settings.reading_provider !== null) return "chosen";
+	return settings?.reading_same_as_naming ? "same_as_naming" : "default";
 }
 
-/** The provider, model and effort the settings choose for `role`: the reading model is the naming one until it is
- *  chosen on its own. Each part is undefined while the settings do not say it (not read yet, an older engine). */
+/**
+ * The model that reads papers by default while `provider` names communities, as the engine's catalogue tells it
+ * (the Claude API's Haiku): null when that provider has none (the naming model then reads them), undefined while
+ * it is not known (no catalogue, or an older engine's).
+ */
+export function readingDefaultOf(
+	catalog: ModelCatalog | undefined,
+	provider: ProviderId | undefined,
+): { model: string; effort: Effort } | null | undefined {
+	const row = catalog?.providers.find((one) => one.id === (provider ?? catalog.chosen.provider));
+	return row?.reading_default;
+}
+
+/** The provider, model and effort the settings choose for `role`: the reading model's own, the naming one's, or
+ *  the default (which needs `catalog`). Each part is undefined while it is not known (settings not read, no
+ *  catalogue, an older engine). */
 export function pickedOf(
 	settings: ModelSettings | undefined,
 	role: ModelRole,
+	catalog?: ModelCatalog,
 ): { provider: ProviderId | undefined; model: string | undefined; effort: Effort | undefined } {
 	const naming = { provider: settings?.describe_provider, model: settings?.describe_model, effort: settings?.describe_effort };
-	if (role === "naming" || readsWithNaming(settings)) return naming;
-	return {
-		provider: settings?.reading_provider ?? undefined,
-		model: settings?.reading_model ?? naming.model,
-		effort: settings?.reading_effort ?? naming.effort,
-	};
+	if (role === "naming") return naming;
+	switch (readingStateOf(settings)) {
+		case "chosen":
+			return {
+				provider: settings?.reading_provider ?? undefined,
+				model: settings?.reading_model ?? naming.model,
+				effort: settings?.reading_effort ?? naming.effort,
+			};
+		case "same_as_naming":
+			return naming;
+		case "default": {
+			const fallback = readingDefaultOf(catalog, naming.provider);
+			if (fallback === null) return naming;
+			if (fallback === undefined) return { provider: undefined, model: undefined, effort: undefined };
+			return { provider: naming.provider ?? catalog?.chosen.provider, model: fallback.model, effort: fallback.effort };
+		}
+	}
 }
 
-/** What to save to set the model that reads papers back to the naming one. */
-export const SAME_AS_NAMING: Partial<Settings> = { reading_provider: null };
+/** What to save to set the model that reads papers back to the default. */
+export const DEFAULT_READING: Partial<Settings> = { reading_provider: null, reading_same_as_naming: false };
+
+/** What to save to read papers with the naming model, rather than the default. */
+export const SAME_AS_NAMING: Partial<Settings> = { reading_same_as_naming: true };
+
+/** The first entry of the reading model's menu: what the default is ("Default: Claude Haiku 5.5 · Anthropic"), or,
+ *  where the naming provider has no default of its own, the naming model it then is. */
+export function defaultEntryLabel(catalog: ModelCatalog, settings: ModelSettings | undefined): string {
+	const naming = chosenOf(catalog, settings, "naming");
+	const fallback = readingDefaultOf(catalog, naming.providerId);
+	if (!fallback) return "The same as the naming model";
+	const model = naming.provider?.models.find((one) => one.id === fallback.model);
+	return `Default: ${model?.label ?? fallback.model} · ${naming.provider?.label ?? naming.providerId}`;
+}
+
+/** Does the naming provider read papers with a default of its own, which "the same as the naming model" is not? */
+export function hasOwnDefault(catalog: ModelCatalog, settings: ModelSettings | undefined): boolean {
+	return Boolean(readingDefaultOf(catalog, chosenOf(catalog, settings, "naming").providerId));
+}
+
+/** How the model that reads papers is chosen, in words for beside it ("Default: Claude Haiku 5.5 · Anthropic.",
+ *  "The same as the naming model."); null for a model chosen, which its menu names. */
+export function readingStateWords(catalog: ModelCatalog, settings: ModelSettings | undefined): string | null {
+	switch (readingStateOf(settings)) {
+		case "chosen":
+			return null;
+		case "same_as_naming":
+			return "The same as the naming model.";
+		case "default":
+			return `${defaultEntryLabel(catalog, settings)}.`;
+	}
+}
+
+/** One of the entries above the models in the reading model's menu. */
+export interface ReadingEntry {
+	label: string;
+	/** quieter, on the right: the naming model it is, when it is that */
+	note: string;
+	ticked: boolean;
+	change: Partial<Settings>;
+}
+
+/**
+ * The entries above the models in the reading model's menu: the default, saying what it is, and, where the
+ * naming provider has a default of its own (the Claude API), the naming model as a choice of its own; elsewhere
+ * the default is the naming model, and one entry says so.
+ */
+export function readingEntries(catalog: ModelCatalog, settings: ModelSettings | undefined): ReadingEntry[] {
+	const state = readingStateOf(settings);
+	const naming = chosenLabel(chosenOf(catalog, settings, "naming"));
+	if (!hasOwnDefault(catalog, settings)) {
+		return [{ label: "The same as the naming model", note: naming, ticked: state !== "chosen", change: DEFAULT_READING }];
+	}
+	return [
+		{ label: defaultEntryLabel(catalog, settings), note: "", ticked: state === "default", change: DEFAULT_READING },
+		{ label: "The same as the naming model", note: naming, ticked: state === "same_as_naming", change: SAME_AS_NAMING },
+	];
+}
 
 /** What can be chosen: the engine's catalog once it has answered; before that (or when asking failed, `why`), only
  *  the model the settings name. */
@@ -91,7 +195,7 @@ export function waitingFor(
 		docs: "",
 	};
 	const chosen = { provider: id, model, effort: "medium" as const };
-	return { source: "waiting", why, catalog: { providers: [only], chosen, reading: { ...chosen, same_as_naming: true } } };
+	return { source: "waiting", why, catalog: { providers: [only], chosen, reading: { ...chosen, state: "default" as const } } };
 }
 
 /** What can be chosen: the engine's catalog when it has told it, else the settings' model alone. */
@@ -159,7 +263,7 @@ export interface Chosen {
 
 /** The model chosen for `role`, as the settings name it, else as the engine's catalog does. */
 export function chosenOf(catalog: ModelCatalog, settings: ModelSettings | undefined, role: ModelRole = "naming"): Chosen {
-	const picked = pickedOf(settings, role);
+	const picked = pickedOf(settings, role, catalog);
 	// the catalog's own, for what the settings do not say: an older engine tells no reading model, which is the naming one
 	const told = role === "reading" ? (catalog.reading ?? catalog.chosen) : catalog.chosen;
 	const providerId = picked.provider ?? told.provider;
@@ -184,16 +288,17 @@ export function readingDiffers(catalog: ModelCatalog, settings: ModelSettings | 
 	return !sameChoice(chosenOf(catalog, settings, "naming"), chosenOf(catalog, settings, "reading"));
 }
 
-/** Are the two models shown apart, each for what it does? When another reads papers, and also when the same model
- *  was chosen to read on its own: changing the naming one would then not change the other. */
+/** Are the two models shown apart, each for what it does? When another reads papers (the default included), and also
+ *  when the same model was chosen to read on its own: changing the naming one would then not change the other. */
 export function modelsApart(catalog: ModelCatalog, settings: ModelSettings | undefined): boolean {
-	return !readsWithNaming(settings) || readingDiffers(catalog, settings);
+	return readingStateOf(settings) === "chosen" || readingDiffers(catalog, settings);
 }
 
 /**
  * What a window may do with the model that reads papers when the server owns the providers (`providerOwned`):
- * nothing while it reads with the naming model (a pick would pin it to the naming provider of now: the owner
- * chooses it), and set it back to the naming model only while that reads with the same provider.
+ * choose none while none is chosen (a pick would pin it to the naming provider of now: the owner chooses it), and
+ * move between the default and the naming model (one provider, the server's) only while what it reads with now is
+ * of that provider.
  */
 export function readingPicks(
 	catalog: ModelCatalog,
@@ -201,10 +306,10 @@ export function readingPicks(
 	providerOwned: boolean,
 ): { locked: boolean; canReset: boolean } {
 	if (!providerOwned) return { locked: false, canReset: true };
-	const same = readsWithNaming(settings);
+	const free = readingStateOf(settings) !== "chosen";
 	const naming = chosenOf(catalog, settings, "naming");
 	const reading = chosenOf(catalog, settings, "reading");
-	return { locked: same, canReset: same || naming.providerId === reading.providerId };
+	return { locked: free, canReset: free || naming.providerId === reading.providerId };
 }
 
 /** "Claude Opus 5.5 · Anthropic", "qwen3:32b · OpenAI-compatible endpoint". */

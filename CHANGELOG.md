@@ -11,12 +11,17 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   questions, and reads claims, weaknesses, passages to explain and citation kinds, while the first one keeps naming
   communities and writing their overviews. A cheaper model can read papers while a stronger one names. It is chosen
   from the same providers and models, with the same efforts, beside the cost shown in each of those sections, and in
-  Settings, where it can be set back to the same as the naming model. Until it is chosen, papers are read with the
-  naming model, as before. Answers already kept are kept for the model that gave them: choosing that model again
-  costs nothing.
+  Settings. Its menu also offers the default and "The same as the naming model". Answers already kept are kept for
+  the model that gave them: choosing that model again costs nothing.
 - When the two models differ, the sidebar says which one names and which one reads papers, each with its price.
 
 ### Changed
+
+- On the Claude API, papers are now read by Claude Haiku 5.5 by default, also for anyone who never chose a model to
+  read them: tables, agree / disagree, questions, claims, weaknesses, explanations and citation kinds show what Haiku
+  would cost, and ask it once that is accepted. Answers already given by the naming model (such as Opus) are kept
+  and found again when "The same as the naming model" is chosen in the menu beside any of those estimates or in
+  Settings. With another provider, papers are read by the naming model unless another is chosen, as before.
 
 - Communities are ordered by "Uniqueness" in place of "Saturation" and "Tightness": how far a community's papers are,
   on average, from what the community is about (a cosine distance). Low means its papers all do much the same thing;

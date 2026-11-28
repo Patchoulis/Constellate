@@ -8,7 +8,6 @@ import { api } from "@/lib/net/api";
 import {
 	EFFORT_LABEL,
 	READING_TITLE,
-	SAME_AS_NAMING,
 	changeFor,
 	chosenLabel,
 	chosenOf,
@@ -21,7 +20,8 @@ import {
 	priceLabel,
 	priceOf,
 	readingPicks,
-	readsWithNaming,
+	readingEntries,
+	readingStateOf,
 	unavailableBecause,
 	type Choosable,
 	type ModelGroup,
@@ -148,8 +148,9 @@ export function ModelChoice({
 	const efforts = effortsOf(chosen);
 	const sent = effortSent(chosen.effort, efforts);
 	const priced = choosable.source === "engine";
-	const same = role === "reading" && readsWithNaming(settings);
-	const naming = chosenOf(choosable.catalog, settings, "naming");
+	// none chosen to read (the default, or the naming model): no model below is ticked, an entry above is
+	const same = role === "reading" && readingStateOf(settings) !== "chosen";
+	const entries = role === "reading" ? readingEntries(choosable.catalog, settings) : [];
 	// a server's window: the model that reads papers is the owner's to choose, as readingPicks says
 	const allowed = readingPicks(choosable.catalog, settings, providerOwned);
 	const locked = role === "reading" && allowed.locked;
@@ -160,17 +161,20 @@ export function ModelChoice({
 				<Trigger text={chosenLabel(chosen)} empty={false} quiet={quiet} />
 				<DropdownMenu.Portal>
 					<DropdownMenu.Content align="start" sideOffset={4} className={cn(MENU, "w-[min(24rem,calc(100vw-1rem))]")}>
-						{role === "reading" && (
+						{entries.length > 0 && (
 							<DropdownMenu.Group className="mb-1">
-								<DropdownMenu.Item
-									disabled={!canReset}
-									className={cn(ROW, !canReset && "cursor-default opacity-50")}
-									onSelect={() => onChange(SAME_AS_NAMING)}
-								>
-									<Check className={cn("size-3.5 shrink-0", !same && "invisible")} />
-									<span className="shrink-0">The same as the naming model</span>
-									<span className="min-w-0 flex-1 truncate text-right text-xs text-muted-foreground">{chosenLabel(naming)}</span>
-								</DropdownMenu.Item>
+								{entries.map((entry) => (
+									<DropdownMenu.Item
+										key={entry.label}
+										disabled={!canReset}
+										className={cn(ROW, !canReset && "cursor-default opacity-50")}
+										onSelect={() => onChange(entry.change)}
+									>
+										<Check className={cn("size-3.5 shrink-0", !entry.ticked && "invisible")} />
+										<span className="min-w-0 truncate">{entry.label}</span>
+										<span className="min-w-0 flex-1 truncate text-right text-xs text-muted-foreground">{entry.note}</span>
+									</DropdownMenu.Item>
+								))}
 								<DropdownMenu.Separator className="my-1 h-px bg-border" />
 							</DropdownMenu.Group>
 						)}

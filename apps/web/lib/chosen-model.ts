@@ -6,11 +6,11 @@
  * sidebar's menu, the menu beside the estimate, the settings dialog, another window). Every feature asks for its
  * estimates again when the choice changes (`choiceKey` is in their dependencies), and the button that accepts an
  * estimate is offered only while it is the one for the model chosen now (`estimateFor`): an old figure is never
- * accepted for a new model. The features that read papers follow the model that reads papers, which is the naming
- * model until it is chosen on its own.
+ * accepted for a new model. The features that read papers follow the model that reads papers: its own, the naming
+ * model, or by default (the Claude API's Haiku while the Claude API names communities, else the naming model).
  */
 import { createContext, useContext } from "react";
-import type { AskingCost, Effort, ProviderId } from "@rp/contracts";
+import type { AskingCost, Effort, ModelCatalog, ProviderId } from "@rp/contracts";
 import { pickedOf, type ModelRole, type ModelSettings } from "@/lib/shell/models";
 import type { Async } from "@/lib/use-async";
 
@@ -21,19 +21,21 @@ export interface ChosenModel {
 	effort: Effort | null;
 }
 
-/** The choice for `role` as the settings hold it; null until they are read. */
-export function chosenModelOf(settings: ModelSettings | undefined, role: ModelRole = "naming"): ChosenModel | null {
+/** The choice for `role` as the settings hold it (the default from the engine's `catalog`); null until it is
+ *  known: the settings not read, or the default with no catalogue yet. */
+export function chosenModelOf(settings: ModelSettings | undefined, role: ModelRole = "naming", catalog?: ModelCatalog): ChosenModel | null {
 	if (!settings) return null;
-	const picked = pickedOf(settings, role);
+	const picked = pickedOf(settings, role, catalog);
+	if (role === "reading" && picked.model === undefined) return null;
 	return { provider: picked.provider ?? null, model: picked.model ?? "", effort: picked.effort ?? null };
 }
 
 /** Both choices, as the page holds them. */
 export type ChosenModels = Record<ModelRole, ChosenModel | null>;
 
-/** Both choices from the settings; each null until they are read. */
-export function chosenModelsOf(settings: ModelSettings | undefined): ChosenModels {
-	return { naming: chosenModelOf(settings, "naming"), reading: chosenModelOf(settings, "reading") };
+/** Both choices from the settings and the engine's catalogue (once it has told it); each null until known. */
+export function chosenModelsOf(settings: ModelSettings | undefined, catalog?: ModelCatalog): ChosenModels {
+	return { naming: chosenModelOf(settings, "naming"), reading: chosenModelOf(settings, "reading", catalog) };
 }
 
 /** Provided by the page (app/page.tsx) from the settings it holds. */
