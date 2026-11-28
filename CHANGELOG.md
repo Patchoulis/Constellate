@@ -139,7 +139,9 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   "pk, uq P rKs ˆ rH ´ 1s". The symbols of TeX's math fonts (mathabx, Computer Modern and the fonts made to their
   layout) used to come out as accented letters. A formula whose characters the PDF does not say at all is shown as
   a note linking to its page instead of wrong characters, and is never quoted or matched as evidence. A displayed
-  sum keeps its limits with it rather than splitting into a line each. Papers read before are read again, on this
+  sum keeps its limits with it rather than splitting into a line each, superscripts and subscripts are shown raised
+  and lowered rather than run into the line ("CoTgt d"), and a fraction reads as one ("(1)/(|T|)", not "1 |T|"),
+  with the formula it is in kept in one piece. Papers read before are read again, on this
   computer and for free, when next opened. Answers already paid for are kept and shown as before, their quotes
   checked against the new text as always; only an explanation of a passage, which cannot be shown to be about the
   same words now, and a citation's reading whose sentence now reads differently, are asked again when wanted.

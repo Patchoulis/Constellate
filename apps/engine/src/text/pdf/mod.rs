@@ -206,52 +206,69 @@ fn read_pages(bytes: &[u8]) -> Result<Reading, pdf_extract::OutputError> {
         if pdf_extract::output_doc_page(&document, &mut output, number).is_err() {
             break;
         }
-        pages.push(unreadable_marked(&output.text));
-        lines.push(output.lines);
+        let (text, page_lines) = output.laid_out();
+        pages.push(unreadable_marked(&text));
+        lines.push(page_lines);
     }
     // where the figures are is worth having, not worth the text: a panic finding them loses only them
     let figures = catch_unwind(AssertUnwindSafe(|| figures::find(&document, &lines))).unwrap_or_default();
     Ok(Reading { pages, figures })
 }
 
-/// A page's text laid out as `pdf_extract::PlainTextOutput` lays it out (a space where the next glyph starts
-/// right of where the last ended, a line break where it starts lower or left, a blank line between lines further
-/// apart than one and a half times the glyph's size), but for one thing: between a glyph much smaller than the one
-/// before it or than the largest since the last blank line, and set over or under the glyph before it (the limits
-/// of a displayed sum), a blank line takes [`SCRIPT_GAP`] times that larger size. Its
-/// own small size made every such move look like a paragraph's end, and cut one displayed formula into a passage
-/// per piece ("R_K =", "K ∑", "k=1"). A heading or a footnote is not that much larger or smaller than the text
-/// around it, so it is still set apart as before.
-struct PageText {
+/// One glyph as the page draws it, in the order it is drawn.
+#[derive(Clone, Debug)]
+struct Glyph {
+    /// Where it starts and its baseline, in the page's own coordinates (y up).
+    x: f64,
+    y: f64,
+    /// Its size in text space: the side of the square with the area of the transformed size. NaN for rotated text,
+    /// as in `PlainTextOutput`: every comparison with it is false, so it breaks no line.
+    size: f64,
+    /// How far it advances, in points.
+    advance: f64,
     text: String,
-    /// Its lines with the boxes they take, as its text breaks them.
-    lines: Vec<figures::Line>,
-    last_end: f64,
-    /// Where the glyph before began, and its baseline and size.
-    last_x: f64,
-    last_y: f64,
-    last_size: f64,
-    /// The largest glyph since the last blank line: what a script-size glyph is measured against.
-    line_size: f64,
-    first_char: bool,
-    /// The page's height: PDF space counts up from the bottom, the text is read from the top.
-    height: f64,
+    /// The first glyph of a string the page shows: where spaces and line breaks are decided, as in `PlainTextOutput`.
+    word_start: bool,
 }
 
-impl Default for PageText {
-    fn default() -> Self {
-        Self {
-            text: String::new(),
-            lines: Vec::new(),
-            last_end: 100_000.0,
-            last_x: 0.0,
-            last_y: 0.0,
-            last_size: 0.0,
-            line_size: 0.0,
-            first_char: false,
-            height: 0.0,
+impl Glyph {
+    /// The box it takes, for finding where figures are (figures.rs).
+    fn rect(&self) -> figures::Rect {
+        figures::Rect {
+            x0: self.x,
+            y0: self.y - self.size * 0.25,
+            x1: self.x + self.advance.max(0.0),
+            y1: self.y + self.size * 0.8,
         }
     }
+}
+
+/// A page's text laid out as `pdf_extract::PlainTextOutput` lays it out (a space where the next glyph starts
+/// right of where the last ended, a line break where it starts lower or left, a blank line between lines further
+/// apart than one and a half times the glyph's size), with what mathematics needs on top:
+///
+/// - A glyph much smaller than the largest since the last blank line, set over or under the glyph before it (the
+///   limits of a displayed sum), is not taken for the start of a paragraph: a blank line there takes
+///   [`SCRIPT_GAP`] times that larger size. Its own small size made every such move look like a paragraph's end,
+///   and cut one displayed formula into a passage per piece ("R_K =", "K ∑", "k=1").
+/// - A superscript or a subscript (smaller than the glyph it follows, raised or lowered by part of that glyph's size)
+///   is written `^{…}` or `_{…}` where it stands: "CoT^{gt}_{d}", "R^{m}", where the page's text had "CoTgt d" and
+///   "R m". The marks are part of the text every address counts in, and a quote is matched on its letters and digits
+///   only, so they move no address and change no quote's match. A number set small after a word (a footnote's or a
+///   citation's mark: "models.12") is left as it was, since the citation reader reads it so.
+/// - A fraction (glyphs over and under a short horizontal rule the page draws) is written
+///   `(numerator)/(denominator)` where it stands: neither read as "1 |T|" nor cut out of its formula.
+///
+/// A heading or a footnote is not that much larger or smaller than the text around it, so it is still set apart as
+/// before.
+#[derive(Default)]
+struct PageText {
+    glyphs: Vec<Glyph>,
+    /// Short horizontal rules the page strokes or fills: fraction bars among them.
+    rules: Vec<figures::Rect>,
+    word_start: bool,
+    /// The top of the page's media box, where PlainTextOutput's y starts.
+    top: f64,
 }
 
 /// How much smaller than its neighbour a glyph is for its moves to be measured by the neighbour's size: script
@@ -261,6 +278,301 @@ const SCRIPT_SIZE: f64 = 0.75;
 /// between them: the lower limit of a displayed sum sits below the sum's whole depth, a little over twice the
 /// size of the text (measured on papers set with Computer Modern and with mathabx).
 const SCRIPT_GAP: f64 = 2.4;
+/// A superscript or subscript is smaller than its base by this much at least (TeX's script size is 0.7)...
+const SCRIPT_SMALLER: f64 = 0.85;
+/// ...and raised or lowered by more than this share of its base's size, and less than its whole size.
+const SCRIPT_SHIFT: f64 = 0.1;
+
+/// Is `glyph` raised (1) or lowered (-1) as a script of a base of `size` on `baseline`, or not a script (0)?
+fn script_of(glyph: &Glyph, baseline: f64, size: f64) -> i8 {
+    // NaN sizes are never smaller: not a script
+    if glyph.size.partial_cmp(&(size * SCRIPT_SMALLER)) != Some(std::cmp::Ordering::Less) {
+        return 0;
+    }
+    let shift = glyph.y - baseline;
+    if shift > size * SCRIPT_SHIFT && shift < size {
+        1
+    } else if shift < -size * SCRIPT_SHIFT && shift > -size {
+        -1
+    } else {
+        0
+    }
+}
+
+/// The text of glyphs set together (a numerator, a denominator), with their scripts marked.
+fn group_text(glyphs: &[&Glyph]) -> String {
+    let Some(base) = glyphs.iter().copied().max_by(|a, b| a.size.total_cmp(&b.size)) else { return String::new() };
+    let (mut baseline, mut size) = (base.y, base.size);
+    let mut text = String::new();
+    let mut open = 0i8;
+    let mut last_end = f64::INFINITY;
+    for glyph in glyphs {
+        let script = script_of(glyph, baseline, size);
+        if script != open && open != 0 {
+            text.push('}');
+        }
+        if script == 0 && glyph.x > last_end + glyph.size * 0.25 && !text.is_empty() {
+            text.push(' ');
+        }
+        if script != open && script != 0 {
+            text.push_str(if script > 0 { "^{" } else { "_{" });
+        }
+        open = script;
+        if script == 0 && glyph.size >= size * SCRIPT_SMALLER {
+            (baseline, size) = (glyph.y, glyph.size);
+        }
+        text.push_str(&glyph.text);
+        last_end = glyph.x + glyph.advance;
+    }
+    if open != 0 {
+        text.push('}');
+    }
+    text
+}
+
+impl PageText {
+    /// The fractions of the page: for each rule with glyphs right over and right under it, those glyphs (by their
+    /// index), and the fraction as one glyph standing where it starts.
+    fn fractions(&self) -> (Vec<bool>, Vec<Option<Glyph>>) {
+        let mut taken = vec![false; self.glyphs.len()];
+        let mut standing: Vec<Option<Glyph>> = vec![None; self.glyphs.len()];
+        for rule in &self.rules {
+            let over_the_rule = |glyph: &Glyph| {
+                let middle = glyph.x + glyph.advance / 2.0;
+                glyph.size.is_finite() && middle >= rule.x0 - 1.0 && middle <= rule.x1 + 1.0
+            };
+            // measured by the largest glyph near the rule: a subscript of the denominator sits lower than its size
+            let near = |glyph: &Glyph| over_the_rule(glyph) && (glyph.y - rule.y0).abs() <= glyph.size * 2.5;
+            let big = self.glyphs.iter().filter(|glyph| near(glyph)).map(|glyph| glyph.size).fold(0.0, f64::max);
+            let above: Vec<usize> = (0..self.glyphs.len())
+                .filter(|at| !taken[*at])
+                .filter(|at| {
+                    let glyph = &self.glyphs[*at];
+                    over_the_rule(glyph) && glyph.y > rule.y1 && glyph.y - rule.y1 <= big * 1.2
+                })
+                .collect();
+            let below: Vec<usize> = (0..self.glyphs.len())
+                .filter(|at| !taken[*at])
+                .filter(|at| {
+                    let glyph = &self.glyphs[*at];
+                    over_the_rule(glyph) && glyph.y < rule.y0 && rule.y0 - glyph.y <= big * 1.6
+                })
+                .collect();
+            // a fraction's parts are each one run of glyphs; a table's rows over and under its rules are cells far apart
+            let together = |group: &[usize]| {
+                let mut spans: Vec<(f64, f64, f64)> = group
+                    .iter()
+                    .map(|at| {
+                        let glyph = &self.glyphs[*at];
+                        (glyph.x, glyph.x + glyph.advance, glyph.size)
+                    })
+                    .collect();
+                spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+                spans.windows(2).all(|pair| pair[1].0 - pair[0].1 <= pair[0].2.max(pair[1].2) * 1.5)
+            };
+            // a fraction's numerator and denominator stand alone on their lines: a line of text that runs on past the
+            // rule's ends (prose over the rule above a page's footnotes, a table's cells) is not one
+            let alone = |group: &[usize]| {
+                group.iter().all(|at| {
+                    let glyph = &self.glyphs[*at];
+                    self.glyphs.iter().enumerate().all(|(other_at, other)| {
+                        // on the very same baseline, a word's space or less from the rule's end
+                        let beside = (other.y - glyph.y).abs() < glyph.size * 0.15
+                            && ((other.x + other.advance > rule.x0 - glyph.size * 0.6
+                                && other.x + other.advance <= rule.x0 - 0.5)
+                                || (other.x >= rule.x1 + 0.5 && other.x < rule.x1 + glyph.size * 0.6));
+                        group.contains(&other_at) || !beside
+                    })
+                })
+            };
+            let short = above.len() + below.len() <= 80;
+            // the bar of a radical starts where its sign ends: what is under it is the radicand, not a denominator
+            let radical = self.glyphs.iter().any(|glyph| {
+                glyph.text.contains('√') && (glyph.x + glyph.advance - rule.x0).abs() <= 2.0 && glyph.y < rule.y1 + 2.0
+            });
+            if radical {
+                continue;
+            }
+            if above.is_empty()
+                || below.is_empty()
+                || !short
+                || !together(&above)
+                || !together(&below)
+                || !alone(&above)
+                || !alone(&below)
+            {
+                continue;
+            }
+            let first = *above.iter().chain(&below).min().unwrap_or(&above[0]);
+            let numerator: Vec<&Glyph> = above.iter().map(|at| &self.glyphs[*at]).collect();
+            let denominator: Vec<&Glyph> = below.iter().map(|at| &self.glyphs[*at]).collect();
+            let size = numerator.iter().chain(&denominator).map(|glyph| glyph.size).fold(0.0, f64::max);
+            for at in above.iter().chain(&below) {
+                taken[*at] = true;
+            }
+            standing[first] = Some(Glyph {
+                x: rule.x0,
+                // on the baseline of the formula it is in: the bar is on the math axis, a quarter of the size above
+                y: rule.y0 - size * 0.25,
+                size,
+                advance: rule.x1 - rule.x0,
+                text: format!("({})/({})", group_text(&numerator), group_text(&denominator)),
+                word_start: true,
+            });
+        }
+        (taken, standing)
+    }
+
+    /// The page's text, and its lines with the boxes they take.
+    fn laid_out(&self) -> (String, Vec<figures::Line>) {
+        let (taken, standing) = self.fractions();
+        let glyphs: Vec<Glyph> = self
+            .glyphs
+            .iter()
+            .enumerate()
+            .filter_map(|(at, glyph)| match &standing[at] {
+                Some(fraction) => Some(fraction.clone()),
+                None if taken[at] => None,
+                None => Some(glyph.clone()),
+            })
+            .collect();
+        let mut text = String::new();
+        let mut lines: Vec<figures::Line> = Vec::new();
+        // as PlainTextOutput, which measures from the top of the page: the first glyph is far from where it starts
+        let (mut last_end, mut last_x, mut last_y, mut last_size) = (100_000.0, 0.0, self.top, 0.0);
+        // the largest glyph since the last blank line: what a script-size glyph is measured against
+        let mut line_size: f64 = 0.0;
+        // the glyph scripts are set on, and the script open now (1 raised, -1 lowered, 0 none)
+        let (mut base_x, mut base_y, mut base_size): (f64, f64, f64) = (0.0, 0.0, f64::NAN);
+        let mut base_word = String::new();
+        let mut open = 0i8;
+        let mut flat_run = false;
+        for (at, glyph) in glyphs.iter().enumerate() {
+            let size = glyph.size;
+            let mut script = if base_size.is_nan() { 0 } else { script_of(glyph, base_y, base_size) };
+            if script != 0 && !(glyph.x >= base_x - 1.0 && glyph.x <= last_end + base_size * 1.5) {
+                // not beside what it would be set on (from its base to just after the last glyph): not its script
+                script = 0;
+            }
+            if script != 0 && open == 0 {
+                // a number set small after a word or a stop is a footnote's or a citation's mark: left as it was
+                let run: String = glyphs[at..]
+                    .iter()
+                    .take_while(|next| script_of(next, base_y, base_size) == script)
+                    .map(|next| next.text.as_str())
+                    .collect();
+                let mark = run.chars().all(|c| c.is_ascii_digit() || ",–-*†‡§".contains(c));
+                let after_word = base_word.chars().filter(|c| c.is_alphabetic()).count() >= 2
+                    || base_word.ends_with(['.', ',', ';', ':', ')']);
+                flat_run = mark && after_word;
+            }
+            // a footnote's mark: laid out as any glyph, and not the word a later script is set on
+            let flat = flat_run && script != 0;
+            if flat {
+                script = 0;
+            } else if script == 0 {
+                flat_run = false;
+            }
+            let mut new_line = lines.is_empty();
+            let mut spaced = false;
+            if script == 0 && open != 0 {
+                text.push('}');
+                if let Some(line) = lines.last_mut() {
+                    line.text.push('}');
+                }
+                open = 0;
+            }
+            if glyph.word_start && script == 0 {
+                let large = size.max(line_size);
+                let stacked = (glyph.x - last_x).abs() <= large * 1.5;
+                let script_size = size.min(last_size) < large * SCRIPT_SIZE && stacked;
+                let gap = if script_size { large * SCRIPT_GAP } else { size * 1.5 };
+                let drop = (glyph.y - last_y).abs();
+                if drop > gap {
+                    text.push('\n');
+                    line_size = 0.0;
+                    new_line = true;
+                }
+                if glyph.x < last_end && drop > size * 0.5 {
+                    text.push('\n');
+                    new_line = true;
+                }
+                if glyph.x > last_end + size * 0.1 {
+                    text.push(' ');
+                    spaced = true;
+                    if let Some(line) = lines.last_mut().filter(|_| !new_line) {
+                        line.text.push(' ');
+                    }
+                }
+            }
+            let mut written = String::new();
+            if script != open {
+                if open != 0 {
+                    written.push('}');
+                }
+                written.push_str(if script > 0 { "^{" } else { "_{" });
+                open = script;
+            }
+            written.push_str(&glyph.text);
+            text.push_str(&written);
+            if size.is_finite() && size > 0.0 {
+                match lines.last_mut().filter(|_| !new_line) {
+                    Some(line) => {
+                        line.text.push_str(&written);
+                        line.rect = line.rect.union(&glyph.rect());
+                        line.size = line.size.max(size);
+                    }
+                    None => lines.push(figures::Line { text: written.clone(), rect: glyph.rect(), size }),
+                }
+            }
+            if script == 0 && !flat {
+                // the word it is part of: a word is often drawn in pieces (kerned), so only a space or a new line
+                // ends it
+                if new_line || glyph.text.trim().is_empty() || spaced {
+                    base_word.clear();
+                }
+                base_word.push_str(glyph.text.trim());
+                let smaller = size.partial_cmp(&(base_size * SCRIPT_SMALLER)) == Some(std::cmp::Ordering::Less);
+                if !smaller || new_line || base_size.is_nan() {
+                    (base_x, base_y, base_size) = (glyph.x, glyph.y, size);
+                }
+            }
+            last_x = glyph.x;
+            last_y = glyph.y;
+            last_size = size;
+            line_size = line_size.max(size);
+            last_end = glyph.x + glyph.advance;
+        }
+        if open != 0 {
+            text.push('}');
+            if let Some(line) = lines.last_mut() {
+                line.text.push('}');
+            }
+        }
+        (text, lines)
+    }
+}
+
+/// The box a stroked or filled path takes on the page, when it is a short horizontal rule (a fraction bar).
+fn rule_of(ctm: &pdf_extract::Transform, path: &pdf_extract::Path) -> Option<figures::Rect> {
+    let apply = |x: f64, y: f64| (ctm.m11 * x + ctm.m21 * y + ctm.m31, ctm.m12 * x + ctm.m22 * y + ctm.m32);
+    let mut points = Vec::new();
+    for op in &path.ops {
+        match *op {
+            pdf_extract::PathOp::MoveTo(x, y) | pdf_extract::PathOp::LineTo(x, y) => points.push(apply(x, y)),
+            pdf_extract::PathOp::Rect(x, y, width, height) => {
+                points.push(apply(x, y));
+                points.push(apply(x + width, y + height));
+            }
+            pdf_extract::PathOp::CurveTo(..) => return None,
+            pdf_extract::PathOp::Close => {}
+        }
+    }
+    let (x0, x1) = points.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| (a.min(p.0), b.max(p.0)));
+    let (y0, y1) = points.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| (a.min(p.1), b.max(p.1)));
+    let rect = figures::Rect { x0, y0, x1, y1 };
+    (x1 - x0 >= 2.0 && x1 - x0 <= 300.0 && y1 - y0 <= 1.5 && rect.x0.is_finite()).then_some(rect)
+}
 
 impl pdf_extract::OutputDev for PageText {
     fn begin_page(
@@ -269,7 +581,8 @@ impl pdf_extract::OutputDev for PageText {
         media_box: &pdf_extract::MediaBox,
         _art_box: Option<(f64, f64, f64, f64)>,
     ) -> Result<(), pdf_extract::OutputError> {
-        self.height = media_box.ury - media_box.lly;
+        // PlainTextOutput measures y from the page's top as `ury - lly - y`; from 0 there is `ury - lly` here
+        self.top = media_box.ury - media_box.lly;
         Ok(())
     }
 
@@ -285,69 +598,23 @@ impl pdf_extract::OutputDev for PageText {
         font_size: f64,
         char: &str,
     ) -> Result<(), pdf_extract::OutputError> {
-        // as PlainTextOutput: the glyph's place with the page turned the right way up, and its size in text space
-        // (the side of the square with the area of the transformed size)
-        let (x, y) = (trm.m31, self.height - trm.m32);
+        // as PlainTextOutput: the glyph's size is the side of the square with the area of the transformed size
         let along = (font_size * trm.m11 + font_size * trm.m21, font_size * trm.m12 + font_size * trm.m22);
-        // NaN for rotated text, as there: every comparison with it is false, so it breaks no line
         let size = (along.0 * along.1).sqrt();
-        let mut new_line = self.lines.is_empty();
-        if self.first_char {
-            // the largest glyph of the line so far (an operator whose limits are being set) or this one
-            let large = size.max(self.line_size);
-            // set over or under the glyph before it, as a limit is over or under its operator: not the start of
-            // the next line, which is far to the left
-            let stacked = (x - self.last_x).abs() <= large * 1.5;
-            let script = size.min(self.last_size) < large * SCRIPT_SIZE && stacked;
-            let gap = if script { large * SCRIPT_GAP } else { size * 1.5 };
-            let drop = (y - self.last_y).abs();
-            if drop > gap {
-                self.text.push('\n');
-                self.line_size = 0.0;
-                new_line = true;
-            }
-            // moved to the left and down
-            if x < self.last_end && drop > size * 0.5 {
-                self.text.push('\n');
-                new_line = true;
-            }
-            if x > self.last_end + size * 0.1 {
-                self.text.push(' ');
-                if let Some(line) = self.lines.last_mut().filter(|_| !new_line) {
-                    line.text.push(' ');
-                }
-            }
-        }
-        self.text.push_str(char);
-        // the box the glyph takes, in the page's own coordinates, for finding where figures are (figures.rs)
-        if size.is_finite() && size > 0.0 {
-            let (left, baseline) = (trm.m31, trm.m32);
-            let glyph = figures::Rect {
-                x0: left,
-                y0: baseline - size * 0.25,
-                x1: left + (width * size).max(0.0),
-                y1: baseline + size * 0.8,
-            };
-            match self.lines.last_mut().filter(|_| !new_line) {
-                Some(line) => {
-                    line.text.push_str(char);
-                    line.rect = line.rect.union(&glyph);
-                    line.size = line.size.max(size);
-                }
-                None => self.lines.push(figures::Line { text: char.to_owned(), rect: glyph, size }),
-            }
-        }
-        self.first_char = false;
-        self.last_x = x;
-        self.last_y = y;
-        self.last_size = size;
-        self.line_size = self.line_size.max(size);
-        self.last_end = x + width * size;
+        self.glyphs.push(Glyph {
+            x: trm.m31,
+            y: trm.m32,
+            size,
+            advance: width * size,
+            text: char.to_owned(),
+            word_start: self.word_start,
+        });
+        self.word_start = false;
         Ok(())
     }
 
     fn begin_word(&mut self) -> Result<(), pdf_extract::OutputError> {
-        self.first_char = true;
+        self.word_start = true;
         Ok(())
     }
 
@@ -356,6 +623,28 @@ impl pdf_extract::OutputDev for PageText {
     }
 
     fn end_line(&mut self) -> Result<(), pdf_extract::OutputError> {
+        Ok(())
+    }
+
+    fn stroke(
+        &mut self,
+        ctm: &pdf_extract::Transform,
+        _colorspace: &pdf_extract::ColorSpace,
+        _color: &[f64],
+        path: &pdf_extract::Path,
+    ) -> Result<(), pdf_extract::OutputError> {
+        self.rules.extend(rule_of(ctm, path));
+        Ok(())
+    }
+
+    fn fill(
+        &mut self,
+        ctm: &pdf_extract::Transform,
+        _colorspace: &pdf_extract::ColorSpace,
+        _color: &[f64],
+        path: &pdf_extract::Path,
+    ) -> Result<(), pdf_extract::OutputError> {
+        self.rules.extend(rule_of(ctm, path));
         Ok(())
     }
 }
@@ -672,6 +961,70 @@ mod tests {
         assert_eq!(blocks[1], ["We bound the regret by a sum."]);
         assert_eq!(blocks[2].concat().replace(' ', ""), "R=KSk=1r", "the formula is one block: {blocks:?}");
         assert_eq!(blocks[3], ["which is what we wanted."]);
+    }
+
+    /// The text of a one-page PDF drawn in Helvetica by `content`.
+    fn drawn(content: &str) -> String {
+        use fonts::fixtures::{Font, pdf_with_content};
+        let helvetica =
+            Font { dictionary: "/Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding", streams: &[] };
+        read_in_this_process(&pdf_with_content(&[helvetica], content)).unwrap().pages.remove(0)
+    }
+
+    #[test]
+    fn scripts_above_and_below_the_baseline_are_marked_and_a_footnotes_number_is_not() {
+        let text = drawn(
+            "BT /F0 10 Tf 72 700 Td (CoT) Tj ET\n\
+             BT /F0 7 Tf 92 704.8 Td (gt) Tj ET\n\
+             BT /F0 7 Tf 92 697 Td (d) Tj ET\n\
+             BT /F0 10 Tf 104 700 Td (and R) Tj ET\n\
+             BT /F0 7 Tf 131 704.5 Td (m) Tj ET\n\
+             BT /F0 10 Tf 72 680 Td (models.) Tj ET\n\
+             BT /F0 7 Tf 107.5 684 Td (12) Tj ET",
+        );
+        let lines: Vec<&str> = text.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+        assert_eq!(lines, ["CoT^{gt}_{d} and R^{m}", "models.12"], "{text:?}");
+    }
+
+    #[test]
+    fn a_fraction_over_a_rule_is_written_as_one_and_keeps_its_formula_in_one_block() {
+        // "v := 1/n S x", the fraction's bar a stroked line; the sum sign set higher than the line, as a large
+        // operator is: from the denominator to it is further than a blank line's worth
+        let text = drawn(
+            "BT /F0 10 Tf 72 700 Td (v :=) Tj ET\n\
+             BT /F0 10 Tf 102 708 Td (1) Tj ET\n\
+             0.4 w 100 705 m 110 705 l S\n\
+             BT /F0 10 Tf 101.5 692 Td (n) Tj ET\n\
+             BT /F0 10 Tf 114 710 Td (S) Tj ET\n\
+             BT /F0 10 Tf 126 700 Td (x) Tj ET",
+        );
+        let blocks: Vec<String> = text
+            .split("\n\n")
+            .map(|block| block.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|block| !block.is_empty())
+            .collect();
+        assert_eq!(blocks.len(), 1, "one displayed formula, one block: {text:?}");
+        assert!(blocks[0].contains("(1)/(n)"), "{blocks:?}");
+        assert!(blocks[0].starts_with("v :="), "the left side kept with the right: {blocks:?}");
+    }
+
+    #[test]
+    fn a_table_s_rows_over_and_under_its_rule_are_not_a_fraction() {
+        let text = drawn(
+            "BT /F0 10 Tf 72 708 Td (Model) Tj ET\n\
+             BT /F0 10 Tf 150 708 Td (Score) Tj ET\n\
+             0.4 w 72 705 m 200 705 l S\n\
+             BT /F0 10 Tf 72 694 Td (Ours) Tj ET\n\
+             BT /F0 10 Tf 150 694 Td (71.2) Tj ET",
+        );
+        assert!(!text.contains(")/("), "{text:?}");
+        // the short rule over a page's footnotes, with a line of prose just above it that runs on past its end
+        let text = drawn(
+            "BT /F0 10 Tf 72 112 Td (we read the page as it is drawn and nothing else) Tj ET\n\
+             0.4 w 72 104 m 140 104 l S\n\
+             BT /F0 8 Tf 72 95 Td (1Seoul National University) Tj ET",
+        );
+        assert!(!text.contains(")/("), "{text:?}");
     }
 
     #[test]
