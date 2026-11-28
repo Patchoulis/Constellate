@@ -16,6 +16,8 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - In a narrow communities panel, the "Overview: methods, findings, directions" button wraps onto a second line
   instead of running past the panel's edge.
+- A reviewer's sentence with a formula in it is shown as one sentence: the pieces of the formula no longer each take
+  a line of their own in Weaknesses and Claims.
 - The graph no longer disappears while a side panel is dragged wider or narrower.
 
 ## [0.2.2] - 2026-11-28
