@@ -281,8 +281,10 @@ function Editor({
 	if (field.kind === "model") {
 		const state = field.role === "reading" ? readingStateWords(choosable.catalog, settings) : null;
 		return (
-			<Label>
-				{field.label}
+			// Not a <label>: a label hands its hover and its click to the first control inside it, so pointing anywhere
+			// near the field lit the model menu and clicking the field's name or hint opened it. Two menus live here.
+			<div role="group" aria-label={field.label} className="flex flex-col gap-1 text-xs text-muted-foreground">
+				<span>{field.label}</span>
 				<span
 					className="flex h-8 items-center rounded-md border border-input bg-background px-2 text-sm"
 					title={field.role === "reading" ? READING_TITLE : undefined}
@@ -298,7 +300,7 @@ function Editor({
 					/>
 				</span>
 				{field.hint && <span>{state ? `${state} ${field.hint}` : field.hint}</span>}
-			</Label>
+			</div>
 		);
 	}
 	if (field.kind === "switch") {

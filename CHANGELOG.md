@@ -29,6 +29,8 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- In Settings, the language model menus light up and open only when the pointer is on them, not anywhere near the
+  field.
 - A reviewer's sentence with a formula in it is shown as one sentence: the pieces of the formula no longer each take
   a line of their own in Weaknesses and Claims.
 - The graph no longer disappears while a side panel is dragged wider or narrower.
