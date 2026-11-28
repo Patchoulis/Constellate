@@ -553,7 +553,13 @@ fn parse_keys(body: &[u8]) -> Result<Vec<Jwk>, OidcError> {
         keys: Vec<Value>,
     }
     let set: Set = serde_json::from_slice(body).map_err(|_| OidcError::Keys)?;
-    Ok(set.keys.into_iter().filter_map(|key| serde_json::from_value::<Jwk>(key).ok()).collect())
+    // jsonwebtoken reads a key of a type it does not know as `Other`, rather than failing on it
+    Ok(set
+        .keys
+        .into_iter()
+        .filter_map(|key| serde_json::from_value::<Jwk>(key).ok())
+        .filter(|jwk| !matches!(jwk.algorithm, AlgorithmParameters::Other(_)))
+        .collect())
 }
 
 impl Owner {
