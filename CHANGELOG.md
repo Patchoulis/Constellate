@@ -19,6 +19,13 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A paper's rating chips show stars too: each field's name with stars out of its conference's scale, and the score on
   hover ("3.8/4 Average Score"), with every reviewer's score and whether the scale is the conference's published one
   or assumed.
+- Communities are ordered by "Uniqueness" in place of "Saturation" and "Tightness": how far a community's papers are,
+  on average, from what the community is about (a cosine distance). Low means its papers all do much the same thing;
+  high means the work in it is more varied.
+
+### Fixed
+
+- The graph no longer disappears while a side panel is dragged wider or narrower.
 
 ## [0.2.2] - 2026-11-28
 
