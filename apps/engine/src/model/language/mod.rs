@@ -77,11 +77,11 @@ mod schema;
 
 use anthropic::{Block, Message, Usage, failure};
 pub use provider::{
-    About, Address, Answers, Caching, Capabilities, EffortControl, Key, ModelIds, Offered, Provider, TokenCount,
-    variables,
+    About, Address, Answers, CLAUDE_READING_DEFAULT, Caching, Capabilities, EffortControl, Key, ModelIds, Offered,
+    Provider, READING_DEFAULT_EFFORT, TokenCount, variables,
 };
 use provider::{Api, effort_for};
-pub use providers::{AddressState, Availability, KeyState, Listed, ListedModel, Place, Providers};
+pub use providers::{AddressState, Availability, KeyState, Listed, ListedModel, Place, Providers, ReadingDefault};
 pub use schema::strict_ready;
 
 /// The version of the API this speaks (`anthropic-version`).
@@ -636,10 +636,62 @@ pub trait Recorder: Send + Sync {
     }
 }
 
+/// The calls asked for one run, passed on to `recorder` with its name, so that the ledger can say what the run cost.
+/// What is charged, and when it is recorded, is the recorder's as before: the answer and its cost are still kept in
+/// one transaction. A call that already names a run keeps it.
+pub struct ForRun<'a> {
+    pub recorder: &'a dyn Recorder,
+    /// The run's name; none for calls of no run (the detector's training).
+    pub run: Option<String>,
+}
+
+impl<'a> ForRun<'a> {
+    pub fn new(recorder: &'a dyn Recorder, run: Option<&str>) -> Self {
+        Self { recorder, run: run.map(str::to_owned) }
+    }
+
+    fn stamped(&self, mut call: Call) -> Call {
+        if call.run.is_none() {
+            call.run.clone_from(&self.run);
+        }
+        call
+    }
+}
+
+impl Recorder for ForRun<'_> {
+    fn record(&self, call: Call) {
+        self.recorder.record(self.stamped(call));
+    }
+
+    fn keep_paid(
+        &self,
+        library: &Library,
+        slot: &crate::library::Slot,
+        model: &str,
+        prompt: u32,
+        content: &str,
+        calls: Vec<Call>,
+    ) -> Result<(), crate::library::LibraryError> {
+        let calls = calls.into_iter().map(|call| self.stamped(call)).collect();
+        self.recorder.keep_paid(library, slot, model, prompt, content, calls)
+    }
+
+    fn record_paid(
+        &self,
+        library: &Library,
+        slot: &crate::library::Slot,
+        calls: Vec<Call>,
+    ) -> Result<(), crate::library::LibraryError> {
+        let calls = calls.into_iter().map(|call| self.stamped(call)).collect();
+        self.recorder.record_paid(library, slot, calls)
+    }
+}
+
 /// A call as the library's ledger keeps it: whole millionths of a dollar, counts that fit its columns.
 fn ledger_call(call: &Call) -> crate::library::money::ledger::Call<'_> {
     let signed = |count: u64| i64::try_from(count).unwrap_or(i64::MAX);
     crate::library::money::ledger::Call {
+        run: call.run.as_deref(),
         model: &call.model,
         purpose: &call.purpose,
         input_tokens: signed(call.tokens.input),
@@ -1513,7 +1565,7 @@ impl<'a> Client<'a> {
         let mut total = Tokens::default();
         let mut cost = Some(Usd::ZERO);
         for (model, tokens) in parts {
-            let call = Call { model, purpose: purpose.to_owned(), tokens };
+            let call = Call { model, purpose: purpose.to_owned(), tokens, run: None };
             cost = cost.and_then(|sum| call.cost().map(|one| sum + one));
             total = total + tokens;
             self.recorder.record(call);
@@ -1560,7 +1612,7 @@ impl<'a> Client<'a> {
             // an answer was given and so probably billed, but says nothing of what it took: its worst case is
             // recorded and counted, rather than nothing
             let worst = self.worst(ask);
-            let call = Call { model: ask.model.to_owned(), purpose: ask.purpose.to_owned(), tokens: worst };
+            let call = Call { model: ask.model.to_owned(), purpose: ask.purpose.to_owned(), tokens: worst, run: None };
             held.settle(&worst, call.cost());
             self.recorder.record(call);
             return Err(NoAnswer::Unexpected.into());
@@ -1573,7 +1625,7 @@ impl<'a> Client<'a> {
             None => {
                 let worst = self.worst(ask);
                 let model = message.model.clone().unwrap_or_else(|| ask.model.to_owned());
-                let call = Call { model: model.clone(), purpose: ask.purpose.to_owned(), tokens: worst };
+                let call = Call { model: model.clone(), purpose: ask.purpose.to_owned(), tokens: worst, run: None };
                 let cost = call.cost();
                 self.recorder.record(call);
                 (model, worst, cost)
@@ -1736,7 +1788,7 @@ impl<'a> Client<'a> {
             };
             let Some(read) = self.read(&reply.body, ask.model) else {
                 // answered, and so probably billed, but in no shape this knows: its worst case is recorded
-                let call = Call { model: priced.clone(), purpose: ask.purpose.to_owned(), tokens: worst };
+                let call = Call { model: priced.clone(), purpose: ask.purpose.to_owned(), tokens: worst, run: None };
                 held.settle(&worst, call.cost());
                 self.recorder.record(call);
                 return Err(NoAnswer::Unexpected.into());
@@ -1748,7 +1800,8 @@ impl<'a> Client<'a> {
             let tokens = read.tokens.unwrap_or(worst);
             // a dated id of the model asked for (gpt-6.2-sol-2026-11-01) has its price; another model has its own
             let recorded = if dated_of(&answered, ask.model) { ask.model } else { answered.as_str() };
-            let call = Call { model: price_key(provider, recorded), purpose: ask.purpose.to_owned(), tokens };
+            let call =
+                Call { model: price_key(provider, recorded), purpose: ask.purpose.to_owned(), tokens, run: None };
             let cost = call.cost();
             // paid for whether or not the answer is usable: recorded before it is looked at
             held.settle(&tokens, cost);
@@ -2010,6 +2063,31 @@ mod tests {
 
     fn endpoint() -> Endpoint {
         Endpoint::from_lookup(|name| (name == KEY_VARIABLE).then(|| KEY.to_owned())).unwrap()
+    }
+
+    #[test]
+    fn calls_for_a_run_are_kept_paid_and_recorded_under_its_name_and_others_under_none() {
+        use crate::library::{AnswerKey, Feature, Slot, Subject};
+        let folder = tempfile::tempdir().unwrap();
+        let library = Library::open(folder.path()).unwrap();
+        let slot = |question: &str| Slot {
+            feature: Feature::Critique,
+            key: AnswerKey::of_feature(Feature::Critique, 1, &["p"], question),
+            subject: Subject::Paper("p".to_owned()),
+        };
+        let call = || Call::plain("claude-opus-5-5", "a paper's weaknesses", 1_000, 100);
+        let for_r1 = ForRun::new(&library, Some("r1"));
+        // the answer and its cost in one transaction of the library, as without a run
+        Recorder::keep_paid(&for_r1, &library, &slot("kept"), "claude-opus-5-5", 1, "{}", vec![call()]).unwrap();
+        Recorder::record_paid(&for_r1, &library, &slot("unusable"), vec![call()]).unwrap();
+        for_r1.record(call());
+        // a call that names its run keeps it
+        for_r1.record(Call { run: Some("r2".to_owned()), ..call() });
+        ForRun::new(&library, None).record(call());
+        assert!(library.kept::<Value>(Feature::Critique, &slot("kept").key).unwrap().is_some());
+        assert_eq!(library.run_spending("r1").unwrap().total.calls, 3);
+        assert_eq!(library.run_spending("r2").unwrap().total.calls, 1);
+        assert_eq!(library.spending().unwrap().total.calls, 5);
     }
 
     fn schema() -> Value {

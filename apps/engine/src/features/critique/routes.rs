@@ -32,7 +32,7 @@ use crate::jobs::{Finished, Tracker};
 use crate::library::{Feature, Library, PaperReading, Subject};
 use crate::model::batch::{Asking, BatchEstimate, IN_FLIGHT, Outcome, Stopped};
 use crate::model::chosen::{Accepted, Terms, budget};
-use crate::model::language::{Budget, Endpoint, Provider, Transport};
+use crate::model::language::{Budget, Endpoint, ForRun, Provider, Transport};
 
 /// The most one paper's reading may be allowed to cost, in US dollars, whatever is asked: one call, however long
 /// the paper, costs well under this.
@@ -111,6 +111,8 @@ struct Start {
     /// The model whose estimate the user saw, and its provider.
     model: Option<String>,
     provider: Option<Provider>,
+    /// The run open in the interface, when the paper is read from inside one: what the call costs is the run's.
+    run: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -137,7 +139,7 @@ fn paper(engine: &Shared, id: &str) -> Result<Paper, ApiError> {
     library.paper(id)?.ok_or(ApiError::NotFound)?;
     let kept = library.reviews(id)?;
     let page = library.review_page(id)?;
-    let chosen = engine.chosen()?;
+    let chosen = engine.reading()?;
     let text = match library.paper_texts(&[id])?.pop() {
         Some(PaperReading::Read(passages)) => {
             let plan = Plan::new(id, &chosen, &passages, kept.as_ref().map(|kept| &kept.discussion));
@@ -239,8 +241,9 @@ async fn start(State(engine): State<Shared>, Path(id): Path<String>, body: Bytes
         let transport = engine.transport.clone();
         let about =
             crate::jobs::About { feature: Feature::Critique, subject: Subject::Paper(plan.paper.clone()), item: None };
+        let run = engine.asked_from(asked.run.as_deref());
         let job = engine.job.start_about("a paper's weaknesses", about, move |tracker| {
-            work(&library, &*transport, endpoint, &plan, &budget, tracker)
+            work(&library, &*transport, endpoint, run.as_deref(), &plan, &budget, tracker)
         })?;
         Ok(Started::Started { job })
     })
@@ -249,16 +252,18 @@ async fn start(State(engine): State<Shared>, Path(id): Path<String>, body: Bytes
 }
 
 /// The job: ask about one paper through `transport`, say in its log what came of it, and hand back the paper whose
-/// weaknesses were read (nothing when it was stopped before).
+/// weaknesses were read (nothing when it was stopped before). What it costs is the run's it was asked from, if any.
 fn work(
     library: &Library,
     transport: &dyn Transport,
     endpoint: Endpoint,
+    run: Option<&str>,
     plan: &Plan,
     budget: &Budget,
     tracker: &Tracker<'_>,
 ) -> Result<Finished, String> {
-    let asking = Asking { library, transport, endpoint, recorder: library, in_flight: IN_FLIGHT };
+    let recorder = ForRun::new(library, run);
+    let asking = Asking { library, transport, endpoint, recorder: &recorder, in_flight: IN_FLIGHT };
     let read = Finished::Feature { feature: Feature::Critique, subject: Subject::Paper(plan.paper.clone()) };
     let (said, finished) = match plan.ask(asking, budget, tracker).map_err(|error| error.to_string())? {
         Outcome::Answered(_) => ("The model read the paper for weaknesses.", read),
@@ -339,6 +344,7 @@ mod tests {
         for id in ["iclr-2024-1", "iclr-2024-3"] {
             library.keep_reviews(id, FORUM, ICLR_2024, &read_discussion(ICLR_2024).unwrap(), ratings.clone()).unwrap();
         }
+        crate::api::other_providers::reads_with_naming(data.path());
         data
     }
 
@@ -395,6 +401,29 @@ mod tests {
         assert_eq!((model["estimate"]["to_ask"].clone(), model["points_asked"].clone()), (json!(1), json!(3)));
         assert!(model["estimate"]["usd"].as_f64().unwrap() > 0.0);
         assert_eq!(model["estimate"]["counting"]["kind"], "assumed");
+    }
+
+    #[tokio::test]
+    async fn on_the_claude_api_papers_are_read_by_its_haiku_by_default_and_an_opus_estimate_is_not_taken_for_it() {
+        let data = data();
+        // no model chosen to read papers, as in a settings file written before there was one
+        let default: serde_json::Map<String, Value> =
+            json!({"reading_same_as_naming": false}).as_object().cloned().unwrap();
+        crate::settings::save(&data.path().join("settings.json"), &default, &choices()).unwrap();
+        let (router, _) = served(&listen(), AT, with_key(&data));
+        let (_, told) = ask(&router, "GET", "/api/papers/iclr-2024-1/critique", None).await;
+        let model = &told["model"];
+        assert_eq!(
+            (model["provider"].clone(), model["model"].clone(), model["estimate"]["model"].clone()),
+            (json!("anthropic"), json!("claude-haiku-5-5"), json!("claude-haiku-5-5"))
+        );
+        let haiku = model["estimate"]["usd"].as_f64().unwrap();
+        assert!(haiku > 0.0, "priced from the catalogue: {model}");
+        // what was shown for the naming model before is refused, naming the model that reads now
+        let opus = json!({"provider": "anthropic", "model": "claude-opus-5-5", "budget_usd": 1.0}).to_string();
+        let (status, refused) = ask(&router, "POST", "/api/papers/iclr-2024-1/critique", Some(opus)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        assert!(refused["error"].as_str().unwrap().contains("claude-haiku-5-5"), "{refused}");
     }
 
     #[tokio::test]
@@ -630,7 +659,8 @@ mod tests {
         let cancel = Cancel::new();
         cancel.cancel();
         let stopped = Fake::new(Vec::new());
-        let told = work(&library, &stopped, endpoint(), &plan, &budget(), &Tracker::new(&log, &progress, &cancel));
+        let told =
+            work(&library, &stopped, endpoint(), None, &plan, &budget(), &Tracker::new(&log, &progress, &cancel));
         assert_eq!(told, Ok(Finished::Nothing), "stopped before the model was asked");
         assert!(stopped.sent().is_empty());
 
@@ -638,12 +668,12 @@ mod tests {
         let usage = json!({"input_tokens": 100, "output_tokens": 50});
         let fake = Fake::new(vec![Ok(ok(&message("claude-opus-5-5", &answer, "end_turn", usage)))]);
         let going = Cancel::new();
-        let told = work(&library, &fake, endpoint(), &plan, &budget(), &Tracker::new(&log, &progress, &going));
+        let told = work(&library, &fake, endpoint(), None, &plan, &budget(), &Tracker::new(&log, &progress, &going));
         let read = Finished::Feature { feature: Feature::Critique, subject: Subject::Paper("2601.00002".to_owned()) };
         assert_eq!(told, Ok(read.clone()));
         assert_eq!(fake.sent().len(), 1);
         assert!(plan.kept(&library).unwrap().is_some());
-        let again = work(&library, &fake, endpoint(), &plan, &budget(), &Tracker::new(&log, &progress, &going));
+        let again = work(&library, &fake, endpoint(), None, &plan, &budget(), &Tracker::new(&log, &progress, &going));
         assert_eq!(again, Ok(read), "kept from before: nothing was asked");
         assert_eq!(fake.sent().len(), 1);
     }
@@ -651,7 +681,8 @@ mod tests {
     #[tokio::test]
     async fn another_provider_is_priced_asked_in_its_own_shape_kept_and_asked_again_when_the_provider_changes() {
         use crate::api::other_providers::{
-            BUDGET, Chosen as Asked, Scripted, accepting, call, choose, finished, priced_for, router, sent_to,
+            BUDGET, Chosen as Asked, Scripted, accepting, call, choose_reading as choose, finished, priced_for,
+            reading_router as router, sent_to,
         };
 
         let data = data();
@@ -717,5 +748,52 @@ mod tests {
         .await;
         assert_eq!(refused.0, StatusCode::BAD_REQUEST, "{}", refused.1);
         assert_eq!(transport.sent().len(), sent);
+    }
+
+    #[tokio::test]
+    async fn a_reading_kept_under_the_naming_model_is_kept_for_that_model_chosen_to_read_and_estimates_follow_it() {
+        use crate::api::other_providers::{
+            BUDGET, Chosen as Asked, MODEL, Scripted, accepting, call, choices, choose_reading, finished, priced_for,
+            router, sent_to,
+        };
+
+        let data = data();
+        let answer = json!({
+            "points": [{"point": "p1", "located": "passage", "quote": "We test it on two small models only and leave larger ones to future work", "paper_says": ""}],
+            "weaknesses": []
+        })
+        .to_string();
+        let transport = Scripted::new(move |_| answer.clone());
+        // never chosen on its own: papers are read with the naming model
+        let router = router(data.path(), Asked::OpenAi, &transport);
+        let path = "/api/papers/iclr-2024-1/critique";
+        let (_, told) = call(&router, "GET", path, None).await;
+        priced_for(&told["model"]["estimate"], Asked::OpenAi);
+        let (_, started) = call(&router, "POST", path, Some(accepting(&told["model"]["estimate"], BUDGET))).await;
+        assert_eq!(finished(&router, &started["job"]).await["state"], "done");
+        sent_to(&transport.sent(), Asked::OpenAi);
+        let sent = transport.sent().len();
+        // the same model chosen to read on its own, the naming one moved elsewhere: the reading is kept, not paid again
+        choose_reading(data.path(), Asked::OpenAi);
+        let (_, told) = call(&router, "GET", path, None).await;
+        assert_eq!(told["model"]["state"], "answered", "{told}");
+        assert_eq!(transport.sent().len(), sent, "nothing asked again");
+        // an estimate seen for the model that reads papers is refused once another reads them, the naming model the same
+        let other = "/api/papers/2601.00002/critique";
+        let (_, shown) = call(&router, "GET", other, None).await;
+        priced_for(&shown["model"]["estimate"], Asked::OpenAi);
+        let to_local: serde_json::Map<String, Value> =
+            json!({"reading_provider": "compatible", "reading_model": MODEL}).as_object().cloned().unwrap();
+        crate::settings::save(&data.path().join("settings.json"), &to_local, &choices()).unwrap();
+        let (status, refused) =
+            call(&router, "POST", other, Some(accepting(&shown["model"]["estimate"], BUDGET))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        assert!(refused["error"].as_str().unwrap().contains("to read papers"), "{refused}");
+        assert_eq!(transport.sent().len(), sent, "nothing sent on an estimate seen for another model");
+        // set back to the naming model, which is the other provider's now: its estimate is the one shown
+        let back: serde_json::Map<String, Value> = json!({"reading_provider": null}).as_object().cloned().unwrap();
+        crate::settings::save(&data.path().join("settings.json"), &back, &choices()).unwrap();
+        let (_, told) = call(&router, "GET", other, None).await;
+        priced_for(&told["model"]["estimate"], Asked::ThisComputer);
     }
 }

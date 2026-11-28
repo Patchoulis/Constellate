@@ -6,7 +6,16 @@
  * left by year, the papers that cite it (derivative work) on the right by year. A work's size says how many papers
  * Constellate has read cite it; within a year, the most cited sit nearest the middle line.
  */
-import type { CitationLink, CitationNeighbour, CitationNetwork, Community, ReferenceConfidence } from "@rp/contracts";
+import type {
+	CitationLink,
+	CitationNeighbour,
+	CitationNetwork,
+	Community,
+	CountedCitations,
+	CountedCommunity,
+	ReferenceConfidence,
+	RunCitations,
+} from "@rp/contracts";
 import { safeLink } from "@/lib/net/links";
 import { count } from "@/lib/units";
 
@@ -212,19 +221,63 @@ export function lookupsStoppedLine(stopped: CitationNetwork["lookups_stopped"]):
 	return `${why.charAt(0).toUpperCase()}${why.slice(1)}. ${left}; reading the references again continues where they stopped.`;
 }
 
-/** A community's citation figures, or null while none of its papers' reference lists has been read. */
-function readCitations(community: Community) {
-	return community.citations && community.citations.papers_read > 0 ? community.citations : null;
+/**
+ * A community's citation figures with their splits, or null while they are not counted: figures saved with a run
+ * before citations from outside the run were counted have no splits, and are not shown as if they had.
+ */
+function countedCitations(community: Community): CountedCitations | null {
+	const figures = community.citations;
+	if (!figures) return null;
+	const splits = [
+		figures.cited_by_rest_of_run,
+		figures.cited_by_outside_run,
+		figures.cites_in_run,
+		figures.cites_outside_run,
+		figures.cites_on_arxiv,
+		figures.cites_unresolved,
+	];
+	return splits.every((figure) => typeof figure === "number") ? (figures as CountedCitations) : null;
 }
 
-/** How often the community's papers are cited by the run's read papers; null (sorted last) while nothing of it is read. */
+/** The communities of a run with the figures `counted` has for them (by tree path), in place of those saved with it. */
+export function withCounted(communities: Community[], counted: RunCitations | null | undefined): Community[] {
+	if (!counted) return communities;
+	const byPath = new Map<string, CountedCommunity>();
+	const gather = (counts: CountedCommunity[]) =>
+		counts.forEach((one) => {
+			byPath.set(one.tree_path, one);
+			gather(one.children);
+		});
+	gather(counted.communities);
+	const figures = (one: CountedCommunity): CountedCitations => ({
+		papers_read: one.papers_read,
+		cited_by: one.cited_by,
+		cited_by_inside: one.cited_by_inside,
+		cited_by_rest_of_run: one.cited_by_rest_of_run,
+		cited_by_outside_run: one.cited_by_outside_run,
+		cites: one.cites,
+		cites_in_library: one.cites_in_library,
+		cites_in_run: one.cites_in_run,
+		cites_outside_run: one.cites_outside_run,
+		cites_on_arxiv: one.cites_on_arxiv,
+		cites_unresolved: one.cites_unresolved,
+	});
+	const replace = (community: Community): Community => {
+		const found = byPath.get(community.tree_path);
+		return { ...community, citations: found ? figures(found) : community.citations, children: community.children.map(replace) };
+	};
+	return communities.map(replace);
+}
+
+/** How often the community's papers are cited by the read papers of the library; null (sorted last) while not counted. */
 export function citedByOf(community: Community): number | null {
-	return readCitations(community)?.cited_by ?? null;
+	return countedCitations(community)?.cited_by ?? null;
 }
 
-/** How many distinct works its read papers cite; null (sorted last) while nothing of it is read. */
+/** How many distinct works its read papers cite; null (sorted last) while not counted or nothing of it is read. */
 export function citesOf(community: Community): number | null {
-	return readCitations(community)?.cites ?? null;
+	const counted = countedCitations(community);
+	return counted && counted.papers_read > 0 ? counted.cites : null;
 }
 
 /** "212 of 739 papers read". */
@@ -232,27 +285,144 @@ function readShare(community: Community, papersRead: number): string {
 	return `${papersRead.toLocaleString()} of ${count(community.size, "paper")} read`;
 }
 
-/** "1,204 citations · 212 of 739 papers read", or "not read yet". */
+export const NOT_COUNTED = "not counted yet";
+
+/** "1,204 citations", or "not counted yet". */
 export function citedByFigure(community: Community): string {
-	const read = readCitations(community);
-	return read ? `${count(read.cited_by, "citation")} · ${readShare(community, read.papers_read)}` : "not read yet";
+	const counted = countedCitations(community);
+	return counted ? count(counted.cited_by, "citation") : NOT_COUNTED;
 }
 
-/** "3,410 works cited · 212 of 739 papers read", or "not read yet". */
+/** "3,410 works cited · 212 of 739 papers read", "none of its papers read yet", or "not counted yet". */
 export function citesFigure(community: Community): string {
-	const read = readCitations(community);
-	return read ? `${count(read.cites, "work cited", "works cited")} · ${readShare(community, read.papers_read)}` : "not read yet";
+	const counted = countedCitations(community);
+	if (!counted) return NOT_COUNTED;
+	if (counted.papers_read === 0) return "none of its papers read yet";
+	return `${count(counted.cites, "work cited", "works cited")} · ${readShare(community, counted.papers_read)}`;
+}
+
+/** One part of a split figure: what it is, and how many. */
+export interface SplitPart {
+	label: string;
+	value: number;
+	/** what the part is made of, when it is two figures in one */
+	detail?: string;
+}
+
+/** Where a community's citations come from, in three parts that add up to its "cited by"; null while not counted. */
+export function citedBySplit(community: Community): SplitPart[] | null {
+	const counted = countedCitations(community);
+	if (!counted) return null;
+	return [
+		{ label: "from its own papers", value: counted.cited_by_inside },
+		{ label: "from the rest of the run", value: counted.cited_by_rest_of_run },
+		{ label: "from your library outside the run", value: counted.cited_by_outside_run },
+	];
+}
+
+/** What a community's works cited are, in three parts that add up to its "cites"; null while not counted or not read. */
+export function citesSplit(community: Community): SplitPart[] | null {
+	const counted = countedCitations(community);
+	if (!counted || counted.papers_read === 0) return null;
+	return [
+		{ label: "in the run", value: counted.cites_in_run },
+		{ label: "in your library outside the run", value: counted.cites_outside_run },
+		{
+			label: "not in your library",
+			value: counted.cites_on_arxiv + counted.cites_unresolved,
+			detail: `${counted.cites_on_arxiv.toLocaleString()} on arXiv, ${counted.cites_unresolved.toLocaleString()} not found`,
+		},
+	];
+}
+
+/** "1,000 from its own papers, 500 from the rest of the run and 404 from your library outside the run". */
+function splitWords(parts: SplitPart[]): string {
+	const said = parts.map((part) => `${part.value.toLocaleString()} ${part.label}${part.detail ? ` (${part.detail})` : ""}`);
+	return `${said.slice(0, -1).join(", ")} and ${said[said.length - 1]}`;
 }
 
 /** What the community's figures are made of, for its hover text. */
 export function citationsNote(community: Community): string {
-	const read = readCitations(community);
-	if (!read) return "None of its papers' reference lists has been read yet.";
+	const counted = countedCitations(community);
+	if (!counted)
+		return "Not counted yet: the figures saved with this run were counted before citations from outside the run were. They are counted again whenever the run is opened.";
+	const citedBy = `Of its ${count(counted.cited_by, "citation")}, ${splitWords(citedBySplit(community)!)}.`;
+	const split = citesSplit(community);
+	const cites = split
+		? ` Of the ${count(counted.cites, "work")} it cites, ${splitWords(split)}.`
+		: " None of its papers' reference lists has been read yet, so what it cites is not known.";
+	return citedBy + cites;
+}
+
+/** The run's own figures in a line: how often its papers are cited, from inside it and from outside, and what they cite. */
+export function runCitationsLine(run: RunCitations): string {
+	const citedBy =
+		`The run's papers are cited ${count(run.cited_by, "time")}: ` +
+		`${run.cited_by_inside.toLocaleString()} by papers of the run and ${run.cited_by_outside_run.toLocaleString()} by papers of your library outside it.`;
+	if (run.papers_read === 0) return `${citedBy} None of its papers' reference lists has been read yet.`;
+	const outside = run.cites_on_arxiv + run.cites_unresolved;
 	return (
-		`${count(read.cited_by_inside, "citation")} of the ${count(read.cited_by, "citation")} come from its own papers. ` +
-		`${count(read.cites_in_library, "work")} of the ${count(read.cites, "work")} it cites ${read.cites_in_library === 1 ? "is" : "are"} in your library.`
+		`${citedBy} Works cited by its ${count(run.papers_read, "paper")} read: ${run.cites.toLocaleString()} ` +
+		`(${run.cites_in_run.toLocaleString()} in the run, ${run.cites_outside_run.toLocaleString()} in your library outside it, ` +
+		`${outside.toLocaleString()} not in your library).`
 	);
 }
 
 export const CITATIONS_NOTE =
-	"Counted from the reference lists Constellate has read (the run's papers whose PDFs it has read), not from the whole literature.";
+	"Counted from the reference lists Constellate has read (the papers of your library whose PDFs it has read), not from the whole literature.";
+
+/** What a community's "Cited by" and "Cites" are, for their hover text and the sorts. */
+export const CITED_BY_TITLE = `How many times its papers are cited by the papers of your library whose reference lists have been read, in the run or not. ${CITATIONS_NOTE}`;
+export const CITES_TITLE = `How many different works its papers cite: papers of the run, of your library outside it, or not in your library. ${CITATIONS_NOTE}`;
+
+/** Said wherever "cited by" is: what cannot be counted. */
+export const NOT_COUNTABLE = "Not counted: papers that are not in your library.";
+
+/** Where a work of a network stands: a paper of the run (or of the library, when no run is asked about), a paper of the
+ *  library outside the run, on arXiv, or not found. */
+export type WorkPlace = "in_library" | "outside_run" | "on_arxiv" | "unresolved";
+
+export function workPlace(work: CitationNeighbour): WorkPlace {
+	if (work.link.kind !== "in_library") return work.link.kind;
+	return work.in_run === false ? "outside_run" : "in_library";
+}
+
+/** The tag of a paper of the library that is not in the run the reader was opened from; null for any other work. */
+export function runTag(work: CitationNeighbour): { label: string; note: string } | null {
+	if (workPlace(work) !== "outside_run") return null;
+	return {
+		label: "Outside this run",
+		note: "A paper of your library that is not in this run: click it to open it in the reader. It is not on this run's graph.",
+	};
+}
+
+/** "Showing 12 of 12 references: 3 in this run, 2 in your library outside this run, 4 on arXiv, 3 not found". */
+export function referencesLine(totals: CitationNetwork["totals"], shown: number): string {
+	const known = `${totals.references_on_arxiv.toLocaleString()} on arXiv, ${totals.references_unresolved.toLocaleString()} not found`;
+	const head = showing(shown, totals.references, "reference");
+	if (typeof totals.references_in_run === "number" && typeof totals.references_outside_run === "number")
+		return `${head}: ${totals.references_in_run.toLocaleString()} in this run, ${totals.references_outside_run.toLocaleString()} in your library outside this run, ${known}`;
+	return `${head}: ${totals.references_in_library.toLocaleString()} in your library, ${known}`;
+}
+
+/**
+ * Where a network comes from, and with a run, how many of the papers citing it are of the run and how many of the
+ * library outside it: "From the reference lists Constellate has read of your library: 12 of 300 papers. Built
+ * 2026-11-28. Cited by 3 papers of this run and 2 of your library outside it."
+ */
+export function networkSourceLine(network: CitationNetwork): string {
+	const { totals } = network;
+	const source = `From the reference lists Constellate has read of your library: ${network.papers_read.toLocaleString()} of ${count(network.papers_in_library, "paper")}. Built ${network.built}.`;
+	if (totals.citations_in_run === null) return source;
+	if (typeof totals.citations_outside_run !== "number") return `${source} Cited by ${count(totals.citations_in_run, "paper")} of this run.`;
+	return `${source} Cited by ${count(totals.citations_in_run, "paper")} of this run and ${totals.citations_outside_run.toLocaleString()} of your library outside it.`;
+}
+
+/** "Showing 5 of 5 citing papers Constellate has read in your library: 2 in this run, 3 outside it". */
+export function citationsLine(totals: CitationNetwork["totals"], shown: number): string {
+	const limited = totals.citations_shown < totals.citations ? ", the most cited" : "";
+	const head = `${showing(shown, totals.citations, "citing paper")} Constellate has read in your library${limited}`;
+	if (typeof totals.citations_in_run === "number" && typeof totals.citations_outside_run === "number")
+		return `${head}: ${totals.citations_in_run.toLocaleString()} in this run, ${totals.citations_outside_run.toLocaleString()} outside it`;
+	return head;
+}

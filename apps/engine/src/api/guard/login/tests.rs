@@ -409,9 +409,50 @@ async fn the_embedding_model_belongs_to_the_server_and_is_refused_from_the_inter
         json!({ "describe_provider": "openai" }),
         json!({ "describe_provider": "Anthropic" }),
         json!({ "describe_provider": null, "describe_model": "claude-opus-5-5" }),
+        json!({ "reading_provider": "openai" }),
+        json!({ "reading_provider": "openai", "reading_model": "gpt-6.2-sol" }),
     ] {
         let (status, _, _) = answer(&served.router, put(sneaked.clone())).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{sneaked}");
+    }
+    // while the server reads papers with its naming model, a window choosing a model or effort for reading would
+    // pin the reading provider where the naming one is now: only the owner does that
+    for pinning in [
+        json!({ "reading_model": "claude-opus-5-5" }),
+        json!({ "reading_effort": "low" }),
+        json!({ "reading_provider": "anthropic" }),
+    ] {
+        let (status, _, _) = answer(&served.router, put(pinning.clone())).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{pinning}");
+    }
+    // sent as it is (null, or the naming provider it means) changes nothing and is fine
+    let (status, told, _) = answer(&served.router, put(json!({ "reading_provider": null }))).await;
+    assert_eq!((status, told["reading_provider"].clone()), (StatusCode::OK, Value::Null));
+    // the default (the Claude API's Haiku) or the naming model: both read with the server's provider, so a window
+    // may move between them
+    let (status, told, _) = answer(&served.router, put(json!({ "reading_same_as_naming": true }))).await;
+    assert_eq!((status, told["reading_same_as_naming"].clone()), (StatusCode::OK, json!(true)));
+    let (status, told, _) = answer(&served.router, put(json!({ "reading_same_as_naming": false }))).await;
+    assert_eq!((status, told["reading_same_as_naming"].clone()), (StatusCode::OK, json!(false)));
+    // the owner chose another provider to read papers, in the server's own file: a window may pick its effort, but
+    // neither set it back to the naming model (papers would go elsewhere) nor move it
+    let file = served._data.path().join("settings.json");
+    let mut stored: serde_json::Map<String, Value> = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    stored.extend([
+        ("reading_provider".to_owned(), json!("openai")),
+        ("reading_model".to_owned(), json!("gpt-6.2-sol")),
+        ("reading_effort".to_owned(), json!("medium")),
+    ]);
+    std::fs::write(&file, Value::Object(stored).to_string()).unwrap();
+    let (status, told, _) = answer(&served.router, put(json!({ "reading_effort": "low" }))).await;
+    assert_eq!((status, told["reading_provider"].clone()), (StatusCode::OK, json!("openai")));
+    for moving in [
+        json!({ "reading_provider": null }),
+        json!({ "reading_provider": "anthropic" }),
+        json!({ "reading_same_as_naming": true }),
+    ] {
+        let (status, _, _) = answer(&served.router, put(moving.clone())).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{moving}");
     }
     // a key spelled differently is no setting at all: ignored, and nothing changes
     let (status, told, _) = answer(&served.router, put(json!({ "Embedding_Model": "BAAI/bge-large-en-v1.5" }))).await;
@@ -419,7 +460,7 @@ async fn the_embedding_model_belongs_to_the_server_and_is_refused_from_the_inter
     assert_eq!((told["describe_provider"].clone(), told["max_links"].clone()), (json!("anthropic"), json!(5)));
     let (_, told, _) =
         answer(&served.router, with_cookie(asked("GET", "/api/status"), &cookie).body(Body::empty()).unwrap()).await;
-    let owned = json!(["embedding_model", "describe_provider"]);
+    let owned = json!(["embedding_model", "describe_provider", "reading_provider"]);
     assert_eq!((told["mode"].clone(), told["server_owned"].clone()), (json!("network"), owned));
 }
 

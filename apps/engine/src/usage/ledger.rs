@@ -19,13 +19,16 @@ pub struct Call {
     pub purpose: String,
     /// Its tokens by how they are billed: full-rate prompt, answer, cache reads and cache writes.
     pub tokens: Tokens,
+    /// The run it was made for, by name; none for a call of no run (the detector's training). The client never
+    /// knows it: whoever asks for a run says so ([`crate::model::language::ForRun`]).
+    pub run: Option<String>,
 }
 
 impl Call {
-    /// A call that did not use the prompt cache.
+    /// A call that did not use the prompt cache, for no run.
     pub fn plain(model: &str, purpose: &str, input_tokens: u64, output_tokens: u64) -> Self {
         let tokens = Tokens { input: input_tokens, output: output_tokens, ..Tokens::default() };
-        Self { model: model.to_owned(), purpose: purpose.to_owned(), tokens }
+        Self { model: model.to_owned(), purpose: purpose.to_owned(), tokens, run: None }
     }
 
     /// What it cost; `None` when its model's prices (or cache prices) are not known.

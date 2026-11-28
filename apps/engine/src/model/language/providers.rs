@@ -8,7 +8,7 @@ use serde::Serialize;
 use url::Url;
 
 use super::provider::{Address, Capabilities, Key, ModelIds, Offered, Provider};
-use super::{Endpoint, Price, Setup, Unavailable, listed_price, on_loopback};
+use super::{Effort, Endpoint, Price, Setup, Unavailable, listed_price, on_loopback};
 
 /// The providers, read once when the engine starts (the variables do not change while it runs).
 #[derive(Clone)]
@@ -128,6 +128,9 @@ impl Row {
                 .collect(),
             price_of_typed: if here { Price::ThisComputer } else { Price::NotKnown },
             docs: about.docs,
+            reading_default: about
+                .reading_default()
+                .map(|offered| ReadingDefault { model: offered.id, effort: super::READING_DEFAULT_EFFORT }),
         }
     }
 }
@@ -161,6 +164,15 @@ pub struct Listed {
     /// The price of a model id typed rather than listed: not known, or no fee on this computer.
     pub price_of_typed: Price,
     pub docs: &'static str,
+    /// The model that reads papers by default while this provider names communities; none: the naming model.
+    pub reading_default: Option<ReadingDefault>,
+}
+
+/// One of a provider's listed models, and the effort it reads papers at by default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct ReadingDefault {
+    pub model: &'static str,
+    pub effort: Effort,
 }
 
 /// Whether the key is set: the variable's name, never its value.

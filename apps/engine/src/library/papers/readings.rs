@@ -15,7 +15,10 @@ use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::analysis::reviews::{Scale, scale};
 use crate::library::{Library, LibraryError, Paper, json_column, now};
+use crate::text::reviews::Field;
+use crate::text::reviews::discussion::Venue;
 
 /// A checklist answer, as the reader accepts them; anything else ("[TODO]") is not an answer and is left out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +72,10 @@ pub struct FieldRatings {
     pub mean: f64,
     /// What each score means, as the page said ("fair").
     pub meanings: Vec<String>,
+    /// The scale the field is scored on, for a field the engine knows: added when the ratings are served
+    /// ([`Ratings::with_scales`]) and never kept, so a kept reading needs no migration and holds no stale scale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<Scale>,
 }
 
 /// The scores reviewers gave a paper (the contract's `Ratings`).
@@ -117,6 +124,24 @@ impl Ratings {
     fn says_less_than(&self, other: &Self) -> bool {
         (self.exact, self.reviews) < (other.exact, other.reviews)
     }
+
+    /// The ratings as served: each field the engine knows with the scale `venue` scores it on (the field's usual
+    /// scale, said to be assumed, when the venue is not known); a field it does not know gets none.
+    pub fn with_scales(mut self, venue: Option<&Venue>) -> Self {
+        for (name, field) in &mut self.ratings {
+            field.scale = Field::named(name).map(|known| scale(venue, known));
+        }
+        self
+    }
+
+    /// The ratings as kept: without the scales that are only added when serving them.
+    fn without_scales(&self) -> Self {
+        let mut kept = self.clone();
+        for (_, field) in &mut kept.ratings {
+            field.scale = None;
+        }
+        kept
+    }
 }
 
 /// The AI-text estimate of one abstract.
@@ -156,7 +181,7 @@ pub(in crate::library) fn put_ratings(
         "INSERT INTO ratings (paper_id, content, read_at) VALUES (?1, ?2, ?3)
          ON CONFLICT (paper_id) DO UPDATE SET content = excluded.content, read_at = excluded.read_at",
     )?;
-    Ok(statement.execute(params![paper_id, serde_json::to_string(ratings)?, now()])?)
+    Ok(statement.execute(params![paper_id, serde_json::to_string(&ratings.without_scales())?, now()])?)
 }
 
 pub(in crate::library) fn put_ai_score(
@@ -205,6 +230,7 @@ pub(super) fn keep_ratings_in(
     {
         return Ok(before);
     }
+    let ratings = ratings.without_scales();
     put_ratings(connection, paper_id, &ratings)?;
     Ok(ratings)
 }
@@ -223,6 +249,7 @@ impl From<&crate::text::reviews::Ratings> for Ratings {
                         values: scores.values.iter().map(|&value| u32::from(value)).collect(),
                         mean: scores.mean,
                         meanings: scores.meanings.clone(),
+                        scale: None,
                     };
                     (field.name().to_owned(), ratings)
                 })
@@ -346,6 +373,7 @@ mod tests {
             mean: f64::from(values.iter().sum::<u32>()) / values.len() as f64,
             meanings: values.iter().map(|_| "fair".to_owned()).collect(),
             values,
+            scale: None,
         };
         Ratings {
             reviews,
@@ -384,6 +412,24 @@ mod tests {
     fn the_checklist_answers_are_written_as_the_interface_reads_them() {
         let json = serde_json::to_value(declared()).unwrap();
         assert_eq!(json["checklist"][0]["answer"], "NA");
+    }
+
+    #[test]
+    fn ratings_are_served_with_their_venues_scales_and_kept_without() {
+        let mut read = ratings(3, true);
+        read.ratings.push(("Novelty".into(), read.ratings[0].1.clone()));
+        let icml = Venue::new("ICML", 2025);
+        let served = read.clone().with_scales(Some(&icml));
+        let scales: Vec<(&str, Option<Scale>)> =
+            served.ratings.iter().map(|(name, field)| (name.as_str(), field.scale)).collect();
+        assert_eq!(scales[0], ("Rating", Some(scale(Some(&icml), Field::Rating))));
+        assert_eq!(scales[1], ("Clarity", Some(scale(Some(&icml), Field::Clarity))));
+        assert_eq!(scales[2], ("Novelty", None)); // a field the engine does not know
+        let (_folder, library) = library_with(&[paper("p")]);
+        assert_eq!(library.keep_ratings("p", served).unwrap(), read);
+        let kept = library.ratings("p").unwrap().unwrap();
+        assert_eq!(kept, read);
+        assert!(!serde_json::to_string(&kept).unwrap().contains("scale"));
     }
 
     #[test]

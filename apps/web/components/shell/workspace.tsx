@@ -11,7 +11,8 @@ import { OverviewPanel } from "@/components/community/overview";
 import { PaperReader } from "@/components/reader/paper-reader";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/net/api";
-import { communityTree, type CommunityNode } from "@/lib/community/community";
+import { communityTree, nodeAt, type CommunityNode } from "@/lib/community/community";
+import { withCounted } from "@/lib/reader/citations";
 import { ANSWER_OWNER, GraphColouringContext, colouringStep, type GraphColouring, type PaperColouring } from "@/lib/graph/graph-colouring";
 import { useMarks } from "@/lib/community/marks";
 import type { Job } from "@/lib/shell/use-job";
@@ -105,8 +106,14 @@ export function Workspace({
 	const [selected, setSelected] = useState<CommunityNode | null>(null);
 	const [paper, setPaper] = useState<string | null>(null);
 	const [overview, setOverview] = useState<CommunityNode | null>(null); // the community whose overview is open
-	const [result, graph] = ready(run) ?? [];
+	const [saved, graph] = ready(run) ?? [];
+	// the citation figures counted now, from every reference list of the library read so far, in place of any
+	// saved with the run; until they come (or if they cannot be counted), the saved ones say "not counted yet"
+	const counted = ready(useAsync(() => api.runCitations(name), [name], { keep: false }));
+	const result = useMemo(() => saved && { ...saved, communities: withCounted(saved.communities, counted) }, [saved, counted]);
 	const roots = useMemo(() => (result ? communityTree(result.communities) : []), [result]);
+	// the tree made again (the figures came): the community selected is the same one, in the new tree
+	useEffect(() => setSelected((before) => before && nodeAt(roots, before.community.tree_path)), [roots]);
 	// reviewers' scores: those read before, and those read from a Reviews tab opened since
 	const kept = ready(useAsync(() => api.ratings(), [name], { keep: false }));
 	const [fresh, setFresh] = useState<Record<string, Ratings>>({});
@@ -284,6 +291,7 @@ export function Workspace({
 					onGoToPaper={goToPaper}
 					onNamed={run.reload}
 					title={title ?? name}
+					citations={counted ?? null}
 				/>
 			</GraphColouringContext>
 		</EvidenceProvider>

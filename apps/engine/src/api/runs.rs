@@ -728,8 +728,26 @@ mod tests {
         python_data_folder(data.path());
         let router = engine(data.path());
         let path = format!("/api/runs/{PYTHON_RUN}");
+        // what was spent on the run, by its name
+        let spent_on_run = format!("/api/usage?run={PYTHON_RUN}");
+        ask_json(&router, "GET", "/api/library", None).await;
+        let call = crate::library::Call {
+            run: Some(PYTHON_RUN),
+            model: "claude-opus-5-5",
+            purpose: "naming communities",
+            input_tokens: 1_000,
+            output_tokens: 100,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            price_micros: Some(250_000),
+        };
+        crate::library::Library::open(&data.path().join("library")).unwrap().record_call(&call).unwrap();
+        let (_, before) = ask_json(&router, "GET", &spent_on_run, None).await;
+        assert_eq!(before["run_usd"], json!(0.25), "{before}");
         let (status, told) = ask_json(&router, "PATCH", &path, Some(json!({"title": "  Another   name "}))).await;
         assert_eq!((status, told), (StatusCode::OK, json!({"name": PYTHON_RUN, "title": "Another name"})));
+        // a new title: the run keeps its name, and with it what it cost
+        assert_eq!(ask_json(&router, "GET", &spent_on_run, None).await.1["run_usd"], json!(0.25));
         let (_, listed) = ask_json(&router, "GET", "/api/runs", None).await;
         assert_eq!((listed[0]["name"].clone(), listed[0]["title"].clone()), (json!(PYTHON_RUN), json!("Another name")));
         let (_, page) = ask_json(&router, "GET", "/api/runs?sort=name&limit=10", None).await;
@@ -749,6 +767,11 @@ mod tests {
         assert_eq!(listed, json!([]));
         let (_, held) = ask_json(&router, "GET", "/api/library", None).await;
         assert_eq!(held["papers"], 36, "the library's papers stay");
+        // the money was spent: deleting the run takes nothing off the total, nor off what its name cost
+        let (_, after) = ask_json(&router, "GET", &spent_on_run, None).await;
+        for field in ["usd", "calls", "run_usd", "run_calls"] {
+            assert_eq!(after[field], before[field], "{field}");
+        }
     }
 
     #[tokio::test]

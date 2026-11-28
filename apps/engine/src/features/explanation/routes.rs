@@ -16,7 +16,7 @@
 //!
 //! `address` is a passage's address as `GET /api/papers/{id}/passages` gives it (the reader resolves a selection
 //! to one with the locate route first): the passage explained is the one that address starts in. The model is
-//! the one chosen in the settings, of the provider chosen there ([`Engine::chosen`](crate::api::routes::Engine::chosen)).
+//! the one chosen in the settings to read papers, of its provider ([`Engine::reading`](crate::api::routes::Engine::reading)).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,7 +40,7 @@ use crate::library::core::store::read_json;
 use crate::library::{Feature, Library, PaperReading, Subject};
 use crate::model::batch::Asking;
 use crate::model::chosen::{Accepted, Chosen, Terms, budget};
-use crate::model::language::{Estimate, Provider};
+use crate::model::language::{Estimate, ForRun, Provider};
 use crate::text::pdf::passages::{Address, Kind, Passages};
 
 /// The longest section heading taken in an address: a heading is a line, not a page.
@@ -142,7 +142,7 @@ fn open(engine: &Shared, paper: &str, address: &Address) -> Result<Result<Opened
             "a title or a heading cannot be explained: choose a paragraph, an equation or a caption".into(),
         )
     })?;
-    let chosen = engine.chosen()?;
+    let chosen = engine.reading()?;
     let found = definitions(&passages, index);
     let prompt = prompt(paper, &record.title, &record.r#abstract, &passages, index, &found);
     Ok(Ok(Opened { library, paper: paper.to_owned(), passages, index, question, chosen, definitions: found, prompt }))
@@ -297,6 +297,9 @@ struct Start {
     accepted_usd: Option<f64>,
     #[serde(default)]
     accepted_tokens: Option<u64>,
+    /// The run open in the interface, when the paper is read from inside one: what the call costs is the run's.
+    #[serde(default)]
+    run: Option<String>,
 }
 
 async fn start(
@@ -336,13 +339,15 @@ async fn start(
             subject: Subject::Paper(opened.paper.clone()),
             item: None,
         };
+        let run = engine.asked_from(seen.run.as_deref());
         let job = engine.job.start_about(PURPOSE, about, move |tracker| {
             let item = item(opened.slot(), &opened.chosen, &opened.prompt, &schema);
+            let recorder = ForRun::new(&*opened.library, run.as_deref());
             let asking = Asking {
                 library: &opened.library,
                 transport: &*transport,
                 endpoint,
-                recorder: &*opened.library,
+                recorder: &recorder,
                 in_flight: 1,
             };
             explain(asking, &item, &accepted, tracker).map_err(|why| why.to_string())?;
@@ -381,7 +386,7 @@ async fn explained(State(engine): State<Shared>, Path(paper): Path<String>) -> R
     let marks = on_the_side(move || {
         let library = engine.library()?;
         library.paper(&paper)?.ok_or(ApiError::NotFound)?;
-        let chosen = engine.chosen()?;
+        let chosen = engine.reading()?;
         let model = chosen.model().to_owned();
         let Ok(passages) = read(&library, &paper)? else { return Ok(Marks { model, explained: Vec::new() }) };
         let mut explained = Vec::new();
@@ -624,6 +629,7 @@ mod tests {
         let tree = json!({"communities": [{"tree_path": "c0", "members": [0, 1, 2, 3], "children": [
             {"tree_path": "c0.0", "members": [0, 3], "children": []}]}]});
         std::fs::write(run.join("communities.json"), tree.to_string()).unwrap();
+        crate::api::other_providers::reads_with_naming(data.path());
         data
     }
 
@@ -677,7 +683,8 @@ mod tests {
     #[tokio::test]
     async fn another_provider_is_priced_asked_in_its_own_shape_kept_and_asked_again_when_the_provider_changes() {
         use crate::api::other_providers::{
-            ACCEPTED, Chosen as Asked, MODEL, Scripted, accepting, call, choose, finished, priced_for, router, sent_to,
+            ACCEPTED, Chosen as Asked, MODEL, Scripted, accepting, call, choose_reading as choose, finished,
+            priced_for, reading_router as router, sent_to,
         };
 
         let data = data();

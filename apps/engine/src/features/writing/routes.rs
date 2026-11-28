@@ -42,7 +42,7 @@ use crate::library::core::store::read_json;
 use crate::library::{Feature, Library, Paper};
 use crate::model::batch::{Asking, BatchEstimate, IN_FLIGHT};
 use crate::model::chosen::{Accepted, Chosen, Terms, budget};
-use crate::model::language::{Estimate, Provider};
+use crate::model::language::{Estimate, ForRun, Provider};
 use crate::settings;
 
 /// What the job naming a run's communities is called in `/api/status`.
@@ -492,9 +492,17 @@ async fn write_overview(
         let transport = Arc::clone(&engine.transport);
         let worker = Arc::clone(&library);
         let subject = prepared.subject.clone();
+        let of_run = run.clone();
         engine.job.start_tracked(overview::JOB, move |tracker| {
-            let asking =
-                Asking { library: &worker, transport: &*transport, endpoint, recorder: &*worker, in_flight: IN_FLIGHT };
+            // a community's overview: the run's cost
+            let recorder = ForRun::new(&*worker, Some(&of_run));
+            let asking = Asking {
+                library: &worker,
+                transport: &*transport,
+                endpoint,
+                recorder: &recorder,
+                in_flight: IN_FLIGHT,
+            };
             match overview::ask(asking, &prepared, &budget, tracker) {
                 Ok(_) => {
                     tracker.log("Written; its quotes are checked whenever it is shown.");
@@ -730,6 +738,10 @@ mod tests {
         sent_to(&transport.sent(), Picked::OpenAi);
         let prompt = transport.sent()[0].body.to_string();
         assert!(prompt.contains("BEGIN PAPERS") && prompt.contains("[paper p2]") && !prompt.contains("[paper p3]"));
+        // a community's overview is its run's cost
+        let (_, spent) = call(&router, "GET", "/api/usage?run=r1", None).await;
+        assert_eq!((spent["run_calls"].clone(), spent["calls"].clone()), (json!(1), json!(1)), "{spent}");
+        assert_eq!(spent["run_purposes"][crate::features::writing::overview::PURPOSE]["calls"], 1);
 
         // asking again costs nothing: it is kept
         let (_, again) = call(&router, "POST", at, Some(accepting(&idle["estimate"], ACCEPTED))).await;

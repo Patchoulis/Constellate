@@ -12,14 +12,19 @@ import { api } from "@/lib/net/api";
 import { openOutside } from "@/lib/net/links";
 import {
 	authorLine,
+	citationsLine,
 	citedByLine,
 	confidenceNote,
 	layoutNetwork,
 	linkTag,
 	lookupsStoppedLine,
+	networkSourceLine,
+	NOT_COUNTABLE,
 	outsideLink,
-	showing,
+	referencesLine,
+	runTag,
 	shownWorks,
+	workPlace,
 	type PlacedWork,
 	type WorkOrder,
 } from "@/lib/reader/citations";
@@ -59,6 +64,17 @@ function LinkTag({ work }: { work: CitationNeighbour }) {
 	);
 }
 
+/** A paper of the library that is not in the run the reader was opened from, said quietly. */
+function RunTag({ work }: { work: CitationNeighbour }) {
+	const tag = runTag(work);
+	if (!tag) return null;
+	return (
+		<span title={tag.note} className={cn(TAG, "border-dashed border-border text-muted-foreground")}>
+			{tag.label}
+		</span>
+	);
+}
+
 /** The width of the element, followed as it changes. */
 function useWidth() {
 	const ref = useRef<HTMLDivElement>(null);
@@ -74,11 +90,16 @@ function useWidth() {
 	return [ref, width] as const;
 }
 
-/** How a work is drawn: filled when it is in the library, a ring when it is on arXiv, a dashed ring when not found. */
+/**
+ * How a work is drawn: filled when it is in the library, faded with a thin ring when it is in the library but not in
+ * the run, a ring when it is on arXiv, a dashed ring when not found.
+ */
 function Work({ work, hovered }: { work: PlacedWork; hovered: boolean }) {
 	const colour = hsl(HUE[work.side], hovered ? 78 : 66);
 	if (!work.work)
 		return <circle cx={work.x} cy={work.y} r={work.r} fill={colour} style={{ filter: `drop-shadow(0 0 6px ${hsl(HUE.seed, 60, 0.8)})` }} />;
+	if (workPlace(work.work) === "outside_run")
+		return <circle cx={work.x} cy={work.y} r={work.r} fill={colour} fillOpacity={hovered ? 0.55 : 0.3} stroke={colour} strokeWidth={1} />;
 	const kind = work.work.link.kind;
 	return (
 		<circle
@@ -205,6 +226,7 @@ function Picture({
 								</div>
 								<div className="mt-1 text-muted-foreground">
 									{citedByLine(shown.work.cited_by)} · {linkTag(shown.work.link).label}
+									{runTag(shown.work) && ` · ${runTag(shown.work)!.label}`}
 								</div>
 							</>
 						) : (
@@ -220,18 +242,27 @@ function Picture({
 				<span title="The works this paper's reference list cites, at the year of each.">
 					<Dot hue={HUE.prior} /> prior work: it cites
 				</span>
-				<span title="The papers Constellate has read whose reference lists cite this paper, at the year of each.">
+				<span title="The papers of your library Constellate has read, in this run or not, whose reference lists cite this paper, at the year of each.">
 					<Dot hue={HUE.derivative} /> derivative work: cites it
 				</span>
 				<span title="Filled: in your library (click to open it here). Ring: on arXiv. Dashed ring: not found; what was read of it is shown.">
 					filled: in your library · ring: on arXiv · dashed: not found
 				</span>
+				{network.totals.citations_in_run !== null && (
+					<span title="A paper of your library that is not in this run: click it to open it in the reader. It is not on this run's graph.">
+						<span
+							className="mr-1 inline-block size-2 rounded-full border align-middle"
+							style={{ background: hsl(HUE.derivative, 66, 0.3), borderColor: hsl(HUE.derivative) }}
+						/>
+						faded: in your library, outside this run
+					</span>
+				)}
 				{kinds && kinds.size > 0 && (
 					<span title="The model's reading of the citing sentences, listed below with each sentence and the words that show it: an estimate.">
 						coloured line: the kind of citation, as the model read it
 					</span>
 				)}
-				<span title="Size is how many papers Constellate has read cite the work: only papers whose PDFs it has read are counted.">
+				<span title="Size is how many papers of your library Constellate has read cite the work, in this run or not: only papers whose PDFs it has read are counted, and papers that are not in your library cannot be.">
 					size: times cited by papers read
 				</span>
 			</figcaption>
@@ -261,10 +292,11 @@ function Works({ works, onOpen }: { works: CitationNeighbour[]; onOpen: (work: C
 							{work.authors.length > 0 && <span className="max-w-[28rem] truncate">{authorLine(work)}</span>}
 							<span>{work.year ?? "year unknown"}</span>
 							{work.venue && <span className="max-w-[20rem] truncate">{work.venue}</span>}
-							<span title="Only papers whose PDFs Constellate has read are counted, not the whole literature.">
+							<span title="Papers of your library whose PDFs Constellate has read, in this run or not; papers that are not in your library cannot be counted. Not the whole literature.">
 								{citedByLine(work.cited_by)}
 							</span>
 							<LinkTag work={work} />
+							<RunTag work={work} />
 						</span>
 					</RowButton>
 				</li>
@@ -285,7 +317,6 @@ function Lists({ network, onOpen }: { network: CitationNetwork; onOpen: (work: C
 	const references = shownWorks(network.references, order, filter);
 	const citations = shownWorks(network.citations, order, filter);
 	const { totals } = network;
-	const limited = totals.citations_shown < totals.citations;
 	return (
 		<div className="flex flex-col gap-4">
 			<div className="flex items-center gap-2">
@@ -299,8 +330,7 @@ function Lists({ network, onOpen }: { network: CitationNetwork; onOpen: (work: C
 						className="font-ui text-xs text-muted-foreground"
 						title="In your library: can be opened here. On arXiv: its arXiv id is known. Not found: only what was read of the entry is known."
 					>
-						{showing(references.length, totals.references, "reference")}: {totals.references_in_library.toLocaleString()} in your library,{" "}
-						{totals.references_on_arxiv.toLocaleString()} on arXiv, {totals.references_unresolved.toLocaleString()} not found
+						{referencesLine(totals, references.length)}
 					</p>
 				)}
 				{network.seed_state === "read" && totals.references === 0 && (
@@ -314,15 +344,19 @@ function Lists({ network, onOpen }: { network: CitationNetwork; onOpen: (work: C
 			<section className="flex flex-col gap-1.5">
 				<Heading className="font-ui">Cited by: derivative work</Heading>
 				{totals.citations > 0 ? (
-					<p className="font-ui text-xs text-muted-foreground">
-						{showing(citations.length, totals.citations, "citing paper")} Constellate has read{limited ? ", the most cited" : ""}
-					</p>
+					<p className="font-ui text-xs text-muted-foreground">{citationsLine(totals, citations.length)}</p>
 				) : (
 					<p className="text-base text-muted-foreground">
-						None of the {count(network.papers_read, "paper")} Constellate has read cite this paper. Papers that cite it but whose PDFs have
-						not been read, or that are not in your library, are not counted: this is not the whole literature.
+						None of the {count(network.papers_read, "paper")} of your library Constellate has read cite this paper. Papers of your library
+						whose PDFs have not been read are not counted yet: this is not the whole literature.
 					</p>
 				)}
+				<p
+					className="font-ui text-xs text-muted-foreground"
+					title="Nothing of a paper outside your library has been read, and no outside citation service is asked."
+				>
+					{NOT_COUNTABLE}
+				</p>
 				<Works works={citations} onOpen={onOpen} />
 			</section>
 		</div>
@@ -364,9 +398,7 @@ export function Citations({ paper, run, onOpen }: { paper: Paper; run?: string; 
 				className="font-ui text-xs text-muted-foreground"
 				title="Constellate reads the reference list of each paper whose PDF it reads; nothing is asked of an outside citation service."
 			>
-				From the reference lists of the papers Constellate has read: {network.papers_read.toLocaleString()} of{" "}
-				{count(network.papers_in_library, "paper")} in your library. Built {network.built}.
-				{totals.citations_in_run !== null && ` Cited by ${count(totals.citations_in_run, "paper")} of this run.`}
+				{networkSourceLine(network)}
 			</p>
 			{network.seed_state === "not_read" && (
 				<div className="flex flex-col items-start gap-2 rounded-lg border p-3 font-ui">

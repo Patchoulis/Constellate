@@ -40,6 +40,17 @@ export function communityTree(communities: Community[]): CommunityNode[] {
 	return family(communities, null);
 }
 
+/** The node of `roots` (or of their sub-communities) at `treePath`: a community selected before the tree was made
+ *  again (its citation figures counted since) is found in the new one. */
+export function nodeAt(roots: CommunityNode[], treePath: string): CommunityNode | null {
+	for (const node of roots) {
+		if (node.community.tree_path === treePath) return node;
+		const below = nodeAt(node.children, treePath);
+		if (below) return below;
+	}
+	return null;
+}
+
 /** The groups one level of detail shows: every root followed `level` steps down, as far as each branch goes. */
 export function groupsAt(roots: CommunityNode[], level: number): CommunityNode[] {
 	return roots.flatMap((node) => (level === 0 || node.children.length === 0 ? [node] : groupsAt(node.children, level - 1)));
