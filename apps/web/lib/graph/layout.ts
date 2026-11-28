@@ -63,20 +63,38 @@ interface Pull extends SimulationLinkDatum<Home> {
 	strength: number;
 }
 
+/**
+ * A community's papers that the graph has: what the layout places. A run's two files are written together, but a
+ * community naming a paper the graph does not have (a file of an older version, one written halfway) must not stop
+ * the page; such a member is left out rather than placed nowhere.
+ */
+function placedMembers(graph: GraphData, node: CommunityNode): number[] {
+	return node.community.members.filter((index) => Number.isInteger(index) && index >= 0 && index < graph.nodes.length);
+}
+
+/** A number from the engine to compute with: one that is not (NaN, missing) counts as 0. */
+const finite = (value: number) => (Number.isFinite(value) ? value : 0);
+
 /** Step 1: a disc per community. */
 function placeCommunities(graph: GraphData, roots: CommunityNode[]): Home[] {
-	const homes: Home[] = roots.map(({ community }) => {
-		const sum = community.members.reduce((total, index) => ({ x: total.x + graph.nodes[index].x, y: total.y + graph.nodes[index].y }), {
+	const homes: Home[] = roots.map((node) => {
+		const members = placedMembers(graph, node);
+		const sum = members.reduce((total, index) => ({ x: total.x + finite(graph.nodes[index].x), y: total.y + finite(graph.nodes[index].y) }), {
 			x: 0,
 			y: 0,
 		});
-		const r = SPACING * Math.sqrt(community.size);
-		return { x: (sum.x / community.size) * 2400, y: (sum.y / community.size) * 2400, r };
+		const r = SPACING * Math.sqrt(members.length);
+		const of = members.length || 1; // a community with no papers starts at the origin
+		return { x: (sum.x / of) * 2400, y: (sum.y / of) * 2400, r };
 	});
-	const pulls: Pull[] = roots.flatMap(({ community }) =>
-		community.closest_communities
-			.filter((other) => other.cosine > 0)
-			.map((other) => ({ source: community.id, target: other.id, strength: other.cosine })),
+	// The pulls name communities by their place among the roots (`Community.id`); one naming no root, or itself, is
+	// left out: d3 refuses a link to a node it does not have, and would stop the page.
+	const placeOf = new Map(roots.map((node, index) => [node.community.id, index]));
+	const pulls: Pull[] = roots.flatMap(({ community }, index) =>
+		(community.closest_communities ?? []).flatMap((other) => {
+			const target = placeOf.get(other.id);
+			return target === undefined || target === index || !(other.cosine > 0) ? [] : [{ source: index, target, strength: other.cosine }];
+		}),
 	);
 	forceSimulation(homes)
 		.force(
@@ -102,17 +120,23 @@ function sunflower(disc: Disc, count: number): Point[] {
 	});
 }
 
-function discAround(spots: Point[]): Disc {
+/** The disc around `spots`; with none (a community with no papers), a point at `fallback`, not one at NaN. */
+function discAround(spots: Point[], fallback: Point): Disc {
+	if (spots.length === 0) return { x: fallback.x, y: fallback.y, r: 0 };
 	const x = spots.reduce((sum, spot) => sum + spot.x, 0) / spots.length;
 	const y = spots.reduce((sum, spot) => sum + spot.y, 0) / spots.length;
-	return { x, y, r: Math.sqrt(Math.max(...spots.map((spot) => (spot.x - x) ** 2 + (spot.y - y) ** 2))) };
+	return { x, y, r: Math.sqrt(spots.reduce((most, spot) => Math.max(most, (spot.x - x) ** 2 + (spot.y - y) ** 2), 0)) };
 }
 
 /** Step 3: give `spots` to the papers of `node`, cutting them between its sub-communities on the way down. */
-function deal(node: CommunityNode, spots: Point[], layout: Layout) {
-	layout.discs.set(node, discAround(spots));
+function deal(graph: GraphData, node: CommunityNode, spots: Point[], layout: Layout, fallback: Point) {
+	const disc = discAround(spots, fallback);
+	layout.discs.set(node, disc);
 	if (node.children.length === 0) {
-		node.community.members.forEach((index, order) => (layout.points[index] = spots[order]));
+		// a spot for each paper; one more paper than spots (a size that does not match its members) stays where it is
+		placedMembers(graph, node).forEach((index, order) => {
+			if (spots[order]) layout.points[index] = spots[order];
+		});
 		return;
 	}
 	// Cut across a direction that turns a quarter with every level, so patches do not become slivers.
@@ -121,20 +145,29 @@ function deal(node: CommunityNode, spots: Point[], layout: Layout) {
 	const ordered = [...spots].sort((a, b) => along(a) - along(b));
 	let taken = 0;
 	for (const child of node.children) {
-		const share = ordered.slice(taken, taken + child.community.size);
-		taken += child.community.size;
-		const centre = discAround(share);
+		const papers = placedMembers(graph, child).length;
+		const share = ordered.slice(taken, taken + papers);
+		taken += papers;
+		const centre = discAround(share, disc);
 		deal(
+			graph,
 			child,
 			share.map((spot) => ({
 				x: centre.x + (spot.x - centre.x) * DRAW_IN,
 				y: centre.y + (spot.y - centre.y) * DRAW_IN,
 			})),
 			layout,
+			disc,
 		);
 	}
 }
 
+/**
+ * Where every paper and every community is. Whatever the run's files hold, every community of the tree gets a disc
+ * and every paper a finite place: members the graph does not have, a size that does not match the members, a pull
+ * to a community that is not there, NaN positions from the engine (all of which a file of an older version, or one
+ * written halfway, can have) never stop the page or put a paper at NaN.
+ */
 export function layoutGraph(graph: GraphData, roots: CommunityNode[]): Layout {
 	const homes = placeCommunities(graph, roots);
 	// no community at all: a box around the origin, not one from Infinity to -Infinity that no camera can fit
@@ -149,6 +182,6 @@ export function layoutGraph(graph: GraphData, roots: CommunityNode[]): Layout {
 			maxY: edge((home) => home.y + home.r, Math.max),
 		},
 	};
-	roots.forEach((node, index) => deal(node, sunflower(homes[index], node.community.size), layout));
+	roots.forEach((node, index) => deal(graph, node, sunflower(homes[index], placedMembers(graph, node).length), layout, homes[index]));
 	return layout;
 }

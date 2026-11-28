@@ -58,7 +58,7 @@ function canvasData(graph: GraphData, roots: CommunityNode[], layout: Layout): C
 		});
 	}
 	// orals and spotlights are drawn larger: they are the papers a conference singled out
-	const sizes = Float32Array.from(graph.nodes, (node) => ({ oral: 1.9, spotlight: 1.45, poster: 1 })[node.acceptance ?? "poster"]);
+	const sizes = Float32Array.from(graph.nodes, (node) => ({ oral: 1.9, spotlight: 1.45, poster: 1 })[node.acceptance ?? "poster"] ?? 1); // a tier this version does not know: usual size
 	return { points: layout.points, sizes, links: graph.edges, levels };
 }
 
@@ -112,12 +112,19 @@ export function GraphView({
 	markRef.current = onMarkPaper;
 	const markManyRef = useRef(onMarkPapers);
 	markManyRef.current = onMarkPapers;
-	const [hover, setHover] = useState<{ index: number; x: number; y: number; linked: PaperPlace[] } | null>(null);
+	// The hovered paper and the marked papers' places are told by the renderer as indexes into the graph it was given,
+	// and kept with that graph: a run's graph read again (its papers renamed, the run made again) has other papers at
+	// those indexes, or fewer, and for the render before the new renderer tells anything they would name papers that
+	// are not there.
+	const [hoverHeld, setHover] = useState<{ graph: GraphData; index: number; x: number; y: number; linked: PaperPlace[] } | null>(null);
+	const hover = hoverHeld?.graph === graph ? hoverHeld : null;
 	// where the marked papers are on screen, and how large the screen is
-	const [markedView, setMarkedView] = useState<{ places: MarkedPlace[]; frame: { width: number; height: number } }>({
+	const [markedHeld, setMarkedView] = useState<{ graph: GraphData | null; places: MarkedPlace[]; frame: { width: number; height: number } }>({
+		graph: null,
 		places: [],
 		frame: { width: 0, height: 0 },
 	});
+	const markedView = markedHeld.graph === graph ? markedHeld : { places: [], frame: markedHeld.frame };
 	const [level, setLevel] = useState(0);
 	const keyName = useSelectKeyName(selectKey);
 	const layout = useMemo(() => layoutGraph(graph, roots), [graph, roots]);
@@ -128,7 +135,7 @@ export function GraphView({
 		const canvas = canvasRef.current;
 		if (!canvas) return;
 		const renderer = new GraphCanvasRenderer(canvas, {
-			onHover: (index, x, y, linked) => setHover(index === null ? null : { index, x, y, linked }),
+			onHover: (index, x, y, linked) => setHover(index === null ? null : { graph, index, x, y, linked }),
 			onPick: (index) => pickRef.current(index === null ? null : graph.nodes[index].id),
 			onMark: (index) => markRef.current(graph.nodes[index].id),
 			onMarkMany: (indexes) => markManyRef.current(indexes.map((index) => graph.nodes[index].id)),
@@ -137,7 +144,7 @@ export function GraphView({
 				setMarkedView((before) =>
 					places.length === 0 && before.places.length === 0
 						? before
-						: { places, frame: { width: canvas.clientWidth, height: canvas.clientHeight } },
+						: { graph, places, frame: { width: canvas.clientWidth, height: canvas.clientHeight } },
 				),
 			onLevel: setLevel,
 		});

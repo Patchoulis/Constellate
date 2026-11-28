@@ -311,3 +311,8 @@ test("each community's hue turns by the golden angle from the one before, so nei
 		assert.ok(Math.min(apart, 360 - apart) > 137, `communities ${id} and ${id + 1}: ${apart} degrees apart`);
 	}
 });
+
+test("a term that names one of an object's own functions is capitalised as a word", () => {
+	assert.equal(titleCase("constructor tostring"), "Constructor Tostring");
+	assert.equal(titleCase("__proto__ hasownproperty"), "__Proto__ Hasownproperty");
+});
