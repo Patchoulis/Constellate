@@ -15,6 +15,18 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with sections and citations", under such a description and over the list of communities, shows what rewriting
   them would cost first, then rewrites them, with its progress and a way to stop.
 
+### Changed
+
+- Communities are ordered by "Uniqueness" in place of "Saturation" and "Tightness": how far a community's papers are,
+  on average, from what the community is about (a cosine distance). Low means its papers all do much the same thing;
+  high means the work in it is more varied.
+
+### Fixed
+
+- A reviewer's sentence with a formula in it is shown as one sentence: the pieces of the formula no longer each take
+  a line of their own in Weaknesses and Claims.
+- The graph no longer disappears while a side panel is dragged wider or narrower.
+
 ## [0.2.2] - 2026-11-28
 
 ### Added
