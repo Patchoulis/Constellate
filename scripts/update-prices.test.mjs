@@ -9,6 +9,7 @@ import {
 	currenciesOf,
 	isModelKey,
 	nextPatch,
+	providerOf,
 	problemsOf,
 	ratesFrom,
 	serialize,
@@ -260,4 +261,12 @@ test("every model names its provider, which has a source, and is kept as provide
 	assert.deepEqual(withModel(file, "openai:gpt-7", "3", "15").models["openai:gpt-7"], { provider: "openai", input: 3, output: 15 });
 	assert.throws(() => withModel(file, "nobody:model-1", "3", "15"), /no source/);
 	assert.throws(() => withModel(file, "openai:a b", "3", "15"), /not a model id/);
+});
+
+test("a model kept under a provider's prefix belongs to that provider, and one without a prefix to Anthropic", () => {
+	assert.equal(providerOf("claude-opus-5-5"), "anthropic");
+	assert.equal(providerOf("openai:gpt-6.2-sol"), "openai");
+	// only the first colon names the provider: a model's own id may have colons
+	assert.equal(providerOf("compatible:qwen3:32b"), "compatible");
+	assert.equal(providerOf(":nameless"), "");
 });
