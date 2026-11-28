@@ -80,6 +80,31 @@ impl Feature {
             Feature::Detector => "ai_detector",
         }
     }
+
+    /// May an answer kept while papers were read by an older passages reader ([`READER`]) be used as it is?
+    ///
+    /// Yes for every feature whose answer is checked against the papers' text whenever it is loaded (its quotes
+    /// located again by [`crate::evidence::check`], those no longer found dropped), or that reads no paper's passages
+    /// at all (titles and abstracts, embeddings): the words it is shown against are the paper's words now. No for a
+    /// feature keyed by a place in the paper's text whose answer cannot show it was written about the words at that
+    /// place now: an explanation is kept by its passage's address and does not keep the passage's words, and the
+    /// reader that changed may have changed them. A citation's reading keeps its sentence, so it is used only when
+    /// that sentence is the one at its place now (`features::citation_contexts::kinds::kept_reading`, through
+    /// [`Library::kept_older`]).
+    pub const fn survives_a_new_reader(self) -> bool {
+        match self {
+            Feature::Extraction
+            | Feature::Stances
+            | Feature::Answers
+            | Feature::Critique
+            | Feature::ClaimTree
+            | Feature::Describing
+            | Feature::Overview
+            | Feature::Closest
+            | Feature::Detector => true,
+            Feature::Explanation | Feature::CitationKinds => false,
+        }
+    }
 }
 
 /// A feature as the interface is told it: by its stored name ("citation_kinds").
@@ -116,12 +141,47 @@ impl Subject {
 }
 
 /// The key an answer is kept under. Made only by [`AnswerKey::new`], so every feature makes it the same way.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct AnswerKey(String);
+///
+/// It also knows the keys the same answer was kept under while papers were read by each older passages reader
+/// (newest first), so that an answer paid for then is still found ([`Library::kept`]). Two keys are the same key
+/// when their current keys are.
+#[derive(Clone, Debug)]
+pub struct AnswerKey {
+    hex: String,
+    older: Vec<String>,
+}
+
+impl PartialEq for AnswerKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.hex == other.hex
+    }
+}
+
+impl Eq for AnswerKey {}
+
+impl std::hash::Hash for AnswerKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.hex.hash(state);
+    }
+}
+
+impl PartialOrd for AnswerKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for AnswerKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.hex.cmp(&other.hex)
+    }
+}
 
 impl AnswerKey {
     /// The key of an answer of `feature`, written by `model` of `provider` with version `prompt` of the feature's
-    /// prompt, about `papers`, to `question`, read with this version of the passages reader ([`READER`]).
+    /// prompt, about `papers`, to `question`, read with this version of the passages reader ([`READER`]). It knows
+    /// the keys the same answer had under each older reader too, so that an answer paid for then is still found
+    /// where it may be ([`Library::kept`], [`Feature::survives_a_new_reader`]).
     ///
     /// `question` is everything else the answer depends on, as the feature writes it down: the question asked,
     /// the columns of a table (as JSON, in their order), the passage to explain (its address). Whatever it puts in
@@ -152,16 +212,24 @@ impl AnswerKey {
         papers: &[&str],
         question: &str,
     ) -> Self {
-        Self::hashed(feature, &price_key(provider, model), prompt, papers, question)
+        Self::with_older(feature, &price_key(provider, model), prompt, papers, question)
     }
 
     /// The key of what a feature keeps of its own, written by no model (the list of a community's questions):
     /// the key of [`AnswerKey::new`] with an empty model, as such keys always were.
     pub fn of_feature(feature: Feature, version: u32, papers: &[&str], question: &str) -> Self {
-        Self::hashed(feature, "", version, papers, question)
+        Self::with_older(feature, "", version, papers, question)
     }
 
-    fn hashed(feature: Feature, model: &str, prompt: u32, papers: &[&str], question: &str) -> Self {
+    /// The key made with this reader ([`READER`]), knowing those made with each older one.
+    fn with_older(feature: Feature, model: &str, prompt: u32, papers: &[&str], question: &str) -> Self {
+        Self {
+            hex: Self::hashed(feature, model, prompt, READER, papers, question),
+            older: (1..READER).rev().map(|reader| Self::hashed(feature, model, prompt, reader, papers, question)).collect(),
+        }
+    }
+
+    fn hashed(feature: Feature, model: &str, prompt: u32, reader: u32, papers: &[&str], question: &str) -> String {
         let mut papers = papers.to_vec();
         papers.sort_unstable();
         papers.dedup();
@@ -174,23 +242,29 @@ impl AnswerKey {
         field(feature.name());
         field(model);
         field(&prompt.to_string());
-        field(&READER.to_string());
+        field(&reader.to_string());
         field(&papers.len().to_string());
         for paper in &papers {
             field(paper);
         }
         field(question);
-        Self(hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
+        hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
     /// A key as it was kept (its hex), as another table holds it beside what it is the key of: for forgetting the
     /// answer kept under it, whatever the key would be made as now.
     pub fn from_stored(hex: String) -> Self {
-        Self(hex)
+        Self { hex, older: Vec::new() }
     }
 
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.hex
+    }
+
+    /// The keys of older passages readers, newest first: for tests of features that look under them.
+    #[cfg(test)]
+    pub fn older_for_tests(key: &AnswerKey) -> &[String] {
+        &key.older
     }
 }
 
@@ -219,18 +293,50 @@ pub struct Kept<T> {
 impl Library {
     /// The answer kept for `feature` under `key`. One that no longer reads as `T` (the feature changed its answer's
     /// shape without raising its prompt version) counts as not kept: it is asked for again and replaced.
+    ///
+    /// When nothing is kept under the key of this passages reader, the answer kept under the key of the newest
+    /// older reader is used, for a feature whose answers survive a new reader ([`Feature::survives_a_new_reader`]).
+    /// It is read where it is, not moved: going back a version finds it still.
     pub fn kept<T: DeserializeOwned>(
         &self,
         feature: Feature,
         key: &AnswerKey,
     ) -> Result<Option<Kept<T>>, LibraryError> {
+        if let Some(kept) = self.kept_under(feature, &key.hex)? {
+            return Ok(Some(kept));
+        }
+        if feature.survives_a_new_reader() {
+            for older in &key.older {
+                if let Some(kept) = self.kept_under(feature, older)? {
+                    return Ok(Some(kept));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// The answers kept under the keys of older passages readers, newest first, for a feature that checks for
+    /// itself that one was written about the words it would be shown against.
+    pub fn kept_older<T: DeserializeOwned>(
+        &self,
+        feature: Feature,
+        key: &AnswerKey,
+    ) -> Result<Vec<Kept<T>>, LibraryError> {
+        let mut found = Vec::new();
+        for older in &key.older {
+            found.extend(self.kept_under(feature, older)?);
+        }
+        Ok(found)
+    }
+
+    fn kept_under<T: DeserializeOwned>(&self, feature: Feature, hex: &str) -> Result<Option<Kept<T>>, LibraryError> {
         let row: Option<(String, String, String, i64, i64)> = self.read(|connection| {
             Ok(connection
                 .prepare_cached(
                     "SELECT content, kept_at, model, prompt, reader FROM kept_answers
                      WHERE feature = ?1 AND answer_key = ?2",
                 )?
-                .query_row(params![feature.name(), key.as_str()], |row| {
+                .query_row(params![feature.name(), hex], |row| {
                     Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
                 })
                 .optional()?)
@@ -281,7 +387,7 @@ impl Library {
     /// stay (one question of a run's many, one passage's explanation of a paper's). It is asked for again. False
     /// when none was kept.
     pub fn forget_key(&self, feature: Feature, key: &AnswerKey) -> Result<bool, LibraryError> {
-        self.write(|transaction| Ok(forget_key(transaction, feature, key.as_str())? > 0))
+        self.write(|transaction| Ok(forget_all_versions(transaction, feature, key)? > 0))
     }
 
     /// Forget the answers `feature` kept under any of `keys`, in one transaction: how many there were.
@@ -289,7 +395,7 @@ impl Library {
         self.write(|transaction| {
             let mut forgotten = 0;
             for key in keys {
-                forgotten += forget_key(transaction, feature, key.as_str())?;
+                forgotten += forget_all_versions(transaction, feature, key)?;
             }
             Ok(forgotten)
         })
@@ -337,6 +443,16 @@ fn put_answer(
             now()
         ])?;
     Ok(())
+}
+
+/// The answer kept under `key` and under its keys of older passages readers: what a redo asked for by key
+/// forgets, since otherwise the older answer would be found again in its place ([`Library::kept`]).
+fn forget_all_versions(connection: &rusqlite::Connection, feature: Feature, key: &AnswerKey) -> Result<usize, LibraryError> {
+    let mut forgotten = forget_key(connection, feature, key.as_str())?;
+    for older in &key.older {
+        forgotten += forget_key(connection, feature, older)?;
+    }
+    Ok(forgotten)
 }
 
 /// [`Library::forget_key`] in a transaction of the caller's, the key as stored (hex): how many rows went.
@@ -402,12 +518,17 @@ mod tests {
     /// The key as it was made before there were providers other than the Claude API: written out again here, apart
     /// from the code that makes keys now, so that a change there that would orphan the answers kept for Claude fails.
     fn key_before_providers(feature: Feature, model: &str, prompt: u32, papers: &[&str], question: &str) -> String {
+        key_with_reader(feature, model, prompt, READER, papers, question)
+    }
+
+    /// [`key_before_providers`] with the passages reader's version given.
+    fn key_with_reader(feature: Feature, model: &str, prompt: u32, reader: u32, papers: &[&str], question: &str) -> String {
         let mut papers = papers.to_vec();
         papers.sort_unstable();
         papers.dedup();
         let mut hash = Sha256::new();
         let count = papers.len().to_string();
-        let (prompt, reader) = (prompt.to_string(), READER.to_string());
+        let (prompt, reader) = (prompt.to_string(), reader.to_string());
         let fields = ["constellate answer key 1", feature.name(), model, &prompt, &reader, &count];
         for text in fields.into_iter().chain(papers).chain([question]) {
             hash.update((text.len() as u64).to_le_bytes());
@@ -424,21 +545,81 @@ mod tests {
                 assert_eq!(now.as_str(), key_before_providers(feature, model, 3, &["a", "b"], "a question"));
             }
         }
-        if READER == 1 {
-            // as kept in libraries already: the key of one answer, written down
-            let kept = AnswerKey::new(
-                Feature::Answers,
-                Provider::Anthropic,
-                "claude-opus-5-5",
-                1,
-                &["a", "b"],
-                "What is new?",
-            );
-            assert_eq!(kept.as_str(), "b03f1011ed6dc1dfbbaa131184f88fa329802546c1b0a7e5d502c54e28878644");
+        // as kept in libraries already, by the first passages reader: the key of one answer, written down, and
+        // still among those a key of this reader looks under
+        let kept = AnswerKey::hashed(Feature::Answers, "claude-opus-5-5", 1, 1, &["a", "b"], "What is new?");
+        assert_eq!(kept, "b03f1011ed6dc1dfbbaa131184f88fa329802546c1b0a7e5d502c54e28878644");
+        let now = AnswerKey::new(Feature::Answers, Provider::Anthropic, "claude-opus-5-5", 1, &["a", "b"], "What is new?");
+        assert_eq!(now.older.last(), Some(&kept));
+        for reader in 1..READER {
+            let older = key_with_reader(Feature::Answers, "claude-opus-5-5", 1, reader, &["a", "b"], "What is new?");
+            assert!(now.older.contains(&older), "reader {reader}");
         }
         // what a feature keeps of its own (no model) is found where it was kept too
         let list = AnswerKey::of_feature(Feature::Stances, 1, &[], "questions");
         assert_eq!(list.as_str(), key_before_providers(Feature::Stances, "", 1, &[], "questions"));
+    }
+
+    /// Keep `answer` for `feature` under the key the same question had with passages reader `reader`.
+    fn keep_under_reader(library: &Library, feature: Feature, reader: u32, answer: &str) -> AnswerKey {
+        let now = AnswerKey::new(feature, Provider::Anthropic, "claude-opus-5-5", 1, &["p"], "q");
+        let key = if reader == READER {
+            now.clone()
+        } else {
+            AnswerKey::from_stored(AnswerKey::hashed(feature, "claude-opus-5-5", 1, reader, &["p"], "q"))
+        };
+        library.keep(&Slot { feature, key, subject: Subject::Paper("p".into()) }, "claude-opus-5-5", 1, &answer).unwrap();
+        now
+    }
+
+    #[test]
+    fn an_answer_kept_under_an_older_reader_is_still_found_where_its_quotes_are_checked_again() {
+        for feature in Feature::ALL.into_iter().filter(|feature| feature.survives_a_new_reader()) {
+            for reader in 1..READER {
+                let folder = tempfile::tempdir().unwrap();
+                let library = Library::open(folder.path()).unwrap();
+                let key = keep_under_reader(&library, feature, reader, &format!("paid for under reader {reader}"));
+                let kept = library.kept::<String>(feature, &key).unwrap().unwrap();
+                assert_eq!(kept.answer, format!("paid for under reader {reader}"), "{feature:?}");
+            }
+            // the newest older answer first, and this reader's over every older one
+            let folder = tempfile::tempdir().unwrap();
+            let library = Library::open(folder.path()).unwrap();
+            for reader in 1..READER {
+                keep_under_reader(&library, feature, reader, &format!("reader {reader}"));
+            }
+            let key = AnswerKey::new(feature, Provider::Anthropic, "claude-opus-5-5", 1, &["p"], "q");
+            let newest_older = format!("reader {}", READER - 1);
+            assert_eq!(library.kept::<String>(feature, &key).unwrap().unwrap().answer, newest_older);
+            keep_under_reader(&library, feature, READER, "this reader's");
+            assert_eq!(library.kept::<String>(feature, &key).unwrap().unwrap().answer, "this reader's");
+            // read where it is, not moved: the older rows are all still there
+            for reader in 1..READER {
+                let older = AnswerKey::from_stored(AnswerKey::hashed(feature, "claude-opus-5-5", 1, reader, &["p"], "q"));
+                assert!(library.kept::<String>(feature, &older).unwrap().is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn an_answer_kept_by_a_place_in_the_text_under_an_older_reader_is_not_taken_for_the_words_there_now() {
+        for feature in [Feature::Explanation, Feature::CitationKinds] {
+            let folder = tempfile::tempdir().unwrap();
+            let library = Library::open(folder.path()).unwrap();
+            let key = keep_under_reader(&library, feature, READER - 1, "about the words read before");
+            assert_eq!(library.kept::<String>(feature, &key).unwrap(), None, "{feature:?}");
+            // it is there for a feature that checks the words itself, and kept
+            assert_eq!(library.kept_older::<String>(feature, &key).unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn a_redo_by_key_forgets_the_answer_under_every_reader() {
+        let folder = tempfile::tempdir().unwrap();
+        let library = Library::open(folder.path()).unwrap();
+        let key = keep_under_reader(&library, Feature::Answers, 1, "old");
+        assert!(library.forget_key(Feature::Answers, &key).unwrap());
+        assert_eq!(library.kept::<String>(Feature::Answers, &key).unwrap(), None, "not found again in its place");
     }
 
     #[test]

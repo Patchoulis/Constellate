@@ -95,8 +95,9 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   layout) used to come out as accented letters. A formula whose characters the PDF does not say at all is shown as
   a note linking to its page instead of wrong characters, and is never quoted or matched as evidence. A displayed
   sum keeps its limits with it rather than splitting into a line each. Papers read before are read again, on this
-  computer and for free, when next opened; answers kept from the models were made from the old text, so they are
-  asked again when wanted.
+  computer and for free, when next opened. Answers already paid for are kept and shown as before, their quotes
+  checked against the new text as always; only an explanation of a passage, which cannot be shown to be about the
+  same words now, and a citation's reading whose sentence now reads differently, are asked again when wanted.
 
 ## [0.2.2] - 2026-11-28
 
