@@ -5,7 +5,7 @@ members = ["apps/engine"]
 resolver = "3"
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 # 1.88: the oldest Rust that the fixed releases of ctutils (argon2's constant-time helpers, 1.87) and time (1.88)
 # build with; edition 2024 alone would need 1.85

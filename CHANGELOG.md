@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-28
+
 ### Added
 
 - Papers can be marked many at a time: hold Ctrl (Command on a Mac) on the graph and drag to draw a lasso, which
@@ -23,6 +25,7 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A community whose papers hold composed characters (a fraction such as "½", a ligature, "™") no longer stops its
   Agree / disagree and Table sections with "the engine failed unexpectedly".
 - The red line a section shows when it could not be read has the section's own margins.
+- A community's citation note says "1 work ... is in your library", not "are".
 
 ## [0.2.1] - 2026-11-28
 
@@ -377,7 +380,8 @@ The first release.
   limited to the sites papers are published on.
 - PDFs are fetched only from the publishers' hosts, with a size and time limit.
 
-[Unreleased]: https://github.com/Patchoulis/Constellate/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/Patchoulis/Constellate/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/Patchoulis/Constellate/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Patchoulis/Constellate/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Patchoulis/Constellate/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Patchoulis/Constellate/releases/tag/v0.1.0
