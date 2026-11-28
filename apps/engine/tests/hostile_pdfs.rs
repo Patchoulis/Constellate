@@ -147,7 +147,7 @@ fn garbage() -> Vec<u8> {
 }
 
 fn read(bytes: &[u8]) -> Result<Vec<String>, Unreadable> {
-    read_in_child(Path::new(ENGINE), bytes, TIME_LIMIT)
+    read_in_child(Path::new(ENGINE), bytes, TIME_LIMIT).map(|reading| reading.pages)
 }
 
 fn still_reads_a_paper() {
@@ -158,7 +158,7 @@ fn still_reads_a_paper() {
 #[test]
 fn a_paper_is_read_in_a_child_as_it_is_read_here() {
     let bytes = paper(&["Introduction", "We study what a child process reads from a paper."]);
-    assert_eq!(read(&bytes).unwrap(), read_in_this_process(&bytes).unwrap());
+    assert_eq!(read_in_child(Path::new(ENGINE), &bytes, TIME_LIMIT).unwrap(), read_in_this_process(&bytes).unwrap());
     assert_eq!(read(&paper(&[])), Err(Unreadable::NoText));
     assert!(matches!(read(b"<html>not a paper</html>"), Err(Unreadable::Damaged(_) | Unreadable::Unhandled)));
 }
@@ -221,7 +221,7 @@ fn several_children_read_side_by_side_each_its_own_paper() {
 fn what_reading_in_a_child_costs() {
     fn time(label: &str, pdfs: &[Vec<u8>]) {
         let started = Instant::now();
-        let here: Vec<_> = pdfs.iter().map(|bytes| read_in_this_process(bytes)).collect();
+        let here: Vec<_> = pdfs.iter().map(|bytes| read_in_this_process(bytes).map(|reading| reading.pages)).collect();
         let in_process = started.elapsed();
         let started = Instant::now();
         let children: Vec<_> = pdfs.iter().map(|bytes| read(bytes)).collect();

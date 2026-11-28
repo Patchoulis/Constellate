@@ -7,6 +7,10 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- A paper's Text tab shows its figures and tables as the paper draws them, each above its caption, with a link to
+  its page in the PDF; a click shows it larger. The words drawn inside a figure, which used to stand in the text as
+  "Figure or table text" lines, are folded under it. Where a figure is on its page is found by fixed rules from what
+  the PDF draws, not by a model; a figure the rules cannot place soundly is left out and its caption stands alone.
 - A run's graph comes up with a short constellation intro when the run is opened: its papers appear as stars, gather
   into their communities, a constellation is traced through each community, and the communities then light up in
   their colours and are named. A click, a key, the wheel or a drag ends it at once. Settings, under "The graph", say
@@ -131,6 +135,16 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A reviewer's sentence with a formula in it is shown as one sentence: the pieces of the formula no longer each take
   a line of their own in Weaknesses and Claims.
 - The graph no longer disappears while a side panel is dragged wider or narrower.
+- Formulas in a paper's Text tab read as the paper writes them: "(k, u) ∈ [K] × [H − 1]" and "ϵ ≤ √(1 − γ)/K", not
+  "pk, uq P rKs ˆ rH ´ 1s". The symbols of TeX's math fonts (mathabx, Computer Modern and the fonts made to their
+  layout) used to come out as accented letters. A formula whose characters the PDF does not say at all is shown as
+  a note linking to its page instead of wrong characters, and is never quoted or matched as evidence. A displayed
+  sum keeps its limits with it rather than splitting into a line each, superscripts and subscripts are shown raised
+  and lowered rather than run into the line ("CoTgt d"), and a fraction reads as one ("(1)/(|T|)", not "1 |T|"),
+  with the formula it is in kept in one piece. Papers read before are read again, on this
+  computer and for free, when next opened. Answers already paid for are kept and shown as before, their quotes
+  checked against the new text as always; only an explanation of a passage, which cannot be shown to be about the
+  same words now, and a citation's reading whose sentence now reads differently, are asked again when wanted.
 
 ## [0.2.2] - 2026-11-28
 

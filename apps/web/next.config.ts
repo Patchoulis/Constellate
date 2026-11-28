@@ -9,6 +9,10 @@ const nextConfig: NextConfig = {
 	images: { unoptimized: true },
 	outputFileTracingExcludes: { "*": ["node_modules/sharp/**", "node_modules/@img/**"] },
 	outputFileTracingRoot: path.join(import.meta.dirname, "..", ".."),
+	// the frame figures are drawn in carries pdf.js and its worker, read from the package when it is first asked for
+	outputFileTracingIncludes: {
+		"/figure-frame": ["../../node_modules/pdfjs-dist/build/pdf.min.mjs", "../../node_modules/pdfjs-dist/build/pdf.worker.min.mjs"],
+	},
 	// /api and /auth are the engine's: proxy.ts forwards them, with the engine's token added on that hop alone (a
 	// rewrite here could not add it). A forwarded request may wait as long as the engine takes to fetch a PDF from
 	// its publisher (180 s, apps/engine/README.md) and a little more; Next's own limit is 30 s.

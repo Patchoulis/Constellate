@@ -5,8 +5,10 @@ import { AlignLeft, FileText, MessageSquareText, Sparkles } from "lucide-react";
 import type { Passage, PassageAddress, PassageKind } from "@rp/contracts";
 import { PassageExplainer, type AskedOnce, type ExplainMode } from "@/components/features/explanation/passage-explainer";
 import { Button } from "@/components/ui/button";
+import { FigureView, useFigureRenderer } from "@/components/reader/figure-view";
+import { SectionBoundary } from "@/components/ui/section-boundary";
 import { api } from "@/lib/net/api";
-import { highlighted, pages, passageAt } from "@/lib/reader/evidence";
+import { highlighted, pages, passageAt, scriptParts, unreadableParts, whollyUnreadable } from "@/lib/reader/evidence";
 import { explainable, placeKey, resolveSelection, selectionQuote } from "@/lib/features/explanation/explanation";
 import { noReadablePdf } from "@/lib/reader/no-pdf";
 import { ready, useAsync } from "@/lib/use-async";
@@ -23,18 +25,66 @@ const KIND_NOTE: Partial<Record<PassageKind, { label: string; note: string }>> =
 
 const PART_NAME = { appendix: "Appendix", checklist: "Checklist" } as const;
 
-function Shown({ passage, mark, markRef }: { passage: Passage; mark: PassageAddress | null; markRef?: React.Ref<HTMLElement> }) {
+/**
+ * The paper's words of `text`, with a quiet note where the PDF draws a formula whose characters it does not say:
+ * the note, drawn by CSS and not text of the page (a selection is the paper's words only), opens the PDF at the
+ * page when it can be shown.
+ */
+function WithNotes({ text, page, onOpenPdf }: { text: string; page: number; onOpenPdf?: (page: number) => void }) {
+	const label = `a formula that could not be read as text: see it in the paper, page ${page}`;
+	const note = "mx-0.5 font-ui text-xs text-muted-foreground italic select-none before:content-[attr(data-label)]";
+	return unreadableParts(text).map((words, at) =>
+		words !== null ? (
+			<Fragment key={at}>
+				{scriptParts(words).map((part, index) =>
+					part.script === "sup" ? (
+						<sup key={index}>{part.text}</sup>
+					) : part.script === "sub" ? (
+						<sub key={index}>{part.text}</sub>
+					) : (
+						<Fragment key={index}>{part.text}</Fragment>
+					),
+				)}
+			</Fragment>
+		) : onOpenPdf ? (
+			<button
+				key={at}
+				type="button"
+				data-label={`[${label}]`}
+				aria-label={label}
+				title={`Open the PDF at page ${page}`}
+				className={cn(note, "underline decoration-dotted underline-offset-2 hover:text-foreground")}
+				onClick={() => onOpenPdf(page)}
+			/>
+		) : (
+			<span key={at} data-label={`[${label}]`} aria-label={label} className={note} />
+		),
+	);
+}
+
+function Shown({
+	passage,
+	mark,
+	markRef,
+	onOpenPdf,
+}: {
+	passage: Passage;
+	mark: PassageAddress | null;
+	markRef?: React.Ref<HTMLElement>;
+	onOpenPdf?: (page: number) => void;
+}) {
 	const parts = highlighted(passage, mark);
+	const page = passage.address.page;
 	const text = parts ? (
 		<>
-			{parts[0]}
+			<WithNotes text={parts[0]} page={page} onOpenPdf={onOpenPdf} />
 			<mark ref={markRef} className="rounded-sm bg-primary/20 px-0.5 text-foreground select-text">
-				{parts[1]}
+				<WithNotes text={parts[1]} page={page} onOpenPdf={onOpenPdf} />
 			</mark>
-			{parts[2]}
+			<WithNotes text={parts[2]} page={page} onOpenPdf={onOpenPdf} />
 		</>
 	) : (
-		passage.text
+		<WithNotes text={passage.text} page={page} onOpenPdf={onOpenPdf} />
 	);
 	if (passage.kind === "heading" || passage.kind === "title") {
 		return <h3 className={cn("mt-4 font-semibold text-balance", passage.kind === "title" ? "text-xl" : "text-base")}>{text}</h3>;
@@ -113,6 +163,10 @@ export function PaperText({
 	const mark = at?.address ?? (found?.found ? found.address : null);
 	const markRef = useRef<HTMLElement | null>(null);
 	const passages = ready(read);
+	// where figures are drawn, by their caption; the words drawn inside one that is shown are folded under it
+	const figureAt = new Map((passages?.figures ?? []).map((figure) => [figure.caption, figure]));
+	const folded = new Set((passages?.figures ?? []).flatMap((figure) => figure.inside));
+	const renderer = useFigureRenderer(api.pdfUrl(id), figureAt.size > 0);
 	const target = passages && mark ? passageAt(passages, mark) : -1;
 
 	// the passages explained before; an engine without the route has no explaining at all
@@ -260,8 +314,19 @@ export function PaperText({
 				const previous = passages.passages[index - 1];
 				const newPage = !previous || previous.address.page !== passage.address.page;
 				const newPart = passage.part in PART_NAME && previous?.part !== passage.part;
-				const canExplain = enabled && explainable(passage.kind);
+				const canExplain = enabled && explainable(passage.kind) && !whollyUnreadable(passage);
 				const kept = explained.has(placeKey(passage.address));
+				const figure = figureAt.get(index);
+				// words drawn inside a figure that is shown: folded under it, unless a citation points at them
+				const hidden = folded.has(index) && index !== target;
+				const shown = (
+					<Shown
+						passage={passage}
+						mark={index === target ? mark : null}
+						markRef={index === target ? markRef : undefined}
+						onOpenPdf={onOpenPdf}
+					/>
+				);
 				return (
 					<Fragment key={`${passage.address.page}-${passage.address.start}`}>
 						{newPart && (
@@ -287,7 +352,7 @@ export function PaperText({
 								<span className="h-px flex-1 bg-border" />
 							</div>
 						)}
-						<div data-passage={index} className="group relative">
+						<div data-passage={index} className={cn("group relative", hidden && "hidden")}>
 							{canExplain && (
 								<button
 									type="button"
@@ -301,7 +366,20 @@ export function PaperText({
 									{kept ? <MessageSquareText /> : <Sparkles />}
 								</button>
 							)}
-							<Shown passage={passage} mark={index === target ? mark : null} markRef={index === target ? markRef : undefined} />
+							{figure ? (
+								// a figure that stops while drawn says so in its place; the reader and the rest of the text go on
+								<SectionBoundary what={figure.label} keys={[figure]}>
+									<FigureView
+										figure={figure}
+										renderer={renderer}
+										inside={figure.inside.map((at) => passages.passages[at]?.text ?? "")}
+										onOpenPdf={onOpenPdf}
+										caption={shown}
+									/>
+								</SectionBoundary>
+							) : (
+								shown
+							)}
 						</div>
 						{chosen?.index === index && (
 							<div data-explainer>

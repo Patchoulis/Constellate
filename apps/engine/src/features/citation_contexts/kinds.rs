@@ -526,11 +526,23 @@ pub fn classify(
 
 /// The reading kept under `key` for `case`, when it is a reading of that case's sentence (one kept for another
 /// sentence at the same place, of a PDF replaced since, is none: it is asked again).
+///
+/// Failing that, a reading kept while the paper was read by an older passages reader, when it kept its sentence
+/// and that sentence is this case's word for word: the key is the sentence's place, which a new reader may give
+/// other words.
 pub fn kept_reading(library: &Library, key: &AnswerKey, case: &Case) -> Result<Option<Classified>, LibraryError> {
-    Ok(library
+    let current = library
         .kept::<Classified>(Feature::CitationKinds, key)?
         .map(|kept| kept.answer)
-        .filter(|reading| reading.sentence.as_ref().is_none_or(|sentence| *sentence == case.context.sentence)))
+        .filter(|reading| reading.sentence.as_ref().is_none_or(|sentence| *sentence == case.context.sentence));
+    if current.is_some() {
+        return Ok(current);
+    }
+    Ok(library
+        .kept_older::<Classified>(Feature::CitationKinds, key)?
+        .into_iter()
+        .map(|kept| kept.answer)
+        .find(|reading| reading.sentence.as_deref() == Some(case.context.sentence.as_str())))
 }
 
 /// The reading kept for each case (by `chosen`), in the cases' order.
@@ -967,6 +979,33 @@ baseline.\nAfter: It wins.\n"
             )
             .unwrap();
         assert_eq!(kept_readings(&library, &Chosen::claude(MODEL), &before).unwrap(), [Some(old)]);
+    }
+
+    #[test]
+    fn a_reading_kept_under_an_older_reader_counts_only_for_the_same_sentence_word_for_word() {
+        let (_folder, library) = library();
+        let cases = cases()[30..31].to_vec();
+        let case = &cases[0];
+        let key = sentence_key(&Chosen::claude(MODEL), &case.citing, &case.cited, &case.context.address);
+        let older = AnswerKey::from_stored(
+            crate::library::AnswerKey::older_for_tests(&key).first().cloned().expect("an older reader"),
+        );
+        let keep = |reading: &Classified| {
+            let slot =
+                Slot { feature: Feature::CitationKinds, key: older.clone(), subject: Subject::Paper("arith".into()) };
+            library.keep(&slot, MODEL, PROMPT, reading).unwrap();
+        };
+        // kept for other words at that place: not this sentence's reading
+        keep(&Classified { kind: CitationKind::Uses, quote: "q".into(), sentence: Some("Another sentence.".into()) });
+        assert_eq!(kept_reading(&library, &key, case).unwrap(), None);
+        // kept without its sentence: nothing proves it is this one's
+        keep(&Classified { kind: CitationKind::Uses, quote: "q".into(), sentence: None });
+        assert_eq!(kept_reading(&library, &key, case).unwrap(), None);
+        // kept for these very words: found, without being asked again
+        let same =
+            Classified { kind: CitationKind::Uses, quote: "q".into(), sentence: Some(case.context.sentence.clone()) };
+        keep(&same);
+        assert_eq!(kept_reading(&library, &key, case).unwrap(), Some(same));
     }
 
     #[test]

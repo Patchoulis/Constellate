@@ -407,6 +407,13 @@ pub fn prompt(
     if Question::garbled(target.kind) {
         asked.push_str(" Its text was extracted from the PDF and may be garbled.");
     }
+    if around.contains(crate::text::pdf::UNREADABLE) {
+        asked.push_str(&format!(
+            " Each {} in the text stands for a formula that could not be read from the PDF: do not guess what it \
+             says.",
+            crate::text::pdf::UNREADABLE
+        ));
+    }
     if !found.is_empty() {
         asked.push_str(
             "\n\nWhere the paper introduces the symbols and terms the passage uses (found by a program; \

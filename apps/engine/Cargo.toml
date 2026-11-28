@@ -38,6 +38,11 @@ ndarray = { version = "0.17", features = ["rayon"] }
 ort = { version = "=2.0.0-rc.15", features = ["half"] }
 # text out of a paper's PDF, for its reference list: pure Rust, so it builds anywhere with no system library
 pdf-extract = "0.12"
+# what a PDF's fonts say their codes are, read before pdf-extract reads the text (src/text/pdf/fonts): a font's
+# ToUnicode map and its embedded CFF program's encoding and glyph names. Both are the crates pdf-extract itself
+# reads them with, at its versions, so nothing new is built or shipped.
+adobe-cmap-parser = "0.4"
+cff-parser = "0.2"
 # the engine's one pool of computing threads (src/threads.rs): rows of the similarity graph, papers read in
 # batches, communities cut side by side; tokenizers uses it already
 rayon = "1"
