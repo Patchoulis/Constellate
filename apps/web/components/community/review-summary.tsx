@@ -7,10 +7,21 @@
  * user opened, and says so on hover.
  */
 import { useState } from "react";
-import { Star } from "lucide-react";
-import type { FieldFigures, RankedPaper, ReviewTheme, Scale, Signer, VenueRatings } from "@rp/contracts";
+import { ChevronDown, ChevronRight, Star } from "lucide-react";
+import type {
+	FieldFigures,
+	PaperReviews,
+	PaperTheme,
+	RankedPaper,
+	ReviewTheme,
+	Scale,
+	Signer,
+	ThemeSource,
+	VenueRatings,
+} from "@rp/contracts";
 import { MathText } from "@/components/math-text";
 import { Heading, RowButton } from "@/components/ui/button";
+import { commonPoints, commonPointsLine, firstPoints, reviewersSharing, SHOWN_POINTS } from "@/lib/community/common-points";
 import { api } from "@/lib/net/api";
 import { ready, useAsync } from "@/lib/use-async";
 import { count, normalised, onScale, percent, scaleName, spreadPoints, starsOf } from "@/lib/units";
@@ -101,6 +112,8 @@ export function PaperReviewFigures({ id, version }: { id: string; version?: unkn
 				.map((field) => (
 					<FieldLine key={field.field} figures={field} />
 				))}
+			{/* keyed by the paper the reviews are of: another paper's start collapsed, however this one was left */}
+			<CommonPoints key={kept.paper_id} reviews={kept} />
 		</div>
 	);
 }
@@ -168,37 +181,162 @@ function Ranked({
 	);
 }
 
-function Theme({ theme, titles, onOpenPaper }: { theme: ReviewTheme; titles: Record<string, string>; onOpenPaper: (id: string) => void }) {
+/**
+ * A term reviewers use when they praise or criticise, and how many use it; opened, the sentences they use it in,
+ * each in the reviewer's own words with who said it. `caption` names where a sentence is; `onSource`, when given,
+ * makes each sentence a button.
+ */
+function ThemeRow({
+	term,
+	figure,
+	note,
+	sources,
+	more,
+	caption,
+	onSource,
+	size = "text-sm",
+}: {
+	term: string;
+	figure: string;
+	note: string;
+	sources: ThemeSource[];
+	more: number;
+	caption: (source: ThemeSource) => React.ReactNode;
+	onSource?: (source: ThemeSource) => void;
+	size?: string;
+}) {
 	const [open, setOpen] = useState(false);
 	return (
-		<li>
+		<li className="min-w-0">
 			<button
 				type="button"
-				className="flex w-full items-baseline gap-2 rounded-md px-2 py-1 text-left hover:bg-accent"
+				aria-expanded={open}
+				className="flex w-full min-w-0 items-baseline gap-2 rounded-md px-2 py-1 text-left hover:bg-accent"
 				onClick={() => setOpen(!open)}
-				title={`In ${percent(theme.share)} of these sections, ${theme.distinctiveness.toFixed(1)} times as often as in the reviews' sections overall. Counted from the words of the reviews, without a language model. ${REVIEWS_NOTE}`}
+				title={note}
 			>
-				<span className="flex-1 font-sans text-sm">{theme.term}</span>
-				<span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-					{count(theme.sections, "section")} of {count(theme.papers, "paper")}
-				</span>
+				<span className={`min-w-0 flex-1 font-sans wrap-anywhere text-foreground ${size}`}>{term}</span>
+				<span className="shrink-0 text-xs text-muted-foreground tabular-nums">{figure}</span>
 			</button>
 			{open && (
-				<ul className="ml-2 flex flex-col gap-1 border-l pl-2">
-					{theme.sources.map((source) => (
-						<li key={`${source.paper_id}:${source.note}:${source.span.start}`}>
-							<RowButton className="flex-col gap-0.5" onClick={() => onOpenPaper(source.paper_id)} title="Open the paper">
-								<span className="font-sans text-sm text-foreground">&ldquo;{source.excerpt}&rdquo;</span>
-								<span className="text-xs text-muted-foreground">
-									{signerName(source.signer)}, {source.section}: <MathText>{titles[source.paper_id] ?? source.paper_id}</MathText>
-								</span>
-							</RowButton>
-						</li>
-					))}
-					{theme.more_sources > 0 && <li className="px-2 text-xs text-muted-foreground">and {count(theme.more_sources, "more review")}</li>}
+				<ul className="ml-2 flex min-w-0 flex-col gap-1 border-l pl-2">
+					{sources.map((source) => {
+						const said = (
+							<>
+								<span className={`font-sans wrap-anywhere text-foreground ${size}`}>&ldquo;{source.excerpt}&rdquo;</span>
+								<span className="text-xs wrap-anywhere text-muted-foreground">{caption(source)}</span>
+							</>
+						);
+						return (
+							<li key={`${source.paper_id}:${source.note}:${source.span.start}`} className="min-w-0">
+								{onSource ? (
+									<RowButton className="flex-col gap-0.5" onClick={() => onSource(source)} title="Open the paper">
+										{said}
+									</RowButton>
+								) : (
+									<div className="flex min-w-0 flex-col gap-0.5 px-2 py-1">{said}</div>
+								)}
+							</li>
+						);
+					})}
+					{more > 0 && <li className="px-2 text-xs text-muted-foreground">and {count(more, "more review")}</li>}
 				</ul>
 			)}
 		</li>
+	);
+}
+
+function Theme({ theme, titles, onOpenPaper }: { theme: ReviewTheme; titles: Record<string, string>; onOpenPaper: (id: string) => void }) {
+	return (
+		<ThemeRow
+			term={theme.term}
+			figure={`${count(theme.sections, "section")} of ${count(theme.papers, "paper")}`}
+			note={`In ${percent(theme.share)} of these sections, ${theme.distinctiveness.toFixed(1)} times as often as in the reviews' sections overall. Counted from the words of the reviews, without a language model. ${REVIEWS_NOTE}`}
+			sources={theme.sources}
+			more={theme.more_sources}
+			caption={(source) => (
+				<>
+					{signerName(source.signer)}, {source.section}: <MathText>{titles[source.paper_id] ?? source.paper_id}</MathText>
+				</>
+			)}
+			onSource={(source) => onOpenPaper(source.paper_id)}
+		/>
+	);
+}
+
+const COMMON_NOTE =
+	"Counted by a program from the words of the reviews, not a model's reading: a term at least two of this paper's reviewers use where they praise (or criticise) it, most widely shared first.";
+
+/** One tone of a paper's points in common: the first few, and a control to show the rest. */
+function CommonTone({ heading, points }: { heading: string; points: PaperTheme[] }) {
+	const [all, setAll] = useState(false);
+	if (points.length === 0) return null;
+	const { shown, hidden } = firstPoints(points, all);
+	return (
+		<div className="flex min-w-0 flex-col">
+			<Heading className="px-2 pb-0.5">{heading}</Heading>
+			<ul className="flex min-w-0 flex-col">
+				{shown.map((point) => (
+					<ThemeRow
+						key={point.term}
+						term={point.term}
+						figure={reviewersSharing(point)}
+						note={`${reviewersSharing(point)} use it here, ${point.distinctiveness.toFixed(1)} times as often as in this paper's review sections overall. ${COMMON_NOTE} ${REVIEWS_NOTE}`}
+						sources={point.sources}
+						more={point.more_sources}
+						caption={(source) => `${signerName(source.signer)}, ${source.section}`}
+						size="text-xs"
+					/>
+				))}
+			</ul>
+			{points.length > SHOWN_POINTS && (
+				<button
+					type="button"
+					className="self-start px-2 py-0.5 text-xs text-muted-foreground underline-offset-2 hover:underline"
+					onClick={() => setAll(!all)}
+				>
+					{all ? `Show the first ${SHOWN_POINTS}` : `Show all ${count(points.length, "point")} (${hidden} more)`}
+				</button>
+			)}
+		</div>
+	);
+}
+
+/**
+ * What a paper's reviewers commonly praise and criticise, under its scores: collapsed behind a toggle (each paper
+ * starts collapsed: its parent gives it the paper's id as key), or one muted line when there is nothing to show.
+ */
+function CommonPoints({ reviews }: { reviews: PaperReviews }) {
+	const [open, setOpen] = useState(false);
+	const points = commonPoints(reviews.figures.reviews, reviews.praise, reviews.criticism);
+	if (points.kind === "no_reviews") return null;
+	const line = commonPointsLine(points);
+	const note = `${COMMON_NOTE} ${REVIEWS_NOTE}`;
+	if (points.kind !== "some")
+		return (
+			<p className="pt-1 text-muted-foreground/80 italic" title={note}>
+				{line}
+			</p>
+		);
+	return (
+		<div className="flex min-w-0 flex-col pt-1">
+			<button
+				type="button"
+				aria-expanded={open}
+				className="-mx-1 flex min-w-0 items-start gap-1 rounded-md px-1 py-0.5 text-left hover:bg-accent"
+				onClick={() => setOpen(!open)}
+				title={note}
+			>
+				{open ? <ChevronDown className="mt-px size-3 shrink-0" /> : <ChevronRight className="mt-px size-3 shrink-0" />}
+				<span className="min-w-0 flex-1 wrap-anywhere">{line}</span>
+			</button>
+			{open && (
+				<div className="-mx-2 flex max-h-72 min-w-0 flex-col gap-2 overflow-x-hidden overflow-y-auto pt-1">
+					<CommonTone heading="Common praise" points={reviews.praise} />
+					<CommonTone heading="Common criticism" points={reviews.criticism} />
+				</div>
+			)}
+		</div>
 	);
 }
 

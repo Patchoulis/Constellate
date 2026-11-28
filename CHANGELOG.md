@@ -5,6 +5,13 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Under a paper's review scores in the reader, "Common praise and criticism" lists what at least two of its reviewers
+  praise and criticise alike, each point with how many of the reviewers make it ("3 of 4 reviewers"); open a point
+  to read the reviewers' own sentences, each with who wrote it. It is counted from the words of the reviews, with no
+  language model and nothing sent anywhere, and works for reviews read before this version too.
+
 ### Changed
 
 - A paper's review scores are shown as stars out of each scale's own number of points (4 of 5 stars, 2.8 of 4) with
