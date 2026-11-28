@@ -399,11 +399,11 @@ function Detail({
 			<Block title="Nearest to the mean embedding">
 				{community.nearest_to_centroid.map((paper) => (
 					<div key={paper.id} className="flex items-start gap-1">
-						<RowButton className="items-baseline gap-2" onClick={() => onOpenPaper(paper.id)}>
-							<span className="min-w-0 flex-1 font-sans text-base leading-snug [overflow-wrap:anywhere]">
+						<RowButton className="flex-col items-start gap-0.5" onClick={() => onOpenPaper(paper.id)}>
+							<span className="w-full min-w-0 font-sans text-base leading-snug [overflow-wrap:anywhere]">
 								<MathText>{paper.title}</MathText>
 							</span>
-							<span className="shrink-0 text-xs text-muted-foreground tabular-nums" title={SIMILARITY_NOTE}>
+							<span className="text-xs text-muted-foreground tabular-nums" title={SIMILARITY_NOTE}>
 								{similarity(paper.cosine)}
 							</span>
 						</RowButton>
