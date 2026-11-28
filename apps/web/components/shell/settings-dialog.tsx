@@ -96,14 +96,14 @@ function GraphChoices() {
 				</span>
 				<Segmented options={INTRO_CHOICES} value={prefs.intro} onChange={(intro) => setPrefs({ intro })} />
 			</div>
-			<div className="flex items-start justify-between gap-4 py-1.5">
+			<div className="flex flex-col gap-1.5 py-1.5">
 				<span className="flex flex-col gap-0.5">
 					<span className="text-sm text-foreground">Background stars</span>
 					<span className="text-xs text-muted-foreground">
 						Tiny faint stars behind the graph, the same as the sky shown while a run loads. They move only a little as the graph is moved.
 					</span>
 				</span>
-				<Segmented className="shrink-0" options={STAR_CHOICES} value={prefs.stars} onChange={(stars) => setPrefs({ stars })} />
+				<Segmented className="self-start" options={STAR_CHOICES} value={prefs.stars} onChange={(stars) => setPrefs({ stars })} />
 			</div>
 		</section>
 	);
