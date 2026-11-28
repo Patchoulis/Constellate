@@ -20,6 +20,15 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Tiny faint stars behind the graph, the same as the loading sky's, so loading, the intro and the graph are one sky.
   They move only a little as the graph is moved and keep their size when it is zoomed. Settings, under "The graph",
   choose how many: off, a few (the default) or many.
+- Many marked papers are shown as a highlighted region: they keep their colours with a soft halo, every other paper
+  is dimmed and the community glows are turned down, in place of a ring, links and a name for each. A marked paper
+  hovered or opened still shows its ring, links and name. Settings, under "The graph", choose from how many marked
+  papers shown this is used (25 at first); fewer get their rings as before. The hint above the graph says when it is.
+- Under Marked, each marked paper can be hidden on the graph or shown again (the graph button), and its links drawn
+  or not (the eye); "Show all", "Hide all", "Links on" and "Links off" do it for all of them, and the eye beside the
+  Marked tab shows or hides them all. A hidden mark is drawn as any paper but stays marked, listed, and in the Table
+  and Agree / disagree. A paper marked is always shown with its links; Settings say whether marking one also shows
+  the hidden marks again. The setting "Show marked papers on the graph" is gone: the eye and the list do it.
 
 ### Changed
 

@@ -17,7 +17,7 @@ import { ANSWER_OWNER, GraphColouringContext, colouringStep, type GraphColouring
 import { useMarks } from "@/lib/community/marks";
 import type { Job } from "@/lib/shell/use-job";
 import { ready, useAsync } from "@/lib/use-async";
-import { setPrefs, usePrefs } from "@/lib/ui/prefs";
+import { usePrefs } from "@/lib/ui/prefs";
 import { useResizable } from "@/lib/ui/use-resizable";
 import { stepLine } from "@/lib/shell/run-step";
 import { SkyLoading } from "@/components/graph/sky-loading";
@@ -127,18 +127,19 @@ export function Workspace({
 	const [intro] = useState(() => introPlays(prefs.intro, opening, prefersLessMotion()));
 	// the loading sky, fading out over the intro's first stars once the graph is there
 	const [skyLeft, setSkyLeft] = useState(!intro);
-	// Marking while the marks are hidden shows them again, where the person chose that (Settings).
+	// A paper marked is always shown with its links (lib/community/marks.ts); where the person chose that (Settings),
+	// marking one also shows every hidden mark again.
 	const { showMarksOnMark } = prefs;
 	const marks = useMemo(() => {
-		const show = () => showMarksOnMark && setPrefs({ marksShown: true });
+		const showAll = () => showMarksOnMark && stored.hidden.size > 0 && stored.setShown([...stored.hidden], true);
 		return {
 			...stored,
 			toggle: (id: string) => {
-				if (!stored.has(id)) show();
+				if (!stored.has(id)) showAll();
 				stored.toggle(id);
 			},
 			addMany: (ids: readonly string[]) => {
-				show();
+				showAll();
 				stored.addMany(ids);
 			},
 		};
@@ -230,11 +231,13 @@ export function Workspace({
 						selectedPaper={paper}
 						ratings={ratings}
 						marked={marks.marked}
-						marksShown={prefs.marksShown}
+						hiddenMarks={marks.hidden}
+						marksWithoutLinks={marks.noLinks}
 						selectKey={prefs.selectKey}
 						goTo={goTo}
 						intro={intro}
 						stars={prefs.stars}
+						regionFrom={prefs.regionFrom}
 						onPickPaper={openPaper}
 						onMarkPaper={marks.toggle}
 						onMarkPapers={marks.addMany}
@@ -286,8 +289,6 @@ export function Workspace({
 					onOpenPaper={openPaper}
 					marks={marks}
 					markedPapers={markedPapers}
-					marksShown={prefs.marksShown}
-					onMarksShown={(marksShown) => setPrefs({ marksShown })}
 					onGoToPaper={goToPaper}
 					onNamed={run.reload}
 					title={title ?? name}

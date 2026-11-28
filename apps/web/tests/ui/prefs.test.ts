@@ -49,7 +49,7 @@ test("a key is named as it is written on the keyboard in front of the person", (
 });
 
 test("the choices come back from storage as they were written", () => {
-	const chosen: Prefs = { selectKey: "alt", marksShown: false, showMarksOnMark: false, intro: "never", stars: "many" };
+	const chosen: Prefs = { selectKey: "alt", showMarksOnMark: false, intro: "never", stars: "many", regionFrom: 60 };
 	assert.deepEqual(parsePrefs(serialisePrefs(chosen)), chosen);
 	assert.deepEqual(parsePrefs(serialisePrefs(INITIAL_PREFS)), INITIAL_PREFS);
 });
@@ -69,13 +69,15 @@ test("whatever else is in storage reads as the initial choices, one choice at a 
 	])
 		assert.deepEqual(parsePrefs(text), INITIAL_PREFS, String(text));
 	// one choice that cannot be trusted does not take the others with it
-	const stored = JSON.stringify({ version: 1, prefs: { selectKey: "hyper", marksShown: false, showMarksOnMark: "no", other: 1 } });
-	assert.deepEqual(parsePrefs(stored), { ...INITIAL_PREFS, marksShown: false });
+	const stored = JSON.stringify({
+		version: 1,
+		prefs: { selectKey: "hyper", marksShown: false, showMarksOnMark: "no", stars: "lots", other: 1 },
+	});
+	assert.deepEqual(parsePrefs(stored), INITIAL_PREFS);
 });
 
-test("the initial choices are a key every keyboard has, with marks shown", () => {
+test("the initial choices are a key every keyboard has, marking shows hidden marks again", () => {
 	assert.ok(SELECT_KEYS.includes(INITIAL_PREFS.selectKey));
-	assert.equal(INITIAL_PREFS.marksShown, true);
 	assert.equal(INITIAL_PREFS.showMarksOnMark, true);
 });
 
@@ -89,7 +91,13 @@ test("the constellation intro plays whenever a run is opened unless chosen other
 	}
 	// choices stored before the intro existed keep what they were, and the intro gets its initial choice
 	const older = JSON.stringify({ version: 1, prefs: { selectKey: "alt", marksShown: false, showMarksOnMark: true } });
-	assert.deepEqual(parsePrefs(older), { selectKey: "alt", marksShown: false, showMarksOnMark: true, intro: "opened", stars: "few" });
+	assert.deepEqual(parsePrefs(older), {
+		selectKey: "alt",
+		showMarksOnMark: true,
+		intro: "opened",
+		stars: "few",
+		regionFrom: 25,
+	});
 	assert.equal(parsePrefs(null).intro, "opened", "nothing stored");
 });
 
@@ -103,6 +111,17 @@ test("Settings offers every choice of the intro once, in words, the initial one 
 		["Whenever a run is opened", "When a run is made", "Never"],
 	);
 	assert.equal(INTRO_CHOICES[0].value, INITIAL_PREFS.intro);
+});
+
+test("marked papers become a region from 25 unless chosen otherwise, within 5 to 500, and anything else reads as 25", () => {
+	assert.equal(INITIAL_PREFS.regionFrom, 25);
+	for (const regionFrom of [5, 40, 500]) assert.equal(parsePrefs(serialisePrefs({ ...INITIAL_PREFS, regionFrom })).regionFrom, regionFrom);
+	const stored = (regionFrom: unknown) => parsePrefs(JSON.stringify({ version: 1, prefs: { intro: "never", regionFrom } }));
+	assert.equal(stored(2).regionFrom, 5, "below the bounds: the least");
+	assert.equal(stored(10_000).regionFrom, 500, "above them: the most");
+	assert.equal(stored(30.4).regionFrom, 30);
+	for (const regionFrom of ["40", null, true, [], {}, "many"])
+		assert.deepEqual(stored(regionFrom), { ...INITIAL_PREFS, intro: "never" }, JSON.stringify(regionFrom));
 });
 
 test("background stars start at a few, every choice is kept, and anything else reads as a few", () => {
@@ -138,14 +157,14 @@ test("a change of the choices is laid over the ones remembered and remembered wi
 	const before = global.window;
 	try {
 		global.window = { localStorage: working };
-		setPrefs({ marksShown: false });
-		assert.deepEqual(parsePrefs(kept.get(PREFS_KEY)), { ...INITIAL_PREFS, selectKey: "shift", marksShown: false });
+		setPrefs({ regionFrom: 40 });
+		assert.deepEqual(parsePrefs(kept.get(PREFS_KEY)), { ...INITIAL_PREFS, selectKey: "shift", regionFrom: 40 });
 		// storage switched off: the change still holds in the window, and is written with the next one
 		global.window = { localStorage: refusing };
 		setPrefs({ showMarksOnMark: false });
 		global.window = { localStorage: working };
 		setPrefs({ selectKey: "alt" });
-		assert.deepEqual(parsePrefs(kept.get(PREFS_KEY)), { ...INITIAL_PREFS, selectKey: "alt", marksShown: false, showMarksOnMark: false });
+		assert.deepEqual(parsePrefs(kept.get(PREFS_KEY)), { ...INITIAL_PREFS, selectKey: "alt", regionFrom: 40, showMarksOnMark: false });
 	} finally {
 		global.window = before;
 	}

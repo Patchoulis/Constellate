@@ -4,6 +4,7 @@ import { useState } from "react";
 import {
 	ArrowDownWideNarrow,
 	ArrowUpNarrowWide,
+	ChartNetwork,
 	ChevronLeft,
 	Eye,
 	EyeOff,
@@ -32,7 +33,7 @@ import { ResizeHandle } from "@/components/ui/resize-handle";
 import { CITED_BY_TITLE, CITES_TITLE, NOT_COUNTABLE, citedByFigure, citedByOf, citesFigure, citesOf } from "@/lib/reader/citations";
 import { CommunityCitationFigures, RunCitationFigures } from "@/components/community/citation-figures";
 import { communityLabel, type CommunityNode } from "@/lib/community/community";
-import type { MarksOf } from "@/lib/community/marks";
+import { markedListLine, type MarksOf } from "@/lib/community/marks";
 import { useResizable } from "@/lib/ui/use-resizable";
 import { cn, hsl } from "@/lib/utils";
 import { UNIQUENESS_NOTE, uniqueness } from "@/lib/community/community";
@@ -119,29 +120,38 @@ export interface MarkedPaper {
 	community?: CommunityNode;
 }
 
-/** The run's marked papers, newest first: open one, unmark one, or unmark them all after saying so twice. */
-function MarkedList({
-	papers,
-	onOpen,
-	onRemove,
-	onClear,
-}: {
-	papers: MarkedPaper[];
-	onOpen: (id: string) => void;
-	onRemove: (id: string) => void;
-	onClear: () => void;
-}) {
+/** A marked paper's "on the graph" switch: a graph, struck through when the paper is hidden there. */
+function GraphSwitchIcon({ on }: { on: boolean }) {
+	return (
+		<span className="relative inline-flex">
+			<ChartNetwork />
+			{!on && <span aria-hidden className="absolute top-1/2 left-[-2px] h-px w-[calc(100%+4px)] -rotate-45 bg-current" />}
+		</span>
+	);
+}
+
+const SHOWN_TITLE =
+	"Shown on the graph: its ring, its links and its name. Click to hide it there; it stays marked, listed here, and in the Table and Agree / disagree, which use every marked paper, hidden or not.";
+const HIDDEN_TITLE =
+	"Hidden on the graph: drawn there as an ordinary paper. It stays marked, listed here, and in the Table and Agree / disagree. Click to show it again.";
+
+/** The run's marked papers, newest first: open one, show or hide it on the graph, draw its links or not, unmark one,
+ *  or unmark them all after saying so twice. */
+function MarkedList({ papers, marks, onOpen }: { papers: MarkedPaper[]; marks: MarksOf; onOpen: (id: string) => void }) {
 	const [confirming, setConfirming] = useState(false);
+	const all = papers.map(({ node }) => node.id);
+	const hidden = all.filter((id) => marks.hidden.has(id)).length;
+	const linksOff = all.filter((id) => marks.noLinks.has(id)).length;
 	return (
 		<>
-			<div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
+			<div className="flex min-h-11 shrink-0 flex-wrap items-center gap-x-1 gap-y-1 border-b px-3 py-1.5">
 				{confirming ? (
 					<>
 						<span className="min-w-0 flex-1 text-xs">Unmark all {count(papers.length, "paper")}? This cannot be undone.</span>
 						<Button
 							variant="outline"
 							onClick={() => {
-								onClear();
+								marks.clear();
 								setConfirming(false);
 							}}
 						>
@@ -153,10 +163,55 @@ function MarkedList({
 					</>
 				) : (
 					<>
-						<span className="min-w-0 flex-1 px-1 text-xs text-muted-foreground tabular-nums">
-							{count(papers.length, "paper")} marked in this run, newest first
+						<span className="min-w-0 basis-full px-1 text-xs text-muted-foreground tabular-nums">
+							{markedListLine(papers.length, hidden, linksOff)}
 						</span>
-						<Button variant="ghost" title="Unmark every paper of this run (asks first)" onClick={() => setConfirming(true)}>
+						<Button
+							variant="ghost"
+							className="h-7 px-2"
+							title="Show every marked paper on the graph"
+							disabled={hidden === 0}
+							onClick={() => marks.setShown(all, true)}
+						>
+							<GraphSwitchIcon on />
+							Show all
+						</Button>
+						<Button
+							variant="ghost"
+							className="h-7 px-2"
+							title="Hide every marked paper on the graph: they stay marked and listed"
+							disabled={hidden === all.length}
+							onClick={() => marks.setShown(all, false)}
+						>
+							<GraphSwitchIcon on={false} />
+							Hide all
+						</Button>
+						<Button
+							variant="ghost"
+							className="h-7 px-2"
+							title="Draw the links of every marked paper shown on the graph"
+							disabled={linksOff === 0}
+							onClick={() => marks.setLinks(all, true)}
+						>
+							<Eye />
+							Links on
+						</Button>
+						<Button
+							variant="ghost"
+							className="h-7 px-2"
+							title="Draw no marked paper's links: their rings and names stay"
+							disabled={linksOff === all.length}
+							onClick={() => marks.setLinks(all, false)}
+						>
+							<EyeOff />
+							Links off
+						</Button>
+						<Button
+							variant="ghost"
+							className="h-7 px-2"
+							title="Unmark every paper of this run (asks first)"
+							onClick={() => setConfirming(true)}
+						>
 							<Trash2 />
 							Clear all
 						</Button>
@@ -164,28 +219,63 @@ function MarkedList({
 				)}
 			</div>
 			<ul className="min-h-0 flex-1 overflow-y-auto p-2">
-				{papers.map(({ node, community }) => (
-					<li key={node.id} className="flex items-start gap-1">
-						<RowButton className="flex-col gap-1" title="Open it in the reader and show it on the graph" onClick={() => onOpen(node.id)}>
-							<span className="font-sans text-base leading-snug">
-								<MathText>{node.title}</MathText>
-							</span>
-							{community && (
-								<span className="flex w-full min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-									<CommunityDot hue={community.hue} />
-									<span className="truncate">{communityLabel(community.community)}</span>
+				{papers.map(({ node, community }) => {
+					const shown = !marks.hidden.has(node.id);
+					const links = !marks.noLinks.has(node.id);
+					return (
+						<li key={node.id} className={cn("flex items-start gap-1", !shown && "text-muted-foreground")}>
+							<RowButton className="flex-col gap-1" title="Open it in the reader and show it on the graph" onClick={() => onOpen(node.id)}>
+								<span className="font-sans text-base leading-snug">
+									<MathText>{node.title}</MathText>
 								</span>
-							)}
-							<span className="flex flex-wrap items-center gap-1 empty:hidden">
-								<AcceptanceTag state={node.acceptance} term={node.acceptance_term} small />
-								{node.ai && <AiTag small />}
+								{community && (
+									<span className="flex w-full min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+										<CommunityDot hue={community.hue} />
+										<span className="truncate">{communityLabel(community.community)}</span>
+									</span>
+								)}
+								<span className="flex flex-wrap items-center gap-1 empty:hidden">
+									<AcceptanceTag state={node.acceptance} term={node.acceptance_term} small />
+									{node.ai && <AiTag small />}
+								</span>
+							</RowButton>
+							<span className="mt-1 flex shrink-0 items-center">
+								<Button
+									variant="ghost"
+									size="icon"
+									aria-pressed={shown}
+									aria-label={shown ? "Shown on the graph" : "Hidden on the graph"}
+									title={shown ? SHOWN_TITLE : HIDDEN_TITLE}
+									className={cn(shown ? "text-mark hover:text-mark" : "text-muted-foreground/60")}
+									onClick={() => marks.setShown([node.id], !shown)}
+								>
+									<GraphSwitchIcon on={shown} />
+								</Button>
+								<Button
+									variant="ghost"
+									size="icon"
+									aria-pressed={shown && links}
+									aria-label={links ? "Its links are drawn" : "Its links are not drawn"}
+									disabled={!shown}
+									title={
+										!shown
+											? "Its links are drawn only while it is shown on the graph: show it first."
+											: links
+												? "Its links to related papers are drawn. Click to draw only its ring and name; hovering it still shows its links."
+												: "Only its ring and name are drawn. Click to draw its links again."
+									}
+									className={cn(shown && links ? "text-foreground" : "text-muted-foreground/60")}
+									onClick={() => marks.setLinks([node.id], !links)}
+								>
+									{links ? <Eye /> : <EyeOff />}
+								</Button>
+								<Button variant="ghost" size="icon" title="Unmark this paper" onClick={() => marks.remove(node.id)}>
+									<X />
+								</Button>
 							</span>
-						</RowButton>
-						<Button variant="ghost" size="icon" className="mt-1" title="Unmark this paper" onClick={() => onRemove(node.id)}>
-							<X />
-						</Button>
-					</li>
-				))}
+						</li>
+					);
+				})}
 			</ul>
 		</>
 	);
@@ -353,8 +443,6 @@ export function CommunityPanel({
 	onOpenPaper,
 	marks,
 	markedPapers,
-	marksShown,
-	onMarksShown,
 	onGoToPaper,
 	onNamed,
 	title,
@@ -375,9 +463,6 @@ export function CommunityPanel({
 	marks: MarksOf;
 	/** the run's marked papers, newest first */
 	markedPapers: MarkedPaper[];
-	/** whether the marked papers are shown as marked on the graph, and the eye that changes it */
-	marksShown: boolean;
-	onMarksShown: (shown: boolean) => void;
 	/** open a paper and move the graph to it */
 	onGoToPaper: (id: string) => void;
 }) {
@@ -396,6 +481,8 @@ export function CommunityPanel({
 	const markedIds = markedPapers.map(({ node }) => node.id);
 	// in one order whatever order they were marked in: what the stances section is keyed and remembered by
 	const sortedMarked = [...markedIds].sort();
+	// the eye beside the tabs: pressed while any mark is shown on the graph; a click hides them all, or shows them all
+	const anyShown = markedIds.some((id) => !marks.hidden.has(id));
 	return (
 		<aside ref={ref} style={style} className="relative flex w-(--panel-size) shrink-0 flex-col border-l bg-card">
 			<ResizeHandle {...handle} />
@@ -406,21 +493,24 @@ export function CommunityPanel({
 					variant="ghost"
 					size="icon"
 					className="shrink-0"
-					aria-pressed={marksShown}
+					aria-pressed={anyShown}
+					disabled={markedIds.length === 0}
 					title={
-						marksShown
-							? "The marked papers are shown on the graph. Click to hide them there: they stay marked and listed here."
-							: "The marked papers are hidden on the graph. Click to show their rings and links again."
+						markedIds.length === 0
+							? "No paper is marked in this run"
+							: anyShown
+								? "Marked papers are shown on the graph. Click to hide them all there: they stay marked and listed under Marked, where each can be shown again."
+								: "Every marked paper is hidden on the graph. Click to show them all again."
 					}
-					onClick={() => onMarksShown(!marksShown)}
+					onClick={() => marks.setShown(markedIds, !anyShown)}
 				>
-					{marksShown ? <Eye /> : <EyeOff />}
+					{anyShown ? <Eye /> : <EyeOff />}
 				</Button>
 			</div>
 			{tab === "marked" ? (
 				markedPapers.length > 0 ? (
 					<>
-						<MarkedList papers={markedPapers} onOpen={onGoToPaper} onRemove={marks.remove} onClear={marks.clear} />
+						<MarkedList papers={markedPapers} marks={marks} onOpen={onGoToPaper} />
 						<div className="max-h-[60%] shrink-0 overflow-y-auto border-t pt-3">
 							{/* mounted afresh when the marked papers change: what it shows is for exactly these papers */}
 							<CommunityStances

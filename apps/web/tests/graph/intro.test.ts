@@ -18,7 +18,10 @@ import {
 	openingOf,
 	introProgress,
 	packConstellations,
+	paintGathering,
 	paperGathered,
+	TWINKLE_GROUPS,
+	twinkleGroup,
 	paperPlace,
 	tracedTo,
 	unitHash,
@@ -112,6 +115,64 @@ test("a paper waits for its turn, goes to its place, and is there by the end of 
 	assert.deepEqual(paperPlace(start, place, 0.5), { x: 100, y: -10 });
 	assert.ok(introFrame(BEATS.gather[1]).settled, "every paper is at its place once the beat has ended");
 	assert.ok(!introFrame(BEATS.gather[1] - 0.01).settled);
+});
+
+/** Papers in a 400 x 300 world box, a camera that fits it into a canvas, and pixels as large as the canvas. */
+function gathering(width: number, height: number, dpr: number) {
+	const points = Array.from({ length: 2000 }, (_, index) => ({ x: unitHash(index, 7) * 400, y: unitHash(index, 8) * 300 }));
+	const sizes = new Float32Array(points.length).fill(1);
+	const k = Math.min(width / 400, height / 300) * 0.9;
+	const camera = { x: (width - 400 * k) / 2, y: (height - 300 * k) / 2, k, dpr };
+	const pixels = { words: new Uint32Array(width * dpr * height * dpr), width: width * dpr, height: height * dpr };
+	return { points, sizes, camera, pixels, plan: introPlan(points.length) };
+}
+const lit = (words: Uint32Array) => words.filter((word) => word >>> 24 > 0).length;
+
+test("every paper's star is in the pixels and plainly visible at every moment of the gathering", () => {
+	const { points, sizes, camera, pixels, plan } = gathering(600, 400, 1.5);
+	const full = [1, 1, 1, 1];
+	for (const gathered of [0, 0.25, 0.5, 0.75, 0.95, 1]) {
+		const inside = paintGathering(pixels, plan, points, sizes, camera, 2, gathered, full, 0xffe2d6);
+		assert.equal(inside, points.length, `at ${gathered} of the beat`);
+		assert.ok(lit(pixels.words) > points.length, `at ${gathered}: stars of two by two pixels, a few overlapping`);
+		const strongest = pixels.words.reduce((most, word) => Math.max(most, word >>> 24), 0);
+		assert.equal(strongest, 255, "a star of a pixel or more is drawn at its full strength");
+	}
+	// a star smaller than a pixel is one pixel, fainter by its area, never gone
+	paintGathering(pixels, plan, points, sizes, camera, 0.5, 1, full, 0xffe2d6);
+	const faint = new Set(Array.from(pixels.words, (word) => word >>> 24).filter(Boolean));
+	assert.deepEqual([...faint], [Math.round(0.25 * 255)]);
+});
+
+test("pixels made again for a resized canvas hold every star, inside them, where the camera now puts it", () => {
+	const before = gathering(600, 400, 1.5);
+	paintGathering(before.pixels, before.plan, before.points, before.sizes, before.camera, 2, 0.5, [1, 1, 1, 1], 0xffffff);
+	// a panel dragged wider, and the page zoomed: the canvas is smaller and has another pixel ratio
+	for (const [width, height, dpr] of [
+		[380, 400, 1.5],
+		[600, 400, 2],
+		[1200, 300, 1],
+	]) {
+		const after = gathering(width, height, dpr);
+		const inside = paintGathering(after.pixels, after.plan, after.points, after.sizes, after.camera, 2, 0.5, [1, 1, 1, 1], 0xffffff);
+		assert.equal(inside, after.points.length, `${width} x ${height} at ${dpr}x`);
+		// once gathered, a star is where the camera puts its paper
+		paintGathering(after.pixels, after.plan, after.points, after.sizes, after.camera, 1, 1, [1, 1, 1, 1], 0xffffff);
+		const { x, y, k } = after.camera;
+		const at = (point: { x: number; y: number }) =>
+			Math.round((point.y * k + y) * dpr - 0.5) * after.pixels.width + Math.round((point.x * k + x) * dpr - 0.5);
+		assert.ok(after.points.every((point) => after.pixels.words[at(point)] >>> 24 === 255));
+	}
+});
+
+test("a star's strength follows its twinkle group, and none is outside the pixels it is written into", () => {
+	const { points, sizes, camera, pixels, plan } = gathering(300, 200, 1);
+	paintGathering(pixels, plan, points, sizes, camera, 1, 1, [0.2, 0.4, 0.6, 0.8], 0xffffff);
+	const strengths = new Set(Array.from(pixels.words, (word) => word >>> 24).filter(Boolean));
+	for (const strength of strengths) assert.ok([51, 102, 153, 204].includes(strength), String(strength));
+	assert.equal(pixels.words.length, pixels.width * pixels.height);
+	for (const index of [0, 1, 2, 3])
+		assert.equal(twinkleGroup(plan, index), Math.min(TWINKLE_GROUPS - 1, Math.floor(plan.twinkle[index] * 4)));
 });
 
 test("a traced line is drawn one segment after another", () => {

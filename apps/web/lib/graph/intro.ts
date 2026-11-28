@@ -132,6 +132,78 @@ export function paperGathered(gathered: number, delay: number): number {
 	return easeOut((gathered - delay) / (1 - delay));
 }
 
+/** The papers twinkle in this many groups, each in its own time. */
+export const TWINKLE_GROUPS = 4;
+
+/** Which twinkle group a paper is in. */
+export function twinkleGroup(plan: IntroPlan, index: number): number {
+	return Math.min(TWINKLE_GROUPS - 1, Math.floor(plan.twinkle[index] * TWINKLE_GROUPS));
+}
+
+/** Pixels the gathering stars are written into, one 32-bit word per pixel (red in the low byte), as large as the
+ *  canvas they are drawn on: made again whenever the canvas's size in device pixels changes. */
+export interface StarPixels {
+	words: Uint32Array;
+	width: number;
+	height: number;
+}
+
+/** The camera, as the renderer has it: a world point (wx, wy) is at ((wx * k + x) * dpr, (wy * k + y) * dpr) in device
+ *  pixels. */
+export interface StarCamera {
+	x: number;
+	y: number;
+	k: number;
+	dpr: number;
+}
+
+/**
+ * Write every paper's star into `pixels`, `gathered` of the way through the gathering beat: from where it started
+ * (its share of the pixels' width and height) to its place under the camera. `side` is a star's side in device pixels
+ * before its paper's own size; a star smaller than a pixel is one pixel, fainter by its area. `groupAlpha` is how
+ * strong each twinkle group is, `colour` the stars' red, green and blue (red in the low byte). Clears the pixels
+ * first. Answers how many stars are inside them.
+ */
+export function paintGathering(
+	pixels: StarPixels,
+	plan: IntroPlan,
+	points: ArrayLike<Point>,
+	sizes: ArrayLike<number>,
+	camera: StarCamera,
+	side: number,
+	gathered: number,
+	groupAlpha: ArrayLike<number>,
+	colour: number,
+): number {
+	const { words, width, height } = pixels;
+	words.fill(0);
+	const { start, delay } = plan;
+	const { x: tx, y: ty, k, dpr } = camera;
+	let inside = 0;
+	for (let index = 0; index < points.length; index++) {
+		const along = paperGathered(gathered, delay[index]);
+		const point = points[index];
+		const sx = start[index * 2] * width;
+		const sy = start[index * 2 + 1] * height;
+		const x = sx + ((tx + point.x * k) * dpr - sx) * along;
+		const y = sy + ((ty + point.y * k) * dpr - sy) * along;
+		const size = side * sizes[index];
+		const cells = size < 1 ? 1 : Math.round(size);
+		const strength = (size < 1 ? size * size : 1) * groupAlpha[twinkleGroup(plan, index)];
+		const word = ((Math.round(Math.min(1, Math.max(0, strength)) * 255) << 24) | colour) >>> 0;
+		const left = Math.round(x - cells / 2);
+		const top = Math.round(y - cells / 2);
+		let drawn = false;
+		for (let row = Math.max(0, top); row < Math.min(height, top + cells); row++)
+			for (let column = Math.max(0, left); column < Math.min(width, left + cells); column++) {
+				words[row * width + column] = word;
+				drawn = true;
+			}
+		if (drawn) inside++;
+	}
+	return inside;
+}
+
 /** Where a paper is drawn: `along` (paperGathered) of the way from where it started to its place. */
 export function paperPlace(start: Point, place: Point, along: number): Point {
 	return { x: start.x + (place.x - start.x) * along, y: start.y + (place.y - start.y) * along };

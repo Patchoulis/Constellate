@@ -15,6 +15,7 @@ import { splitByOwner } from "@/lib/net/engine";
 import { SELECT_KEYS, selectKeyName, setPrefs, usePrefs, useSelectKeyName } from "@/lib/ui/prefs";
 import type { IntroWhen } from "@/lib/graph/intro";
 import type { StarField } from "@/lib/graph/sky";
+import { REGION_FROM, regionFromOf } from "@/lib/graph/mark-look";
 import { prefersLessMotion } from "@/lib/graph/glide";
 import { cn } from "@/lib/utils";
 
@@ -72,14 +73,8 @@ function GraphChoices() {
 				<Segmented className="shrink-0" options={keys} value={prefs.selectKey} onChange={(selectKey) => setPrefs({ selectKey })} />
 			</div>
 			<SwitchRow
-				label="Show marked papers on the graph"
-				hint="Their yellow rings, links and names. The eye beside the Marked tab does the same. Hidden marks stay marked and listed."
-				checked={prefs.marksShown}
-				onCheckedChange={(marksShown) => setPrefs({ marksShown })}
-			/>
-			<SwitchRow
-				label="Show marks again when a paper is marked"
-				hint="Marking a paper while the marks are hidden shows them. Off: marks stay hidden until the eye is clicked."
+				label="Show hidden marks again when a paper is marked"
+				hint="A paper you mark is always shown on the graph. On: marking one also shows every marked paper you hid there. Off: they stay hidden until shown again under Marked, or with the eye beside it."
 				checked={prefs.showMarksOnMark}
 				onCheckedChange={(showMarksOnMark) => setPrefs({ showMarksOnMark })}
 			/>
@@ -105,7 +100,50 @@ function GraphChoices() {
 				</span>
 				<Segmented className="self-start" options={STAR_CHOICES} value={prefs.stars} onChange={(stars) => setPrefs({ stars })} />
 			</div>
+			<RegionFrom value={prefs.regionFrom} />
 		</section>
+	);
+}
+
+/** From how many shown marked papers they are a highlighted region: typed freely, kept once it is a number, and put
+ *  within its bounds when the field is left. */
+function RegionFrom({ value }: { value: number }) {
+	const [typed, setTyped] = useState(String(value));
+	useEffect(() => setTyped(String(value)), [value]);
+	return (
+		<div className="flex items-start justify-between gap-4 py-1.5">
+			<span className="flex flex-col gap-0.5">
+				<Label htmlFor="region-from" className="text-sm text-foreground">
+					Show marked papers as a highlighted region from
+				</Label>
+				<span className="text-xs text-muted-foreground">
+					With this many marked papers shown or more, they keep their colours with a soft halo and every other paper is dimmed, in place of
+					a ring, links and a name for each. A marked paper hovered or opened still shows them. From {REGION_FROM.least} to{" "}
+					{REGION_FROM.most}.
+				</span>
+			</span>
+			<Input
+				id="region-from"
+				type="number"
+				inputMode="numeric"
+				min={REGION_FROM.least}
+				max={REGION_FROM.most}
+				step={1}
+				className="w-20 shrink-0 tabular-nums"
+				value={typed}
+				onChange={(event) => {
+					setTyped(event.target.value);
+					const number = Number(event.target.value);
+					if (event.target.value.trim() !== "" && number >= REGION_FROM.least && number <= REGION_FROM.most)
+						setPrefs({ regionFrom: regionFromOf(number) });
+				}}
+				onBlur={() => {
+					const kept = regionFromOf(typed);
+					setPrefs({ regionFrom: kept });
+					setTyped(String(kept));
+				}}
+			/>
+		</div>
 	);
 }
 
