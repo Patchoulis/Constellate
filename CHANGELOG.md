@@ -19,12 +19,32 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A paper's rating chips show stars too: each field's name with stars out of its conference's scale, and the score on
   hover ("3.8/4 Average Score"), with every reviewer's score and whether the scale is the conference's published one
   or assumed.
+- A second choice of language model, the model that reads papers: it fills tables, answers agree / disagree and
+  questions, and reads claims, weaknesses, passages to explain and citation kinds, while the first one keeps naming
+  communities and writing their overviews. A cheaper model can read papers while a stronger one names. It is chosen
+  from the same providers and models, with the same efforts, beside the cost shown in each of those sections, and in
+  Settings. Its menu also offers the default and "The same as the naming model". Answers already kept are kept for
+  the model that gave them: choosing that model again costs nothing.
+- When the two models differ, the sidebar says which one names and which one reads papers, each with its price.
+
+### Changed
+
+- On the Claude API, papers are now read by Claude Haiku 5.5 by default, also for anyone who never chose a model to
+  read them: tables, agree / disagree, questions, claims, weaknesses, explanations and citation kinds show what Haiku
+  would cost, and ask it once that is accepted. Answers already given by the naming model (such as Opus) are kept
+  and found again when "The same as the naming model" is chosen in the menu beside any of those estimates or in
+  Settings. With another provider, papers are read by the naming model unless another is chosen, as before.
+
 - Communities are ordered by "Uniqueness" in place of "Saturation" and "Tightness": how far a community's papers are,
   on average, from what the community is about (a cosine distance). Low means its papers all do much the same thing;
   high means the work in it is more varied.
 
 ### Fixed
 
+- In Settings, the language model menus light up and open only when the pointer is on them, not anywhere near the
+  field.
+- A reviewer's sentence with a formula in it is shown as one sentence: the pieces of the formula no longer each take
+  a line of their own in Weaknesses and Claims.
 - The graph no longer disappears while a side panel is dragged wider or narrower.
 
 ## [0.2.2] - 2026-11-28

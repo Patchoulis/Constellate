@@ -19,7 +19,7 @@ use std::fmt;
 use super::language::provider::{EffortControl, effort_for};
 use super::language::{Budget, Counting, Effort, Endpoint, Estimate, Limit, Planned, Pricing, Provider, Unavailable};
 use crate::library::{AnswerKey, Feature};
-use crate::settings::Settings;
+use crate::settings::{ModelRole, Settings};
 use crate::usage::Usd;
 
 /// The provider, model and effort the features ask with, and where.
@@ -30,6 +30,8 @@ pub struct Chosen {
     effort: Effort,
     /// Where it is asked, or why it cannot be: the provider's endpoint, which is [`Chosen::provider`]'s.
     endpoint: Result<Endpoint, Unavailable>,
+    /// Which choice of the settings it was read from: the naming model, or the one that reads papers.
+    role: ModelRole,
 }
 
 impl fmt::Debug for Chosen {
@@ -60,36 +62,61 @@ impl PartialEq for Chosen {
 pub struct NoModel(pub &'static str);
 
 /// The model shown with an estimate is no longer the one that would be asked.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("the model chosen in the settings is now {now}: look at its estimate before asking")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Changed {
     pub now: String,
+    pub role: ModelRole,
 }
 
+impl fmt::Display for Changed {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let which = match self.role {
+            ModelRole::Naming => "",
+            ModelRole::Reading => " to read papers",
+        };
+        write!(
+            formatter,
+            "the model chosen in the settings{which} is now {}: look at its estimate before asking",
+            self.now
+        )
+    }
+}
+
+impl std::error::Error for Changed {}
+
 impl Chosen {
-    /// The model the features ask: `settings`' provider (`wanted`, as read from them) unless `endpoint` is another
-    /// provider's (a test's fixed endpoint), the settings' model when it is that provider's, else the provider's first
-    /// model, and the settings' effort.
+    /// The model chosen for `role` ([`Settings::model_for`]): its provider (`wanted`, as read from the settings)
+    /// unless `endpoint` is another provider's (a test's fixed endpoint), its model when it is that provider's,
+    /// else the provider's first model, and its effort. The model that reads papers is the naming one until it is
+    /// chosen on its own.
     pub fn new(
+        role: ModelRole,
         endpoint: Result<Endpoint, Unavailable>,
         wanted: Provider,
         settings: &Settings,
     ) -> Result<Self, NoModel> {
+        let picked = settings.model_for(role);
         let provider = endpoint.as_ref().map_or(wanted, Endpoint::provider);
         let about = provider.about();
-        let set = settings.describe_model.trim();
-        let model = if settings.describe_provider == provider && !set.is_empty() {
+        let set = picked.model.trim();
+        let model = if picked.provider == provider && !set.is_empty() {
             set.to_owned()
         } else {
             // the settings' model is another provider's: never sent here
             about.models.first().map(|first| first.id.to_owned()).ok_or(NoModel(about.label))?
         };
-        Ok(Self::of(provider, &model, settings.describe_effort, endpoint))
+        Ok(Self { role, ..Self::of(provider, &model, picked.effort, endpoint) })
     }
 
-    /// `model` of `provider` at `effort` (as near as the model has it), asked at `endpoint`.
+    /// `model` of `provider` at `effort` (as near as the model has it), asked at `endpoint`, as the naming model.
     pub fn of(provider: Provider, model: &str, effort: Effort, endpoint: Result<Endpoint, Unavailable>) -> Self {
-        Self { provider, effort: nearest(provider, model, effort), model: model.to_owned(), endpoint }
+        let effort = nearest(provider, model, effort);
+        Self { provider, effort, model: model.to_owned(), endpoint, role: ModelRole::Naming }
+    }
+
+    /// Which of the settings' two choices it is: what a refusal names it by.
+    pub fn role(&self) -> ModelRole {
+        self.role
     }
 
     /// The Claude API's `model` at medium effort, with no endpoint: what the features' tests plan with.
@@ -150,7 +177,7 @@ impl Chosen {
         if provider.unwrap_or(Provider::Anthropic) == self.provider && model == self.model {
             Ok(())
         } else {
-            Err(Changed { now: self.to_string() })
+            Err(Changed { now: self.to_string(), role: self.role })
         }
     }
 }
@@ -304,24 +331,60 @@ mod tests {
     #[test]
     fn the_model_is_the_settings_one_for_its_provider_and_never_another_providers() {
         let openai = settings("openai", "gpt-6.2-astra", Effort::High);
-        let chosen = Chosen::new(Ok(endpoint(Provider::OpenAi)), Provider::OpenAi, &openai).unwrap();
+        let naming = ModelRole::Naming;
+        let chosen = Chosen::new(naming, Ok(endpoint(Provider::OpenAi)), Provider::OpenAi, &openai).unwrap();
         assert_eq!(
             (chosen.provider(), chosen.model(), chosen.effort()),
             (Provider::OpenAi, "gpt-6.2-astra", Effort::High)
         );
         // the settings name a Claude model, but OpenAI is where it would be asked: its own first model instead
         let claude = settings("anthropic", "claude-opus-5-5", Effort::Medium);
-        let fixed = Chosen::new(Ok(endpoint(Provider::OpenAi)), Provider::Anthropic, &claude).unwrap();
+        let fixed = Chosen::new(naming, Ok(endpoint(Provider::OpenAi)), Provider::Anthropic, &claude).unwrap();
         assert_eq!((fixed.provider(), fixed.model()), (Provider::OpenAi, "gpt-6.2-sol"));
         // no endpoint yet: the provider the settings want, priced as it is listed
-        let unset = Chosen::new(Err(Unavailable::NoKey), Provider::OpenAi, &openai).unwrap();
+        let unset = Chosen::new(naming, Err(Unavailable::NoKey), Provider::OpenAi, &openai).unwrap();
         assert_eq!((unset.provider(), unset.can_ask()), (Provider::OpenAi, false));
         // a provider that lists no model, with another provider's model in the settings: no model at all
-        let refused = Chosen::new(Ok(endpoint(Provider::Compatible)), Provider::Anthropic, &claude);
+        let refused = Chosen::new(naming, Ok(endpoint(Provider::Compatible)), Provider::Anthropic, &claude);
         assert_eq!(refused.unwrap_err(), NoModel("OpenAI-compatible endpoint"));
         let typed = settings("compatible", "qwen3:32b", Effort::Max);
-        let local = Chosen::new(Ok(endpoint(Provider::Compatible)), Provider::Compatible, &typed).unwrap();
+        let local = Chosen::new(naming, Ok(endpoint(Provider::Compatible)), Provider::Compatible, &typed).unwrap();
         assert_eq!((local.model(), local.pricing().on_this_computer), ("qwen3:32b", true));
+    }
+
+    #[test]
+    fn the_model_that_reads_papers_is_built_by_the_same_rules_and_falls_back_on_the_naming_one() {
+        let reading = ModelRole::Reading;
+        // never chosen on its own: the naming model, its effort and its endpoint
+        let openai = settings("openai", "gpt-6.2-astra", Effort::High);
+        let same = Chosen::new(reading, Ok(endpoint(Provider::OpenAi)), Provider::OpenAi, &openai).unwrap();
+        assert_eq!((same.provider(), same.model(), same.effort()), (Provider::OpenAi, "gpt-6.2-astra", Effort::High));
+        assert_eq!(same.role(), ModelRole::Reading);
+        // chosen on its own: its provider, model and effort, the naming model untouched
+        let cheaper = Settings {
+            reading_provider: Some(Provider::Compatible),
+            reading_model: Some("qwen3:32b".to_owned()),
+            reading_effort: Some(Effort::Low),
+            ..openai.clone()
+        };
+        let local = Chosen::new(reading, Ok(endpoint(Provider::Compatible)), Provider::Compatible, &cheaper).unwrap();
+        assert_eq!(
+            (local.provider(), local.model(), local.pricing().on_this_computer),
+            (Provider::Compatible, "qwen3:32b", true)
+        );
+        let naming =
+            Chosen::new(ModelRole::Naming, Ok(endpoint(Provider::OpenAi)), Provider::OpenAi, &cheaper).unwrap();
+        assert_eq!(naming.model(), "gpt-6.2-astra");
+        // the same rule as the naming model: another provider's endpoint asks its own first model, never this id
+        let elsewhere = Chosen::new(reading, Ok(endpoint(Provider::OpenAi)), Provider::Compatible, &cheaper).unwrap();
+        assert_eq!((elsewhere.provider(), elsewhere.model()), (Provider::OpenAi, "gpt-6.2-sol"));
+        // a refusal says which model it means
+        let refused = local.as_shown(Some(Provider::OpenAi), "gpt-6.2-astra").unwrap_err().to_string();
+        assert_eq!(
+            refused,
+            "the model chosen in the settings to read papers is now qwen3:32b of OpenAI-compatible endpoint: look at \
+             its estimate before asking"
+        );
     }
 
     #[test]

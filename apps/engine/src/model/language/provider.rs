@@ -303,10 +303,27 @@ pub struct About {
     pub docs: &'static str,
 }
 
+/// The model that reads papers by default (tables, agree / disagree, questions, claims, weaknesses, explanations,
+/// citation kinds) when the user chose none and the Claude API names communities: its newest Haiku, one of the
+/// models listed above (with its price). No other provider has a default of its own: one there could point at a
+/// model the user has not set up, so its papers are read by the naming model.
+pub const CLAUDE_READING_DEFAULT: &str = "claude-haiku-5-5";
+/// The effort it reads at by default: the settings' own default effort.
+pub const READING_DEFAULT_EFFORT: Effort = Effort::Medium;
+
 impl About {
     /// The model offered under `id`.
     pub fn model(&self, id: &str) -> Option<&'static Offered> {
         self.models.iter().find(|model| model.id == id)
+    }
+
+    /// The model that reads papers by default while this provider names communities, if it has one of its own
+    /// ([`CLAUDE_READING_DEFAULT`]); none: the naming model reads them.
+    pub fn reading_default(&self) -> Option<&'static Offered> {
+        match self.provider {
+            Provider::Anthropic => self.model(CLAUDE_READING_DEFAULT),
+            _ => None,
+        }
     }
 
     /// Whether `id` may be chosen: one listed, or, where ids may be typed, any plain id (letters, digits and
@@ -733,6 +750,18 @@ pub fn effort_for(asked: Effort, efforts: &[Effort]) -> Option<Effort> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_claude_apis_newest_haiku_reads_papers_by_default_and_no_other_provider_has_a_default() {
+        let anthropic = Provider::Anthropic.about();
+        let haikus: Vec<&str> =
+            anthropic.models.iter().map(|model| model.id).filter(|id| id.contains("haiku")).collect();
+        assert_eq!(haikus.first(), Some(&CLAUDE_READING_DEFAULT), "the first Haiku listed, the newest");
+        assert_eq!(anthropic.reading_default().map(|model| model.label), Some("Claude Haiku 5.5"));
+        for provider in Provider::ALL.iter().filter(|provider| **provider != Provider::Anthropic) {
+            assert!(provider.about().reading_default().is_none(), "{provider:?}");
+        }
+    }
 
     #[test]
     fn every_provider_has_its_own_row_found_by_its_id() {
