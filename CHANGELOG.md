@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-11-28
+
 ### Added
 
 - A paper's Text tab shows its figures and tables as the paper draws them, each above its caption, with a link to
@@ -521,7 +523,8 @@ The first release.
   limited to the sites papers are published on.
 - PDFs are fetched only from the publishers' hosts, with a size and time limit.
 
-[Unreleased]: https://github.com/Patchoulis/Constellate/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/Patchoulis/Constellate/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/Patchoulis/Constellate/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/Patchoulis/Constellate/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Patchoulis/Constellate/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Patchoulis/Constellate/compare/v0.1.0...v0.2.0

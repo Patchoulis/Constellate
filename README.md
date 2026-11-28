@@ -67,6 +67,18 @@ ANTHROPIC_API_KEY=...
 wins over the file. The key is read by the engine alone, never shown (Settings says only whether it is set), never
 written to a log, and never given to the interface or any page. Keep the file to yourself: it is a secret.
 
+### Update
+
+Download the newer release and install it the same way, over the one you have. Nothing needs to be uninstalled
+first, and your library, runs, settings and the embedding model are kept.
+
+- **Windows:** run the new `Constellate-Setup-x.y.z.exe`. It closes Constellate if it is open, replaces the program
+  and leaves `%LOCALAPPDATA%\Constellate` as it is. Open Constellate again from the Start menu or the desktop.
+- **Linux:** `sudo apt install ./Constellate-x.y.z-amd64.deb` replaces the installed version; an AppImage is
+  replaced by the new file. `~/.local/share/constellate` is not touched.
+
+What a newer version needs changed in your library it changes itself the first time it opens.
+
 ### Uninstall
 
 - **Windows:** Settings, Apps, Installed apps, Constellate, Uninstall. The uninstaller asks whether to also remove
