@@ -343,19 +343,57 @@ export interface Community {
 	citations?: CommunityCitations | null;
 }
 
-/** A community's citations, among the run's papers whose reference lists were read (engine analysis/citations.rs). */
+/**
+ * A community's citations, from the reference lists Constellate has read of the papers of the library (engine
+ * analysis/citations.rs). The splits are absent from figures saved before they were counted: such figures are
+ * "not counted yet" until `GET /api/runs/{name}/citations` counts them again.
+ */
 export interface CommunityCitations {
 	/** of its papers, how many have had their reference list read: `cites` is counted over these */
 	papers_read: number;
-	/** citations its papers receive from the run's read papers, inside the community and outside it (each citing
-	 *  and cited pair once) */
+	/** citations its papers receive from the read papers of the library, in the run or not (each citing and cited
+	 *  pair once); in figures saved before the splits, from the run's papers only */
 	cited_by: number;
 	/** of those, from its own papers */
 	cited_by_inside: number;
+	/** from the run's other papers */
+	cited_by_rest_of_run?: number | null;
+	/** from papers of the library that are not in the run; with the two above, adds up to `cited_by` */
+	cited_by_outside_run?: number | null;
 	/** distinct works its read papers cite, found or not */
 	cites: number;
-	/** of those, papers of the user's library */
+	/** of those, papers of the user's library: `cites_in_run` and `cites_outside_run` together */
 	cites_in_library: number;
+	/** papers of the run */
+	cites_in_run?: number | null;
+	/** papers of the library that are not in the run */
+	cites_outside_run?: number | null;
+	/** not in the library: on arXiv, and not found; the four add up to `cites` */
+	cites_on_arxiv?: number | null;
+	cites_unresolved?: number | null;
+}
+
+/** Every figure of `CommunityCitations`, each one counted. */
+export type CountedCitations = { [field in keyof CommunityCitations]-?: number };
+
+/** A community's figures as `GET /api/runs/{name}/citations` counts them, with its sub-communities'. */
+export interface CountedCommunity extends CountedCitations {
+	tree_path: string;
+	papers: number;
+	children: CountedCommunity[];
+}
+
+/**
+ * What a run and its communities cite and are cited (`GET /api/runs/{name}/citations`), counted from every
+ * reference list of the library Constellate has read. The run's own figures are its papers' as one group:
+ * `cited_by_inside` counts citations from the run's papers, `cited_by_rest_of_run` is 0.
+ */
+export interface RunCitations extends CountedCitations {
+	papers: number;
+	/** the papers of the library, and of those, how many have had their reference list read: whose citations are counted */
+	library_papers: number;
+	library_papers_read: number;
+	communities: CountedCommunity[];
 }
 
 /** What a reference was found to be. */
@@ -381,6 +419,9 @@ export interface CitationNeighbour {
 	confidence: ReferenceConfidence;
 	/** how many papers Constellate has read cite it */
 	cited_by: number;
+	/** is it a paper of the run asked about? null when no run was asked about, or it is not a paper of the library;
+	 *  absent from older engines */
+	in_run?: boolean | null;
 	/** the entry as written in the seed's reference list; null for a citing paper */
 	entry: string | null;
 }
@@ -405,13 +446,20 @@ export interface CitationNetwork {
 	totals: {
 		references: number;
 		references_in_library: number;
+		/** of those in the library, how many are papers of the run asked about, and how many are not (null when none
+		 *  was; absent from older engines) */
+		references_in_run?: number | null;
+		references_outside_run?: number | null;
 		references_on_arxiv: number;
 		references_unresolved: number;
+		/** read papers of the library that cite it, in the run asked about or not */
 		citations: number;
 		/** of those, how many are listed, the most cited first */
 		citations_shown: number;
 		/** of those, how many are papers of the run asked about (null when none was) */
 		citations_in_run: number | null;
+		/** and how many are papers of the library outside it (null when none was; absent from older engines) */
+		citations_outside_run?: number | null;
 	};
 	/** whose reference lists it comes from */
 	papers_read: number;
@@ -849,9 +897,16 @@ export interface Usage {
 	calls: number;
 	/** calls to a model whose price is not known: counted in tokens only, so `usd` is short by them */
 	unpriced_calls: number;
-	/** since the app was started; null as `usd` is */
-	session_usd: number | null;
-	session_calls: number;
+	/** spent on the run asked about (`?run=`): null when none was asked about, or as `usd` is. A run deleted keeps
+	 *  what it cost, and one made again under the same name goes on counting under it */
+	run_usd: number | null;
+	run_calls: number;
+	run_unpriced_calls: number;
+	/** the run's calls by what they were for */
+	run_purposes: Record<string, UsageEntry>;
+	/** the day the run's figure counts from, when calls were recorded before calls were counted by run (those name
+	 *  no run); null when every call recorded was counted by run, or no run was asked about */
+	run_counted_since: string | null;
 	models: Record<string, UsageEntry>;
 	/** what the calls were for: naming communities, overviews, ... */
 	purposes: Record<string, UsageEntry>;
@@ -868,6 +923,12 @@ export interface UsageEntry {
 	/** of the priced calls; null when none of its calls had a price, which is not a cost of 0 */
 	usd: number | null;
 	unpriced_calls: number;
+}
+
+/** In the body of a question about one paper: the run open in the interface, when the paper is read from inside
+ *  one, so that what the question costs is that run's (`Usage.run_usd`). A name that is no run's counts for no run. */
+export interface AskedFrom {
+	run?: string;
 }
 
 /**
@@ -1122,7 +1183,7 @@ export interface Critique {
 
 /** `POST /api/papers/<id>/critique`'s body: the model whose estimate was shown, and its worst case accepted (refused
  *  when asking would now cost more: the paper's text, its reviews or the model changed), or a budget of one's own. */
-export type CritiqueStart = ShownModel & (AcceptedCost | BudgetOf);
+export type CritiqueStart = ShownModel & (AcceptedCost | BudgetOf) & AskedFrom;
 
 /** `POST /api/papers/<id>/critique`: the job started, or nothing asked because the reading is kept. */
 export type CritiqueStarted = { outcome: "started"; job: number } | { outcome: "kept" };
@@ -1370,7 +1431,7 @@ export interface ExplanationRequest {
 
 /** `POST /api/papers/<id>/explanation`: the passage, and the model and worst case the reader was shown; the
  *  engine refuses when either changed since, so nothing is paid that was not shown. */
-export type ExplanationStart = ExplanationRequest & ShownModel & AcceptedCost;
+export type ExplanationStart = ExplanationRequest & ShownModel & AcceptedCost & AskedFrom;
 
 /** What is asked about a passage, from its kind (engine features/explanation/mod.rs). */
 export type ExplanationQuestion = "passage" | "equation" | "table" | "figure";
@@ -1625,7 +1686,7 @@ export interface ClaimsView {
 }
 
 /** `POST /api/papers/<id>/claims`: the most the calls may spend, and the model the estimate was shown for. */
-export type ClaimsStart = BudgetOf & ShownModel;
+export type ClaimsStart = BudgetOf & ShownModel & AskedFrom;
 
 /** `GET /api/runs/<run>/communities/<tree path>/claims/contested`: per paper mapped, its contested claims. */
 export interface ContestedClaims {

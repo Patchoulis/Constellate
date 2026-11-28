@@ -47,7 +47,7 @@ use crate::library::core::store::read_json;
 use crate::library::{AnswerKey, Feature, Library, Paper, Slot, Subject};
 use crate::model::batch::{self, Asking, BatchEstimate, Failure, IN_FLIGHT, Item, Outcome, Stopped};
 use crate::model::chosen::{Accepted, Chosen, Terms, budget};
-use crate::model::language::{Budget, Provider};
+use crate::model::language::{Budget, ForRun, Provider};
 
 /// The most marked papers one question may be about.
 pub const MOST_MARKED: usize = 2_000;
@@ -546,10 +546,11 @@ struct Came {
 
 /// Ask `items`, kept answers skipped, within `budget`. The job fails, with why, when the model could not be asked
 /// (a refused key, billing, the budget) or answered none of what was asked: the interface shows a failed job's
-/// error, not a finished one's log.
+/// error, not a finished one's log. What they cost is the run's (`run`): they are asked of its papers.
 fn ask_items<T>(
     engine: &Shared,
     library: &Library,
+    run: &str,
     chosen: &Chosen,
     items: &[Item<'_>],
     budget: &Budget,
@@ -559,7 +560,8 @@ where
     T: serde::de::DeserializeOwned + Serialize + Send + Clone,
 {
     let endpoint = chosen.endpoint().map_err(|why| why.to_string())?;
-    let asking = Asking { library, transport: &*engine.transport, endpoint, recorder: library, in_flight: IN_FLIGHT };
+    let recorder = ForRun::new(library, Some(run));
+    let asking = Asking { library, transport: &*engine.transport, endpoint, recorder: &recorder, in_flight: IN_FLIGHT };
     let outcomes = batch::ask_all::<T>(asking, items, budget, tracker).map_err(|error| error.to_string())?;
     let count = |wanted: fn(&Outcome<T>) -> bool| outcomes.iter().filter(|outcome| wanted(outcome)).count();
     let stopped = outcomes.iter().find_map(|outcome| match outcome {
@@ -662,7 +664,7 @@ fn ask(
         let library = worker.library().map_err(|error| error.to_string())?;
         tracker.log(&format!("Reading {} papers for: {question}", ids.len()));
         let items = stances::items(&prepared, &prompt, &key, &chosen, &schema);
-        let came = ask_items::<Said>(&worker, &library, &chosen, &items, &budget, tracker)?;
+        let came = ask_items::<Said>(&worker, &library, &owned_run, &chosen, &items, &budget, tracker)?;
         if came.answered > 0 {
             change_questions(&library, &owned_run, &scope, |kept| {
                 kept.unanswered.retain(|known| *known != question_id);
@@ -972,7 +974,7 @@ fn propose(engine: &Shared, run: &str, community: &str, body: ProposeBody) -> Re
         let prompt = stances::proposal_prompt();
         let schema = stances::proposal_schema();
         let items = proposal_slot_items(&records, &shared, &prompt, round, &chosen, &schema, subject.clone());
-        let came = ask_items::<Proposals>(&worker, &library, &chosen, &items, &budget, tracker)?;
+        let came = ask_items::<Proposals>(&worker, &library, &run, &chosen, &items, &budget, tracker)?;
         if let Some(why) = came.failing {
             return Err(why);
         }
@@ -1300,6 +1302,9 @@ pub(super) mod tests {
             assert_eq!(all.len() - sent, 2, "one call per paper");
             sent_to(&all[sent..], chosen);
             sent = all.len();
+            // agree / disagree in one of the run's communities is the run's cost
+            let (_, spent) = send(&router, "GET", "/api/usage?run=r1", None).await;
+            assert_eq!((spent["run_calls"].clone(), spent["calls"].clone()), (json!(sent), json!(sent)), "{spent}");
 
             let id = started["id"].as_str().unwrap();
             let (_, result) = send(&router, "GET", &format!("{C0}/{id}"), None).await;

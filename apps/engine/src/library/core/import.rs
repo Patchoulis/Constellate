@@ -635,6 +635,7 @@ impl Files {
             }
             let priced = totals.calls - totals.unpriced_calls;
             let call = |input_tokens, output_tokens, price_micros| Call {
+                run: None,
                 model,
                 purpose: "imported",
                 input_tokens,
@@ -914,6 +915,7 @@ mod tests {
         library.change_settings(json!({"max_links": 30}).as_object().unwrap()).unwrap();
         library
             .record_call(&Call {
+                run: None,
                 model: "m",
                 purpose: "p",
                 input_tokens: 1,

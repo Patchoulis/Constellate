@@ -373,6 +373,55 @@ pub const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX asking_by_time ON asking (asked_at);
     ",
+    // 15 (the library's citations linked once and kept, analysis/citations.rs LinkedLibrary): what changed since
+    r"
+    -- Raised by every write to the papers (what linking reads of them) and to the reference lists, so that what is
+    -- linked from them is brought up to date only when one changed, and only for what changed.
+    CREATE TABLE revisions (
+        subject  TEXT PRIMARY KEY CHECK (subject IN ('papers', 'paper_references')),
+        revision BIGINT NOT NULL
+    );
+    INSERT INTO revisions (subject, revision) VALUES ('papers', 0), ('paper_references', 0);
+    -- The revision of the reference lists at which this list was last written: read again, or looked up on arXiv.
+    ALTER TABLE paper_references ADD COLUMN revision BIGINT NOT NULL DEFAULT 0;
+    CREATE TRIGGER papers_added AFTER INSERT ON papers BEGIN
+        UPDATE revisions SET revision = revision + 1 WHERE subject = 'papers';
+    END;
+    CREATE TRIGGER papers_changed AFTER UPDATE OF id, title, authors, published, url, origin ON papers BEGIN
+        UPDATE revisions SET revision = revision + 1 WHERE subject = 'papers';
+    END;
+    CREATE TRIGGER papers_removed AFTER DELETE ON papers BEGIN
+        UPDATE revisions SET revision = revision + 1 WHERE subject = 'papers';
+    END;
+    CREATE TRIGGER paper_references_added AFTER INSERT ON paper_references BEGIN
+        UPDATE revisions SET revision = revision + 1 WHERE subject = 'paper_references';
+        UPDATE paper_references SET revision = (SELECT revision FROM revisions WHERE subject = 'paper_references')
+            WHERE paper_id = NEW.paper_id;
+    END;
+    CREATE TRIGGER paper_references_changed AFTER UPDATE OF paper_id, reader, pdf_hash, content ON paper_references
+    BEGIN
+        UPDATE revisions SET revision = revision + 1 WHERE subject = 'paper_references';
+        UPDATE paper_references SET revision = (SELECT revision FROM revisions WHERE subject = 'paper_references')
+            WHERE paper_id = NEW.paper_id;
+    END;
+    CREATE TRIGGER paper_references_removed AFTER DELETE ON paper_references BEGIN
+        UPDATE revisions SET revision = revision + 1 WHERE subject = 'paper_references';
+    END;
+    ",
+    // 16: which run each call was made for, so that what a run cost can be told beside what was spent in all
+    r"
+    -- The name of the run a call was made for (making or naming it, a feature asked of it or of one of its
+    -- communities, a paper asked about from inside it). NULL for a call of no run (the detector's training), and for
+    -- every call recorded before this column was added: nothing kept says which run those were for.
+    ALTER TABLE spending ADD COLUMN run TEXT;
+    CREATE INDEX spending_by_run ON spending (run);
+    -- When calls began to be counted by run: a run's own figure counts from then on.
+    CREATE TABLE spending_runs_since (
+        id BIGINT PRIMARY KEY CHECK (id = 1),
+        at TEXT NOT NULL
+    );
+    INSERT INTO spending_runs_since (id, at) VALUES (1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+    ",
 ];
 
 /// Bring `connection` to the last of `migrations`. Refuses a database newer than the list.
@@ -463,6 +512,39 @@ mod tests {
             let library = Library::open(folder.path()).unwrap();
             assert!(library.paper("2601.00001").unwrap().is_some(), "from version {earlier}");
             assert_eq!(library.settings().unwrap()["max_links"], 8, "from version {earlier}");
+        }
+    }
+
+    /// The migration that counts calls by run (16): from before the citations' revisions (15) and from just after
+    /// them, an old row of the ledger is read as before, names no run, and the citations' revisions are there.
+    #[test]
+    fn calls_recorded_before_runs_were_counted_stay_in_the_total_and_name_no_run() {
+        assert_eq!(MIGRATIONS.len(), 16);
+        for earlier in [14, 15] {
+            let folder = tempfile::tempdir().unwrap();
+            {
+                let connection = Connection::open(folder.path().join(DATABASE)).unwrap();
+                migrate(&connection, &MIGRATIONS[..earlier]).unwrap();
+                connection
+                    .execute_batch(
+                        "INSERT INTO spending (at, model, purpose, calls, input_tokens, output_tokens, price_micros)
+                         VALUES ('2026-11-01T09:00:00Z', 'claude-opus-5-5', 'naming communities', 2, 10, 5, 1200);",
+                    )
+                    .unwrap();
+            }
+            let library = Library::open(folder.path()).unwrap();
+            assert_eq!(version_of(&library.connection()), 16, "from version {earlier}");
+            let spent = library.spending().unwrap();
+            assert_eq!((spent.total.calls, spent.total.price_micros), (2, 1200), "an old row is read as before");
+            let run: Option<String> =
+                library.connection().query_row("SELECT run FROM spending", [], |row| row.get(0)).unwrap();
+            assert_eq!(run, None, "nothing kept says which run it was for");
+            let since = library.runs_counted_since().unwrap();
+            assert!(since.as_str() > "2026-11-01T09:00:00Z", "{since}");
+            assert_eq!(library.run_spending("r1").unwrap().counted_since.as_deref(), Some(&since[..10]));
+            let revisions: i64 =
+                library.connection().query_row("SELECT COUNT(*) FROM revisions", [], |row| row.get(0)).unwrap();
+            assert_eq!(revisions, 2, "from version {earlier}: the citations' revisions are kept");
         }
     }
 

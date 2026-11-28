@@ -31,14 +31,32 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   would cost, and ask it once that is accepted. Answers already given by the naming model (such as Opus) are kept
   and found again when "The same as the naming model" is chosen in the menu beside any of those estimates or in
   Settings. With another provider, papers are read by the naming model unless another is chosen, as before.
+- The bottom of the sidebar says what was spent in all and on the run that is open: "USD 3.77 spent (USD 1.20 this
+  run)", in place of what was spent since the app was started. Both are kept in the library, so they read the same
+  after Constellate is closed and opened again. A run's figure counts making and naming it, everything asked of it
+  and of its communities, and what is asked about one of its papers while that run is open; training the AI-text
+  detector belongs to no run. Deleting a run takes nothing off the total, and a run made again under the same name
+  goes on counting. Money spent before this version was not recorded by run, so a run made earlier counts from the
+  day this version was first opened, and its tooltip says so.
 
 - Menu entries and warnings that stand alone begin with a capital: "Medium effort", "Set ANTHROPIC_API_KEY", "No filter".
 - Communities are ordered by "Uniqueness" in place of "Saturation" and "Tightness": how far a community's papers are,
   on average, from what the community is about (a cosine distance). Low means its papers all do much the same thing;
   high means the work in it is more varied.
+- "Cited by" now counts the citations from every paper of your library whose reference list Constellate has read,
+  not only from the papers of the run. A community's figures say how many come from its own papers, from the rest of
+  the run and from your library outside the run, and "Cites" says how many of the works cited are in the run, in
+  your library outside it, or not in your library (on arXiv or not found). The run's own figures are shown over the
+  list of communities when it is ordered by "Cited by" or "Cites". Papers that are not in your library still cannot
+  be counted, and the panel says so; no outside citation service is asked.
+- In a paper's Citations tab, a citing or cited paper of your library that is not in the run is tagged "Outside this
+  run", drawn faded in the picture, and opens in the reader like any other paper of your library.
+- The library's reference lists are linked once and kept while the app runs: only a list read since, or the
+  references a newly added paper might be, are linked again.
 
 ### Fixed
 
+- A community's details show its "Cited by" again, beside "Cites".
 - In Settings, the language model menus light up and open only when the pointer is on them, not anywhere near the
   field.
 - In a narrow communities panel, the "Overview: methods, findings, directions" button wraps onto a second line

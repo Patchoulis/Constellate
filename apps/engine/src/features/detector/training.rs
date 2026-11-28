@@ -694,6 +694,12 @@ mod tests {
         assert_eq!(Kind::ALL.map(|kind| mirrors.iter().any(|mirror| mirror.kind == kind)), [true, true]);
         let spending = setup.library.spending().unwrap();
         assert_eq!(spending.purposes[PURPOSE].calls, generated as i64, "recorded in the ledger with its purpose");
+        let of_a_run: i64 = setup
+            .library
+            .connection()
+            .query_row("SELECT COUNT(*) FROM spending WHERE run IS NOT NULL", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(of_a_run, 0, "the detector's training is no run's cost");
 
         let trained = super::super::model(&setup.library).unwrap().unwrap();
         let report = &trained.report;

@@ -1,16 +1,21 @@
-//! The citation network around one paper, from the reference lists of the papers Constellate has read
-//! ([`crate::analysis::citations`]).
+//! The citation network around one paper, and what a run and its communities cite and are cited, from the
+//! reference lists of the papers of the library Constellate has read ([`crate::analysis::citations`]).
 //!
 //! ```text
-//! GET  /api/papers/{id}/citations[?run=R]    the network around the paper, from the lists read so far; with R,
-//!                                             how many of the papers citing it are of run R
+//! GET  /api/papers/{id}/citations[?run=R]    the network around the paper, from the lists read so far, its
+//!                                             citing papers from the whole library; with R, which of its
+//!                                             neighbours are papers of run R and how many
 //!                                             ([`CitationNetwork`]); seed_state "not_read" until its own list is
 //! POST /api/papers/{id}/references[?run=R]   read the paper's reference list from its PDF (fetched first when it
 //!                                             is not kept), look the works it cites that are not in the library
 //!                                             up on arXiv, and answer the network
+//! GET  /api/runs/{run}/citations             what the run and each of its communities cite and are cited
+//!                                             ([`RunCitations`]): citations from inside a community, from the rest
+//!                                             of the run and from the library outside it, counted apart
 //! ```
 //!
-//! The GET reads nothing and asks no one: it links the kept lists to the library as it is now. The POST reads the
+//! The GETs read nothing and ask no one: they count from the kept lists linked to the library as it is now, linked
+//! once and kept ([`Linking`]). The POST reads the
 //! list once per PDF and version of the reader ([`crate::library::papers::references`]: a second POST reads nothing), and
 //! asks arXiv about at most [`MOST_LOOKUPS`] entries, at arXiv's one pace (first come, first served with the PDFs
 //! and listings the engine fetches: [`crate::sources::polite::ARXIV_PACE`]), never about an entry it asked about
@@ -22,10 +27,10 @@
 //! a program may fetch it from, 502 when its source refused or could not be reached, 422 when the PDF cannot be
 //! read.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Condvar, LazyLock, Mutex, PoisonError};
-use std::time::Duration;
+use std::sync::{Condvar, LazyLock, Mutex, PoisonError, RwLock, RwLockReadGuard};
+use std::time::{Duration, SystemTime};
 
 use axum::Json;
 use axum::extract::rejection::QueryRejection;
@@ -36,14 +41,17 @@ use axum::routing::{MethodRouter, get, post};
 use serde::Deserialize;
 use url::Url;
 
-use super::reviews::papers_of;
-use crate::analysis::citations::{CitationNetwork, Linker, LookupsStopped, network};
-use crate::api::routes::{ApiError, Shared, on_the_side};
+use super::reviews::{papers_of, tree_of};
+use crate::analysis::citations::{
+    CitationNetwork, LinkedLibrary, Linker, LookupsStopped, RunCitations, community_citations, network,
+};
+use crate::api::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::library::papers::references::{
-    Arxiv, KeptReferences, Looked, ReferencesReading, Stopped, look_up, to_look_up,
+    Arxiv, KeptReferences, Looked, ReferencesReading, Revisions, Stopped, look_up, to_look_up,
 };
 use crate::library::{Library, LibraryError};
 use crate::papers::pdf::PdfOutcome;
+use crate::pipeline::results::files;
 use crate::sources::arxiv::citations;
 use crate::sources::{Fetch, Limits, any_https, get_following};
 
@@ -93,7 +101,11 @@ impl Drop for Claim<'_> {
 
 /// The routes of this module, for [`crate::api::routes::table`].
 pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
-    vec![("/api/papers/{id}/citations", get(citations_of)), ("/api/papers/{id}/references", post(read_references))]
+    vec![
+        ("/api/papers/{id}/citations", get(citations_of)),
+        ("/api/papers/{id}/references", post(read_references)),
+        ("/api/runs/{run}/citations", get(run_citations)),
+    ]
 }
 
 #[derive(Deserialize)]
@@ -143,19 +155,76 @@ fn run_papers(engine: &Shared, run: Option<&str>) -> Result<Option<HashSet<Strin
     Ok(run.map(|run| papers_of(engine, run, None)).transpose()?.map(|ids| ids.into_iter().collect()))
 }
 
-/// The network around `seed`, from every reference list kept, linked to the library's `linker` as it is now.
+/// The library's reference lists linked ([`LinkedLibrary`]), kept for as long as the engine runs, and each run's
+/// figures counted from them.
+///
+/// A request first asks the library how far its papers and lists have moved ([`Library::citation_revisions`]: two
+/// numbers); when neither moved, nothing is read or linked. When one did, the stamps of the lists are read (no list),
+/// the papers only when they moved, and only the lists new or changed since ([`LinkedLibrary::update`]). A run's figures are
+/// counted again only when the linking moved or the run's files were written since.
+#[derive(Default)]
+pub struct Linking {
+    kept: RwLock<Kept>,
+    runs: Mutex<HashMap<String, Counted>>,
+}
+
+#[derive(Default)]
+struct Kept {
+    library: LinkedLibrary,
+    /// The library's revisions it was brought up to, none before the first request.
+    at: Option<Revisions>,
+}
+
+/// A run's figures, and what they were counted from.
+struct Counted {
+    from: RunFrom,
+    figures: RunCitations,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RunFrom {
+    linked: u64,
+    graph: Option<SystemTime>,
+    communities: Option<SystemTime>,
+}
+
+impl Linking {
+    /// The library linked as it is now: brought up to date first, with what changed alone.
+    fn linked(&self, library: &Library) -> Result<RwLockReadGuard<'_, Kept>, ApiError> {
+        let now = library.citation_revisions()?;
+        if self.kept.read().unwrap_or_else(PoisonError::into_inner).at != Some(now) {
+            let mut kept = self.kept.write().unwrap_or_else(PoisonError::into_inner);
+            // another request may have brought it up to date meanwhile
+            if kept.at != Some(now) {
+                let at = kept.at;
+                let papers = (at.map(|at| at.papers) != Some(now.papers)).then(|| library.link_papers()).transpose()?;
+                // the stamps are read whenever anything moved (they are small, no list is read): a paper removed
+                // takes its list with it
+                let stamps = Some(library.reference_list_stamps()?);
+                kept.library.update(papers, stamps, |wanted| library.reference_lists_of(wanted))?;
+                kept.at = Some(now);
+            }
+        }
+        Ok(self.kept.read().unwrap_or_else(PoisonError::into_inner))
+    }
+}
+
+/// When a file was last written, if it is there.
+fn written(path: &std::path::Path) -> Option<SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
+}
+
+/// The network around `seed`, from every reference list kept, linked to the library as it is now.
 fn network_now(
+    engine: &Shared,
     library: &Library,
-    linker: &Linker,
     seed: &str,
     run: Option<&HashSet<String>>,
 ) -> Result<CitationNetwork, ApiError> {
-    let kept = library.every_kept_reference_list()?;
-    let read = linker.read_all(kept.into_iter().map(|(id, list)| (id, list.references())).collect());
+    let kept = engine.citations.linked(library)?;
     Ok(network(
         seed,
-        linker,
-        &read,
+        &kept.library,
         run,
         chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::now()).date_naive(),
     ))
@@ -165,8 +234,32 @@ fn network_of(engine: &Shared, seed: &str, run: Option<&str>) -> Result<Citation
     let library = engine.library()?;
     library.paper(paper_id(seed)?)?.ok_or(ApiError::NotFound)?;
     let run = run_papers(engine, run)?;
-    let papers = library.link_papers()?;
-    network_now(&library, &Linker::new(&papers), seed, run.as_ref())
+    network_now(engine, &library, seed, run.as_ref())
+}
+
+/// What run `run` and its communities cite and are cited, from every reference list kept: counted once per
+/// change of the linking or of the run.
+fn run_figures(engine: &Shared, run: &str) -> Result<RunCitations, ApiError> {
+    let library = engine.library()?;
+    let kept = engine.citations.linked(&library)?;
+    let folder = engine.data.join("runs").join(one_name(run)?);
+    let from = RunFrom {
+        linked: kept.library.revision(),
+        graph: written(&folder.join(files::GRAPH)),
+        communities: written(&folder.join(files::COMMUNITIES)),
+    };
+    let mut runs = engine.citations.runs.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(counted) = runs.get(run).filter(|counted| counted.from == from) {
+        return Ok(counted.figures.clone());
+    }
+    let (papers, tree) = tree_of(engine, run)?;
+    let figures = community_citations(&kept.library, &papers, &tree);
+    runs.insert(run.to_owned(), Counted { from, figures: figures.clone() });
+    Ok(figures)
+}
+
+async fn run_citations(State(engine): State<Shared>, Path(run): Path<String>) -> Result<Json<RunCitations>, ApiError> {
+    Ok(Json(on_the_side(move || run_figures(&engine, &run)).await?))
 }
 
 async fn citations_of(
@@ -249,7 +342,7 @@ fn read_then_network(engine: &Shared, seed: &str, run: Option<&str>) -> Result<C
         eprintln!("citations: arXiv lookups for {seed} stopped after {} requests: {why}", looked.asked);
     }
     let left = to_look_up(&list, seed, &linker).len();
-    let mut answer = network_now(&library, &linker, seed, run.as_ref())?;
+    let mut answer = network_now(engine, &library, seed, run.as_ref())?;
     answer.lookups_stopped = stopped_early(&looked.stopped, left);
     Ok(answer)
 }
@@ -358,10 +451,20 @@ mod tests {
         let papers = [seed, arith, on_arxiv("2601.00009"), paper("iclr-2026-1"), on_arxiv("2601.00008")];
         library.add_papers(&papers, None, Known::Keep).unwrap();
         library.keep_pdf(SEED, &seed_pdf()).unwrap();
-        for (run, ids) in [("r1", json!([{"id": SEED}, {"id": "2601.00009"}])), ("r2", json!([{"id": SEED}]))] {
+        let community = |path: &str, members: Value, children: Value| json!({"tree_path": path, "members": members, "children": children});
+        let r1 = json!([community(
+            "c0",
+            json!([0, 1]),
+            json!([community("c0.0", json!([0]), json!([])), community("c0.1", json!([1]), json!([]))])
+        )]);
+        let r2 = json!([community("c0", json!([0]), json!([]))]);
+        for (run, ids, tree) in
+            [("r1", json!([{"id": SEED}, {"id": "2601.00009"}]), r1), ("r2", json!([{"id": SEED}]), r2)]
+        {
             let folder = data.path().join("runs").join(run);
             std::fs::create_dir_all(&folder).unwrap();
             std::fs::write(folder.join("graph.json"), json!({"nodes": ids, "edges": []}).to_string()).unwrap();
+            std::fs::write(folder.join("communities.json"), json!({"communities": tree}).to_string()).unwrap();
         }
         data
     }
@@ -458,6 +561,7 @@ mod tests {
         url: Option<String>,
         confidence: ContractConfidence,
         cited_by: u64,
+        in_run: Option<bool>,
         entry: Option<String>,
     }
 
@@ -498,11 +602,67 @@ mod tests {
     struct ContractTotals {
         references: u64,
         references_in_library: u64,
+        references_in_run: Option<u64>,
+        references_outside_run: Option<u64>,
         references_on_arxiv: u64,
         references_unresolved: u64,
         citations: u64,
         citations_shown: u64,
         citations_in_run: Option<u64>,
+        citations_outside_run: Option<u64>,
+    }
+
+    // `RunCitations` of the contracts, field for field.
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ContractCounts {
+        papers: u64,
+        papers_read: u64,
+        cited_by: u64,
+        cited_by_inside: u64,
+        cited_by_rest_of_run: u64,
+        cited_by_outside_run: u64,
+        cites: u64,
+        cites_in_library: u64,
+        cites_in_run: u64,
+        cites_outside_run: u64,
+        cites_on_arxiv: u64,
+        cites_unresolved: u64,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ContractCountedCommunity {
+        tree_path: String,
+        papers: u64,
+        papers_read: u64,
+        cited_by: u64,
+        cited_by_inside: u64,
+        cited_by_rest_of_run: u64,
+        cited_by_outside_run: u64,
+        cites: u64,
+        cites_in_library: u64,
+        cites_in_run: u64,
+        cites_outside_run: u64,
+        cites_on_arxiv: u64,
+        cites_unresolved: u64,
+        children: Vec<ContractCountedCommunity>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct ContractRunCitations {
+        #[serde(flatten)]
+        counts: ContractCounts,
+        library_papers: u64,
+        library_papers_read: u64,
+        communities: Vec<ContractCountedCommunity>,
+    }
+
+    /// `answer` is a `RunCitations` of the contracts, field for field.
+    fn as_run_contract(answer: &Value) {
+        let typed: ContractRunCitations = serde_json::from_value(answer.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&typed).unwrap(), *answer, "every field of the contract, and only those");
     }
 
     /// `answer` is a `CitationNetwork` of the contracts, field for field.
@@ -615,8 +775,15 @@ mod tests {
             (around["totals"]["citations"].clone(), around["totals"]["citations_in_run"].clone()),
             (json!(1), json!(1))
         );
+        assert_eq!(around["citations"][0]["in_run"], true);
         let (_, other) = ask(&router, "GET", &format!("/api/papers/{SEED_PATH}/citations?run=r2")).await;
         assert_eq!(other["totals"]["citations_in_run"], 0, "the citing paper is not of run r2");
+        assert_eq!(keys(&other["citations"]), ["paper:2601.00009"], "but it is of the library, and is counted");
+        assert_eq!(
+            (other["totals"]["citations"].clone(), other["totals"]["citations_outside_run"].clone()),
+            (json!(1), json!(1))
+        );
+        assert_eq!(other["citations"][0]["in_run"], false, "marked outside the run");
         let (_, any) = ask(&router, "GET", &format!("/api/papers/{SEED_PATH}/citations")).await;
         assert_eq!(any["totals"]["citations_in_run"], Value::Null);
 
@@ -632,6 +799,70 @@ mod tests {
             let path = format!("/api/papers/{SEED_PATH}/references?run={run}");
             assert_eq!(ask(&router, "POST", &path).await.0, StatusCode::NOT_FOUND, "{run}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_runs_figures_count_citers_from_the_whole_library_and_follow_a_list_read_since() {
+        let data = data();
+        let router = serve(&data, fake());
+        let (status, before) = ask(&router, "GET", "/api/runs/r2/citations").await;
+        assert_eq!(status, StatusCode::OK, "{before}");
+        as_run_contract(&before);
+        assert_eq!((before["cited_by"].clone(), before["library_papers_read"].clone()), (json!(0), json!(0)));
+        assert_eq!(before["library_papers"], 5);
+
+        // the citer, a paper of the library outside run r2, is read: r2's seed is cited from outside the run
+        assert_eq!(ask(&router, "POST", "/api/papers/2601.00009/references").await.0, StatusCode::OK);
+        let (_, r2) = ask(&router, "GET", "/api/runs/r2/citations").await;
+        as_run_contract(&r2);
+        let split = |figures: &Value| {
+            ["cited_by", "cited_by_inside", "cited_by_rest_of_run", "cited_by_outside_run"]
+                .map(|field| figures[field].clone())
+        };
+        assert_eq!(split(&r2), [json!(1), json!(0), json!(0), json!(1)], "{r2}");
+        assert_eq!(split(&r2["communities"][0]), [json!(1), json!(0), json!(0), json!(1)]);
+        assert_eq!((r2["papers_read"].clone(), r2["library_papers_read"].clone()), (json!(0), json!(1)));
+
+        // in run r1 the citer is of the run: of the rest of the run for the seed's community
+        let (_, r1) = ask(&router, "GET", "/api/runs/r1/citations").await;
+        as_run_contract(&r1);
+        assert_eq!(split(&r1), [json!(1), json!(1), json!(0), json!(0)]);
+        let seed = &r1["communities"][0]["children"][0];
+        assert_eq!(seed["tree_path"], "c0.0");
+        assert_eq!(split(seed), [json!(1), json!(0), json!(1), json!(0)]);
+        // what the citer cites: the seed (of the run), arith (of the library, not of the run), one not found
+        let citer = &r1["communities"][0]["children"][1];
+        let cites = ["cites", "cites_in_run", "cites_outside_run", "cites_on_arxiv", "cites_unresolved"]
+            .map(|field| citer[field].clone());
+        assert_eq!(cites, [json!(3), json!(1), json!(1), json!(0), json!(1)], "{citer}");
+        assert_eq!(ask(&router, "GET", "/api/runs/r1/citations").await.1, r1, "the same when nothing changed");
+
+        assert_eq!(ask(&router, "GET", "/api/runs/none/citations").await.0, StatusCode::NOT_FOUND);
+        assert_eq!(ask(&router, "GET", "/api/runs/..%2Fx/citations").await.0, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn the_linking_is_kept_until_a_list_is_read_or_a_paper_added() {
+        let folder = tempfile::tempdir().unwrap();
+        let library = Library::open(folder.path()).unwrap();
+        let mut seed = paper(SEED);
+        seed.title = "String theory dynamics in various dimensions".to_owned();
+        library.add_papers(&[seed, paper("arith")], None, Known::Keep).unwrap();
+        let linking = Linking::default();
+        let first = linking.linked(&library).unwrap().library.revision();
+        assert_eq!(linking.linked(&library).unwrap().library.revision(), first, "nothing changed: kept as it was");
+
+        library.add_papers(&[on_arxiv("2601.00009")], None, Known::Keep).unwrap();
+        let added = linking.linked(&library).unwrap().library.revision();
+        assert!(added > first, "a paper added");
+        library.keep_pdf("2601.00009", &citer_pdf()).unwrap();
+        assert!(matches!(library.references_of("2601.00009").unwrap(), ReferencesReading::ReadNow { .. }));
+        let kept = linking.linked(&library).unwrap();
+        assert!(kept.library.revision() > added, "a list read");
+        assert!(kept.library.citers(&format!("paper:{SEED}")).unwrap().contains("2601.00009"));
+        let read = kept.library.revision();
+        drop(kept);
+        assert_eq!(linking.linked(&library).unwrap().library.revision(), read);
     }
 
     #[tokio::test]

@@ -20,7 +20,7 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::analysis::citations::Linker;
+use crate::analysis::citations::{Linker, Stamp};
 use crate::library::{Library, LibraryError, now};
 use crate::sources::arxiv::citations::{Answer, Ask, Get, LookupError, ask_for, read_answer, send, url_for};
 use crate::text::pdf::references::{Citing, Confidence, Reference, ReferenceList, read_reference_list};
@@ -70,6 +70,14 @@ impl KeptReferences {
     pub fn references(&self) -> Vec<Reference> {
         self.entries.iter().map(|entry| entry.reference.clone()).collect()
     }
+}
+
+/// How far the library's papers and its reference lists have changed ([`Library::citation_revisions`]): a
+/// number raised by every write to each.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Revisions {
+    pub papers: i64,
+    pub references: i64,
 }
 
 /// What asking for a paper's reference list came to.
@@ -135,6 +143,60 @@ impl Library {
                 let (id, content) = row?;
                 if let Ok(list) = serde_json::from_str(&content) {
                     kept.push((id, list));
+                }
+            }
+            Ok(kept)
+        })
+    }
+
+    /// How far the papers and the reference lists have changed: each is raised by every write to it (the
+    /// triggers of migration 15), so that what is linked from them is brought up to date only when one moved.
+    pub fn citation_revisions(&self) -> Result<Revisions, LibraryError> {
+        self.read(|connection| {
+            let of = |subject: &str| -> rusqlite::Result<i64> {
+                connection
+                    .prepare_cached("SELECT revision FROM revisions WHERE subject = ?1")?
+                    .query_row([subject], |row| row.get(0))
+            };
+            Ok(Revisions { papers: of("papers")?, references: of("paper_references")? })
+        })
+    }
+
+    /// Every reference list kept by this reader, by paper id in order, with the revision it was last written at
+    /// ([`crate::analysis::citations::Stamp`]): which lists are new or changed, without reading any.
+    pub fn reference_list_stamps(&self) -> Result<Vec<(String, Stamp)>, LibraryError> {
+        self.read(|connection| {
+            // a PDF kept as unreadable ({"unreadable": ...}) has no list to link
+            let mut statement = connection.prepare_cached(
+                "SELECT paper_id, revision FROM paper_references
+                 WHERE reader = ?1 AND content NOT LIKE '{\"unreadable\"%' ORDER BY paper_id",
+            )?;
+            let rows = statement.query_map([READER], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// The reference lists kept by this reader of the papers `paper_ids`, as the linker reads them; a paper with
+    /// none is left out.
+    pub fn reference_lists_of(&self, paper_ids: &[String]) -> Result<Vec<(String, Vec<Reference>)>, LibraryError> {
+        self.read(|connection| {
+            let mut kept = Vec::new();
+            for ids in paper_ids.chunks(500) {
+                let marks = (2..ids.len() + 2).map(|at| format!("?{at}")).collect::<Vec<_>>().join(", ");
+                let sql = format!(
+                    "SELECT paper_id, content FROM paper_references WHERE reader = ?1 AND paper_id IN ({marks})
+                     ORDER BY paper_id"
+                );
+                let mut statement = connection.prepare(&sql)?;
+                let values: Vec<&dyn rusqlite::ToSql> =
+                    std::iter::once(&READER as &dyn rusqlite::ToSql).chain(ids.iter().map(|id| id as _)).collect();
+                let rows = statement
+                    .query_map(values.as_slice(), |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+                for row in rows {
+                    let (id, content) = row?;
+                    if let Ok(list) = serde_json::from_str::<KeptReferences>(&content) {
+                        kept.push((id, list.references()));
+                    }
                 }
             }
             Ok(kept)
@@ -354,8 +416,40 @@ mod tests {
         let ReferencesReading::Unreadable(again) = library.references_of("seed").unwrap() else { panic!() };
         assert_eq!(again, Unreadable::NoText.to_string(), "kept, not read again (first: {first})");
         assert!(library.every_kept_reference_list().unwrap().is_empty(), "no list is made of it");
+        assert!(library.reference_list_stamps().unwrap().is_empty(), "nothing to link");
         library.keep_pdf("seed", &seed_pdf()).unwrap();
         assert!(matches!(library.references_of("seed").unwrap(), ReferencesReading::ReadNow { .. }));
+    }
+
+    #[test]
+    fn the_revisions_move_with_every_list_written_and_every_paper_added_and_only_then() {
+        let (_folder, library) = library();
+        let start = library.citation_revisions().unwrap();
+        assert!(library.reference_list_stamps().unwrap().is_empty());
+        library.keep_pdf("seed", &seed_pdf()).unwrap();
+        let ReferencesReading::ReadNow { pdf_hash, mut list } = library.references_of("seed").unwrap() else {
+            panic!()
+        };
+        let read = library.citation_revisions().unwrap();
+        assert!(read.references > start.references);
+        assert_eq!(read.papers, start.papers, "no paper changed");
+        let stamps = library.reference_list_stamps().unwrap();
+        assert_eq!(stamps.len(), 1);
+        library.references_of("seed").unwrap();
+        assert_eq!(library.reference_list_stamps().unwrap(), stamps, "kept, not written again");
+        assert_eq!(library.citation_revisions().unwrap(), read);
+
+        list.entries[0].lookup = Lookup::NotFound;
+        assert!(library.keep_lookups("seed", &pdf_hash, &list).unwrap());
+        let looked = library.reference_list_stamps().unwrap();
+        assert!(looked[0].1 > stamps[0].1, "a list looked up is a new version of it");
+        let lists = library.reference_lists_of(&["seed".to_owned(), "nowhere".to_owned()]).unwrap();
+        assert_eq!((lists.len(), lists[0].0.as_str(), lists[0].1.len()), (1, "seed", 3));
+
+        library.add_papers(&[paper("other")], None, Known::Keep).unwrap();
+        let added = library.citation_revisions().unwrap();
+        assert!(added.papers > read.papers);
+        assert_eq!(added.references, library.citation_revisions().unwrap().references);
     }
 
     #[test]

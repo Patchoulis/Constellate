@@ -290,6 +290,7 @@ mod tests {
         let first = slot("one");
         library.intend(&intent(&first, Some(40_000))).unwrap();
         let call = super::super::ledger::Call {
+            run: None,
             model: "claude-opus-5-5",
             purpose: "questions",
             input_tokens: 10,

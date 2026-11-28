@@ -71,6 +71,8 @@ pub struct Engine {
     library: Mutex<Option<Arc<Library>>>,
     /// The person's runs: the one being made, the list, the loaded ones ([`crate::pipeline::served`]).
     pub runs: crate::pipeline::served::Runs,
+    /// The library's reference lists linked once and kept, and the runs' citation figures counted from them.
+    pub citations: crate::api::papers::citations::Linking,
     /// What of the earlier version's data folder could not be moved in when the library was opened, in words.
     import_problems: Mutex<Vec<String>>,
 }
@@ -96,6 +98,7 @@ impl Engine {
             pdfs: crate::papers::pdf::Pdfs::default(),
             library: Mutex::new(None),
             runs: Default::default(),
+            citations: Default::default(),
             import_problems: Mutex::new(Vec::new()),
         }
     }
@@ -104,6 +107,14 @@ impl Engine {
     /// the library has not been opened yet).
     pub fn import_problems(&self) -> Vec<String> {
         self.import_problems.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// The run a request about one paper says it was asked from (the run open in the interface), when that is the
+    /// name of a run there is: what the paper's questions cost is then the run's. A name that is not one, or no
+    /// name, is no run: never a reason to refuse the request.
+    pub fn asked_from(&self, run: Option<&str>) -> Option<String> {
+        let run = run.filter(|run| one_name(run).is_ok())?;
+        crate::pipeline::results::files::folder_of(&self.data, run).is_ok().then(|| run.to_owned())
     }
 
     /// The library in the data folder, opened once and shared by every request.

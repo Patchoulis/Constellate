@@ -213,6 +213,7 @@ function ModelPart({
 	onShow,
 	onChanged,
 	id,
+	fromRun,
 }: {
 	part: CritiqueModelPart;
 	/** the estimate is answered for the model chosen now: false while it is asked for again */
@@ -221,6 +222,8 @@ function ModelPart({
 	onShow: (shown: boolean) => void;
 	onChanged: () => void;
 	id: string;
+	/** the run the paper is read from inside: what asking costs is that run's */
+	fromRun?: string;
 }) {
 	// the job is followed until it ends, also when the reader's tab was left and opened again; then what is kept is
 	// read again
@@ -228,7 +231,7 @@ function ModelPart({
 	const ask = (asked: Extract<CritiqueModelPart, { state: "not_asked" }>) =>
 		void start(async () => {
 			// the model and the most shown go with the request: the engine refuses if either changed
-			const started = await api.readCritique(id, shownModel(asked), accepting(asked.estimate));
+			const started = await api.readCritique(id, shownModel(asked), accepting(asked.estimate), fromRun);
 			if (started.outcome === "started") return started.job;
 			onChanged(); // read before: nothing was asked
 			return null;
@@ -355,7 +358,7 @@ function ModelPart({
 }
 
 /** The Weaknesses section of a paper. `onReviews` opens the reader's Reviews tab, where reviews are read. */
-export function Weaknesses({ id, onReviews, className }: { id: string; onReviews?: () => void; className?: string }) {
+export function Weaknesses({ id, run, onReviews, className }: { id: string; run?: string; onReviews?: () => void; className?: string }) {
 	const [shown, setShown] = useState(false);
 	const chosen = useChosenModel("reading");
 	// read again when the model chosen changes (its estimate is the model's) or after asking; the reviewers' part
@@ -376,6 +379,7 @@ export function Weaknesses({ id, onReviews, className }: { id: string; onReviews
 			onChanged={loaded.reload}
 			onReviews={onReviews}
 			className={className}
+			fromRun={run}
 		/>
 	);
 }
@@ -389,6 +393,7 @@ export function WeaknessesOf({
 	onChanged,
 	onReviews,
 	className,
+	fromRun,
 }: {
 	critique: Critique;
 	/** the estimate in it is answered for the model chosen now (false while it is asked for again) */
@@ -398,13 +403,23 @@ export function WeaknessesOf({
 	onChanged: () => void;
 	onReviews?: () => void;
 	className?: string;
+	/** the run the paper is read from inside, sent with a question about it */
+	fromRun?: string;
 }) {
 	const readings = critique.model.state === "answered" && shown ? readingsByPoint(critique.model.reading) : null;
 	return (
 		<section className={cn("flex flex-col gap-4 font-ui", className)}>
 			<Heading className="text-foreground">Weaknesses</Heading>
 			<ReviewersPart part={critique.reviewers} readings={readings} onReviews={onReviews} />
-			<ModelPart part={critique.model} current={current} shown={shown} onShow={onShow} onChanged={onChanged} id={critique.paper_id} />
+			<ModelPart
+				part={critique.model}
+				current={current}
+				shown={shown}
+				onShow={onShow}
+				onChanged={onChanged}
+				id={critique.paper_id}
+				fromRun={fromRun}
+			/>
 		</section>
 	);
 }

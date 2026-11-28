@@ -40,7 +40,7 @@ use crate::library::core::store::read_json;
 use crate::library::{Feature, Library, PaperReading, Subject};
 use crate::model::batch::Asking;
 use crate::model::chosen::{Accepted, Chosen, Terms, budget};
-use crate::model::language::{Estimate, Provider};
+use crate::model::language::{Estimate, ForRun, Provider};
 use crate::text::pdf::passages::{Address, Kind, Passages};
 
 /// The longest section heading taken in an address: a heading is a line, not a page.
@@ -297,6 +297,9 @@ struct Start {
     accepted_usd: Option<f64>,
     #[serde(default)]
     accepted_tokens: Option<u64>,
+    /// The run open in the interface, when the paper is read from inside one: what the call costs is the run's.
+    #[serde(default)]
+    run: Option<String>,
 }
 
 async fn start(
@@ -336,13 +339,15 @@ async fn start(
             subject: Subject::Paper(opened.paper.clone()),
             item: None,
         };
+        let run = engine.asked_from(seen.run.as_deref());
         let job = engine.job.start_about(PURPOSE, about, move |tracker| {
             let item = item(opened.slot(), &opened.chosen, &opened.prompt, &schema);
+            let recorder = ForRun::new(&*opened.library, run.as_deref());
             let asking = Asking {
                 library: &opened.library,
                 transport: &*transport,
                 endpoint,
-                recorder: &*opened.library,
+                recorder: &recorder,
                 in_flight: 1,
             };
             explain(asking, &item, &accepted, tracker).map_err(|why| why.to_string())?;
