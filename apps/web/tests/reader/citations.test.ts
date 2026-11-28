@@ -221,8 +221,10 @@ test("a community's citation note says how many citations come from inside it an
 	const read = community({ papers_read: 212, cited_by: 1204, cited_by_inside: 300, cites: 3410, cites_in_library: 1 });
 	assert.equal(
 		citationsNote(read),
-		"300 citations of the 1,204 citations come from its own papers. 1 work of the 3,410 works it cites are in your library.",
+		"300 citations of the 1,204 citations come from its own papers. 1 work of the 3,410 works it cites is in your library.",
 	);
+	const several = community({ papers_read: 212, cited_by: 1204, cited_by_inside: 300, cites: 3410, cites_in_library: 57 });
+	assert.match(citationsNote(several), /57 works of the 3,410 works it cites are in your library\.$/);
 	const unread = community({ papers_read: 0, cited_by: 4, cited_by_inside: 0, cites: 0, cites_in_library: 0 });
 	assert.equal(citationsNote(unread), "None of its papers' reference lists has been read yet.");
 	assert.equal(citationsNote(community(null)), "None of its papers' reference lists has been read yet.");
