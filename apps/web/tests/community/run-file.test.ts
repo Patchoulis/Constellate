@@ -9,7 +9,10 @@ import { uniqueness } from "@/lib/community/community";
 
 test("a run saved before many fields were added reads as a run, with what it lacks not known rather than thrown on", () => {
 	// what an early communities.json could hold: no paths, no lists the panels read, no figures
-	const run = runOf({ communities: [{ members: [0, 1], keywords: ["graphs", "trees"], children: [{ members: [0] }, { members: [1] }] }, {}] }, "old");
+	const run = runOf(
+		{ communities: [{ members: [0, 1], keywords: ["graphs", "trees"], children: [{ members: [0] }, { members: [1] }] }, {}] },
+		"old",
+	);
 	assert.equal(run.name, "old");
 	assert.equal(run.communities.length, 2);
 	const [first, second] = run.communities;
@@ -59,7 +62,17 @@ test("what is kept of a run is kept as it is: a run of this version reads the sa
 		children: [],
 		citations: { papers_read: 1, cited_by: 2, cited_by_inside: 0, cites: 3, cites_in_library: 1 },
 	};
-	const raw = { name: "new", papers: 1, model: "m", centered: true, clustering: "leiden", modularity: 0.5, ai_flagged: 0, communities: [community], citations_read: 1 };
+	const raw = {
+		name: "new",
+		papers: 1,
+		model: "m",
+		centered: true,
+		clustering: "leiden",
+		modularity: 0.5,
+		ai_flagged: 0,
+		communities: [community],
+		citations_read: 1,
+	};
 	assert.deepEqual(runOf(raw, "new"), { ...raw, communities: [{ ...community, sections: undefined, sections_left_out: undefined }] });
 });
 
@@ -70,7 +83,11 @@ test("sections that are not a list of sections leave the description plain; a ci
 				{ sections: "Problem" },
 				{
 					sections: [
-						{ heading: "Problem", text: "It is hard.", cites: [{ title: "T", evidence: { paper: "p", quote: "q", established: { kind: "abstract" } } }, { title: "U" }] },
+						{
+							heading: "Problem",
+							text: "It is hard.",
+							cites: [{ title: "T", evidence: { paper: "p", quote: "q", established: { kind: "abstract" } } }, { title: "U" }],
+						},
 						{ heading: 3 },
 					],
 				},
@@ -86,13 +103,7 @@ test("sections that are not a list of sections leave the description plain; a ci
 test("a graph's links to papers it does not have are left out, and papers with no place are put at the origin", () => {
 	const graph = graphOf({
 		nodes: [{ id: "a", x: Number.NaN, y: 0.5, acceptance: "award" }, { title: "No id" }, { id: "c", x: 0.1, y: 0.2, acceptance: "oral" }],
-		edges: [
-			[0, 2, 0.8],
-			[0, 9, 0.5],
-			[1, 1, 0.9],
-			[-1, 0, 0.3],
-			"not a link",
-		],
+		edges: [[0, 2, 0.8], [0, 9, 0.5], [1, 1, 0.9], [-1, 0, 0.3], "not a link"],
 	});
 	assert.equal(graph.nodes.length, 3);
 	assert.deepEqual(graph.edges, [[0, 2, 0.8]]);

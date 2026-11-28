@@ -39,7 +39,9 @@ function sections(value: unknown): CommunitySection[] | undefined {
 		if (typeof section.heading !== "string" || typeof section.text !== "string") return [];
 		const cites = list(section.cites).filter((cite): cite is CommunitySection["cites"][number] => {
 			const evidence = record(record(cite).evidence);
-			return typeof evidence.paper === "string" && typeof evidence.quote === "string" && typeof record(evidence.established).kind === "string";
+			return (
+				typeof evidence.paper === "string" && typeof evidence.quote === "string" && typeof record(evidence.established).kind === "string"
+			);
 		});
 		return [{ heading: section.heading, text: section.text, cites: cites.map((cite) => ({ ...cite, title: text(cite.title) })) }];
 	});
@@ -113,7 +115,8 @@ export function graphOf(value: unknown): GraphData {
 			x: typeof node.x === "number" && Number.isFinite(node.x) ? node.x : 0,
 			y: typeof node.y === "number" && Number.isFinite(node.y) ? node.y : 0,
 			ai: node.ai === true,
-			acceptance: typeof node.acceptance === "string" && ACCEPTANCE.has(node.acceptance) ? (node.acceptance as GraphNode["acceptance"]) : null,
+			acceptance:
+				typeof node.acceptance === "string" && ACCEPTANCE.has(node.acceptance) ? (node.acceptance as GraphNode["acceptance"]) : null,
 			acceptance_term:
 				typeof term.called === "string" && typeof term.conference === "string"
 					? { conference: term.conference, called: term.called, means: text(term.means), known: term.known !== false }

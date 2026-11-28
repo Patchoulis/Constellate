@@ -95,7 +95,13 @@ export function listedOfRow(row: RunRow): ListedRun {
 			return { name: row.name, title: row.name, papers: null, details: null, problem: null };
 		default:
 			// a kind of row this version does not know (a newer engine): listed by its name, as one not read yet
-			return { name: String((row as { name?: unknown }).name ?? ""), title: String((row as { name?: unknown }).name ?? ""), papers: null, details: null, problem: null };
+			return {
+				name: String((row as { name?: unknown }).name ?? ""),
+				title: String((row as { name?: unknown }).name ?? ""),
+				papers: null,
+				details: null,
+				problem: null,
+			};
 	}
 }
 

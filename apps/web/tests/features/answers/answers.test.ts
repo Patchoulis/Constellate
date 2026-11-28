@@ -172,7 +172,11 @@ test("a search still under way when another question is asked does not answer th
 	const found: PassagesFound = { state: "ready", query: "first", coverage, passages: [passage("p1", false)] };
 	let state: AskState = reduceAsk({ kind: "idle" }, { type: "asked", question: "first" });
 	state = reduceAsk(state, { type: "asked", question: "second" }); // a question asked before, picked from the list
-	assert.equal(reduceAsk(state, { type: "searched", question: "first", found, estimate }), state, "the first's passages are not the second's");
+	assert.equal(
+		reduceAsk(state, { type: "searched", question: "first", found, estimate }),
+		state,
+		"the first's passages are not the second's",
+	);
 	assert.equal(reduceAsk(state, { type: "failed", error: "refused", searched: "first" }), state, "the first's failure is not the second's");
 	assert.equal(reduceAsk(state, { type: "searched", question: "second", found, estimate }).kind, "found");
 	assert.equal(reduceAsk(state, { type: "failed", error: "refused", searched: "second" }).kind, "failed");

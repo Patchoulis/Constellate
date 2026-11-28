@@ -115,7 +115,11 @@ export function judgementLabel(judgement: CitationJudgement): { label: string; n
 			return { label: "not classified", note: "The model has not been asked about this sentence.", kind: null };
 		default:
 			// a reading this version does not know (a newer engine): said as not classified, never thrown on
-			return { label: "not classified", note: "This reading of the sentence is of a kind this version of Constellate does not show.", kind: null };
+			return {
+				label: "not classified",
+				note: "This reading of the sentence is of a kind this version of Constellate does not show.",
+				kind: null,
+			};
 	}
 }
 

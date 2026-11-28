@@ -351,9 +351,7 @@ function Abstract({
 					<Heading className="mb-1.5 font-ui">Closest papers</Heading>
 					{related.map((other) => (
 						<RowButton key={other.id} className="items-baseline gap-2" onClick={() => onOpen(other.id)}>
-							<span className="translate-y-px">
-								{other.community && <CommunityDot hue={other.community.hue} />}
-							</span>
+							<span className="translate-y-px">{other.community && <CommunityDot hue={other.community.hue} />}</span>
 							<span className="flex-1 text-base leading-snug">
 								<MathText>{other.title}</MathText>
 							</span>

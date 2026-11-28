@@ -79,10 +79,13 @@ const finite = (value: number) => (Number.isFinite(value) ? value : 0);
 function placeCommunities(graph: GraphData, roots: CommunityNode[]): Home[] {
 	const homes: Home[] = roots.map((node) => {
 		const members = placedMembers(graph, node);
-		const sum = members.reduce((total, index) => ({ x: total.x + finite(graph.nodes[index].x), y: total.y + finite(graph.nodes[index].y) }), {
-			x: 0,
-			y: 0,
-		});
+		const sum = members.reduce(
+			(total, index) => ({ x: total.x + finite(graph.nodes[index].x), y: total.y + finite(graph.nodes[index].y) }),
+			{
+				x: 0,
+				y: 0,
+			},
+		);
 		const r = SPACING * Math.sqrt(members.length);
 		const of = members.length || 1; // a community with no papers starts at the origin
 		return { x: (sum.x / of) * 2400, y: (sum.y / of) * 2400, r };

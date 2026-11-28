@@ -17,7 +17,10 @@ const unknown = <T>(value: unknown) => value as T;
 
 test("a job in a state this version does not know is still under way, not undefined", () => {
 	const job = started(4);
-	const next = step(job as Extract<typeof job, { state: "running" }>, unknown<Status>({ id: 4, state: "queued", log: ["waiting"], result: null, error: null, total: 1 }));
+	const next = step(
+		job as Extract<typeof job, { state: "running" }>,
+		unknown<Status>({ id: 4, state: "queued", log: ["waiting"], result: null, error: null, total: 1 }),
+	);
 	assert.equal(next.state, "running");
 	assert.deepEqual(next.log, ["waiting"]);
 });
@@ -35,19 +38,31 @@ test("a citation's reading of a kind this version does not know is said as not c
 
 test("a quote found in a way this version does not know still says where it is from", () => {
 	const evidence = (established: unknown): Evidence => ({ paper: "p", quote: "words", established: unknown(established) });
-	assert.match(evidenceTitle(evidence({ kind: "abstract", field: "abstract", start: 0, end: 5, matched: { kind: "normalised" } }), "P"), /Found in the paper/);
-	assert.match(evidenceTitle(evidence({ kind: "abstract", field: "title", start: 0, end: 5, matched: { kind: "close" } }), "P"), /Found in the paper/);
+	assert.match(
+		evidenceTitle(evidence({ kind: "abstract", field: "abstract", start: 0, end: 5, matched: { kind: "normalised" } }), "P"),
+		/Found in the paper/,
+	);
+	assert.match(
+		evidenceTitle(evidence({ kind: "abstract", field: "title", start: 0, end: 5, matched: { kind: "close" } }), "P"),
+		/Found in the paper/,
+	);
 	assert.match(evidenceTitle(evidence({ kind: "in_figure" }), "P"), /^“words”\nP\. Click to open the paper\.$/);
 });
 
 test("a reference found to be something this version does not know is tagged, and a stop without a reason says none", () => {
 	assert.equal(linkTag(unknown<CitationLink>({ kind: "doi", doi: "10.1/x" })).label, "Elsewhere");
-	assert.match(lookupsStoppedLine(unknown({ kind: "rate_limited", left: 3 })) ?? "", /^The lookups of the works this paper cites stopped early\. 3 cited works/);
+	assert.match(
+		lookupsStoppedLine(unknown({ kind: "rate_limited", left: 3 })) ?? "",
+		/^The lookups of the works this paper cites stopped early\. 3 cited works/,
+	);
 });
 
 test("a provider unavailable for a reason not given says it is not available", () => {
 	assert.equal(unavailableBecause(unknown<ModelProvider>({ available: { state: "paused" } })), "Not available");
-	assert.equal(unavailableBecause(unknown<ModelProvider>({ available: { state: "unavailable", why: "set OPENAI_API_KEY" } })), "Set OPENAI_API_KEY");
+	assert.equal(
+		unavailableBecause(unknown<ModelProvider>({ available: { state: "unavailable", why: "set OPENAI_API_KEY" } })),
+		"Set OPENAI_API_KEY",
+	);
 });
 
 test("an acceptance tier this version does not know is named as the engine names it", () => {

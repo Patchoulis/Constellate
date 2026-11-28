@@ -5,7 +5,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { formulaHtml, MathText, plainText } from "@/components/math-text";
 
 test("odd TeX from a paper is shown, never thrown on: unbalanced braces, unknown macros, an enormous title, no text at all", () => {
-	for (const odd of ["$\\frac{a}{$ and $}{$", "$\\begin{array}$", "$\\ours{x$", "$" + "{".repeat(5000) + "$", "$x$".repeat(2000), "\\textbf{unclosed"]) {
+	for (const odd of [
+		"$\\frac{a}{$ and $}{$",
+		"$\\begin{array}$",
+		"$\\ours{x$",
+		"$" + "{".repeat(5000) + "$",
+		"$x$".repeat(2000),
+		"\\textbf{unclosed",
+	]) {
 		assert.doesNotThrow(() => shown(odd), odd.slice(0, 40));
 	}
 	assert.equal(shown(undefined as unknown as string), "");

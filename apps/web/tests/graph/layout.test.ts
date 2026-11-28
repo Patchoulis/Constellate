@@ -28,7 +28,14 @@ function community(id: number, members: number[], children: Community[] = []): C
 
 function graphOf(papers: number, at: (index: number) => { x: number; y: number } = () => ({ x: 0, y: 0 })): GraphData {
 	return {
-		nodes: Array.from({ length: papers }, (_, index) => ({ id: `p${index}`, title: `Paper ${index}`, community: 0, ai: false, acceptance: null, ...at(index) })),
+		nodes: Array.from({ length: papers }, (_, index) => ({
+			id: `p${index}`,
+			title: `Paper ${index}`,
+			community: 0,
+			ai: false,
+			acceptance: null,
+			...at(index),
+		})),
 		edges: [],
 	};
 }
@@ -84,6 +91,11 @@ test("NaN and missing positions from the engine still give finite places", () =>
 });
 
 test("every paper at the same place, and a run of papers in no community, lay out to a finite box", () => {
-	assertFinite(layoutGraph(graphOf(5, () => ({ x: 0.3, y: 0.3 })), communityTree([community(0, [0, 1, 2, 3, 4])])));
+	assertFinite(
+		layoutGraph(
+			graphOf(5, () => ({ x: 0.3, y: 0.3 })),
+			communityTree([community(0, [0, 1, 2, 3, 4])]),
+		),
+	);
 	assertFinite(layoutGraph(graphOf(3), []));
 });

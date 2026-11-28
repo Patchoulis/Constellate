@@ -119,7 +119,11 @@ export function GraphView({
 	const [hoverHeld, setHover] = useState<{ graph: GraphData; index: number; x: number; y: number; linked: PaperPlace[] } | null>(null);
 	const hover = hoverHeld?.graph === graph ? hoverHeld : null;
 	// where the marked papers are on screen, and how large the screen is
-	const [markedHeld, setMarkedView] = useState<{ graph: GraphData | null; places: MarkedPlace[]; frame: { width: number; height: number } }>({
+	const [markedHeld, setMarkedView] = useState<{
+		graph: GraphData | null;
+		places: MarkedPlace[];
+		frame: { width: number; height: number };
+	}>({
 		graph: null,
 		places: [],
 		frame: { width: 0, height: 0 },
