@@ -23,7 +23,7 @@ export function markLook(shown: number, from: number): MarkLook {
 export const LOOK_FADE_MS = 200;
 
 /** How strong the glows of the communities are while the region is shown, as a share of their usual strength. */
-export const REGION_GLOW = 0.4;
+export const REGION_GLOW = 0.3;
 
 /** A number read from storage or typed in, as the choice: a whole number between the bounds, or the initial choice
  *  when it is no number at all. */

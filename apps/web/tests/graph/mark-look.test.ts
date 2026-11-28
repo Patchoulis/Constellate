@@ -1,7 +1,16 @@
 /** How marked papers are shown: rings for a few, a highlighted region for many (lib/graph/mark-look.ts). */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { HALO_ZOOM_SLACK, LOOK_FADE_MS, REGION_FROM, haloLayerFits, lookTowards, markLook, regionFromOf } from "@/lib/graph/mark-look";
+import {
+	HALO_ZOOM_SLACK,
+	LOOK_FADE_MS,
+	REGION_FROM,
+	REGION_GLOW,
+	haloLayerFits,
+	lookTowards,
+	markLook,
+	regionFromOf,
+} from "@/lib/graph/mark-look";
 
 test("a few shown marks get rings, as many as the number chosen or more a region, and none get nothing", () => {
 	assert.equal(markLook(0, 25), "rings", "nothing marked: nothing changes");
@@ -34,6 +43,10 @@ test("the halos drawn at one zoom are kept while the zoom stays within a quarter
 	assert.ok(!haloLayerFits(0.3, 0.3 / 1.3));
 	assert.ok(!haloLayerFits(0, 0.3));
 	assert.equal(HALO_ZOOM_SLACK, 1.25);
+});
+
+test("in the region the community glows are turned well down, so that the marked papers stand out", () => {
+	assert.equal(REGION_GLOW, 0.3);
 });
 
 test("one look gives way to the other over a fifth of a second, from wherever it was", () => {
