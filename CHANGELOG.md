@@ -5,8 +5,16 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- The activity log can be made wider or narrower by dragging its right edge, as well as taller.
+
 ### Fixed
 
+- In a narrow paper reader, the tabs show their icons only, and the mark, open and close buttons stay inside the
+  reader instead of lying over the communities panel.
+- The sidebar's line of what was spent wraps inside the sidebar instead of running past its edge.
+- On the graph, a paper's links are drawn under the papers, so a line no longer crosses a paper's dot.
 - Spectral clustering (on nearest neighbours, and on all papers) gives the same communities on every computer when
   the papers' similarity graph falls apart into more separate pieces than the communities asked for: the pieces
   are now joined by how similar they are, where before which pieces ended up together could differ between two

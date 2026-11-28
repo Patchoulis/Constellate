@@ -580,6 +580,38 @@ export class GraphCanvasRenderer {
 		}
 		ctx.globalCompositeOperation = "source-over";
 
+		// 1b. Links, under the papers: a line runs from a paper's centre to another's and crosses whatever lies between,
+		// so every dot is drawn over it. The marked papers' links (those in focus), then the hovered paper's.
+		const marked = this.shownMarked();
+		if (marked.length > 0) {
+			const links = new Path2D();
+			for (const index of marked) {
+				const point = data.points[index];
+				for (const other of this.linked[index]) {
+					if (!this.lit(other)) continue;
+					const end = data.points[other];
+					links.moveTo(point.x, point.y);
+					links.lineTo(end.x, end.y);
+				}
+			}
+			ctx.strokeStyle = MARK_LINK;
+			ctx.lineWidth = 1 / k;
+			ctx.stroke(links);
+		}
+		if (this.hovered !== null && data.points[this.hovered]) {
+			const point = data.points[this.hovered];
+			ctx.strokeStyle = MARKED_LINK;
+			ctx.lineWidth = 1.3 / k;
+			ctx.beginPath();
+			for (const other of this.linked[this.hovered]) {
+				if (!this.lit(other)) continue;
+				const end = data.points[other];
+				ctx.moveTo(point.x, point.y);
+				ctx.lineTo(end.x, end.y);
+			}
+			ctx.stroke();
+		}
+
 		// 2. Papers: one path per group (a community, or a feature's group) plus one for everything out of focus or
 		// in no group. Never under ~1px on screen.
 		const radius = dotRadius(k);
@@ -593,11 +625,9 @@ export class GraphCanvasRenderer {
 			ctx.fill(path);
 		});
 
-		// 3. Marked papers (those in focus): links to their linked papers in focus, then a yellow ring on a dark rim. The
+		// 3. Marked papers (those in focus): the papers their links (1b) end at, then a yellow ring on a dark rim. The
 		// ring sits outside where the selected paper's ring goes, so a paper that is both shows both.
-		const marked = this.shownMarked();
 		if (marked.length > 0) {
-			const links = new Path2D();
 			const ends = new Path2D();
 			const rings = new Path2D();
 			for (const index of marked) {
@@ -605,8 +635,6 @@ export class GraphCanvasRenderer {
 				for (const other of this.linked[index]) {
 					if (!this.lit(other)) continue;
 					const end = data.points[other];
-					links.moveTo(point.x, point.y);
-					links.lineTo(end.x, end.y);
 					const size = radius * data.sizes[other] * 1.1;
 					ends.moveTo(end.x + size, end.y);
 					ends.arc(end.x, end.y, size, 0, Math.PI * 2);
@@ -615,9 +643,6 @@ export class GraphCanvasRenderer {
 				rings.moveTo(point.x + ring, point.y);
 				rings.arc(point.x, point.y, ring, 0, Math.PI * 2);
 			}
-			ctx.strokeStyle = MARK_LINK;
-			ctx.lineWidth = 1 / k;
-			ctx.stroke(links);
 			ctx.fillStyle = MARK_LINK;
 			ctx.fill(ends);
 			ctx.strokeStyle = MARK_EDGE;
@@ -628,20 +653,13 @@ export class GraphCanvasRenderer {
 			ctx.stroke(rings);
 		}
 
-		// 4. Hovered and selected papers: a halo, a white core, a ring. The hovered one also shows its links.
+		// 4. Hovered and selected papers: a halo, a white core, a ring. The hovered one also shows the papers its links
+		// (1b) end at.
 		for (const index of new Set([this.selected, this.hovered])) {
 			if (index === null || !data.points[index]) continue;
 			const point = data.points[index];
 			const ends = index === this.hovered ? this.linked[index].filter((other) => this.lit(other)).map((other) => data.points[other]) : [];
-			ctx.strokeStyle = MARKED_LINK;
-			ctx.lineWidth = 1.3 / k;
 			ctx.fillStyle = "#ffffff";
-			ctx.beginPath();
-			for (const end of ends) {
-				ctx.moveTo(point.x, point.y);
-				ctx.lineTo(end.x, end.y);
-			}
-			ctx.stroke();
 			ctx.beginPath();
 			for (const end of ends) {
 				ctx.moveTo(end.x + radius * 1.25, end.y);

@@ -48,11 +48,14 @@ export function Segmented<T extends string>({
 	value,
 	onChange,
 	className,
+	compact = false,
 }: {
 	options: readonly { value: T; label: string; title?: string; icon?: React.ReactNode }[];
 	value: T;
 	onChange: (value: T) => void;
 	className?: string;
+	/** inside a narrow `@container`, options that have an icon show only it (their label is still read out) */
+	compact?: boolean;
 }) {
 	return (
 		<div className={cn("inline-flex rounded-md border p-0.5", className)}>
@@ -60,17 +63,17 @@ export function Segmented<T extends string>({
 				<button
 					key={option.value}
 					type="button"
-					title={option.title}
+					title={option.title ?? (compact && option.icon ? option.label : undefined)}
 					// which one is chosen, for those who do not see the highlight
 					aria-pressed={value === option.value}
 					onClick={() => onChange(option.value)}
 					className={cn(
-						"flex h-6 flex-1 items-center justify-center gap-1.5 rounded-sm px-2.5 text-xs transition-colors [&_svg]:size-3",
+						"flex h-6 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-sm px-2.5 text-xs transition-colors [&_svg]:size-3 [&_svg]:shrink-0",
 						value === option.value ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
 					)}
 				>
 					{option.icon}
-					{option.label}
+					{compact && option.icon ? <span className="@max-3xl:sr-only">{option.label}</span> : option.label}
 				</button>
 			))}
 		</div>
