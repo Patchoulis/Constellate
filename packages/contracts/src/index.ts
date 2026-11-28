@@ -836,6 +836,13 @@ export type PassageKind = "title" | "heading" | "text" | "figure_caption" | "tab
 
 export type PassagePart = "front" | "body" | "appendix" | "checklist";
 
+/**
+ * What stands in a passage's text (and its page's) for a formula, or other text, whose characters the PDF does not
+ * say: one character per such stretch (U+FFFC, the object replacement character), so that addresses count it as
+ * one. It is never a letter of a quote; the reader shows a note with a link to the page in its place.
+ */
+export const UNREADABLE = "￼";
+
 /** One paragraph (or heading, caption, equation) of a page. */
 export interface Passage {
 	kind: PassageKind;

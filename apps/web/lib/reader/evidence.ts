@@ -3,7 +3,7 @@
  * says, where in the reader a citation opens, and the passage and characters to highlight there. Plain functions,
  * so that they are tested (tests/reader/evidence.test.tsx); components/reader/evidence-link.tsx draws them.
  */
-import type { Evidence, PaperPassages, PassageAddress, QuoteMatch } from "@rp/contracts";
+import { UNREADABLE, type Evidence, type PaperPassages, type PassageAddress, type QuoteMatch } from "@rp/contracts";
 import { count } from "@/lib/units";
 
 /**
@@ -12,6 +12,25 @@ import { count } from "@/lib/units";
  */
 export function codePoints(text: string, start: number, end?: number): string {
 	return Array.from(text).slice(start, end).join("");
+}
+
+/**
+ * `text` cut at each formula the PDF does not say the characters of (`UNREADABLE`): the paper's words, with `null`
+ * where a note stands instead. Text without one is itself alone.
+ */
+export function unreadableParts(text: string): (string | null)[] {
+	const parts: (string | null)[] = [];
+	text.split(UNREADABLE).forEach((words, at) => {
+		if (at > 0) parts.push(null);
+		if (words) parts.push(words);
+	});
+	return parts;
+}
+
+/** Is the passage all formula that could not be read, with hardly a letter or digit of its own (an equation
+ *  number at most)? There is nothing in it to explain. As the engine's `Passage::unreadable`. */
+export function whollyUnreadable(passage: { text: string }): boolean {
+	return passage.text.includes(UNREADABLE) && Array.from(passage.text).filter((c) => /[\p{L}\p{N}]/u.test(c)).length < 4;
 }
 
 /** A paper as a citation names it: "Vaswani et al., 2017", "Vaswani and Shazeer, 2017", "Vaswani, 2017". */

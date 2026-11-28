@@ -4,7 +4,19 @@ import { test } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Evidence, PaperPassages, PassageAddress } from "@rp/contracts";
 import { EvidenceLink, EvidenceProvider } from "@/components/reader/evidence-link";
-import { codePoints, evidenceTitle, highlighted, passageAt, pdfAt, placeName, readerTarget, shortLabel } from "@/lib/reader/evidence";
+import {
+	codePoints,
+	evidenceTitle,
+	highlighted,
+	passageAt,
+	pdfAt,
+	placeName,
+	readerTarget,
+	shortLabel,
+	unreadableParts,
+	whollyUnreadable,
+} from "@/lib/reader/evidence";
+import { UNREADABLE } from "@rp/contracts";
 
 const address = (page: number, start: number, end: number, section = "2. Method"): PassageAddress => ({
 	page,
@@ -104,4 +116,13 @@ test("a citation is a button that opens the reader there, and finds the paper on
 	assert.deepEqual(readerTarget(verified), { paper: "2501.00001", address: address(4, 120, 156), quote: verified.quote });
 	const alone = renderToStaticMarkup(<EvidenceLink evidence={verified} label="x" />);
 	assert.match(alone, /disabled/, "outside a workspace there is nowhere to open it");
+});
+
+test("a formula the PDF could not say is cut out of the text for a note, and the words around it stay as they are", () => {
+	assert.deepEqual(unreadableParts(`the bound ${UNREADABLE} holds`), ["the bound ", null, " holds"]);
+	assert.deepEqual(unreadableParts(`${UNREADABLE} (12)`), [null, " (12)"]);
+	assert.deepEqual(unreadableParts("we use p, q, r and s"), ["we use p, q, r and s"]);
+	assert.equal(whollyUnreadable({ text: `${UNREADABLE} (12)` }), true, "an equation number is not text to explain");
+	assert.equal(whollyUnreadable({ text: `the bound ${UNREADABLE} holds` }), false);
+	assert.equal(whollyUnreadable({ text: "(1)" }), false, "nothing unreadable in it");
 });

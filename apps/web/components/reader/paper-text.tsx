@@ -6,7 +6,7 @@ import type { Passage, PassageAddress, PassageKind } from "@rp/contracts";
 import { PassageExplainer, type AskedOnce, type ExplainMode } from "@/components/features/explanation/passage-explainer";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/net/api";
-import { highlighted, pages, passageAt } from "@/lib/reader/evidence";
+import { highlighted, pages, passageAt, unreadableParts, whollyUnreadable } from "@/lib/reader/evidence";
 import { explainable, placeKey, resolveSelection, selectionQuote } from "@/lib/features/explanation/explanation";
 import { noReadablePdf } from "@/lib/reader/no-pdf";
 import { ready, useAsync } from "@/lib/use-async";
@@ -23,18 +23,56 @@ const KIND_NOTE: Partial<Record<PassageKind, { label: string; note: string }>> =
 
 const PART_NAME = { appendix: "Appendix", checklist: "Checklist" } as const;
 
-function Shown({ passage, mark, markRef }: { passage: Passage; mark: PassageAddress | null; markRef?: React.Ref<HTMLElement> }) {
+/**
+ * The paper's words of `text`, with a quiet note where the PDF draws a formula whose characters it does not say:
+ * the note, drawn by CSS and not text of the page (a selection is the paper's words only), opens the PDF at the
+ * page when it can be shown.
+ */
+function WithNotes({ text, page, onOpenPdf }: { text: string; page: number; onOpenPdf?: (page: number) => void }) {
+	const label = `a formula that could not be read as text: see it in the paper, page ${page}`;
+	const note = "mx-0.5 font-ui text-xs text-muted-foreground italic select-none before:content-[attr(data-label)]";
+	return unreadableParts(text).map((words, at) =>
+		words !== null ? (
+			<Fragment key={at}>{words}</Fragment>
+		) : onOpenPdf ? (
+			<button
+				key={at}
+				type="button"
+				data-label={`[${label}]`}
+				aria-label={label}
+				title={`Open the PDF at page ${page}`}
+				className={cn(note, "underline decoration-dotted underline-offset-2 hover:text-foreground")}
+				onClick={() => onOpenPdf(page)}
+			/>
+		) : (
+			<span key={at} data-label={`[${label}]`} aria-label={label} className={note} />
+		),
+	);
+}
+
+function Shown({
+	passage,
+	mark,
+	markRef,
+	onOpenPdf,
+}: {
+	passage: Passage;
+	mark: PassageAddress | null;
+	markRef?: React.Ref<HTMLElement>;
+	onOpenPdf?: (page: number) => void;
+}) {
 	const parts = highlighted(passage, mark);
+	const page = passage.address.page;
 	const text = parts ? (
 		<>
-			{parts[0]}
+			<WithNotes text={parts[0]} page={page} onOpenPdf={onOpenPdf} />
 			<mark ref={markRef} className="rounded-sm bg-primary/20 px-0.5 text-foreground select-text">
-				{parts[1]}
+				<WithNotes text={parts[1]} page={page} onOpenPdf={onOpenPdf} />
 			</mark>
-			{parts[2]}
+			<WithNotes text={parts[2]} page={page} onOpenPdf={onOpenPdf} />
 		</>
 	) : (
-		passage.text
+		<WithNotes text={passage.text} page={page} onOpenPdf={onOpenPdf} />
 	);
 	if (passage.kind === "heading" || passage.kind === "title") {
 		return <h3 className={cn("mt-4 font-semibold text-balance", passage.kind === "title" ? "text-xl" : "text-base")}>{text}</h3>;
@@ -260,7 +298,7 @@ export function PaperText({
 				const previous = passages.passages[index - 1];
 				const newPage = !previous || previous.address.page !== passage.address.page;
 				const newPart = passage.part in PART_NAME && previous?.part !== passage.part;
-				const canExplain = enabled && explainable(passage.kind);
+				const canExplain = enabled && explainable(passage.kind) && !whollyUnreadable(passage);
 				const kept = explained.has(placeKey(passage.address));
 				return (
 					<Fragment key={`${passage.address.page}-${passage.address.start}`}>
@@ -301,7 +339,12 @@ export function PaperText({
 									{kept ? <MessageSquareText /> : <Sparkles />}
 								</button>
 							)}
-							<Shown passage={passage} mark={index === target ? mark : null} markRef={index === target ? markRef : undefined} />
+							<Shown
+								passage={passage}
+								mark={index === target ? mark : null}
+								markRef={index === target ? markRef : undefined}
+								onOpenPdf={onOpenPdf}
+							/>
 						</div>
 						{chosen?.index === index && (
 							<div data-explainer>
