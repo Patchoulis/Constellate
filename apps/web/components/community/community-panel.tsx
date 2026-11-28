@@ -7,6 +7,7 @@ import {
 	ChevronLeft,
 	Eye,
 	EyeOff,
+	ListTree,
 	Loader2,
 	Square,
 	Star,
@@ -18,8 +19,12 @@ import {
 import type { Community, GraphNode, RunCitations, RunResult } from "@rp/contracts";
 import { CommunityAsk } from "@/components/features/answers/ask";
 import { useAskNaming } from "@/components/shell/run-dialogs";
+import { EvidenceLink } from "@/components/reader/evidence-link";
+import { Block, ListLabel, SubBlock } from "@/components/community/block";
+import { ClosestLine, ClosestList, useClosest } from "@/components/community/closest-papers";
+import { CITED_LABEL, citedIn, quotesTitle, statementOf } from "@/lib/features/writing/closest";
 import { api } from "@/lib/net/api";
-import { namingRequest, unnamedOf } from "@/lib/features/writing/naming";
+import { isPlain, leftOutWords, namingRequest, plainOf, sectionsOf, unnamedOf } from "@/lib/features/writing/naming";
 import { elsewhereLine, useFollowedJob } from "@/lib/shell/use-followed-job";
 import { AcceptanceTag, AiTag } from "@/components/brand";
 import { MathText } from "@/components/math-text";
@@ -27,9 +32,18 @@ import { CommunityReviews } from "@/components/community/review-summary";
 import { CommunityStances } from "@/components/features/stances/stances";
 import { ExtractionTable } from "@/components/features/extraction/extraction-table";
 import { CommunityCitationKinds } from "@/components/features/citation_contexts/citation-kinds";
-import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
+import { Button, RowButton, Segmented } from "@/components/ui/button";
 import { ResizeHandle } from "@/components/ui/resize-handle";
-import { CITED_BY_TITLE, CITES_TITLE, NOT_COUNTABLE, citedByFigure, citedByOf, citesFigure, citesOf } from "@/lib/reader/citations";
+import {
+	CITATIONS_NOTE,
+	CITED_BY_TITLE,
+	CITES_TITLE,
+	NOT_COUNTABLE,
+	citedByFigure,
+	citedByOf,
+	citesFigure,
+	citesOf,
+} from "@/lib/reader/citations";
 import { CommunityCitationFigures, RunCitationFigures } from "@/components/community/citation-figures";
 import { communityLabel, type CommunityNode } from "@/lib/community/community";
 import type { MarksOf } from "@/lib/community/marks";
@@ -204,104 +218,199 @@ function Line({ node, figure, onClick }: { node: CommunityNode; figure: string; 
 
 function Stat({ label, title, children }: { label: string; title?: string; children: React.ReactNode }) {
 	return (
-		<div className="flex justify-between" title={title}>
-			<dt className="text-muted-foreground">{label}</dt>
-			<dd>{children}</dd>
+		<div className="flex min-w-0 justify-between gap-3" title={title}>
+			<dt className="min-w-0 text-muted-foreground [overflow-wrap:anywhere]">{label}</dt>
+			<dd className="shrink-0 text-right">{children}</dd>
 		</div>
 	);
+}
+
+/** The figures of "At a glance", besides its venues and acceptance tiers (its citations have a block of their own). */
+const GLANCE = ["uniqueness", "highlights"];
+
+/**
+ * A community's description in its sections: each a quieter sub-header with its own hairline, its text, then the
+ * papers the model cited (each the paper's title, which opens the reader at the quoted words, and the quote), then
+ * the papers closest to it in meaning, found with the embedding model (none cited above listed again).
+ */
+function Sections({ community, closest }: { community: Community; closest: ReturnType<typeof useClosest> }) {
+	const sections = sectionsOf(community);
+	const leftOut = leftOutWords(community.sections_left_out);
+	return (
+		<div className="flex min-w-0 flex-col gap-4">
+			{sections?.map((section) => {
+				const found = statementOf(closest.status, section.heading);
+				return (
+					<SubBlock key={section.heading} title={section.heading}>
+						<p className="font-sans text-base text-foreground">{section.text}</p>
+						<ListLabel>{CITED_LABEL}</ListLabel>
+						<ul className="flex flex-col gap-1.5" aria-label={`Papers cited for ${section.heading}`}>
+							{section.cites.map((cite, index) => (
+								<li key={`${cite.evidence.paper}-${index}`} className="min-w-0 border-l-2 pl-2 [overflow-wrap:anywhere]">
+									<EvidenceLink
+										evidence={cite.evidence}
+										label={cite.title.trim() || cite.evidence.paper}
+										className="flex items-start leading-snug [&_button]:text-left [&>button:first-child]:min-w-0 [&>button:first-child]:flex-1"
+									/>
+									{!quotesTitle(cite) && (
+										<p className="font-sans text-[0.8125rem] leading-snug text-muted-foreground italic">
+											&ldquo;{cite.evidence.quote}&rdquo;
+										</p>
+									)}
+								</li>
+							))}
+						</ul>
+						{found && closest.status && <ClosestList papers={found.papers} floor={closest.status.floor} cited={citedIn(section)} />}
+					</SubBlock>
+				);
+			})}
+			{!sections && <p className="text-xs text-muted-foreground">None of its description&apos;s sections could be shown.</p>}
+			{leftOut && <p className="text-xs text-muted-foreground">{leftOut}</p>}
+			<ClosestLine line={closest.line} />
+		</div>
+	);
+}
+
+/**
+ * A plain description, written before sections were asked for: once its closest papers are found, each sentence is
+ * a short paragraph of its own with the papers closest to it under it; until then, the paragraph as written.
+ */
+function PlainDescription({ community, closest }: { community: Community; closest: ReturnType<typeof useClosest> }) {
+	const statements = closest.status?.statements;
+	return (
+		<div className="flex min-w-0 flex-col gap-3">
+			{statements && statements.length > 0 ? (
+				statements.map((statement, index) => (
+					<div key={`${index}-${statement.statement}`} className="min-w-0">
+						<p className="font-sans text-base text-foreground">{statement.statement}</p>
+						<ClosestList papers={statement.papers} floor={closest.status?.floor ?? 0} />
+					</div>
+				))
+			) : (
+				<p className="font-sans text-base text-foreground">{community.description}</p>
+			)}
+			<ClosestLine line={closest.line} />
+		</div>
+	);
+}
+
+/** What the run is, for what describing it again asks first. */
+interface Described {
+	run: string;
+	/** the run's title, said in what is asked first */
+	title: string;
+	communities: Community[];
+	/** the run's communities were described again: read them again */
+	onNamed: () => void;
 }
 
 function Detail({
 	node,
 	marks,
+	described,
 	onSelect,
 	onOverview,
 	onOpenPaper,
 }: {
 	node: CommunityNode;
 	marks: MarksOf;
+	described: Described;
 	onSelect: (node: CommunityNode) => void;
 	onOverview: (node: CommunityNode) => void;
 	onOpenPaper: (id: string) => void;
 }) {
 	const { community, siblings, children } = node;
+	const closest = useClosest(described.run, community.tree_path);
+	const glance = SORTS.filter((sort) => GLANCE.includes(sort.value));
 	return (
-		<div className="flex flex-col gap-4 p-4">
+		<div className="flex flex-col gap-5 p-4">
 			{/* in a narrow panel its words go onto a second line: never past the panel's edge */}
 			<Button variant="outline" className="h-auto min-h-8 py-1.5 text-left whitespace-normal" onClick={() => onOverview(node)}>
 				<Telescope />
 				<span className="min-w-0">Overview: methods, findings, directions</span>
 			</Button>
-			{community.description ? (
-				<p className="font-sans text-base text-foreground">{community.description}</p>
-			) : (
-				<p className="text-xs text-muted-foreground">
-					No written description yet. &ldquo;Name the communities&rdquo;, over the list of all communities, names and describes them with
-					the chosen language model, and shows what that costs first. It needs that model&apos;s key (Settings, Language model, says which
-					variable to set).
-				</p>
-			)}
-			<div className="flex flex-wrap gap-1">
-				{community.keywords.map((keyword) => (
-					<span key={keyword} className="rounded-sm border px-1.5 py-0.5 text-xs text-muted-foreground">
-						{keyword}
-					</span>
-				))}
-			</div>
-			<dl className="flex flex-col gap-1 text-xs tabular-nums">
-				{Object.entries(community.mix).map(([tag, papers]) => (
-					<Stat key={tag} label={tag}>
-						{count(papers, "paper")}
-					</Stat>
-				))}
-				{SORTS.slice(1, 3).map((sort) => (
-					<Stat key={sort.value} label={sort.label} title={sort.title}>
-						{sort.show(community)}
-					</Stat>
-				))}
-				<CommunityCitationFigures community={community} />
-				{(["oral", "spotlight"] as const).map(
-					(tier) =>
-						community.acceptance[tier] !== undefined && (
-							<Stat key={tier} label={tier === "oral" ? "Orals" : "Spotlights"}>
-								{count(community.acceptance[tier] ?? 0, "paper")}
-							</Stat>
-						),
+			<Block title="Description">
+				{community.sections !== undefined ? (
+					<Sections community={community} closest={closest} />
+				) : community.description ? (
+					<div className="flex flex-col items-start gap-2">
+						<PlainDescription community={community} closest={closest} />
+						{isPlain(community) && <RewriteSections {...described} compact />}
+					</div>
+				) : (
+					<p className="text-xs text-muted-foreground">
+						No written description yet. &ldquo;Name the communities&rdquo;, over the list of all communities, names and describes them with
+						the chosen language model, and shows what that costs first. It needs that model&apos;s key (Settings, Language model, says which
+						variable to set).
+					</p>
 				)}
-				<Stat label="Tagged AI detected" title="Papers the statistical AI-text detector flagged: an estimate">
-					{count(community.ai_flagged, "paper")}
-				</Stat>
-			</dl>
+			</Block>
+			<Block title="Characteristic terms" note={count(community.keywords.length, "term")}>
+				<div className="flex flex-wrap gap-1">
+					{community.keywords.map((keyword) => (
+						<span key={keyword} className="rounded-sm border px-1.5 py-0.5 text-xs text-muted-foreground [overflow-wrap:anywhere]">
+							{keyword}
+						</span>
+					))}
+				</div>
+			</Block>
+			<Block title="At a glance" note={count(community.size, "paper")}>
+				<dl className="flex flex-col gap-1 text-xs tabular-nums">
+					{Object.entries(community.mix).map(([tag, papers]) => (
+						<Stat key={tag} label={tag}>
+							{count(papers, "paper")}
+						</Stat>
+					))}
+					{glance.map((sort) => (
+						<Stat key={sort.value} label={sort.label} title={sort.title}>
+							{sort.show(community)}
+						</Stat>
+					))}
+					{(["oral", "spotlight"] as const).map(
+						(tier) =>
+							community.acceptance[tier] !== undefined && (
+								<Stat key={tier} label={tier === "oral" ? "Orals" : "Spotlights"}>
+									{count(community.acceptance[tier] ?? 0, "paper")}
+								</Stat>
+							),
+					)}
+					<Stat label="Tagged AI detected" title="Papers the statistical AI-text detector flagged: an estimate">
+						{count(community.ai_flagged, "paper")}
+					</Stat>
+				</dl>
+			</Block>
+			<Block title="Citations" noteTitle={CITATIONS_NOTE} note="from reference lists read">
+				<dl className="flex flex-col gap-1 text-xs tabular-nums">
+					<CommunityCitationFigures community={community} />
+				</dl>
+			</Block>
 			{children.length > 0 && (
-				<section>
-					<Heading className="mb-1.5">Sub-communities</Heading>
+				<Block title="Sub-communities" note={count(children.length, "part")}>
 					{children.map((child) => (
 						<Line key={child.community.id} node={child} figure={count(child.community.size, "paper")} onClick={() => onSelect(child)} />
 					))}
-				</section>
+				</Block>
 			)}
-			<section>
-				<Heading className="mb-1.5">Closest {node.depth ? "sibling" : "communities"}</Heading>
+			<Block title={`Closest ${node.depth ? "sibling" : "communities"}`}>
 				{community.closest_communities.map((other) => (
 					<Line key={other.id} node={siblings[other.id]} figure={similarity(other.cosine)} onClick={() => onSelect(siblings[other.id])} />
 				))}
-			</section>
-			<section>
-				<Heading className="mb-1.5">Nearest to the mean embedding</Heading>
+			</Block>
+			<Block title="Nearest to the mean embedding">
 				{community.nearest_to_centroid.map((paper) => (
 					<div key={paper.id} className="flex items-start gap-1">
-						<RowButton className="items-baseline gap-2" onClick={() => onOpenPaper(paper.id)}>
-							<span className="flex-1 font-sans text-base leading-snug">
+						<RowButton className="flex-col items-start gap-0.5" onClick={() => onOpenPaper(paper.id)}>
+							<span className="w-full min-w-0 font-sans text-base leading-snug [overflow-wrap:anywhere]">
 								<MathText>{paper.title}</MathText>
 							</span>
-							<span className="shrink-0 text-xs text-muted-foreground tabular-nums" title={SIMILARITY_NOTE}>
+							<span className="text-xs text-muted-foreground tabular-nums" title={SIMILARITY_NOTE}>
 								{similarity(paper.cosine)}
 							</span>
 						</RowButton>
 						<MarkButton className="mt-0.5" marked={marks.has(paper.id)} onToggle={() => marks.toggle(paper.id)} />
 					</div>
 				))}
-			</section>
+			</Block>
 		</div>
 	);
 }
@@ -485,9 +594,9 @@ function NameCommunities({
 		setRefused(null);
 		setAsking(true);
 		try {
-			const estimate = await api.describeEstimate(run);
-			if (!(await askNaming(estimate, false, title))) return;
-			await start(async () => (await api.describeRun(run, namingRequest(estimate, false))).id);
+			const estimate = await api.describeEstimate(run, "name");
+			if (!(await askNaming(estimate, "name", title))) return;
+			await start(async () => (await api.describeRun(run, namingRequest(estimate, "name"))).id);
 		} catch (error) {
 			setRefused((error as Error).message);
 		} finally {
@@ -540,6 +649,81 @@ function NameCommunities({
 	);
 }
 
+/**
+ * "Rewrite with sections and citations", for a run with communities described before sections were asked for: a
+ * small button under such a description (`compact`), and a line over the list of all communities. What rewriting
+ * them would cost is shown first (the naming dialog, lib/features/writing/naming.ts), the click starts the job,
+ * which is followed with its progress and can be stopped, and the run's communities are read again when it ends.
+ */
+function RewriteSections({ run, title, communities, onNamed, compact = false }: Described & { compact?: boolean }) {
+	const askNaming = useAskNaming();
+	const [asking, setAsking] = useState(false);
+	const [refused, setRefused] = useState<string | null>(null);
+	const { job, elsewhere, start } = useFollowedJob(() => onNamed(), `sectioning:${run}`);
+	const { communities: all, plain } = plainOf(communities);
+	const running = job.state === "running" ? job : null;
+	if (plain === 0 && !running && job.state !== "failed") return null;
+	const rewrite = async () => {
+		setRefused(null);
+		setAsking(true);
+		try {
+			const estimate = await api.describeEstimate(run, "sections");
+			if (!(await askNaming(estimate, "sections", title))) return;
+			await start(async () => (await api.describeRun(run, namingRequest(estimate, "sections"))).id);
+		} catch (error) {
+			setRefused((error as Error).message);
+		} finally {
+			setAsking(false);
+		}
+	};
+	const button = (
+		<Button
+			variant={compact ? "ghost" : "outline"}
+			className="h-auto min-h-7 px-2 py-1 text-left text-xs whitespace-normal"
+			disabled={asking || job.state === "starting" || elsewhere !== null}
+			title={`Shows what rewriting the ${count(plain, "plain description")} of this run with sections and the language model's own checked citations would cost, before anything is asked`}
+			onClick={() => void rewrite()}
+		>
+			{asking || job.state === "starting" ? <Loader2 className="animate-spin" /> : <ListTree />}
+			Rewrite with sections and the model&apos;s own citations
+		</Button>
+	);
+	return (
+		<div className={cn("flex min-w-0 flex-col items-start gap-1.5 text-xs", !compact && "border-b px-3 py-2")}>
+			{running ? (
+				<div className="flex w-full items-center gap-2 text-muted-foreground" role="status">
+					<Loader2 className="size-3.5 shrink-0 animate-spin" />
+					<span className="min-w-0 flex-1">
+						Rewriting with sections and citations
+						{running.progress ? `: ${running.progress.done.toLocaleString()} of ${count(running.progress.of, "call")} done` : "…"}
+					</span>
+					<Button
+						variant="ghost"
+						size="icon"
+						title="Stop: what is under way is finished, nothing new is asked; what was rewritten stays"
+						onClick={() => void api.cancelJob(running.id).catch(() => undefined)}
+					>
+						<Square />
+					</Button>
+				</div>
+			) : (
+				<>
+					{!compact && (
+						<span className="text-muted-foreground">
+							{plain.toLocaleString()} of {count(all, "community", "communities")} {plain === 1 ? "has" : "have"} a plain description,
+							written before sections and citations.
+						</span>
+					)}
+					{button}
+				</>
+			)}
+			{job.state === "failed" && <p className="text-destructive">They were not all rewritten: {job.error}</p>}
+			{refused && <p className="text-destructive">{refused}</p>}
+			{elsewhere && !running && <p className="text-muted-foreground">{elsewhereLine(elsewhere)}</p>}
+		</div>
+	);
+}
+
 /** The Communities tab: the list of communities, or one community in detail. */
 function Communities({
 	result,
@@ -569,6 +753,7 @@ function Communities({
 	onOverview: (node: CommunityNode) => void;
 	onOpenPaper: (id: string) => void;
 }) {
+	const described: Described = { run: result.name, title, communities: result.communities, onNamed };
 	return (
 		<>
 			<div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
@@ -598,7 +783,14 @@ function Communities({
 			{selected ? (
 				// one community's sections start afresh for another: nothing of the last one is shown under its name
 				<div key={`${result.name}/${selected.community.tree_path}`} className="min-h-0 flex-1 overflow-y-auto">
-					<Detail node={selected} marks={marks} onSelect={onSelect} onOverview={onOverview} onOpenPaper={onOpenPaper} />
+					<Detail
+						node={selected}
+						marks={marks}
+						described={described}
+						onSelect={onSelect}
+						onOverview={onOverview}
+						onOpenPaper={onOpenPaper}
+					/>
 					<CommunityReviews run={result.name} treePath={selected.community.tree_path} onOpenPaper={onOpenPaper} />
 					<CommunityStances
 						key={`${result.name}/${selected.community.tree_path}`}
@@ -630,6 +822,7 @@ function Communities({
 						</Button>
 					</div>
 					<NameCommunities run={result.name} title={title} communities={result.communities} onNamed={onNamed} />
+					<RewriteSections {...described} />
 					{(sort.by.value === "cited" || sort.by.value === "cites") && <RunCitationFigures citations={citations} />}
 					<div className="min-h-0 flex-1 overflow-y-auto p-2">
 						<List nodes={roots} sort={sort} onSelect={onSelect} />

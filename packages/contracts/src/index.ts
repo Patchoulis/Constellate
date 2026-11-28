@@ -218,7 +218,16 @@ export type JobOutcome =
 
 /** The features that keep the model's answers (engine library/money/answers.rs `Feature`). */
 export type FeatureName =
-	"extraction" | "citation_kinds" | "stances" | "answers" | "critique" | "explanation" | "claim_tree" | "describing" | "overview";
+	| "extraction"
+	| "citation_kinds"
+	| "stances"
+	| "answers"
+	| "critique"
+	| "explanation"
+	| "claim_tree"
+	| "describing"
+	| "overview"
+	| "closest_papers";
 
 /** What a feature's answers are about. */
 export type FeatureSubject = { paper: string } | { run: string } | { community: { run: string; community: string } };
@@ -320,7 +329,14 @@ export interface Community {
 	tree_path: string;
 	size: number;
 	name: string | null;
+	/** what it is about: its sections' texts one after the other, or one plain paragraph when it was described
+	 *  before sections were asked for */
 	description: string | null;
+	/** its description in sections, each with the papers it cites; absent when it was described before sections
+	 *  were asked for (a plain description), or not described */
+	sections?: CommunitySection[];
+	/** with `sections`: how many were left out, their quotes not found in at least 2 of its papers */
+	sections_left_out?: number;
 	keywords: string[];
 	mix: Record<string, number>;
 	/** mean adjacency weight between two members */
@@ -341,6 +357,22 @@ export interface Community {
 	/** what it cites and how often it is cited, from the reference lists Constellate has read; absent in runs
 	 *  saved before these were counted */
 	citations?: CommunityCitations | null;
+}
+
+/** A section of a community's description (engine features/writing/describe.rs): "Problem", "Shared methods" or
+ *  "What sets it apart", in that order, each shown only with quotes found in at least 2 of the community's papers. */
+export interface CommunitySection {
+	heading: string;
+	/** 1 to 2 sentences */
+	text: string;
+	/** one per quote found, the model's order */
+	cites: CommunityCite[];
+}
+
+/** A paper a section rests on: its title, and the quote of it found (in its title or abstract). */
+export interface CommunityCite {
+	title: string;
+	evidence: Evidence;
 }
 
 /**
@@ -2023,7 +2055,8 @@ export interface DescribeBeforeRun {
 /** What a run request accepts of `DescribeBeforeRun`: the model shown and its most. */
 export type DescribeAccepted = ShownModel & AcceptedCost;
 
-/** `GET /api/runs/<run>/describe/estimate[?redo=true]`: what naming a made run's communities would cost. */
+/** `GET /api/runs/<run>/describe/estimate[?add_sections=true | ?redo=true]`: what naming a made run's communities
+ *  would cost; with `add_sections`, describing again with sections those described plainly before. */
 export interface DescribeEstimate {
 	provider: ProviderId;
 	model: string;
@@ -2031,13 +2064,58 @@ export interface DescribeEstimate {
 	communities: number;
 	/** of those, with a name now */
 	named: number;
+	/** of those named, with a plain description and no sections: described before sections were asked for */
+	plain: number;
 	/** calls kept from before (`kept`) cost nothing */
 	estimate: BatchCost;
 	api_key_set: boolean;
 }
 
-/** `POST /api/runs/<run>/describe`: name the run's communities (all again with `redo`), as the one job. */
-export type DescribeRequest = ShownModel & AcceptedCost & { redo?: boolean };
+/** `POST /api/runs/<run>/describe`: name the run's communities, as the one job: with `add_sections`, describe again
+ *  with sections those described plainly before; with `redo`, all of them again. An ordinary one never asks again
+ *  about a community described plainly. */
+export type DescribeRequest = ShownModel & AcceptedCost & { redo?: boolean; add_sections?: boolean };
+
+/** `GET /api/runs/<run>/closest/<path>`: each statement of a community's description (a section's text, or a
+ *  sentence of a plain description) with the community's papers closest to it in meaning, found with the run's
+ *  embedding model on this computer (engine features/writing/closest.rs). It costs nothing and sends nothing
+ *  anywhere. Closeness of meaning, not a check that a paper says the statement. */
+export interface ClosestPapers {
+	state: JobState;
+	/** every statement with its papers, once all are found */
+	statements: ClosestStatement[] | null;
+	error: string | null;
+	/** why they cannot be found on this computer now ("The embedding model is not on this computer: ..."):
+	 *  nothing is started */
+	unavailable: string | null;
+	/** the embedding model they are found with */
+	model: string;
+	/** no paper below this cosine similarity is shown */
+	floor: number;
+}
+
+export interface ClosestStatement {
+	statement: string;
+	/** the section's heading it is the text of; null for a sentence of a plain description */
+	section: string | null;
+	/** at most 5, closest first (ties by paper id); empty when no paper reaches `floor` */
+	papers: ClosestPaper[];
+}
+
+export interface ClosestPaper {
+	id: string;
+	title: string;
+	/** cosine similarity of the statement and the paper's embedding, to 3 decimals */
+	cosine: number;
+	/** the paper's sentence closest to the statement, in its own words, located in its title or abstract */
+	evidence: Evidence;
+}
+
+/** `POST /api/runs/<run>/closest/<path>`: the job finding them, or none when they were found before. */
+export interface ClosestStarted {
+	ok: true;
+	id: number | null;
+}
 
 /** The job naming them; it finishes as `{kind: "run", run}`: open the run again to see the names. */
 export interface DescribeStarted {

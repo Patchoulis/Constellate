@@ -55,6 +55,20 @@ impl Onnx {
         Self { download, repo: QWEN3, loaded: Mutex::new(Loaded::Not) }
     }
 
+    /// The model's name, as runs and the library name it.
+    pub fn model(&self) -> &'static str {
+        self.repo.model
+    }
+
+    /// Use the model's files in `folder` (found on this computer, never downloaded): loaded at the first
+    /// [`Embedding::encode`]. A model loaded already stays as it is.
+    pub fn use_folder(&self, folder: PathBuf) {
+        let mut loaded = self.loaded.lock().unwrap_or_else(PoisonError::into_inner);
+        if matches!(&*loaded, Loaded::Not) {
+            *loaded = Loaded::Ready(folder);
+        }
+    }
+
     /// Which device the loaded model runs on, if it has been loaded.
     pub fn loaded_device(&self) -> Option<Device> {
         match &*self.loaded.lock().unwrap_or_else(PoisonError::into_inner) {
