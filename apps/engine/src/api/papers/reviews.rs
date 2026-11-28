@@ -3,7 +3,8 @@
 //! ```text
 //! POST /api/papers/{id}/reviews    {text, url}: the text of the paper's reviews page as the reader shows it,
 //!                                  and the page's address. Answers what is kept now ([`Read`])
-//! GET  /api/papers/{id}/reviews    the kept notes and their figures ([`PaperReviews`]), or null
+//! GET  /api/papers/{id}/reviews    the kept notes, their figures and what the reviewers have in common
+//!                                  ([`PaperReviews`]), or null
 //! GET  /api/runs/{run}/reviews/summary                          the run's [`ReviewSummary`]
 //! GET  /api/runs/{run}/communities/{community}/reviews/summary  one community's (by its tree path)
 //! ```
@@ -24,11 +25,14 @@ use axum::extract::{Path, State};
 use axum::routing::{MethodRouter, get};
 use serde::{Deserialize, Serialize};
 
-use crate::analysis::reviews::{PaperFigures, ReviewSummary, Reviewed, paper_figures, summarise, venue_of};
+use crate::analysis::citations::Members;
+use crate::analysis::reviews::{
+    InCommon, PaperFigures, ReviewSummary, Reviewed, in_common, paper_figures, summarise, venue_of,
+};
 use crate::api::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::library::core::store::read_json;
 use crate::library::{Keeping, KeptReviews, Library, Ratings};
-use crate::text::reviews::discussion::{Discussion, read_discussion};
+use crate::text::reviews::discussion::{Discussion, Venue, read_discussion};
 use crate::text::reviews::{MAX_TEXT, forum, read_ratings};
 
 /// The routes of this module, for [`crate::api::routes::table`].
@@ -40,7 +44,9 @@ pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
     ]
 }
 
-/// A paper's kept reviews: where and when they were read, the notes, and what their scores come to.
+/// A paper's kept reviews: where and when they were read, the notes, what their scores come to, and what the
+/// reviewers commonly praise and criticise (`praise`, `criticism`). The last are counted from the kept notes each
+/// time they are asked for, so reviews kept before they existed have them too.
 #[derive(Serialize)]
 pub struct PaperReviews {
     pub paper_id: String,
@@ -49,18 +55,23 @@ pub struct PaperReviews {
     #[serde(flatten)]
     pub discussion: Discussion,
     pub figures: PaperFigures,
+    #[serde(flatten)]
+    pub in_common: InCommon,
 }
 
 impl PaperReviews {
     fn of(kept: KeptReviews) -> Self {
         let venue = venue_of(&kept.paper_id, &kept.discussion);
-        let figures = paper_figures(&Reviewed::new(&kept.paper_id, venue.as_ref(), &kept.discussion));
+        let reviewed = Reviewed::new(&kept.paper_id, venue.as_ref(), &kept.discussion);
+        let figures = paper_figures(&reviewed);
+        let in_common = in_common(&reviewed);
         Self {
             paper_id: kept.paper_id,
             address: kept.address,
             read_at: kept.read_at,
             discussion: kept.discussion,
             figures,
+            in_common,
         }
     }
 }
@@ -121,6 +132,12 @@ async fn read(
         let paper = library.paper(&paper_id)?.ok_or(ApiError::NotFound)?;
         let as_it_is = |outcome| -> Result<Read, ApiError> {
             let (ratings, reviews) = library.ratings_and_reviews(&paper_id)?;
+            // the scale of each field as the venue scores it: the paper id's venue, else the kept page's
+            let venue = match &reviews {
+                Some(kept) => venue_of(&paper_id, &kept.discussion),
+                None => Venue::of_paper(&paper_id),
+            };
+            let ratings = ratings.map(|ratings| ratings.with_scales(venue.as_ref()));
             Ok(Read { outcome, ratings, reviews: reviews.map(PaperReviews::of) })
         };
         let discussion = paper.url.as_deref().and_then(forum);
@@ -193,6 +210,30 @@ pub(crate) fn papers_of(engine: &Shared, run: &str, community: Option<&str>) -> 
     ids.sort_unstable();
     ids.dedup();
     Ok(ids)
+}
+
+/// The ids of a run's papers, and its tree of communities by the ids of their papers.
+pub(crate) fn tree_of(engine: &Shared, run: &str) -> Result<(Vec<String>, Vec<Members>), ApiError> {
+    fn members(community: &Community, graph: &Graph) -> Members {
+        Members {
+            tree_path: community.tree_path.clone(),
+            papers: community
+                .members
+                .iter()
+                .filter_map(|member| graph.nodes.get(*member))
+                .map(|node| node.id.clone())
+                .collect(),
+            children: community.children.iter().map(|child| members(child, graph)).collect(),
+        }
+    }
+    let folder = run_folder(engine, run)?;
+    let graph: Graph = read_json(&folder.join("graph.json"))?.ok_or(ApiError::NotFound)?;
+    let tree: Communities = read_json(&folder.join("communities.json"))?.ok_or(ApiError::NotFound)?;
+    let communities = tree.communities.iter().map(|community| members(community, &graph)).collect();
+    let mut ids: Vec<String> = graph.nodes.into_iter().map(|node| node.id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    Ok((ids, communities))
 }
 
 /// What the reviews of a run or community come to, with the titles of the papers it names.
@@ -337,6 +378,12 @@ mod tests {
         assert_eq!(read["outcome"], "kept");
         assert_eq!(read["ratings"]["reviews"], 2); // the old route's answer, unchanged
         assert_eq!(read["ratings"]["ratings"]["Rating"]["values"], json!([8, 6]));
+        // with the scale of the venue the paper's id names, added as served
+        assert_eq!(
+            read["ratings"]["ratings"]["Rating"]["scale"],
+            json!({"minimum": 1, "maximum": 10, "source": "assumed"})
+        );
+        crate::api::contract::assert_fits("FieldRatings", &read["ratings"]["ratings"]["Rating"], &[]);
         let (_, kept) = ask(&router, "GET", "/api/papers/iclr-2024-1/reviews", None).await;
         assert_eq!(kept["address"], FORUM);
         assert_eq!(kept["notes"].as_array().unwrap().len(), 5);
@@ -344,6 +391,20 @@ mod tests {
         let rating = &kept["figures"]["fields"][0];
         assert_eq!((rating["field"].clone(), rating["mean"].clone()), (json!("Rating"), json!(7.0)));
         assert_eq!(rating["scale"], json!({"minimum": 1, "maximum": 10, "source": "assumed"}));
+        // both reviewers praise the novel convergence proof ("novel" first: the summaries never say it); they
+        // criticise nothing in common
+        let praised: Vec<(&str, &Value, &Value)> = kept["praise"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|theme| (theme["term"].as_str().unwrap(), &theme["reviewers"], &theme["all_reviewers"]))
+            .collect();
+        assert_eq!(praised, [("novel", &json!(2), &json!(2)), ("convergence proof", &json!(2), &json!(2))]);
+        assert_eq!(kept["criticism"], json!([]));
+        let source = &kept["praise"][0]["sources"][0];
+        assert_eq!(source["signer"], json!({"role": "reviewer", "id": "Uv78"}));
+        assert_eq!(source["excerpt"], "The convergence proof is novel and the writing is clear.");
+        crate::api::contract::assert_fits("PaperReviews", &kept, &[]);
         let (_, again) =
             ask(&router, "POST", "/api/papers/iclr-2024-1/reviews", Some(json!({"text": "Loading...", "url": FORUM})))
                 .await;

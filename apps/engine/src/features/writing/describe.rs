@@ -72,7 +72,7 @@ use crate::library::{AnswerKey, Feature, Kept, Library, LibraryError, Paper, Slo
 use crate::model::batch::{self, Asking, BatchEstimate, Failure, IN_FLIGHT, Item, Outcome as Asked, Stopped};
 use crate::model::chosen::{Accepted, Chosen, Refused, Terms, budget};
 use crate::model::language::{
-    Ask, Budget, CHARS_PER_TOKEN, Counting, Effort, Estimate, Form, Planned, Provider, Transport, Unavailable,
+    Ask, Budget, CHARS_PER_TOKEN, Counting, Effort, Estimate, ForRun, Form, Planned, Provider, Transport, Unavailable,
 };
 use crate::settings::Settings;
 
@@ -1032,8 +1032,10 @@ pub fn describe_with(
 ) -> Described {
     let walked = match chosen.endpoint() {
         Ok(endpoint) => {
+            // making the run or naming it again: what it costs is the run's
+            let recorder = ForRun::new(library, Some(run.name));
             let mut answer = |items: &[Item<'_>], level: &Tracker<'_>| {
-                let asking = Asking { library, transport, endpoint: endpoint.clone(), recorder: library, in_flight };
+                let asking = Asking { library, transport, endpoint: endpoint.clone(), recorder: &recorder, in_flight };
                 batch::ask_all::<Said>(asking, items, budget, level)
             };
             walk(library, run, chosen, tracker, run.again == Again::All, &mut answer)

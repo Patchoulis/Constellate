@@ -31,6 +31,7 @@ import {
 	stateNote,
 } from "@/lib/features/answers/answers";
 import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
+import { ReadingModel } from "@/components/shell/model-choice";
 import { ready, useAsync } from "@/lib/use-async";
 import { elsewhereLine, runSubject, useFollowedJob } from "@/lib/shell/use-followed-job";
 import { useResizable } from "@/lib/ui/use-resizable";
@@ -142,7 +143,7 @@ export function AskBox({
 	const [text, setText] = useState("");
 	const asked = useAsync(() => api.questions(run), [run], { keep: false });
 	const history = useMemo(() => historyOf(ready(asked) ?? [], community), [asked, community]);
-	const chosen = useChosenModel();
+	const chosen = useChosenModel("reading");
 	const choice = choiceKey(chosen);
 	const confirm = useConfirm();
 
@@ -284,6 +285,7 @@ export function AskBox({
 							<Passages passages={state.found.passages} />
 						</div>
 					)}
+					<ReadingModel />
 					{cannotAsk(state.estimate) ? (
 						<p className="text-xs text-muted-foreground">{cannotAsk(state.estimate)}</p>
 					) : stale ? (

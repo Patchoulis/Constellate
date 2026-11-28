@@ -40,7 +40,7 @@ use crate::jobs::{Busy, Counted, Finished, Job, Phase, Progress};
 use crate::library::{Library, LibraryError};
 use crate::model::chosen::Chosen;
 use crate::model::language::{Endpoint, Provider, Transport, Unavailable};
-use crate::settings::{self, Choices, Settings, SettingsError};
+use crate::settings::{self, Choices, ModelRole, ReadingState, Settings, SettingsError};
 
 /// How long a request may take from its first byte to its answer: a client that sends its body slowly (to hold
 /// the engine's connections) is cut off.
@@ -71,6 +71,8 @@ pub struct Engine {
     library: Mutex<Option<Arc<Library>>>,
     /// The person's runs: the one being made, the list, the loaded ones ([`crate::pipeline::served`]).
     pub runs: crate::pipeline::served::Runs,
+    /// The library's reference lists linked once and kept, and the runs' citation figures counted from them.
+    pub citations: crate::api::papers::citations::Linking,
     /// What of the earlier version's data folder could not be moved in when the library was opened, in words.
     import_problems: Mutex<Vec<String>>,
 }
@@ -96,6 +98,7 @@ impl Engine {
             pdfs: crate::papers::pdf::Pdfs::default(),
             library: Mutex::new(None),
             runs: Default::default(),
+            citations: Default::default(),
             import_problems: Mutex::new(Vec::new()),
         }
     }
@@ -104,6 +107,14 @@ impl Engine {
     /// the library has not been opened yet).
     pub fn import_problems(&self) -> Vec<String> {
         self.import_problems.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// The run a request about one paper says it was asked from (the run open in the interface), when that is the
+    /// name of a run there is: what the paper's questions cost is then the run's. A name that is not one, or no
+    /// name, is no run: never a reason to refuse the request.
+    pub fn asked_from(&self, run: Option<&str>) -> Option<String> {
+        let run = run.filter(|run| one_name(run).is_ok())?;
+        crate::pipeline::results::files::folder_of(&self.data, run).is_ok().then(|| run.to_owned())
     }
 
     /// The library in the data folder, opened once and shared by every request.
@@ -171,14 +182,28 @@ impl Engine {
         });
     }
 
-    /// The provider, model and effort every feature asks with, and the endpoint it asks at, read together from
-    /// the settings ([`Chosen::new`]): the one place a feature learns which model it asks, so that what it
+    /// The model that names communities and writes their overviews (and the detector's training texts):
+    /// [`Engine::chosen_for`] the naming role.
+    pub fn chosen(&self) -> Result<Chosen, ApiError> {
+        self.chosen_for(ModelRole::Naming)
+    }
+
+    /// The model that reads papers, for every feature that asks a model about papers' text (tables, agree /
+    /// disagree, questions, claims, weaknesses, explanations, citation kinds): the naming model until it is chosen
+    /// on its own.
+    pub fn reading(&self) -> Result<Chosen, ApiError> {
+        self.chosen_for(ModelRole::Reading)
+    }
+
+    /// The provider, model and effort a feature asks with for `role`, and the endpoint it asks at, read together
+    /// from the settings ([`Chosen::new`]): the one place a feature learns which model it asks, so that what it
     /// estimates, keys its answers under and sends cannot be of different providers. Settings that cannot be read
     /// are an error naming the file, never a provider guessed.
-    pub fn chosen(&self) -> Result<Chosen, ApiError> {
+    pub fn chosen_for(&self, role: ModelRole) -> Result<Chosen, ApiError> {
         let settings = self.read_settings().map_err(|why| ApiError::Invalid(why.to_string()))?;
-        let provider = settings.describe_provider;
-        Chosen::new(self.endpoint_for(provider), provider, &settings).map_err(|why| ApiError::Invalid(why.to_string()))
+        let provider = settings.model_for(role).provider;
+        Chosen::new(role, self.endpoint_for(provider), provider, &settings)
+            .map_err(|why| ApiError::Invalid(why.to_string()))
     }
 
     pub fn settings_file(&self) -> PathBuf {
@@ -392,13 +417,18 @@ pub fn routes() -> Router<Shared> {
 /// The settings that belong to the server when the interface reaches it across a network: the same for every
 /// window that connects, and not changed from one. The embedding model is the library's: changing it would
 /// embed every paper again. The language model's provider is the server's: its key, its account and the address
-/// papers' text is sent to are the server owner's (the model and effort within it may be chosen from a window).
+/// papers' text is sent to are the server owner's (the model and effort within it may be chosen from a window), and
+/// so is the provider of the model that reads papers, for the same reason: a window may set it back to the naming
+/// model only while that sends papers to the same provider.
 pub fn server_owned(mode: Mode) -> &'static [&'static str] {
     match mode {
         Mode::Local => &[],
-        Mode::Network => &["embedding_model", "describe_provider"],
+        Mode::Network => &["embedding_model", "describe_provider", "reading_provider"],
     }
 }
+
+/// The settings that choose the model that reads papers on its own (any of them not null does).
+const READING_PICKS: [&str; 3] = ["reading_provider", "reading_model", "reading_effort"];
 
 /// `routes` behind the security layer, with the engine they share: the one way a router is served.
 pub fn secured(routes: Router<Shared>, engine: Shared, guard: Guard) -> Router {
@@ -562,10 +592,33 @@ async fn change_settings(
             // sent unchanged (an interface that sends every setting) is fine; changed is not
             let current = serde_json::to_value(settings::load(&engine.settings_file(), &engine.choices)?)
                 .map_err(|_| ApiError::Internal)?;
-            if let Some(key) =
-                owned.iter().find(|key| changes.get(**key).is_some_and(|value| Some(value) != current.get(**key)))
-            {
+            // the provider papers are read with as it is used: none chosen on its own is the naming model's
+            let as_used = |key: &str, value: &Value| match (key, value) {
+                ("reading_provider", Value::Null) => current.get("describe_provider").cloned().unwrap_or(Value::Null),
+                _ => value.clone(),
+            };
+            let changed = |key: &str| {
+                let now = current.get(key).map(|now| as_used(key, now));
+                changes.get(key).is_some_and(|value| Some(as_used(key, value)) != now)
+            };
+            if let Some(key) = owned.iter().find(|key| changed(key)) {
                 return Err(ApiError::ServerOwned(key));
+            }
+        }
+        // while no model is chosen to read papers (the default, or the naming model), a model or effort chosen
+        // from a window would pin the reading provider to the naming one as it is now, and keep sending papers
+        // there once the owner moved the naming model elsewhere: only the owner chooses the model that reads papers
+        // on its own. And no change may move where papers are read (the naming model again, from the owner's own
+        // reading provider)
+        if owned.contains(&"reading_provider") {
+            let now = settings::load(&engine.settings_file(), &engine.choices)?;
+            let picks = READING_PICKS.iter().any(|key| changes.get(*key).is_some_and(|value| !value.is_null()));
+            if picks && now.reading_state() != ReadingState::Chosen {
+                return Err(ApiError::ServerOwned("reading_provider"));
+            }
+            let after = now.apply(&changes, &engine.choices)?;
+            if after.model_for(ModelRole::Reading).provider != now.model_for(ModelRole::Reading).provider {
+                return Err(ApiError::ServerOwned("reading_provider"));
             }
         }
         Ok(settings::save(&engine.settings_file(), &changes, &engine.choices)?)

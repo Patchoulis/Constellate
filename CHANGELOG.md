@@ -21,15 +21,60 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that a paper says the statement.
 - A community's details are in blocks, each with a small header and a line under it: Description, Characteristic
   terms, At a glance, Sub-communities, Closest communities, Nearest to the mean embedding.
+- Under a paper's review scores in the reader, "Common praise and criticism" lists what at least two of its reviewers
+  praise and criticise alike, each point with how many of the reviewers make it ("3 of 4 reviewers"); open a point
+  to read the reviewers' own sentences, each with who wrote it. It is counted from the words of the reviews, with no
+  language model and nothing sent anywhere, and works for reviews read before this version too.
+- A second choice of language model, the model that reads papers: it fills tables, answers agree / disagree and
+  questions, and reads claims, weaknesses, passages to explain and citation kinds, while the first one keeps naming
+  communities and writing their overviews. A cheaper model can read papers while a stronger one names. It is chosen
+  from the same providers and models, with the same efforts, beside the cost shown in each of those sections, and in
+  Settings. Its menu also offers the default and "The same as the naming model". Answers already kept are kept for
+  the model that gave them: choosing that model again costs nothing.
 
 ### Changed
 
+- A paper's review scores are shown as stars out of each scale's own number of points (4 of 5 stars, 2.8 of 4) with
+  the mean beside them; the range, the number of reviews and the confidence-weighted mean are said on hover.
+- A paper's rating chips show stars too: each field's name with stars out of its conference's scale, and the score on
+  hover ("3.8/4 Average Score"), with every reviewer's score and whether the scale is the conference's published one
+  or assumed.
+- When the two models differ, the sidebar says which one names and which one reads papers, each with its price.
+- On the Claude API, papers are now read by Claude Haiku 5.5 by default, also for anyone who never chose a model to
+  read them: tables, agree / disagree, questions, claims, weaknesses, explanations and citation kinds show what Haiku
+  would cost, and ask it once that is accepted. Answers already given by the naming model (such as Opus) are kept
+  and found again when "The same as the naming model" is chosen in the menu beside any of those estimates or in
+  Settings. With another provider, papers are read by the naming model unless another is chosen, as before.
+- The bottom of the sidebar says what was spent in all and on the run that is open: "USD 3.77 spent (USD 1.20 this
+  run)", in place of what was spent since the app was started. Both are kept in the library, so they read the same
+  after Constellate is closed and opened again. A run's figure counts making and naming it, everything asked of it
+  and of its communities, and what is asked about one of its papers while that run is open; training the AI-text
+  detector belongs to no run. Deleting a run takes nothing off the total, and a run made again under the same name
+  goes on counting. Money spent before this version was not recorded by run, so a run made earlier counts from the
+  day this version was first opened, and its tooltip says so.
+
+- Menu entries and warnings that stand alone begin with a capital: "Medium effort", "Set ANTHROPIC_API_KEY", "No filter".
 - Communities are ordered by "Uniqueness" in place of "Saturation" and "Tightness": how far a community's papers are,
   on average, from what the community is about (a cosine distance). Low means its papers all do much the same thing;
   high means the work in it is more varied.
+- "Cited by" now counts the citations from every paper of your library whose reference list Constellate has read,
+  not only from the papers of the run. A community's figures say how many come from its own papers, from the rest of
+  the run and from your library outside the run, and "Cites" says how many of the works cited are in the run, in
+  your library outside it, or not in your library (on arXiv or not found). The run's own figures are shown over the
+  list of communities when it is ordered by "Cited by" or "Cites". Papers that are not in your library still cannot
+  be counted, and the panel says so; no outside citation service is asked.
+- In a paper's Citations tab, a citing or cited paper of your library that is not in the run is tagged "Outside this
+  run", drawn faded in the picture, and opens in the reader like any other paper of your library.
+- The library's reference lists are linked once and kept while the app runs: only a list read since, or the
+  references a newly added paper might be, are linked again.
 
 ### Fixed
 
+- A community's details show its "Cited by" again, beside "Cites".
+- In Settings, the language model menus light up and open only when the pointer is on them, not anywhere near the
+  field.
+- In a narrow communities panel, the "Overview: methods, findings, directions" button wraps onto a second line
+  instead of running past the panel's edge.
 - A reviewer's sentence with a formula in it is shown as one sentence: the pieces of the formula no longer each take
   a line of their own in Weaknesses and Claims.
 - The graph no longer disappears while a side panel is dragged wider or narrower.

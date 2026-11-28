@@ -16,7 +16,7 @@ import {
 	Trash2,
 	X,
 } from "lucide-react";
-import type { Community, GraphNode, RunResult } from "@rp/contracts";
+import type { Community, GraphNode, RunCitations, RunResult } from "@rp/contracts";
 import { CommunityAsk } from "@/components/features/answers/ask";
 import { useAskNaming } from "@/components/shell/run-dialogs";
 import { EvidenceLink } from "@/components/reader/evidence-link";
@@ -34,7 +34,17 @@ import { ExtractionTable } from "@/components/features/extraction/extraction-tab
 import { CommunityCitationKinds } from "@/components/features/citation_contexts/citation-kinds";
 import { Button, RowButton, Segmented } from "@/components/ui/button";
 import { ResizeHandle } from "@/components/ui/resize-handle";
-import { CITATIONS_NOTE, citationsNote, citedByFigure, citedByOf, citesFigure, citesOf } from "@/lib/reader/citations";
+import {
+	CITATIONS_NOTE,
+	CITED_BY_TITLE,
+	CITES_TITLE,
+	NOT_COUNTABLE,
+	citedByFigure,
+	citedByOf,
+	citesFigure,
+	citesOf,
+} from "@/lib/reader/citations";
+import { CommunityCitationFigures, RunCitationFigures } from "@/components/community/citation-figures";
 import { communityLabel, type CommunityNode } from "@/lib/community/community";
 import type { MarksOf } from "@/lib/community/marks";
 import { useResizable } from "@/lib/ui/use-resizable";
@@ -77,14 +87,14 @@ const SORTS: readonly {
 	{
 		value: "cited",
 		label: "Cited by",
-		title: `How many times its papers are cited by the run's papers, from inside it and outside it. ${CITATIONS_NOTE}`,
+		title: `${CITED_BY_TITLE} ${NOT_COUNTABLE}`,
 		of: citedByOf,
 		show: citedByFigure,
 	},
 	{
 		value: "cites",
 		label: "Cites",
-		title: `How many different works its papers cite, found in your library or not. ${CITATIONS_NOTE}`,
+		title: CITES_TITLE,
 		of: citesOf,
 		show: citesFigure,
 	},
@@ -215,8 +225,8 @@ function Stat({ label, title, children }: { label: string; title?: string; child
 	);
 }
 
-/** The figures of "At a glance", besides its venues and acceptance tiers. */
-const GLANCE = ["uniqueness", "cited", "cites"];
+/** The figures of "At a glance", besides its venues and acceptance tiers (its citations have a block of their own). */
+const GLANCE = ["uniqueness", "highlights"];
 
 /**
  * A community's description in its sections: each a quieter sub-header with its own hairline, its text, then the
@@ -314,9 +324,10 @@ function Detail({
 	const glance = SORTS.filter((sort) => GLANCE.includes(sort.value));
 	return (
 		<div className="flex flex-col gap-5 p-4">
-			<Button variant="outline" className="h-auto min-h-8 py-1.5 whitespace-normal" onClick={() => onOverview(node)}>
+			{/* in a narrow panel its words go onto a second line: never past the panel's edge */}
+			<Button variant="outline" className="h-auto min-h-8 py-1.5 text-left whitespace-normal" onClick={() => onOverview(node)}>
 				<Telescope />
-				Overview: methods, findings, directions
+				<span className="min-w-0">Overview: methods, findings, directions</span>
 			</Button>
 			<Block title="Description">
 				{community.sections !== undefined ? (
@@ -351,11 +362,7 @@ function Detail({
 						</Stat>
 					))}
 					{glance.map((sort) => (
-						<Stat
-							key={sort.value}
-							label={sort.label}
-							title={sort.value === "cited" || sort.value === "cites" ? `${sort.title} ${citationsNote(community)}` : sort.title}
-						>
+						<Stat key={sort.value} label={sort.label} title={sort.title}>
 							{sort.show(community)}
 						</Stat>
 					))}
@@ -370,6 +377,11 @@ function Detail({
 					<Stat label="Tagged AI detected" title="Papers the statistical AI-text detector flagged: an estimate">
 						{count(community.ai_flagged, "paper")}
 					</Stat>
+				</dl>
+			</Block>
+			<Block title="Citations" noteTitle={CITATIONS_NOTE} note="from reference lists read">
+				<dl className="flex flex-col gap-1 text-xs tabular-nums">
+					<CommunityCitationFigures community={community} />
 				</dl>
 			</Block>
 			{children.length > 0 && (
@@ -455,7 +467,10 @@ export function CommunityPanel({
 	onGoToPaper,
 	onNamed,
 	title,
+	citations = null,
 }: {
+	/** what the run cites and is cited, counted from every reference list of the library; null until counted */
+	citations?: RunCitations | null;
 	/** the run's communities were named: read them again */
 	onNamed: () => void;
 	/** the run's title, said in what is asked before naming its communities */
@@ -545,6 +560,7 @@ export function CommunityPanel({
 					onOpenPaper={onOpenPaper}
 					onNamed={onNamed}
 					title={title}
+					citations={citations}
 				/>
 			)}
 		</aside>
@@ -721,12 +737,14 @@ function Communities({
 	onOpenPaper,
 	onNamed,
 	title,
+	citations,
 }: {
 	result: RunResult;
 	roots: CommunityNode[];
 	selected: CommunityNode | null;
 	onNamed: () => void;
 	title: string;
+	citations: RunCitations | null;
 	/** kept by the panel, so it survives a look at the Marked tab */
 	sort: Sort;
 	marks: MarksOf;
@@ -805,6 +823,7 @@ function Communities({
 					</div>
 					<NameCommunities run={result.name} title={title} communities={result.communities} onNamed={onNamed} />
 					<RewriteSections {...described} />
+					{(sort.by.value === "cited" || sort.by.value === "cites") && <RunCitationFigures citations={citations} />}
 					<div className="min-h-0 flex-1 overflow-y-auto p-2">
 						<List nodes={roots} sort={sort} onSelect={onSelect} />
 					</div>

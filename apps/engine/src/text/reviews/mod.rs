@@ -97,7 +97,7 @@ impl Field {
     }
 
     /// The field a page names, in whatever case.
-    pub(super) fn named(written: &str) -> Option<Self> {
+    pub(crate) fn named(written: &str) -> Option<Self> {
         let written = written.to_lowercase();
         Self::ALL.into_iter().find(|field| field.name().to_lowercase() == written)
     }

@@ -46,6 +46,7 @@ import { ready, useAsync } from "@/lib/use-async";
 import { elsewhereLine, notAskedLine, runSubject, useFollowedJob } from "@/lib/shell/use-followed-job";
 import { count, money, tokens } from "@/lib/units";
 import { cn } from "@/lib/utils";
+import { ReadingModel } from "@/components/shell/model-choice";
 
 const USD = { code: "USD", rate: 1, date: null };
 const usd = (amount: number) => money(amount, USD);
@@ -294,7 +295,7 @@ function Grid({
 					value={filter?.column ?? ""}
 					onChange={(event) => setFilter(event.target.value === "" ? null : { column: Number(event.target.value), key: "stated" })}
 				>
-					<option value="">no filter</option>
+					<option value="">No filter</option>
 					{columns.map((column, index) => (
 						<option key={column.id} value={index}>
 							{column.label}
@@ -488,7 +489,7 @@ function Opened({
 	onOpenPaper: (id: string) => void;
 }) {
 	const where = JSON.stringify(scope);
-	const chosen = useChosenModel();
+	const chosen = useChosenModel("reading");
 	const choice = choiceKey(chosen);
 	// the table and the estimates are of this run and scope (and the estimates of the model chosen now): another's
 	// are never shown for them; after a run, a redo or new columns they are read again
@@ -574,6 +575,7 @@ function Opened({
 						</p>
 					)}
 					{elsewhere && <p className="text-xs text-muted-foreground">{elsewhereLine(elsewhere)}</p>}
+					<ReadingModel />
 					{reckoning && <p className="text-xs text-muted-foreground">Working out the cost…</p>}
 					{estimateError?.status === "failed" && <p className="text-xs text-warning">{estimateError.error}</p>}
 					{noKey && (

@@ -12,7 +12,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use constellate::analysis::citations::{LibraryPaper, Linker, Members, ReadPaper, community_citations, network};
+use constellate::analysis::citations::{
+    LibraryPaper, LinkedLibrary, Linker, Members, ReadPaper, community_citations, network,
+};
 use constellate::analysis::graph::cluster::{Limits, Method, Papers, communities};
 use constellate::analysis::graph::kmeans::kmeans;
 use constellate::analysis::graph::links::{knn_graph, natural_neighbours};
@@ -155,15 +157,29 @@ fn citations_stage() {
     let linker = timed("citation index (Linker::new)", &format!("{LIBRARY} papers"), || Linker::new(&library));
     let read: Vec<ReadPaper> =
         timed("references linked (Linker::read_all)", &format!("{READ} x {REFERENCES} references"), || {
-            linker.read_all(lists)
+            linker.read_all(lists.clone())
         });
-    let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 27).unwrap_or_default();
-    timed("citation network around one paper", &format!("{READ} read papers"), || {
-        network("p7", &linker, &read, None, today)
+    drop(read);
+    let mut linked = timed("library linked and kept (LinkedLibrary::of)", &format!("{READ} read papers"), || {
+        LinkedLibrary::of(library.clone(), lists.clone())
     });
-    let run: Vec<String> = (0..READ).map(|index| format!("p{index}")).collect();
+    // one more list read: only it is linked
+    let stamps: Vec<(String, i64)> =
+        lists.iter().map(|(paper, _)| (paper.clone(), 0)).chain([("new".to_owned(), 1)]).collect();
+    let one = lists.first().map(|(_, references)| references.clone()).unwrap_or_default();
+    let added = timed("a list read since, linked into it", "1 list", || {
+        linked.update::<()>(None, Some(stamps), |_| Ok(vec![("new".to_owned(), one)]))
+    });
+    if added.is_err() {
+        println!("the list could not be added");
+    }
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 27).unwrap_or_default();
+    timed("citation network around one paper", &format!("{READ} read papers"), || network("p7", &linked, None, today));
+    let run: Vec<String> = (0..READ / 2).map(|index| format!("p{index}")).collect();
     let tree = members_tree(&run, 20, 2);
-    timed("community citations", &format!("{READ} papers, 20 + 2 levels"), || community_citations(&read, &run, &tree));
+    timed("community citations", &format!("{} papers, 20 + 2 levels", READ / 2), || {
+        community_citations(&linked, &run, &tree)
+    });
 }
 
 /// `count` communities of the run's papers, each cut in two `levels` deep.

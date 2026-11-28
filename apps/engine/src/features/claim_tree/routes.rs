@@ -30,7 +30,7 @@ use crate::features::claim_tree::{self, ClaimsView, Contested};
 use crate::jobs::{Busy, Finished, Phase};
 use crate::library::{Feature, PaperReading, Subject};
 use crate::model::chosen::{Accepted, Terms, budget};
-use crate::model::language::{Estimate, Provider, Transport};
+use crate::model::language::{Estimate, ForRun, Provider, Transport};
 
 /// The most one paper's two calls may be allowed to spend, in US dollars: far above what they take (a few cents
 /// to a dollar), so that a mistyped budget is refused rather than spent.
@@ -84,6 +84,9 @@ pub struct Start {
     provider: Option<Provider>,
     #[serde(default)]
     model: Option<String>,
+    /// The run open in the interface, when the paper is read from inside one: what the calls cost is the run's.
+    #[serde(default)]
+    run: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -104,7 +107,7 @@ fn paper_id(id: &str) -> Result<&str, ApiError> {
 pub async fn read(State(engine): State<Shared>, Path(id): Path<String>) -> Result<Json<ClaimsView>, ApiError> {
     paper_id(&id)?;
     let view = on_the_side(move || {
-        let chosen = engine.chosen()?;
+        let chosen = engine.reading()?;
         claim_tree::view(&*engine.library()?, &id, &chosen)?.ok_or(ApiError::NotFound)
     })
     .await?;
@@ -149,7 +152,7 @@ fn begin(
 ) -> Result<u64, ApiError> {
     {
         let library = engine.library()?;
-        let chosen = engine.chosen()?;
+        let chosen = engine.reading()?;
         let endpoint = chosen.endpoint().map_err(|why| ApiError::Invalid(why.to_string()))?;
         // the estimate the budget was accepted on is of one model: a request that does not say which is refused
         let model = asked.model.as_deref().ok_or_else(|| ApiError::Invalid(NO_MODEL.to_owned()))?;
@@ -170,8 +173,10 @@ fn begin(
             return Err(ApiError::Invalid(GREW.to_owned()));
         }
         let about = crate::jobs::About { feature: Feature::ClaimTree, subject: Subject::Paper(id.clone()), item: None };
+        let run = engine.asked_from(asked.run.as_deref());
         let job = engine.job.start_about(KIND, about, move |tracker| {
-            let askers = Askers { library: &library, transport: &*transport, endpoint, recorder: &*library };
+            let recorder = ForRun::new(&*library, run.as_deref());
+            let askers = Askers { library: &library, transport: &*transport, endpoint, recorder: &recorder };
             let done = ask(&askers, &id, &chosen, &budget, tracker).map_err(|error| error.to_string())?;
             tracker.log(&format!("The claim tree: {}", told(&done.tree)));
             tracker.log(&format!("The reviews mapped onto it: {}", told(&done.mapping)));
@@ -199,7 +204,7 @@ pub async fn forget(State(engine): State<Shared>, Path(id): Path<String>) -> Res
         let library = engine.library()?;
         library.paper(&id)?.ok_or(ApiError::NotFound)?;
         // what the view shows, of the model chosen now: another model's tree of the paper stays
-        let chosen = engine.chosen()?;
+        let chosen = engine.reading()?;
         Ok(claim_tree::forget(&library, &id, &chosen)?)
     })
     .await?;
@@ -212,7 +217,7 @@ pub async fn community_contested(
 ) -> Result<Json<Contested>, ApiError> {
     let contested = on_the_side(move || {
         let papers = papers_of(&engine, &run, Some(&community))?;
-        let chosen = engine.chosen()?;
+        let chosen = engine.reading()?;
         Ok(claim_tree::contested(&*engine.library()?, &papers, &chosen)?)
     })
     .await?;
@@ -264,6 +269,7 @@ mod tests {
     /// [`engine`], the reviews kept or not.
     fn engine_with(language: bool, reviews: bool) -> (Engine, tempfile::TempDir) {
         let data = tempfile::tempdir().unwrap();
+        crate::api::other_providers::reads_with_naming(data.path());
         {
             let library = Library::open(&data.path().join("library")).unwrap();
             let mut with_pdf = paper(PAPER);
@@ -328,7 +334,8 @@ mod tests {
     #[tokio::test]
     async fn another_provider_is_priced_asked_in_its_own_shape_kept_and_asked_again_when_the_provider_changes() {
         use crate::api::other_providers::{
-            BUDGET, Chosen as Asked, MODEL, Scripted, accepting, call, choose, finished, priced_for, router, sent_to,
+            BUDGET, Chosen as Asked, MODEL, Scripted, accepting, call, choose_reading as choose, finished, priced_for,
+            reading_router as router, sent_to,
         };
 
         let (_, data) = engine(false);
@@ -477,7 +484,45 @@ mod tests {
 
     /// A start that accepts two dollars (more than the worst case), for the model the settings choose (of the Claude API).
     fn enough() -> Start {
-        Start { budget_usd: Some(2.0), budget_tokens: None, provider: None, model: Some("claude-opus-5-5".to_owned()) }
+        let model = Some("claude-opus-5-5".to_owned());
+        Start { budget_usd: Some(2.0), budget_tokens: None, provider: None, model, run: None }
+    }
+
+    /// The paper's claims asked from inside the run `run` (as the interface sends it), and what the ledger then says
+    /// the run cost and what was spent in all, in calls.
+    fn asked_from(run: &str, made: &[&str]) -> (i64, i64) {
+        let (engine, data) = engine(true);
+        for name in made {
+            let folder = data.path().join("runs").join(name);
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join(crate::pipeline::results::files::RUN), "{}").unwrap();
+        }
+        let engine: Shared = Arc::new(engine);
+        let answers = vec![reply(&tree_answer()), reply(&mapping_answer())];
+        let start = Start { run: Some(run.to_owned()), ..enough() };
+        let fake = Arc::new(Fake::new(answers));
+        begin(&engine, PAPER.to_owned(), &start, Accepted::Dollars(2.0), fake.clone()).unwrap();
+        assert_eq!(ended(&engine).state, Phase::Done);
+        let library = engine.library().unwrap();
+        // asked of the model that reads papers, whichever run it is counted for, and recorded under the model the
+        // API says answered (the scripted answers name one)
+        let reading = engine.reading().unwrap();
+        assert!(fake.sent().iter().all(|sent| sent.body["model"] == reading.model()), "asked of the reading model");
+        let spent = library.spending().unwrap();
+        assert_eq!(spent.models.keys().collect::<Vec<_>>(), [crate::features::claim_tree::asking::tests::MODEL]);
+        (library.run_spending(run).unwrap().total.calls, spent.total.calls)
+    }
+
+    #[test]
+    fn a_papers_claims_asked_from_inside_a_run_are_what_the_run_cost() {
+        assert_eq!(asked_from("r1", &["r1"]), (2, 2));
+    }
+
+    #[test]
+    fn a_papers_claims_asked_from_a_run_there_is_not_are_no_runs_cost() {
+        // no run of that name (deleted, or never made), or a name no run can have: counted in all, in no run
+        assert_eq!(asked_from("gone", &["r1"]), (0, 2));
+        assert_eq!(asked_from("../r1", &["r1"]).0, 0);
     }
 
     /// Wait for the job to end, and say how it ended.

@@ -54,7 +54,7 @@ use crate::library::core::store::read_json;
 use crate::library::{Feature, Library, Paper, Subject};
 use crate::model::batch::{Asking, BatchEstimate, IN_FLIGHT};
 use crate::model::chosen::{Accepted, Chosen, Terms, budget};
-use crate::model::language::{Estimate, Provider};
+use crate::model::language::{Estimate, ForRun, Provider};
 use crate::pipeline::steps::model_files::{self, QWEN3};
 use crate::settings;
 
@@ -526,9 +526,17 @@ async fn write_overview(
         let transport = Arc::clone(&engine.transport);
         let worker = Arc::clone(&library);
         let subject = prepared.subject.clone();
+        let of_run = run.clone();
         engine.job.start_tracked(overview::JOB, move |tracker| {
-            let asking =
-                Asking { library: &worker, transport: &*transport, endpoint, recorder: &*worker, in_flight: IN_FLIGHT };
+            // a community's overview: the run's cost
+            let recorder = ForRun::new(&*worker, Some(&of_run));
+            let asking = Asking {
+                library: &worker,
+                transport: &*transport,
+                endpoint,
+                recorder: &recorder,
+                in_flight: IN_FLIGHT,
+            };
             match overview::ask(asking, &prepared, &budget, tracker) {
                 Ok(_) => {
                     tracker.log("Written; its quotes are checked whenever it is shown.");
@@ -929,6 +937,10 @@ mod tests {
         sent_to(&transport.sent(), Picked::OpenAi);
         let prompt = transport.sent()[0].body.to_string();
         assert!(prompt.contains("BEGIN PAPERS") && prompt.contains("[paper p2]") && !prompt.contains("[paper p3]"));
+        // a community's overview is its run's cost
+        let (_, spent) = call(&router, "GET", "/api/usage?run=r1", None).await;
+        assert_eq!((spent["run_calls"].clone(), spent["calls"].clone()), (json!(1), json!(1)), "{spent}");
+        assert_eq!(spent["run_purposes"][crate::features::writing::overview::PURPOSE]["calls"], 1);
 
         // asking again costs nothing: it is kept
         let (_, again) = call(&router, "POST", at, Some(accepting(&idle["estimate"], ACCEPTED))).await;
@@ -1161,6 +1173,11 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{job}");
         assert_eq!(finished(&router, &job["id"]).await["state"], "done");
         assert_eq!(transport.sent().len(), 3);
+        // the rewrite's calls are the run's spending, as naming's are
+        let (_, spent) = call(&router, "GET", "/api/usage?run=r1", None).await;
+        assert_eq!((spent["run_calls"].clone(), spent["calls"].clone()), (json!(3), json!(3)), "{spent}");
+        let (_, other) = call(&router, "GET", "/api/usage?run=r2", None).await;
+        assert_eq!(other["run_calls"], 0, "{other}");
         let file: Value = serde_json::from_slice(&std::fs::read(folder.join("communities.json")).unwrap()).unwrap();
         assert_eq!(file["communities"][1]["name"], "Topic tc10");
         assert_eq!(file["communities"][1]["sections"][0]["heading"], "Problem");
@@ -1232,6 +1249,9 @@ mod tests {
         assert_eq!(done["statements"][1]["papers"], json!([]), "nothing close: none, and said so");
         let (_, again) = call(&router, "POST", at, None).await;
         assert_eq!(again, json!({"ok": true, "id": null}), "kept: nothing to start");
+        // nothing asked, refused, found or shown here is a model call: no row in the ledger, in all or for the run
+        let (_, spent) = call(&router, "GET", "/api/usage?run=r1", None).await;
+        assert_eq!((spent["calls"].clone(), spent["run_calls"].clone()), (json!(0), json!(0)), "{spent}");
         // the description changes: its new sentence is not found yet
         let mut tree: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
         tree["communities"][1]["description"] = json!("Papers balance routers. A new sentence now.");

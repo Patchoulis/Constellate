@@ -82,7 +82,7 @@ pub use self::core::import::{ImportError, Imported, import_files};
 pub use self::core::preferences::Rate;
 pub use crate::features::writing::store::{CitedPaper, Description, Overview, Point, Section, community_key};
 pub use money::answers::{AnswerKey, Feature, Kept, Slot, Subject};
-pub use money::ledger::{Call, Spending, Totals};
+pub use money::ledger::{Call, RunSpending, Spending, Totals};
 pub use papers::embeddings::NotEmbedded;
 pub use papers::passages::PaperReading;
 pub use papers::readings::{AiScore, Answer, ChecklistItem, Declarations, FieldRatings, Ratings, Reading, Statement};

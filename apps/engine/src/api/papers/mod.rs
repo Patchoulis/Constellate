@@ -6,7 +6,8 @@
 //! GET  /api/papers/{id}/pdf           its PDF: kept, or fetched now and kept; a byte range when asked for one
 //! POST /api/papers/{id}/declarations  what its authors declare, read from the PDF once (`Declarations`)
 //! POST /api/runs/{run}/declarations   the same for every paper of the run, as the job: {ok, id}
-//! GET  /api/reviews                   {paper id: `Ratings`} for every paper whose reviews page was opened
+//! GET  /api/reviews                   {paper id: `Ratings`} for every paper whose reviews page was opened, each
+//!                                    field a venue scores with its `scale`
 //! ```
 //!
 //! These replace the Python backend's `GET /api/papers/<id>`, `GET /api/pdf/<id>`, `POST /api/declarations/<id>`,
@@ -46,6 +47,7 @@ use crate::papers::declarations::{Declared, declarations_of, read_and_count};
 use crate::papers::pdf::{PdfOutcome, as_source};
 use crate::sources::conferences::acceptance::{Acceptance, Term, accepted};
 use crate::text::declarations::PARSER;
+use crate::text::reviews::discussion::Venue;
 
 /// The routes of this module, for [`super::routes::table`].
 pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
@@ -94,7 +96,7 @@ fn record_of(engine: &Shared, id: &str) -> Result<Record, ApiError> {
         Some(Reading::Read(declarations)) => Some(declarations),
         Some(Reading::NoPdf | Reading::Unreadable) | None => None,
     };
-    let reviews = library.ratings(id)?;
+    let reviews = library.ratings(id)?.map(|ratings| ratings.with_scales(Venue::of_paper(id).as_ref()));
     let ai = crate::features::detector::verdict(&library, &paper)?;
     let told = accepted(&as_source(&paper));
     Ok(Record {
@@ -249,7 +251,16 @@ async fn run_declarations(State(engine): State<Shared>, Path(run): Path<String>)
 }
 
 async fn all_ratings(State(engine): State<Shared>) -> Result<Json<HashMap<String, Ratings>>, ApiError> {
-    Ok(Json(on_the_side(move || Ok(engine.library()?.all_ratings()?)).await?))
+    let all = on_the_side(move || Ok(engine.library()?.all_ratings()?)).await?;
+    // each field with its scale, from the venue the paper's id names (the field's usual scale when it names none)
+    let served = all
+        .into_iter()
+        .map(|(id, ratings)| {
+            let venue = Venue::of_paper(&id);
+            (id, ratings.with_scales(venue.as_ref()))
+        })
+        .collect();
+    Ok(Json(served))
 }
 
 #[cfg(test)]
@@ -542,14 +553,32 @@ mod tests {
         let (router, data, _) = engine();
         let (status, told) = json_of(ask(&router, "GET", "/api/reviews", None).await).await;
         assert_eq!((status, told), (StatusCode::OK, json!({})));
-        let ratings: Ratings =
-            serde_json::from_value(json!({"reviews": 2, "exact": true, "ratings": {"Rating": {"values": [5, 7], "mean": 6.0, "meanings": ["", ""]}}}))
-                .unwrap();
-        Library::open(&data.path().join("library")).unwrap().keep_ratings("2601.00001", ratings).unwrap();
+        // handed over with a scale, as a caller might: the library keeps it without
+        let ratings: Ratings = serde_json::from_value(json!({"reviews": 2, "exact": true, "ratings": {
+            "Rating": {"values": [5, 7], "mean": 6.0, "meanings": ["", ""], "scale": {"minimum": 0, "maximum": 3, "source": "published"}},
+            "Novelty": {"values": [2, 3], "mean": 2.5, "meanings": ["", ""]}}}))
+        .unwrap();
+        let library = Library::open(&data.path().join("library")).unwrap();
+        library.keep_ratings("2601.00001", ratings).unwrap();
+        let kept = library.ratings("2601.00001").unwrap().unwrap();
+        assert!(kept.ratings.iter().all(|(_, field)| field.scale.is_none()));
         let (_, told) = json_of(ask(&router, "GET", "/api/reviews", None).await).await;
         assert_eq!(told["2601.00001"]["ratings"]["Rating"]["values"], json!([5, 7]));
+        // served with the scale the field is scored on: an arXiv paper names no venue, so the usual one, assumed
+        assert_eq!(
+            told["2601.00001"]["ratings"]["Rating"]["scale"],
+            json!({"minimum": 1, "maximum": 10, "source": "assumed"})
+        );
+        // a field the engine does not know gets no scale
+        assert!(told["2601.00001"]["ratings"]["Novelty"].get("scale").is_none());
         let fields: BTreeSet<String> = told["2601.00001"].as_object().unwrap().keys().cloned().collect();
         assert_eq!(fields, contract_fields("Ratings"));
+        crate::api::contract::assert_fits("Ratings", &told["2601.00001"], &["ratings"]);
+        for field in ["Rating", "Novelty"] {
+            crate::api::contract::assert_fits("FieldRatings", &told["2601.00001"]["ratings"][field], &[]);
+        }
+        let (_, record) = json_of(ask(&router, "GET", "/api/papers/2601.00001", None).await).await;
+        assert_eq!(record["reviews"]["ratings"]["Rating"]["scale"]["maximum"], 10);
     }
 
     #[test]
