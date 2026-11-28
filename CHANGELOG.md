@@ -5,6 +5,10 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The graph no longer disappears while a side panel is dragged wider or narrower.
+
 ## [0.2.2] - 2026-11-28
 
 ### Added

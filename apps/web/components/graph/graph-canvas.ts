@@ -499,8 +499,11 @@ export class GraphCanvasRenderer {
 			this.dprQuery?.addEventListener("change", this.onDprChange);
 		}
 		this.dpr = dpr;
-		this.canvas.width = Math.max(1, Math.round(this.canvas.clientWidth * dpr));
-		this.canvas.height = Math.max(1, Math.round(this.canvas.clientHeight * dpr));
+		// Setting a canvas's size empties it, even to the size it has: only when it changed.
+		const width = Math.max(1, Math.round(this.canvas.clientWidth * dpr));
+		const height = Math.max(1, Math.round(this.canvas.clientHeight * dpr));
+		if (this.canvas.width !== width) this.canvas.width = width;
+		if (this.canvas.height !== height) this.canvas.height = height;
 		// a glide under way was aimed for the old size: it ends at once where it now should (lib/graph/glide.ts)
 		if (this.whole) this.fitZoom = this.zoomToFit(this.whole);
 		this.glide.resized({ width: this.canvas.clientWidth, height: this.canvas.clientHeight });
@@ -512,7 +515,12 @@ export class GraphCanvasRenderer {
 		// what is inside the canvas changed with its size
 		this.tellHover();
 		this.tellMarked();
-		this.markDirty();
+		// Drawn now, not in the next frame: the canvas was just emptied, and this runs between layout and paint
+		// (a ResizeObserver's callback). Left to the next frame, every step of a panel being dragged wider or
+		// narrower would paint the empty canvas first, and the graph would be gone for as long as the drag lasts.
+		cancelAnimationFrame(this.frame);
+		this.frame = 0;
+		this.draw();
 	}
 
 	/** The paper under the pointer, or null. Papers out of focus are not picked. */
