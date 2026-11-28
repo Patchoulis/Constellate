@@ -56,7 +56,7 @@ subtle = "2"
 # (src/text/pdf/mod.rs); only the part that reads memory, and without unsafe code of ours
 sysinfo = { version = "0.37", default-features = false, features = ["system"] }
 thiserror = "2"
-tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros", "time", "sync", "fs", "io-util"] }
 # a PDF (or the range of it asked for) streamed from its file, never read whole into memory (src/api/papers/mod.rs)
 tokio-util = { version = "0.7", default-features = false, features = ["io"] }
