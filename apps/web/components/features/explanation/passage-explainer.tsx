@@ -211,11 +211,14 @@ export type AskedOnce = Set<string>;
 
 function ExplainView({
 	paper,
+	run,
 	passage,
 	onExplained,
 	askedOnce,
 }: {
 	paper: string;
+	/** the run the paper is read from: what asking costs is that run's */
+	run?: string;
 	passage: Passage;
 	onExplained: () => void;
 	askedOnce: AskedOnce;
@@ -271,7 +274,7 @@ function ExplainView({
 		setFailure(null);
 		// the model and the worst case shown go with the request: the engine refuses if either changed
 		void follow(async () => {
-			const started = await api.explain(paper, passage.address, shownModel(found), accepting(estimate));
+			const started = await api.explain(paper, passage.address, shownModel(found), accepting(estimate), run);
 			if (started.started && started.job !== null) return started.job;
 			prepared.reload();
 			return null;
@@ -484,7 +487,7 @@ export function PassageExplainer({
 			{mode === "related" && run ? (
 				<RelatedView paper={paper} run={run} passage={passage} />
 			) : (
-				<ExplainView paper={paper} passage={passage} onExplained={onExplained} askedOnce={askedOnce} />
+				<ExplainView paper={paper} run={run} passage={passage} onExplained={onExplained} askedOnce={askedOnce} />
 			)}
 		</section>
 	);

@@ -69,12 +69,15 @@ function Rating({ reviewer }: { reviewer: ClaimReviewer | undefined }) {
 /** The estimate, the button that starts the work, its progress and its stop button. */
 function Ask({
 	id,
+	fromRun,
 	what,
 	estimate,
 	current,
 	onDone,
 }: {
 	id: string;
+	/** the run the paper is read from inside: what asking costs is that run's */
+	fromRun?: string;
 	what: string;
 	estimate: ClaimsEstimate;
 	/** the estimate is answered for the model chosen now: false while it is asked for again */
@@ -85,7 +88,7 @@ function Ask({
 	// tab was left and opened again meanwhile
 	const { job, elsewhere, start } = useFollowedJob(() => onDone(), `claims:${id}`, { feature: "claim_tree", subject: { paper: id } });
 	const budget = budgetFor(estimate);
-	const begin = () => void start(() => api.startClaims(id, { ...budget, ...shownModel(estimate) }).then(({ job }) => job));
+	const begin = () => void start(() => api.startClaims(id, { ...budget, ...shownModel(estimate) }, fromRun).then(({ job }) => job));
 	const starting = job.state === "starting";
 	const progress = job.state === "running" ? job.progress : null;
 	const spent = progress ? knownMoney(progress.usd > 0 ? progress.usd : null, USD) : null;
@@ -536,7 +539,7 @@ function Gaps({ view, nodes }: { view: View; nodes: ClaimNode[] }) {
 }
 
 /** The Claims tab of one paper. `onOpenReviews` opens its Reviews tab, where its reviews are read. */
-export function ClaimsView({ id, onOpenReviews }: { id: string; onOpenReviews?: () => void }) {
+export function ClaimsView({ id, run, onOpenReviews }: { id: string; run?: string; onOpenReviews?: () => void }) {
 	const chosen = useChosenModel();
 	const confirm = useConfirm();
 	// read again when the model chosen changes (the estimate is that model's), the tree staying in view meanwhile
@@ -579,6 +582,7 @@ export function ClaimsView({ id, onOpenReviews }: { id: string; onOpenReviews?: 
 			{tree.state === "not_asked" && view.estimate && (
 				<Ask
 					id={id}
+					fromRun={run}
 					what={
 						reviews && reviews.points.length > 0
 							? `Find this paper's claims, then place ${count(reviews.points.length, "reviewer's point", "reviewers' points")} on them`
@@ -609,6 +613,7 @@ export function ClaimsView({ id, onOpenReviews }: { id: string; onOpenReviews?: 
 			{view.mapping.state === "not_asked" && view.estimate && (
 				<Ask
 					id={id}
+					fromRun={run}
 					what={`Place ${count(reviews?.points.length ?? 0, "reviewer's point", "reviewers' points")} on these claims`}
 					estimate={view.estimate}
 					current={current}
