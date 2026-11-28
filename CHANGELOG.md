@@ -7,6 +7,20 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- A community's description is now in three sections with headings: Problem, Shared methods and What sets it
+  apart. Under each, the papers it rests on are listed with the words quoted from them: click one to open the paper
+  at those words. A section is shown only when its quotes were found in at least two of the community's papers, and
+  the panel says how many were left out.
+- Communities described before this keep their one-paragraph description and are not asked about again. "Rewrite
+  with sections and the model's own citations", under such a description and over the list of communities, shows
+  what rewriting them would cost first, then rewrites them, with its progress and a way to stop.
+- Under every sentence of a community's description (or every section), the community's papers closest to it in
+  meaning are listed, each with its sentence closest to the statement and how close it is: click one to open the
+  paper at that sentence. They are found with the embedding model on this computer, cost nothing, send nothing
+  anywhere and are kept, so opening the community again shows them at once. They show what is close in meaning, not
+  that a paper says the statement.
+- A community's details are in blocks, each with a small header and a line under it: Description, Characteristic
+  terms, At a glance, Sub-communities, Closest communities, Nearest to the mean embedding.
 - Under a paper's review scores in the reader, "Common praise and criticism" lists what at least two of its reviewers
   praise and criticise alike, each point with how many of the reviewers make it ("3 of 4 reviewers"); open a point
   to read the reviewers' own sentences, each with who wrote it. It is counted from the words of the reviews, with no
@@ -20,6 +34,9 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The window has its own top bar in place of the system's title bar: the app's mark and name, Settings, and only
+  the system's minimise, maximise and close buttons at its end. The window is moved by dragging the bar.
+- The app's icon is the white mark on a dark tile everywhere: the window, the taskbar, the installer and shortcuts.
 - A paper's review scores are shown as stars out of each scale's own number of points (4 of 5 stars, 2.8 of 4) with
   the mean beside them; the range, the number of reviews and the confidence-weighted mean are said on hover.
 - A paper's rating chips show stars too: each field's name with stars out of its conference's scale, and the score on
@@ -56,6 +73,11 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A page that stops working shows the app's own screen in place of a bare "This page couldn't load": what happened,
+  the reason as far as it is known, "Try again" and "Load the window again", and where the log is. It says when the
+  cause is only that the app was updated or restarted under an open window.
+- A community selected while the run's figures were still arriving (its citations being counted, its communities
+  just named) could stop the whole page; the selected community is now found again in the run's data as it is.
 - A community's details show its "Cited by" again, beside "Cites".
 - In Settings, the language model menus light up and open only when the pointer is on them, not anywhere near the
   field.

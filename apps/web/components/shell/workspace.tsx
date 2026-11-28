@@ -89,17 +89,23 @@ export function Workspace({
 	children?: React.ReactNode;
 }) {
 	const run = useAsync(() => Promise.all([api.run(name), api.graph(name)]), [name], { keep: false });
-	const [selected, setSelected] = useState<CommunityNode | null>(null);
+	// Which community is selected and whose overview is open are kept by their place in the tree, not as the tree's
+	// own objects: the tree is made again whenever the run's figures come (citations counted, communities named), and
+	// an object of the old tree handed to the graph for even one render is not in the new layout, which stopped the
+	// whole page. The community is found in the tree as it is now, every render.
+	const [selectedPath, setSelectedPath] = useState<string | null>(null);
 	const [paper, setPaper] = useState<string | null>(null);
-	const [overview, setOverview] = useState<CommunityNode | null>(null); // the community whose overview is open
+	const [overviewPath, setOverviewPath] = useState<string | null>(null); // the community whose overview is open
 	const [saved, graph] = ready(run) ?? [];
 	// the citation figures counted now, from every reference list of the library read so far, in place of any
 	// saved with the run; until they come (or if they cannot be counted), the saved ones say "not counted yet"
 	const counted = ready(useAsync(() => api.runCitations(name), [name], { keep: false }));
 	const result = useMemo(() => saved && { ...saved, communities: withCounted(saved.communities, counted) }, [saved, counted]);
 	const roots = useMemo(() => (result ? communityTree(result.communities) : []), [result]);
-	// the tree made again (the figures came): the community selected is the same one, in the new tree
-	useEffect(() => setSelected((before) => before && nodeAt(roots, before.community.tree_path)), [roots]);
+	const selected = useMemo(() => (selectedPath === null ? null : nodeAt(roots, selectedPath)), [roots, selectedPath]);
+	const overview = useMemo(() => (overviewPath === null ? null : nodeAt(roots, overviewPath)), [roots, overviewPath]);
+	const setSelected = useCallback((node: CommunityNode | null) => setSelectedPath(node ? node.community.tree_path : null), []);
+	const setOverview = useCallback((node: CommunityNode | null) => setOverviewPath(node ? node.community.tree_path : null), []);
 	// reviewers' scores: those read before, and those read from a Reviews tab opened since
 	const kept = ready(useAsync(() => api.ratings(), [name], { keep: false }));
 	const [fresh, setFresh] = useState<Record<string, Ratings>>({});

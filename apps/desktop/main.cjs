@@ -95,6 +95,17 @@ app.on("select-client-certificate", (event, _contents, _url, _certificates, call
 	callback();
 });
 
+/** The window's top bar is the page's own: its height in pixels (apps/web/lib/shell/title-bar.ts BAR_HEIGHT) and
+ *  the colours of the page's bar, for the system's window buttons laid over it. */
+const BAR_HEIGHT = 36;
+const BAR_COLOURS = { color: "#1c1c1c", symbolColor: "#e5e5e5" };
+
+/** How a window of this system hides its own title bar and what it keeps of it. */
+function windowChrome(platform) {
+	if (platform === "darwin") return { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 14, y: 11 } };
+	return { titleBarStyle: "hidden", titleBarOverlay: { ...BAR_COLOURS, height: BAR_HEIGHT } };
+}
+
 const ICON_FILE = path.join(__dirname, "icon.png");
 /** The app's icon for a window or a dialog; nothing when it has not been drawn yet (npm run build draws it). */
 function appIcon() {
@@ -214,6 +225,10 @@ function openWindow(url) {
 		autoHideMenuBar: true,
 		title: NAME,
 		icon: appIcon(),
+		// No title bar of the system's: the page draws the window's top bar itself (apps/web components/shell/
+		// title-bar.tsx) and is what the window is dragged by. Windows and Linux keep their own minimise, maximise
+		// and close buttons, laid over the bar's right end in its colours; a Mac keeps its three lights, set in.
+		...windowChrome(process.platform),
 		// the reader shows a paper's own page (and its reviews) inside the window, in an embedded view; the
 		// app's own page needs nothing of this computer either: no Node, a sandboxed process
 		webPreferences: { webviewTag: true, sandbox: true, contextIsolation: true, nodeIntegration: false },
