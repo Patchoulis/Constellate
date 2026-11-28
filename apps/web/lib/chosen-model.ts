@@ -1,14 +1,17 @@
 "use client";
 
 /**
- * The language model chosen in the settings, for every feature that shows what asking it would cost: an estimate
+ * The language models chosen in the settings, for every feature that shows what asking one would cost: an estimate
  * is for one provider and model (its `provider` and `model`), and the choice can change while it is on screen (the
- * sidebar's menu, the settings dialog, another window). Every feature asks for its estimates again when the choice
- * changes (`choiceKey` is in their dependencies), and the button that accepts an estimate is offered only while it
- * is the one for the model chosen now (`estimateFor`): an old figure is never accepted for a new model.
+ * sidebar's menu, the menu beside the estimate, the settings dialog, another window). Every feature asks for its
+ * estimates again when the choice changes (`choiceKey` is in their dependencies), and the button that accepts an
+ * estimate is offered only while it is the one for the model chosen now (`estimateFor`): an old figure is never
+ * accepted for a new model. The features that read papers follow the model that reads papers, which is the naming
+ * model until it is chosen on its own.
  */
 import { createContext, useContext } from "react";
-import type { AskingCost, Effort, ProviderId, Settings } from "@rp/contracts";
+import type { AskingCost, Effort, ProviderId } from "@rp/contracts";
+import { pickedOf, type ModelRole, type ModelSettings } from "@/lib/shell/models";
 import type { Async } from "@/lib/use-async";
 
 export interface ChosenModel {
@@ -18,19 +21,27 @@ export interface ChosenModel {
 	effort: Effort | null;
 }
 
-/** The choice as the settings hold it; null until they are read. */
-export function chosenModelOf(
-	settings: Pick<Settings, "describe_provider" | "describe_model" | "describe_effort"> | undefined,
-): ChosenModel | null {
+/** The choice for `role` as the settings hold it; null until they are read. */
+export function chosenModelOf(settings: ModelSettings | undefined, role: ModelRole = "naming"): ChosenModel | null {
 	if (!settings) return null;
-	return { provider: settings.describe_provider ?? null, model: settings.describe_model, effort: settings.describe_effort ?? null };
+	const picked = pickedOf(settings, role);
+	return { provider: picked.provider ?? null, model: picked.model ?? "", effort: picked.effort ?? null };
+}
+
+/** Both choices, as the page holds them. */
+export type ChosenModels = Record<ModelRole, ChosenModel | null>;
+
+/** Both choices from the settings; each null until they are read. */
+export function chosenModelsOf(settings: ModelSettings | undefined): ChosenModels {
+	return { naming: chosenModelOf(settings, "naming"), reading: chosenModelOf(settings, "reading") };
 }
 
 /** Provided by the page (app/page.tsx) from the settings it holds. */
-export const ChosenModelContext = createContext<ChosenModel | null>(null);
+export const ChosenModelContext = createContext<ChosenModels>({ naming: null, reading: null });
 
-export function useChosenModel(): ChosenModel | null {
-	return useContext(ChosenModelContext);
+/** The model chosen for `role` now: the features that read papers ask for "reading". */
+export function useChosenModel(role: ModelRole): ChosenModel | null {
+	return useContext(ChosenModelContext)[role];
 }
 
 /** The choice as one dependency: estimates are asked for again when it changes. */

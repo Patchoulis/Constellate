@@ -1,7 +1,7 @@
 /** Which estimate may be accepted: only the one answered for what is asked now and the model chosen now. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { choiceKey, chosenModelOf, currentEstimate, isFor } from "@/lib/chosen-model";
+import { choiceKey, chosenModelOf, chosenModelsOf, currentEstimate, isFor } from "@/lib/chosen-model";
 import type { Async } from "@/lib/use-async";
 import { askingCost } from "./costs";
 
@@ -49,4 +49,19 @@ test("the choice is read from the settings, and is not known before them", () =>
 		model: "gpt",
 		effort: "high",
 	});
+});
+
+test("the features that read papers follow the model that reads papers, the naming one until another is chosen", () => {
+	const naming = { describe_provider: "openai" as const, describe_model: "gpt", describe_effort: "high" as const };
+	assert.deepEqual(chosenModelOf(naming, "reading"), { provider: "openai", model: "gpt", effort: "high" });
+	const own = { ...naming, reading_provider: "compatible" as const, reading_model: "qwen3:32b", reading_effort: null };
+	const both = chosenModelsOf(own);
+	assert.deepEqual(both.reading, { provider: "compatible", model: "qwen3:32b", effort: "high" }, "no effort of its own: the naming one's");
+	assert.deepEqual(both.naming, { provider: "openai", model: "gpt", effort: "high" });
+	assert.notEqual(choiceKey(both.reading), choiceKey(both.naming), "a new reading model asks the estimates again");
+	// an estimate seen for the naming model is not offered once another reads papers
+	const seen = askingCost(0.12, 0.25, { provider: "openai", model: "gpt" });
+	assert.equal(currentEstimate({ status: "ready", data: seen }, both.naming), seen);
+	assert.equal(currentEstimate({ status: "ready", data: seen }, both.reading), undefined);
+	assert.deepEqual(chosenModelsOf(undefined), { naming: null, reading: null });
 });

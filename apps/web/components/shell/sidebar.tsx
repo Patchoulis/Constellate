@@ -12,7 +12,7 @@ import { GroupedPicker } from "@/components/ui/picker";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/net/api";
 import { accepting, costWords, shownModel } from "@/lib/cost";
-import { chosenLabel, chosenOf, unavailableBecause, type Choosable } from "@/lib/shell/models";
+import { READING_TITLE, chosenLabel, chosenOf, modelsApart, unavailableBecause, type Choosable, type ModelRole } from "@/lib/shell/models";
 import { engineWarnings, IMPORT_ADVICE, keepDismissed, notDismissed, readDismissed } from "@/lib/shell/notices";
 import { withSignal } from "@/lib/net/request";
 import {
@@ -424,32 +424,68 @@ function CostLine({
 	const unknownOutcome = unsettled && unsettled.calls > 0 ? unsettled.said : null;
 	const spent = ready(usage);
 	const chosen = chosenOf(choosable.catalog, settings);
-	const why = chosen.provider && unavailableBecause(chosen.provider);
+	const reader = chosenOf(choosable.catalog, settings, "reading");
+	// two models: each is said for what it does; one: it does both, and is shown as it always was
+	const apart = modelsApart(choosable.catalog, settings);
 	const price = chosenPrice(choosable, settings, spent?.currency ?? DOLLAR, locale);
-	const choice = (
-		<span className="flex min-w-0 items-center gap-1.5" title="The model that names communities and writes overviews, and who provides it">
-			<ModelChoice
-				quiet
-				choosable={choosable}
-				settings={settings}
-				providerOwned={providerOwned}
-				currency={spent?.currency ?? DOLLAR}
-				locale={locale}
-				onChange={onChange}
-			/>
-			{why && <span className="shrink-0 text-warning">· {why}</span>}
-		</span>
+	const readerPrice = apart ? chosenPrice(choosable, settings, spent?.currency ?? DOLLAR, locale, "reading") : null;
+	const line = (role: ModelRole, title: string, label: string | null) => {
+		const shown = role === "naming" ? chosen : reader;
+		const why = shown.provider && unavailableBecause(shown.provider);
+		return (
+			// a narrow sidebar puts the menu under its label rather than past its edge
+			<span className="flex min-w-0 flex-wrap items-center gap-x-1.5" title={title}>
+				{label && <span className="shrink-0">{label}</span>}
+				<span className="flex max-w-full min-w-0 items-center">
+					<ModelChoice
+						quiet
+						role={role}
+						choosable={choosable}
+						settings={settings}
+						providerOwned={providerOwned}
+						currency={spent?.currency ?? DOLLAR}
+						locale={locale}
+						onChange={onChange}
+					/>
+				</span>
+				{why && <span className="min-w-0 text-warning">· {why}</span>}
+			</span>
+		);
+	};
+	const choice = apart ? (
+		<>
+			{line("naming", "The model that names communities and writes overviews, and who provides it", "Names:")}
+			{line("reading", READING_TITLE, "Reads papers:")}
+		</>
+	) : (
+		line(
+			"naming",
+			"The model that names communities, writes overviews and reads papers, and who provides it. Another can be chosen to read papers in Settings or beside any estimate of a section that reads them.",
+			null,
+		)
 	);
 	const unknownLine = unknownOutcome && (
 		<span className="text-warning" title="Not counted in what was spent: whether these calls were billed is not known.">
 			{unknownOutcome}
 		</span>
 	);
+	// with two models, each price says whose it is
+	const priceShown = price && apart ? `Names: ${price}` : price;
+	const readerLine = readerPrice && (
+		<span className="max-w-full min-w-0 truncate" title={readerPrice}>
+			Reads papers: {readerPrice}
+		</span>
+	);
 	if (!spent)
 		return (
 			<div className="flex flex-col gap-0.5">
 				{choice}
-				{price && <span className="truncate">{price}</span>}
+				{priceShown && (
+					<span className="truncate" title={priceShown}>
+						{priceShown}
+					</span>
+				)}
+				{readerLine}
 				{unknownLine}
 			</div>
 		);
@@ -468,7 +504,8 @@ function CostLine({
 			? [`${count(spent.unpriced_calls, "call")} to a model with no price ${spent.unpriced_calls === 1 ? "is" : "are"} not in this total.`]
 			: []),
 		...(unknownOutcome ? [`${unknownOutcome} Not counted above.`] : []),
-		...(price ? [`${chosenLabel(chosen)}: ${price}.`] : []),
+		...(price ? [`${chosenLabel(chosen)}${apart ? " (names, overviews)" : ""}: ${price}.`] : []),
+		...(readerPrice ? [`${chosenLabel(reader)} (reads papers): ${readerPrice}.`] : []),
 		"Prices are the published list prices in US dollars per million tokens.",
 		...(spent.currency.code === "USD"
 			? []
@@ -481,8 +518,8 @@ function CostLine({
 			{choice}
 			{/* what was spent goes onto lines of its own when the sidebar is too narrow: never past its edge */}
 			<div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
-				<span className="max-w-full min-w-0 truncate" title={price ?? undefined}>
-					{price}
+				<span className="max-w-full min-w-0 truncate" title={priceShown ?? undefined}>
+					{priceShown}
 				</span>
 				<span className="flex max-w-full min-w-0 flex-wrap gap-x-1 text-foreground/80" title={detail}>
 					{/* no priced call: no amount at all, only the calls and their tokens */}
@@ -492,6 +529,7 @@ function CostLine({
 					)}
 				</span>
 			</div>
+			{readerLine}
 			{unknownLine}
 		</div>
 	);

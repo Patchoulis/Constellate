@@ -3,7 +3,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ModelCatalog, ModelProvider } from "@rp/contracts";
 import {
+	READING_TITLE,
+	ROLE_FIELDS,
+	SAME_AS_NAMING,
 	changeFor,
+	effortChange,
+	modelsApart,
+	pickedOf,
+	readingPicks,
+	readingDiffers,
+	readsWithNaming,
 	choosableOf,
 	chosenLabel,
 	chosenOf,
@@ -156,6 +165,59 @@ test("a server's list of models keeps only the ids that can be used, and says ho
 	assert.equal(endpointIds({ data: [{ id: "x" }] }), null, "an answer that is not a list of models");
 	assert.equal(endpointIds("<html>"), null);
 	assert.equal(endpointIds(null), null);
+});
+
+test("the model that reads papers is the naming one until it is chosen on its own, and is then its own", () => {
+	const naming = { describe_provider: "openai" as const, describe_model: "gpt-6.2-sol", describe_effort: "high" as const };
+	assert.ok(readsWithNaming(naming), "an older engine's settings have no reading model");
+	assert.ok(readsWithNaming({ ...naming, reading_provider: null, reading_model: null, reading_effort: null }));
+	assert.deepEqual(pickedOf(naming, "reading"), { provider: "openai", model: "gpt-6.2-sol", effort: "high" });
+	assert.equal(chosenLabel(chosenOf(catalog, naming, "reading")), "GPT-6.2 Sol · OpenAI");
+	assert.equal(readingDiffers(catalog, naming), false);
+	const own = { ...naming, reading_provider: "compatible" as const, reading_model: "qwen3:32b", reading_effort: "low" as const };
+	assert.ok(!readsWithNaming(own));
+	assert.deepEqual(pickedOf(own, "reading"), { provider: "compatible", model: "qwen3:32b", effort: "low" });
+	assert.deepEqual(pickedOf(own, "naming"), { provider: "openai", model: "gpt-6.2-sol", effort: "high" }, "the naming model is untouched");
+	assert.equal(chosenLabel(chosenOf(catalog, own, "reading")), "qwen3:32b · OpenAI-compatible endpoint");
+	assert.equal(readingDiffers(catalog, own), true);
+	// chosen on its own as the very same model: nothing to tell apart
+	const alike = { ...naming, reading_provider: "openai" as const, reading_model: "gpt-6.2-sol", reading_effort: "high" as const };
+	assert.equal(readingDiffers(catalog, alike), false);
+	// the settings not read yet: the catalog's reading model, else (an older engine) its naming one
+	const told = {
+		...catalog,
+		reading: { provider: "openai" as const, model: "gpt-6.2-sol", effort: "low" as const, same_as_naming: false },
+	};
+	assert.equal(chosenOf(told, undefined, "reading").id, "gpt-6.2-sol");
+	assert.equal(chosenOf(catalog, undefined, "reading").id, "claude-opus-5-5");
+});
+
+test("the two models are shown apart once one is chosen to read papers, even as the same model", () => {
+	const naming = { describe_provider: "openai" as const, describe_model: "gpt-6.2-sol", describe_effort: "high" as const };
+	assert.equal(modelsApart(catalog, naming), false);
+	const alike = { ...naming, reading_provider: "openai" as const, reading_model: "gpt-6.2-sol", reading_effort: "high" as const };
+	assert.equal(modelsApart(catalog, alike), true, "changing the naming one would not change it");
+	assert.equal(modelsApart(catalog, { ...naming, reading_provider: "compatible", reading_model: "qwen3:32b" }), true);
+});
+
+test("a server's window cannot choose the model that reads papers, nor set it back to another provider", () => {
+	const naming = { describe_provider: "openai" as const, describe_model: "gpt-6.2-sol" };
+	assert.deepEqual(readingPicks(catalog, naming, false), { locked: false, canReset: true });
+	assert.deepEqual(readingPicks(catalog, naming, true), { locked: true, canReset: true }, "the owner chooses it");
+	const elsewhere = { ...naming, reading_provider: "compatible" as const, reading_model: "qwen3:32b" };
+	assert.deepEqual(readingPicks(catalog, elsewhere, true), { locked: false, canReset: false });
+	const within = { ...naming, reading_provider: "openai" as const, reading_model: "gpt-6.2-sol" };
+	assert.deepEqual(readingPicks(catalog, within, true), { locked: false, canReset: true });
+});
+
+test("a pick of the model that reads papers saves its own settings, and setting it back saves no model", () => {
+	assert.deepEqual(changeFor("openai", "gpt-6.2-sol", false, "reading"), { reading_provider: "openai", reading_model: "gpt-6.2-sol" });
+	assert.deepEqual(changeFor("openai", "gpt-6.2-sol", true, "reading"), { reading_model: "gpt-6.2-sol" }, "the server's provider");
+	assert.deepEqual(effortChange("low", "reading"), { reading_effort: "low" });
+	assert.deepEqual(effortChange("low"), { describe_effort: "low" });
+	assert.deepEqual(SAME_AS_NAMING, { reading_provider: null });
+	assert.deepEqual(ROLE_FIELDS.reading, { provider: "reading_provider", model: "reading_model", effort: "reading_effort" });
+	assert.match(READING_TITLE, /tables, agree \/ disagree, questions, claims, weaknesses, explanations and citation kinds/);
 });
 
 test("a provider that cannot be asked says why, and one that can says nothing", () => {

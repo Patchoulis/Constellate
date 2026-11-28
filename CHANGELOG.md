@@ -5,6 +5,17 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- A second choice of language model, the model that reads papers: it fills tables, answers agree / disagree and
+  questions, and reads claims, weaknesses, passages to explain and citation kinds, while the first one keeps naming
+  communities and writing their overviews. A cheaper model can read papers while a stronger one names. It is chosen
+  from the same providers and models, with the same efforts, beside the cost shown in each of those sections, and in
+  Settings, where it can be set back to the same as the naming model. Until it is chosen, papers are read with the
+  naming model, as before. Answers already kept are kept for the model that gave them: choosing that model again
+  costs nothing.
+- When the two models differ, the sidebar says which one names and which one reads papers, each with its price.
+
 ## [0.2.2] - 2026-11-28
 
 ### Added

@@ -7,6 +7,51 @@
 import type { CatalogItem, Effort, ModelCatalog, ModelEntry, ModelPrice, ModelProvider, ProviderId, Settings } from "@rp/contracts";
 import { money, type Currency } from "@/lib/units";
 
+/**
+ * Which of the two choices of language model: the one that names communities and writes their overviews, or the
+ * one that reads papers (tables, agree / disagree, questions, claims, weaknesses, explanations, citation kinds).
+ * The second is the first until it is chosen on its own.
+ */
+export type ModelRole = "naming" | "reading";
+
+/** The settings each choice is read from and saved to. */
+export const ROLE_FIELDS = {
+	naming: { provider: "describe_provider", model: "describe_model", effort: "describe_effort" },
+	reading: { provider: "reading_provider", model: "reading_model", effort: "reading_effort" },
+} as const satisfies Record<ModelRole, { provider: keyof Settings; model: keyof Settings; effort: keyof Settings }>;
+
+/** What the reading model's menu says of itself, wherever it is shown: it is one setting, shared by every feature. */
+export const READING_TITLE =
+	"The model that reads papers: tables, agree / disagree, questions, claims, weaknesses, explanations and citation kinds. One setting, shared by all of them; changing it here changes it for every one.";
+
+/** The settings that choose the models, as far as they are known. */
+export type ModelSettings = Partial<
+	Pick<Settings, "describe_provider" | "describe_model" | "describe_effort" | "reading_provider" | "reading_model" | "reading_effort">
+>;
+
+/** Is the model that reads papers the naming one, by not being chosen on its own? */
+export function readsWithNaming(settings: ModelSettings | undefined): boolean {
+	return settings?.reading_provider === undefined || settings.reading_provider === null;
+}
+
+/** The provider, model and effort the settings choose for `role`: the reading model is the naming one until it is
+ *  chosen on its own. Each part is undefined while the settings do not say it (not read yet, an older engine). */
+export function pickedOf(
+	settings: ModelSettings | undefined,
+	role: ModelRole,
+): { provider: ProviderId | undefined; model: string | undefined; effort: Effort | undefined } {
+	const naming = { provider: settings?.describe_provider, model: settings?.describe_model, effort: settings?.describe_effort };
+	if (role === "naming" || readsWithNaming(settings)) return naming;
+	return {
+		provider: settings?.reading_provider ?? undefined,
+		model: settings?.reading_model ?? naming.model,
+		effort: settings?.reading_effort ?? naming.effort,
+	};
+}
+
+/** What to save to set the model that reads papers back to the naming one. */
+export const SAME_AS_NAMING: Partial<Settings> = { reading_provider: null };
+
 /** What can be chosen: the engine's catalog once it has answered; before that (or when asking failed, `why`), only
  *  the model the settings name. */
 export type Choosable = { source: "engine"; catalog: ModelCatalog } | { source: "waiting"; catalog: ModelCatalog; why: string | null };
@@ -45,7 +90,8 @@ export function waitingFor(
 		price_of_typed: { kind: "not_known" },
 		docs: "",
 	};
-	return { source: "waiting", why, catalog: { providers: [only], chosen: { provider: id, model, effort: "medium" } } };
+	const chosen = { provider: id, model, effort: "medium" as const };
+	return { source: "waiting", why, catalog: { providers: [only], chosen, reading: { ...chosen, same_as_naming: true } } };
 }
 
 /** What can be chosen: the engine's catalog when it has told it, else the settings' model alone. */
@@ -111,20 +157,54 @@ export interface Chosen {
 	effort: Effort;
 }
 
-export function chosenOf(
-	catalog: ModelCatalog,
-	settings: Pick<Settings, "describe_provider" | "describe_model" | "describe_effort"> | undefined,
-): Chosen {
-	const providerId = settings?.describe_provider ?? catalog.chosen.provider;
-	const id = settings?.describe_model ?? catalog.chosen.model;
+/** The model chosen for `role`, as the settings name it, else as the engine's catalog does. */
+export function chosenOf(catalog: ModelCatalog, settings: ModelSettings | undefined, role: ModelRole = "naming"): Chosen {
+	const picked = pickedOf(settings, role);
+	// the catalog's own, for what the settings do not say: an older engine tells no reading model, which is the naming one
+	const told = role === "reading" ? (catalog.reading ?? catalog.chosen) : catalog.chosen;
+	const providerId = picked.provider ?? told.provider;
+	const id = picked.model ?? told.model;
 	const provider = catalog.providers.find((one) => one.id === providerId);
 	return {
 		providerId,
 		provider,
 		id,
 		model: provider?.models.find((one) => one.id === id),
-		effort: settings?.describe_effort ?? catalog.chosen.effort,
+		effort: picked.effort ?? told.effort,
 	};
+}
+
+/** Are two choices the same provider, model and effort? */
+export function sameChoice(one: Chosen, other: Chosen): boolean {
+	return one.providerId === other.providerId && one.id === other.id && one.effort === other.effort;
+}
+
+/** Does another model read papers than the one that names communities? */
+export function readingDiffers(catalog: ModelCatalog, settings: ModelSettings | undefined): boolean {
+	return !sameChoice(chosenOf(catalog, settings, "naming"), chosenOf(catalog, settings, "reading"));
+}
+
+/** Are the two models shown apart, each for what it does? When another reads papers, and also when the same model
+ *  was chosen to read on its own: changing the naming one would then not change the other. */
+export function modelsApart(catalog: ModelCatalog, settings: ModelSettings | undefined): boolean {
+	return !readsWithNaming(settings) || readingDiffers(catalog, settings);
+}
+
+/**
+ * What a window may do with the model that reads papers when the server owns the providers (`providerOwned`):
+ * nothing while it reads with the naming model (a pick would pin it to the naming provider of now: the owner
+ * chooses it), and set it back to the naming model only while that reads with the same provider.
+ */
+export function readingPicks(
+	catalog: ModelCatalog,
+	settings: ModelSettings | undefined,
+	providerOwned: boolean,
+): { locked: boolean; canReset: boolean } {
+	if (!providerOwned) return { locked: false, canReset: true };
+	const same = readsWithNaming(settings);
+	const naming = chosenOf(catalog, settings, "naming");
+	const reading = chosenOf(catalog, settings, "reading");
+	return { locked: same, canReset: same || naming.providerId === reading.providerId };
 }
 
 /** "Claude Opus 5.5 · Anthropic", "qwen3:32b · OpenAI-compatible endpoint". */
@@ -171,7 +251,14 @@ export function effortSent(asked: Effort, efforts: Effort[]): Effort | null {
 	return best;
 }
 
-/** What to save when a model is picked. The provider is left out where the window may not change it (a server's). */
-export function changeFor(providerId: ProviderId, id: string, providerOwned: boolean): Partial<Settings> {
-	return providerOwned ? { describe_model: id } : { describe_provider: providerId, describe_model: id };
+/** What to save when a model is picked for `role`. The provider is left out where the window may not change it (a
+ *  server's): the engine then takes the model as one of the provider `role` asks now. */
+export function changeFor(providerId: ProviderId, id: string, providerOwned: boolean, role: ModelRole = "naming"): Partial<Settings> {
+	const fields = ROLE_FIELDS[role];
+	return providerOwned ? { [fields.model]: id } : { [fields.provider]: providerId, [fields.model]: id };
+}
+
+/** What to save when an effort is picked for `role`. */
+export function effortChange(effort: Effort, role: ModelRole = "naming"): Partial<Settings> {
+	return { [ROLE_FIELDS[role].effort]: effort };
 }

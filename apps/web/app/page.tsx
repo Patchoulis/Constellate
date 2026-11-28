@@ -7,7 +7,8 @@ import { SettingsDialog } from "@/components/shell/settings-dialog";
 import { Sidebar } from "@/components/shell/sidebar";
 import { ActivityLog, Notice, Workspace } from "@/components/shell/workspace";
 import { api } from "@/lib/net/api";
-import { ChosenModelContext, chosenModelOf } from "@/lib/chosen-model";
+import { ChosenModelContext, chosenModelsOf } from "@/lib/chosen-model";
+import { ModelChoosingContext } from "@/components/shell/model-choice";
 import { serverOwned } from "@/lib/net/engine";
 import { forgetMarks } from "@/lib/community/marks";
 import { choosableOf } from "@/lib/shell/models";
@@ -163,16 +164,21 @@ export default function Home() {
 			/>
 			{current ? (
 				// every estimate on screen is for the model chosen now (lib/chosen-model.ts)
-				<ChosenModelContext value={chosenModelOf(settings)}>
-					<Workspace
-						key={`${current}#${finishedRuns}`}
-						name={current}
-						title={known.find((run) => run.name === current)?.title ?? current}
-						catalog={ready(catalog)}
-						model={settings?.describe_model}
+				<ChosenModelContext value={chosenModelsOf(settings)}>
+					{/* the model that reads papers can be chosen in each section that reads them, beside its estimate */}
+					<ModelChoosingContext
+						value={{ choosable, settings, providerOwned: owned.has("reading_provider"), onChange: (changes) => void change(changes) }}
 					>
-						{log}
-					</Workspace>
+						<Workspace
+							key={`${current}#${finishedRuns}`}
+							name={current}
+							title={known.find((run) => run.name === current)?.title ?? current}
+							catalog={ready(catalog)}
+							model={settings?.describe_model}
+						>
+							{log}
+						</Workspace>
+					</ModelChoosingContext>
 				</ChosenModelContext>
 			) : (
 				<main className="relative min-w-0 flex-1">

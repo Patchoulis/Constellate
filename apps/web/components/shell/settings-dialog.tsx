@@ -6,7 +6,7 @@ import { REDO_STEPS, type Catalog, type Library, type ModelProvider, type RedoSt
 import { DetectorTraining } from "@/components/features/detector/detector-training";
 import { ModelChoice } from "@/components/shell/model-choice";
 import { IMPORT_ADVICE } from "@/lib/shell/notices";
-import { groupsOf, type Choosable } from "@/lib/shell/models";
+import { READING_TITLE, ROLE_FIELDS, groupsOf, readsWithNaming, type Choosable, type ModelRole } from "@/lib/shell/models";
 import { Button, Heading, Segmented } from "@/components/ui/button";
 import { Input, Label, SwitchRow } from "@/components/ui/field";
 import { Choice, GroupedPicker } from "@/components/ui/picker";
@@ -22,8 +22,8 @@ type Field = { key: keyof Settings; label: string; hint?: string } & (
 	| { kind: "choice"; from: "embedding_models" | "clustering" | "acceptance" }
 	// any number of a list the engine offers
 	| { kind: "several"; from: "flags"; placeholder: string }
-	// the language model: a provider and one of its models, and the effort (model-choice.tsx)
-	| { kind: "model" }
+	// a language model: a provider and one of its models, and the effort (model-choice.tsx), for one of its roles
+	| { kind: "model"; role: ModelRole }
 );
 
 /**
@@ -222,7 +222,20 @@ const GROUPS: { title: string; note?: string; columns?: number; fields: Field[] 
 				label: "Describe communities with a language model",
 				hint: "Needs the chosen provider's key (see Language model below)",
 			},
-			{ kind: "model", key: "describe_model", label: "Language model" },
+			{
+				kind: "model",
+				role: "naming",
+				key: "describe_model",
+				label: "Language model",
+				hint: "Names communities and writes their overviews",
+			},
+			{
+				kind: "model",
+				role: "reading",
+				key: "reading_model",
+				label: "Model that reads papers",
+				hint: "Tables, agree / disagree, questions, claims, weaknesses, explanations and citation kinds; one setting for all of them, also chosen beside their estimates. Its menu sets it back to the same as the naming model",
+			},
 		],
 	},
 ];
@@ -237,9 +250,11 @@ const MODELS_GROUP = "Language model";
 /** A change the engine refused, and why. */
 export type Refusal = { changes: Partial<Settings>; error: string };
 
-/** The settings a field edits: the model's field picks the provider and the effort too. */
+/** The settings a field edits: a model's field picks the provider and the effort too. */
 function keysOf(field: Field): (keyof Settings)[] {
-	return field.kind === "model" ? ["describe_provider", "describe_model", "describe_effort"] : [field.key];
+	if (field.kind !== "model") return [field.key];
+	const { provider, model, effort } = ROLE_FIELDS[field.role];
+	return [provider, model, effort];
 }
 
 /** Why the last change to this field was refused, or null when it was not. */
@@ -264,12 +279,17 @@ function Editor({
 }) {
 	const set = (value: Settings[keyof Settings]) => onChange({ [field.key]: value });
 	if (field.kind === "model") {
+		const same = field.role === "reading" && readsWithNaming(settings);
 		return (
 			<Label>
 				{field.label}
-				<span className="flex h-8 items-center rounded-md border border-input bg-background px-2 text-sm">
+				<span
+					className="flex h-8 items-center rounded-md border border-input bg-background px-2 text-sm"
+					title={field.role === "reading" ? READING_TITLE : undefined}
+				>
 					<ModelChoice
 						quiet
+						role={field.role}
 						choosable={choosable}
 						settings={settings}
 						providerOwned={providerOwned}
@@ -277,6 +297,7 @@ function Editor({
 						onChange={onChange}
 					/>
 				</span>
+				{field.hint && <span>{same ? `The same as the naming model. ${field.hint}` : field.hint}</span>}
 			</Label>
 		);
 	}
@@ -460,7 +481,9 @@ export function SettingsDialog({
 														settings={settings}
 														catalog={catalog}
 														choosable={choosable}
-														providerOwned={serverOwned.has("describe_provider")}
+														providerOwned={serverOwned.has(
+															field.kind === "model" && field.role === "reading" ? "reading_provider" : "describe_provider",
+														)}
 														onChange={onChange}
 													/>
 													{why && (
