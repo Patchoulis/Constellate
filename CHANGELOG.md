@@ -5,6 +5,11 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The app's icon is the white mark alone, with nothing behind it, everywhere: the window, the taskbar, the installer
+  and shortcuts. It no longer sits on a dark tile.
+
 ## [0.2.3] - 2026-11-28
 
 ### Added

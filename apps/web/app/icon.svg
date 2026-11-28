@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
   <!-- Constellate's icon. The orbit paths are the "universe" icon of Tabler Icons (https://tabler.io/icons),
-       MIT licence, (c) Pawel Kuna; drawn in white and placed on a dark tile. Their licence, which travels with them:
+       MIT licence, (c) Pawel Kuna; drawn in white, with nothing behind them. Their licence, which travels with them:
 
        MIT License
 
@@ -24,8 +24,7 @@
        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
        SOFTWARE.
   -->
-  <rect width="256" height="256" rx="56" fill="#141414"/>
-  <g transform="translate(32 32) scale(8)" fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <g transform="translate(8 8) scale(10)" fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
     <path d="M7.027 11.477a5 5 0 1 0 5.496 -4.45a4.951 4.951 0 0 0 -3.088 .681"/>
     <path d="M5.636 5.636a9 9 0 1 0 3.555 -2.188"/>
     <path fill="#ffffff" d="M17 5a1 1 0 1 0 2 0a1 1 0 1 0 -2 0"/>
