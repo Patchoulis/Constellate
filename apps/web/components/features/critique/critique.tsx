@@ -34,6 +34,7 @@ import { ReadingModel } from "@/components/shell/model-choice";
 import { accepting, shownModel } from "@/lib/cost";
 import { ready, useAsync } from "@/lib/use-async";
 import { elsewhereLine, useFollowedJob } from "@/lib/shell/use-followed-job";
+import { mendFormulaBreaks } from "@/lib/reader/review-text";
 import { count, knownMoney } from "@/lib/units";
 import { cn } from "@/lib/utils";
 
@@ -50,16 +51,16 @@ function ReviewWords({ reviewer, point }: { reviewer: CritiqueReviewer; point: C
 				title={`${reviewerName(reviewer)}'s own words${section ? `, ${section.name}` : ""}: characters ${point.span.start.toLocaleString()} to ${point.span.end.toLocaleString()} of the kept reviews page. Click to see them in their section.`}
 				onClick={() => setOpen(!open)}
 			>
-				{point.text}
+				{mendFormulaBreaks(point.text)}
 			</button>
 			{open && section && (
 				<span className="block max-h-64 overflow-y-auto rounded-md border bg-background/40 p-2 font-sans text-xs whitespace-pre-line text-muted-foreground">
 					<span className="mb-1 block font-ui text-foreground">
 						{reviewerName(reviewer)}, {section.name}
 					</span>
-					{before}
-					<mark className="rounded-sm bg-primary/20 px-0.5 text-foreground">{marked}</mark>
-					{after}
+					{mendFormulaBreaks(before)}
+					<mark className="rounded-sm bg-primary/20 px-0.5 text-foreground">{mendFormulaBreaks(marked)}</mark>
+					{mendFormulaBreaks(after)}
 				</span>
 			)}
 		</span>
@@ -139,7 +140,7 @@ function Reviewer({ reviewer, readings }: { reviewer: CritiqueReviewer; readings
 					</button>
 					{reply === one.note && (
 						<p className="mt-1 max-h-64 overflow-y-auto rounded-md border bg-background/40 p-2 font-sans whitespace-pre-line">
-							{one.text ??
+							{(one.text && mendFormulaBreaks(one.text)) ??
 								"The reviews page is not kept, so the reply's words cannot be shown: open the paper's Reviews tab to read the page again."}
 							{one.cut && " …"}
 						</p>
