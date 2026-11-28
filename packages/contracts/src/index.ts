@@ -540,7 +540,19 @@ export interface Ratings {
 	/** were the reviews told apart by their headings? If not, the count is a guess and the scores may include quoted ones */
 	exact: boolean;
 	/** field ("Rating", "Quality", "Soundness", ...) -> one score per review; overall judgement first */
-	ratings: Record<string, { values: number[]; mean: number; /** what each score means, e.g. "fair" */ meanings: string[] }>;
+	ratings: Record<string, FieldRatings>;
+}
+
+/** One field's scores in `Ratings`. */
+export interface FieldRatings {
+	/** one score per review */
+	values: number[];
+	mean: number;
+	/** what each score means, e.g. "fair" */
+	meanings: string[];
+	/** the scale the venue scores the field on, added by the engine as it serves the ratings (never kept); absent for
+	 *  a field the engine does not know */
+	scale?: Scale;
 }
 
 /** A stretch of a kept reviews page's text, in characters (Unicode code points, as `Array.from(text)` counts
@@ -653,6 +665,21 @@ export interface PaperFigures {
 	disagreement: Disagreement | null;
 }
 
+/** A term at least two of one paper's reviewers use when they praise (or criticise) it, counted from the words of
+ *  the reviews without a language model (engine analysis/reviews.rs `in_common`). */
+export interface PaperTheme {
+	term: string;
+	/** of the paper's reviewers, how many use it in praising (criticising) sections */
+	reviewers: number;
+	/** the paper's reviewers in all */
+	all_reviewers: number;
+	/** how many times more often it is in the paper's praising (criticising) sections than in its review sections overall */
+	distinctiveness: number;
+	/** the first sentence of each review that uses it, in the order of the notes */
+	sources: ThemeSource[];
+	more_sources: number;
+}
+
 /** `GET /api/papers/<id>/reviews`: a paper's kept discussion and what its scores come to (engine api/papers/reviews.rs). */
 export interface PaperReviews {
 	paper_id: string;
@@ -666,6 +693,10 @@ export interface PaperReviews {
 	venue: Venue | null;
 	notes: ReviewNote[];
 	figures: PaperFigures;
+	/** what at least two of its reviewers praise, most widely shared first; empty with fewer than two reviewers */
+	praise: PaperTheme[];
+	/** what at least two of its reviewers criticise, the same way */
+	criticism: PaperTheme[];
 }
 
 /** `POST /api/papers/<id>/reviews`: what came of a page handed over, and what is kept now. */

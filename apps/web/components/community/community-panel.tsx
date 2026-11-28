@@ -227,9 +227,10 @@ function Detail({
 	const { community, siblings, children } = node;
 	return (
 		<div className="flex flex-col gap-4 p-4">
-			<Button variant="outline" onClick={() => onOverview(node)}>
+			{/* in a narrow panel its words go onto a second line: never past the panel's edge */}
+			<Button variant="outline" className="h-auto min-h-8 py-1.5 text-left whitespace-normal" onClick={() => onOverview(node)}>
 				<Telescope />
-				Overview: methods, findings, directions
+				<span className="min-w-0">Overview: methods, findings, directions</span>
 			</Button>
 			{community.description ? (
 				<p className="font-sans text-base text-foreground">{community.description}</p>
