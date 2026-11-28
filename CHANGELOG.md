@@ -14,11 +14,15 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   system is set to reduce motion, and not when the open run is only shown again, for example after its communities
   are named again.
 - While a run is loaded or made, a quiet night sky is shown behind the words, with a small constellation that draws
-  itself again and again, and the dots after "Loading the run" and "Working" come one by one. While a run is made, the share of its stars that are lit is how far the run has got:
-  the steps done, and the counted part of the step under way. With less motion the sky stands still.
+  itself again and again, and the dots after "Loading the run" and "Working" come one by one. While a run is made,
+  the share of its stars that are lit is how far the run has got: the steps done, and the counted part of the step
+  under way. With less motion the sky stands still.
 
 ### Changed
 
+- The graph stays smooth with hundreds of papers marked: moving it with 500 marked papers went from about 70 to
+  about 210 frames a second here. Zooming out no longer remakes every paper's dot on every frame, and the names of
+  marked papers move with the graph without the page laying itself out again.
 - Communities are ordered by "Uniqueness" in place of "Saturation" and "Tightness": how far a community's papers are,
   on average, from what the community is about (a cosine distance). Low means its papers all do much the same thing;
   high means the work in it is more varied.

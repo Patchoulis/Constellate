@@ -76,7 +76,13 @@ export interface PaperPlace {
 	y: number;
 }
 
-/** A marked paper's place and the places of the papers it is linked to. */
+/** At most this many marked papers, and papers linked to them, are named on the graph at once: with many marks,
+ *  more would cover the graph. Their rings and links are always drawn; a label that finds no free place is
+ *  left out rather than laid over another. */
+export const MOST_LABELS = { marked: 12, linked: 24 };
+
+/** A marked paper's place and the places of the papers it is linked to. Only the newest `MOST_LABELS.marked` marks
+ *  name their neighbours (pickMarkedLabels), so the others' `linked` may be left empty. */
 export interface MarkedPlace extends PaperPlace {
 	linked: PaperPlace[];
 }

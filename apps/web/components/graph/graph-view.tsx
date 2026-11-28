@@ -9,7 +9,7 @@ import { GraphCanvasRenderer, type CanvasData, type CanvasLevel } from "@/compon
 import { MathText } from "@/components/math-text";
 import { Button } from "@/components/ui/button";
 import { communityLabel, groupsAt, treeDepth, type CommunityNode } from "@/lib/community/community";
-import { pickMarkedLabels, placeLabels, type MarkedPlace, type PaperPlace } from "@/lib/graph/labels";
+import { MOST_LABELS, pickMarkedLabels, placeLabels, type MarkedPlace, type PaperPlace } from "@/lib/graph/labels";
 import type { Marks } from "@/lib/community/marks";
 import { useSelectKeyName, type SelectKey } from "@/lib/ui/prefs";
 import { panelSize } from "@/lib/ui/use-resizable";
@@ -23,10 +23,6 @@ import { constellationPicks } from "@/lib/graph/intro";
 /** A paper's halo shrinks with the level, so the glows of smaller groups stay separate. */
 const GLOW = [48, 34, 24, 17];
 const LEVEL_NAMES = ["Communities", "Sub-communities", "Sub-sub-communities"];
-/** At most this many marked papers, and papers linked to them, are named on the graph at once: with many marks,
- *  more would cover the graph. Their rings and links are always drawn; a label that finds no free place is
- *  left out rather than laid over another. */
-const MOST_LABELS = { marked: 12, linked: 24 };
 
 /** A label on the graph, and whose it is: the hovered paper, a paper linked to it, a marked paper, or a paper
  *  linked to a marked one. They are placed in this order, so the first get the best places. */
@@ -37,6 +33,53 @@ const LABEL_PLACING: Record<Labelled["kind"], { gap: number; above: boolean; opt
 	marked: { gap: 10, above: false, optional: true },
 	markedLinked: { gap: 8, above: true, optional: true },
 };
+
+/** The hovered paper, where it is on screen, and the papers it is linked to. */
+type Hovered = { index: number; x: number; y: number; linked: PaperPlace[] } | null;
+/** Where the marked papers are on screen, and how large the screen is. */
+type MarkedView = { places: MarkedPlace[]; frame: { width: number; height: number } };
+
+/** Every label on the graph, most important first: the hovered paper and its linked papers, then the marked papers
+ *  and theirs (those not named already, within MOST_LABELS). */
+function labelsOf(hover: Hovered, marked: MarkedView): Labelled[] {
+	const skip = new Set(hover ? [hover.index, ...hover.linked.map((other) => other.index)] : []);
+	const picked = pickMarkedLabels(marked.frame, marked.places, skip, MOST_LABELS);
+	return [
+		...(hover ? [{ ...hover, kind: "hovered" as const }] : []),
+		...(hover?.linked ?? []).map((other) => ({ ...other, kind: "linked" as const })),
+		...picked.marked.map((place) => ({ ...place, kind: "marked" as const })),
+		...picked.linked.map((place) => ({ ...place, kind: "markedLinked" as const })),
+	];
+}
+
+/** Which papers are named, in order: the same for two lists of labels that differ only in where they are. */
+const labelKey = (labelled: Labelled[]) => labelled.map((label) => `${label.kind}:${label.index}`).join(",");
+
+/** Put the labels (`boxes`, in the order of `labelled`, measured as `sizes`) at their places on the graph: each
+ *  inside it and none over another; a marked paper's label that finds no free place is hidden. */
+function placeOnGraph(
+	frame: HTMLElement,
+	labelled: Labelled[],
+	boxes: (HTMLDivElement | null)[],
+	sizes: ({ width: number; height: number } | null)[],
+) {
+	const shown = labelled.flatMap((label, order) => {
+		const box = boxes[order];
+		const size = sizes[order];
+		return box && size ? [{ box, size, ...label, ...LABEL_PLACING[label.kind] }] : [];
+	});
+	const places = placeLabels(
+		{ width: frame.clientWidth, height: frame.clientHeight },
+		shown.map(({ size, x, y, gap, above, optional }) => ({ x, y, gap, above, optional, ...size })),
+	);
+	// moved, not laid out again: a label moves on every frame of a pan, and changing where it is laid out would make
+	// the page lay out again before every pointer move could be handled
+	shown.forEach(({ box }, order) => {
+		// on whole pixels: a label on a layer of its own between two pixels would have blurred letters
+		box.style.transform = `translate(${Math.round(places[order].left)}px, ${Math.round(places[order].top)}px)`;
+		box.style.visibility = places[order].hidden ? "hidden" : "";
+	});
+}
 
 /** What the renderer draws: the papers' positions and one grouping per level of detail. */
 function canvasData(graph: GraphData, roots: CommunityNode[], layout: Layout): CanvasData {
@@ -131,12 +174,18 @@ export function GraphView({
 	markRef.current = onMarkPaper;
 	const markManyRef = useRef(onMarkPapers);
 	markManyRef.current = onMarkPapers;
-	const [hover, setHover] = useState<{ index: number; x: number; y: number; linked: PaperPlace[] } | null>(null);
-	// where the marked papers are on screen, and how large the screen is
-	const [markedView, setMarkedView] = useState<{ places: MarkedPlace[]; frame: { width: number; height: number } }>({
-		places: [],
-		frame: { width: 0, height: 0 },
-	});
+	const [hover, setHover] = useState<Hovered>(null);
+	// Where the marked papers are on screen, and how large the screen is: told on every move of the camera. Moving
+	// the camera only moves their labels, which is done here without rendering again (onMarked); the graph view is
+	// rendered again only when other papers are to be named.
+	const markedRef = useRef<MarkedView>({ places: [], frame: { width: 0, height: 0 } });
+	const [, setMarkedLabels] = useState(0);
+	const hoverRef = useRef<Hovered>(null);
+	const frameRef = useRef<HTMLDivElement>(null);
+	const labels = useRef<(HTMLDivElement | null)[]>([]);
+	// the labels on screen (labelKey) and their sizes, as last rendered
+	const shownKey = useRef("");
+	const sizes = useRef<({ width: number; height: number } | null)[]>([]);
 	const [level, setLevel] = useState(0);
 	const keyName = useSelectKeyName(selectKey);
 	const layout = useMemo(() => layoutGraph(graph, roots), [graph, roots]);
@@ -154,13 +203,16 @@ export function GraphView({
 			onPick: (index) => pickRef.current(index === null ? null : graph.nodes[index].id),
 			onMark: (index) => markRef.current(graph.nodes[index].id),
 			onMarkMany: (indexes) => markManyRef.current(indexes.map((index) => graph.nodes[index].id)),
-			// told on every camera move: with nothing marked, nothing changes, so nothing is rendered again
-			onMarked: (places) =>
-				setMarkedView((before) =>
-					places.length === 0 && before.places.length === 0
-						? before
-						: { places, frame: { width: canvas.clientWidth, height: canvas.clientHeight } },
-				),
+			// told on every camera move: with nothing marked, nothing changes, so nothing is rendered again; with the same
+			// papers named, their labels are only moved
+			onMarked: (places) => {
+				if (places.length === 0 && markedRef.current.places.length === 0) return;
+				markedRef.current = { places, frame: { width: canvas.clientWidth, height: canvas.clientHeight } };
+				const now = labelsOf(hoverRef.current, markedRef.current);
+				const frame = frameRef.current;
+				if (frame && labelKey(now) === shownKey.current) placeOnGraph(frame, now, labels.current, sizes.current);
+				else setMarkedLabels((version) => version + 1);
+			},
 			onLevel: setLevel,
 		});
 		rendererRef.current = renderer;
@@ -248,45 +300,19 @@ export function GraphView({
 					}
 				: { title: "Bring the whole graph back into view", go: () => rendererRef.current?.fit(layout.bounds, true) };
 
-	// Every label on the graph, most important first: the hovered paper and its linked papers, then the marked
-	// papers and theirs (those not named already, within MOST_LABELS).
-	const skip = new Set(hover ? [hover.index, ...hover.linked.map((other) => other.index)] : []);
-	const picked = pickMarkedLabels(markedView.frame, markedView.places, skip, MOST_LABELS);
-	const labelled: Labelled[] = [
-		...(hover ? [{ ...hover, kind: "hovered" as const }] : []),
-		...(hover?.linked ?? []).map((other) => ({ ...other, kind: "linked" as const })),
-		...picked.marked.map((place) => ({ ...place, kind: "marked" as const })),
-		...picked.linked.map((place) => ({ ...place, kind: "markedLinked" as const })),
-	];
+	// Every label on the graph, most important first.
+	hoverRef.current = hover;
+	const labelled = labelsOf(hover, markedRef.current);
 
 	// Place the labels once they have been measured and before the browser paints, together, so that each stays
-	// inside the graph and none covers another; a marked paper's label that finds no free place is hidden.
-	const frameRef = useRef<HTMLDivElement>(null);
-	const labels = useRef<(HTMLDivElement | null)[]>([]);
+	// inside the graph and none covers another; a marked paper's label that finds no free place is hidden. Their sizes
+	// are kept for moving them again while the camera moves (onMarked above).
 	useLayoutEffect(() => {
 		const frame = frameRef.current;
 		if (!frame) return;
-		const shown = labelled.flatMap((label, order) => {
-			const box = labels.current[order];
-			return box ? [{ box, ...label, ...LABEL_PLACING[label.kind] }] : [];
-		});
-		const places = placeLabels(
-			{ width: frame.clientWidth, height: frame.clientHeight },
-			shown.map(({ box, x, y, gap, above, optional }) => ({
-				x,
-				y,
-				gap,
-				above,
-				optional,
-				width: box.offsetWidth,
-				height: box.offsetHeight,
-			})),
-		);
-		shown.forEach(({ box }, order) => {
-			box.style.left = `${places[order].left}px`;
-			box.style.top = `${places[order].top}px`;
-			box.style.visibility = places[order].hidden ? "hidden" : "";
-		});
+		sizes.current = labels.current.map((box) => (box ? { width: box.offsetWidth, height: box.offsetHeight } : null));
+		shownKey.current = labelKey(labelled);
+		placeOnGraph(frame, labelled, labels.current, sizes.current);
 	});
 
 	const hovered = hover ? graph.nodes[hover.index] : null;
@@ -379,7 +405,7 @@ export function GraphView({
 						key={`${label.kind}:${label.index}`}
 						ref={ref}
 						className={cn(
-							"enter-fade pointer-events-none absolute w-max max-w-56 rounded-sm border bg-popover/95 px-1.5 py-1 shadow-md",
+							"enter-fade pointer-events-none absolute top-0 left-0 w-max will-change-transform max-w-56 rounded-sm border bg-popover/95 px-1.5 py-1 shadow-md",
 							label.kind === "marked" ? "z-[6] border-mark/60" : "z-[5]",
 						)}
 					>
@@ -401,7 +427,7 @@ export function GraphView({
 				<div
 					key="hovered"
 					ref={(box) => void (labels.current[0] = box)}
-					className="enter-fade pointer-events-none absolute z-10 w-max max-w-80 rounded-md border bg-popover px-2.5 py-1.5 shadow-lg"
+					className="enter-fade pointer-events-none absolute top-0 left-0 z-10 w-max will-change-transform max-w-80 rounded-md border bg-popover px-2.5 py-1.5 shadow-lg"
 				>
 					<div className="font-sans text-base leading-snug text-foreground">
 						<Title text={hovered.title} />
