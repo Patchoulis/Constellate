@@ -373,6 +373,41 @@ pub const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX asking_by_time ON asking (asked_at);
     ",
+    // 15 (the library's citations linked once and kept, analysis/citations.rs LinkedLibrary): what changed since
+    r"
+    -- Raised by every write to the papers (what linking reads of them) and to the reference lists, so that what is
+    -- linked from them is brought up to date only when one changed, and only for what changed.
+    CREATE TABLE revisions (
+        subject  TEXT PRIMARY KEY CHECK (subject IN ('papers', 'paper_references')),
+        revision BIGINT NOT NULL
+    );
+    INSERT INTO revisions (subject, revision) VALUES ('papers', 0), ('paper_references', 0);
+    -- The revision of the reference lists at which this list was last written: read again, or looked up on arXiv.
+    ALTER TABLE paper_references ADD COLUMN revision BIGINT NOT NULL DEFAULT 0;
+    CREATE TRIGGER papers_added AFTER INSERT ON papers BEGIN
+        UPDATE revisions SET revision = revision + 1 WHERE subject = 'papers';
+    END;
+    CREATE TRIGGER papers_changed AFTER UPDATE OF id, title, authors, published, url, origin ON papers BEGIN
+        UPDATE revisions SET revision = revision + 1 WHERE subject = 'papers';
+    END;
+    CREATE TRIGGER papers_removed AFTER DELETE ON papers BEGIN
+        UPDATE revisions SET revision = revision + 1 WHERE subject = 'papers';
+    END;
+    CREATE TRIGGER paper_references_added AFTER INSERT ON paper_references BEGIN
+        UPDATE revisions SET revision = revision + 1 WHERE subject = 'paper_references';
+        UPDATE paper_references SET revision = (SELECT revision FROM revisions WHERE subject = 'paper_references')
+            WHERE paper_id = NEW.paper_id;
+    END;
+    CREATE TRIGGER paper_references_changed AFTER UPDATE OF paper_id, reader, pdf_hash, content ON paper_references
+    BEGIN
+        UPDATE revisions SET revision = revision + 1 WHERE subject = 'paper_references';
+        UPDATE paper_references SET revision = (SELECT revision FROM revisions WHERE subject = 'paper_references')
+            WHERE paper_id = NEW.paper_id;
+    END;
+    CREATE TRIGGER paper_references_removed AFTER DELETE ON paper_references BEGIN
+        UPDATE revisions SET revision = revision + 1 WHERE subject = 'paper_references';
+    END;
+    ",
 ];
 
 /// Bring `connection` to the last of `migrations`. Refuses a database newer than the list.

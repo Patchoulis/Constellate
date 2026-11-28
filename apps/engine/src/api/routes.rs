@@ -71,6 +71,8 @@ pub struct Engine {
     library: Mutex<Option<Arc<Library>>>,
     /// The person's runs: the one being made, the list, the loaded ones ([`crate::pipeline::served`]).
     pub runs: crate::pipeline::served::Runs,
+    /// The library's reference lists linked once and kept, and the runs' citation figures counted from them.
+    pub citations: crate::api::papers::citations::Linking,
     /// What of the earlier version's data folder could not be moved in when the library was opened, in words.
     import_problems: Mutex<Vec<String>>,
 }
@@ -96,6 +98,7 @@ impl Engine {
             pdfs: crate::papers::pdf::Pdfs::default(),
             library: Mutex::new(None),
             runs: Default::default(),
+            citations: Default::default(),
             import_problems: Mutex::new(Vec::new()),
         }
     }

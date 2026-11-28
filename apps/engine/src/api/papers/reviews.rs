@@ -24,6 +24,7 @@ use axum::extract::{Path, State};
 use axum::routing::{MethodRouter, get};
 use serde::{Deserialize, Serialize};
 
+use crate::analysis::citations::Members;
 use crate::analysis::reviews::{PaperFigures, ReviewSummary, Reviewed, paper_figures, summarise, venue_of};
 use crate::api::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::library::core::store::read_json;
@@ -193,6 +194,30 @@ pub(crate) fn papers_of(engine: &Shared, run: &str, community: Option<&str>) -> 
     ids.sort_unstable();
     ids.dedup();
     Ok(ids)
+}
+
+/// The ids of a run's papers, and its tree of communities by the ids of their papers.
+pub(crate) fn tree_of(engine: &Shared, run: &str) -> Result<(Vec<String>, Vec<Members>), ApiError> {
+    fn members(community: &Community, graph: &Graph) -> Members {
+        Members {
+            tree_path: community.tree_path.clone(),
+            papers: community
+                .members
+                .iter()
+                .filter_map(|member| graph.nodes.get(*member))
+                .map(|node| node.id.clone())
+                .collect(),
+            children: community.children.iter().map(|child| members(child, graph)).collect(),
+        }
+    }
+    let folder = run_folder(engine, run)?;
+    let graph: Graph = read_json(&folder.join("graph.json"))?.ok_or(ApiError::NotFound)?;
+    let tree: Communities = read_json(&folder.join("communities.json"))?.ok_or(ApiError::NotFound)?;
+    let communities = tree.communities.iter().map(|community| members(community, &graph)).collect();
+    let mut ids: Vec<String> = graph.nodes.into_iter().map(|node| node.id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    Ok((ids, communities))
 }
 
 /// What the reviews of a run or community come to, with the titles of the papers it names.
