@@ -52,6 +52,7 @@ import { ready, useAsync } from "@/lib/use-async";
 import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
 import { elsewhereLine, notAskedLine, useFollowedJob } from "@/lib/shell/use-followed-job";
 import { count, knownMoney, onScale, scaleName, spreadPoints } from "@/lib/units";
+import { mendFormulaBreaks } from "@/lib/reader/review-text";
 import { cn } from "@/lib/utils";
 
 const USD = { code: "USD", rate: 1, date: null };
@@ -231,7 +232,7 @@ function PointRow({
 										</span>
 										{reply.sections.map((section, index) => (
 											<p key={index} className="font-sans text-sm whitespace-pre-wrap text-foreground/80">
-												{section.text}
+												{mendFormulaBreaks(section.text)}
 											</p>
 										))}
 									</div>
@@ -320,7 +321,7 @@ function Root({ reviews, mapping, onOpenReviews }: { reviews: ClaimReviews; mapp
 								{review.sections.map((section, at) => (
 									<p key={at} className="font-sans text-sm whitespace-pre-wrap">
 										{section.name && <span className="font-ui text-xs text-muted-foreground">{section.name}: </span>}
-										{section.text}
+										{mendFormulaBreaks(section.text)}
 									</p>
 								))}
 							</div>
