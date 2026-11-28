@@ -163,13 +163,13 @@ export type Choosable = { source: "engine"; catalog: ModelCatalog } | { source: 
 /** The efforts, lowest first, as the engine ranks them. */
 export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
 
-/** What the interface shows for an effort. */
+/** What the interface shows for an effort: a menu entry or a chip standing alone, so it begins with a capital. */
 export const EFFORT_LABEL: Record<Effort, string> = {
-	low: "low effort",
-	medium: "medium effort",
-	high: "high effort",
-	xhigh: "extra-high effort",
-	max: "most effort",
+	low: "Low effort",
+	medium: "Medium effort",
+	high: "High effort",
+	xhigh: "Extra-high effort",
+	max: "Most effort",
 };
 
 /** The model the settings name, alone, while the engine's catalog is not known: shown, not offered. */
@@ -208,9 +208,15 @@ export function choosableOf(
 	return engine ? { source: "engine", catalog: engine } : waitingFor(models, settings, why);
 }
 
-/** Why a provider cannot be used ("set OPENAI_API_KEY"), or null when it can. */
+/** A label as it stands alone in the interface: its first letter a capital, the rest as given ("Set OPENAI_API_KEY"). */
+export function capitalised(text: string): string {
+	return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** Why a provider cannot be used ("Set OPENAI_API_KEY"), or null when it can. The engine says it in lower case, as
+ *  the end of a sentence; here it stands alone. */
 export function unavailableBecause(provider: ModelProvider): string | null {
-	return provider.available.state === "ready" ? null : provider.available.why;
+	return provider.available.state === "ready" ? null : capitalised(provider.available.why);
 }
 
 /** One provider's part of the menu. */

@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ModelCatalog, ModelProvider } from "@rp/contracts";
 import {
+	capitalised,
+	EFFORT_LABEL,
+	EFFORTS,
 	READING_TITLE,
 	ROLE_FIELDS,
 	SAME_AS_NAMING,
@@ -99,7 +102,7 @@ test("providers that can be used come first, those that cannot after, saying wha
 		[
 			["openai", null],
 			["compatible", null],
-			["anthropic", "set ANTHROPIC_API_KEY"],
+			["anthropic", "Set ANTHROPIC_API_KEY"],
 		],
 	);
 	assert.deepEqual(
@@ -259,5 +262,15 @@ test("a pick of the model that reads papers saves its own settings, and the entr
 
 test("a provider that cannot be asked says why, and one that can says nothing", () => {
 	assert.equal(unavailableBecause(provider("anthropic", "Anthropic", true)), null);
-	assert.equal(unavailableBecause(provider("openai", "OpenAI", false)), "set OPENAI_API_KEY");
+	assert.equal(unavailableBecause(provider("openai", "OpenAI", false)), "Set OPENAI_API_KEY");
+});
+
+test("labels that stand alone begin with a capital: the efforts, and why a provider cannot be used", () => {
+	assert.deepEqual(
+		EFFORTS.map((effort) => EFFORT_LABEL[effort]),
+		["Low effort", "Medium effort", "High effort", "Extra-high effort", "Most effort"],
+	);
+	assert.equal(capitalised("set ANTHROPIC_API_KEY"), "Set ANTHROPIC_API_KEY");
+	assert.equal(capitalised("Already so"), "Already so");
+	assert.equal(capitalised(""), "");
 });
