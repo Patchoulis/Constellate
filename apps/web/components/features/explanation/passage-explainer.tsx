@@ -33,6 +33,7 @@ import {
 	symbolSource,
 } from "@/lib/features/explanation/explanation";
 import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
+import { ReadingModel } from "@/components/shell/model-choice";
 import { accepting, shownModel } from "@/lib/cost";
 import { money } from "@/lib/units";
 import { ready, useAsync } from "@/lib/use-async";
@@ -211,16 +212,19 @@ export type AskedOnce = Set<string>;
 
 function ExplainView({
 	paper,
+	run,
 	passage,
 	onExplained,
 	askedOnce,
 }: {
 	paper: string;
+	/** the run the paper is read from: what asking costs is that run's */
+	run?: string;
 	passage: Passage;
 	onExplained: () => void;
 	askedOnce: AskedOnce;
 }) {
-	const chosen = useChosenModel();
+	const chosen = useChosenModel("reading");
 	// read again when the model chosen changes: the estimate, and the explanation kept, are that model's
 	const prepared = useAsync(
 		() => api.prepareExplanation(paper, passage.address),
@@ -271,7 +275,7 @@ function ExplainView({
 		setFailure(null);
 		// the model and the worst case shown go with the request: the engine refuses if either changed
 		void follow(async () => {
-			const started = await api.explain(paper, passage.address, shownModel(found), accepting(estimate));
+			const started = await api.explain(paper, passage.address, shownModel(found), accepting(estimate), run);
 			if (started.started && started.job !== null) return started.job;
 			prepared.reload();
 			return null;
@@ -341,12 +345,16 @@ function ExplainView({
 				/>
 			)}
 			{found.estimate && !estimate && asking.state !== "running" && (
-				<p className="font-ui text-xs text-muted-foreground">Working out the cost for the model chosen now…</p>
+				<>
+					<ReadingModel className="font-ui" />
+					<p className="font-ui text-xs text-muted-foreground">Working out the cost for the model chosen now…</p>
+				</>
 			)}
 			{estimate && asking.state !== "running" && (
 				<div className="flex flex-col gap-1.5 rounded-md border p-2">
+					<ReadingModel className="font-ui" />
 					<p className="font-ui text-xs" title={costNote(estimate)}>
-						{costLine(estimate)} Asked of the model chosen in the settings ({found.model}).
+						{costLine(estimate)} Asked of the model chosen in the settings to read papers ({found.model}).
 					</p>
 					<div className="flex flex-wrap items-center gap-3">
 						<Button
@@ -484,7 +492,7 @@ export function PassageExplainer({
 			{mode === "related" && run ? (
 				<RelatedView paper={paper} run={run} passage={passage} />
 			) : (
-				<ExplainView paper={paper} passage={passage} onExplained={onExplained} askedOnce={askedOnce} />
+				<ExplainView paper={paper} run={run} passage={passage} onExplained={onExplained} askedOnce={askedOnce} />
 			)}
 		</section>
 	);

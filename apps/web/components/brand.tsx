@@ -1,5 +1,8 @@
 import type { Acceptance, AcceptanceTerm, AiVerdict, Ratings } from "@rp/contracts";
+import { Stars } from "@/components/ui/stars";
 import { tagText, tagTitle } from "@/lib/acceptance";
+import { averageScore, plainChip, ratingTitle } from "@/lib/ratings";
+import { starsOf } from "@/lib/units";
 import { cn } from "@/lib/utils";
 
 /**
@@ -60,31 +63,36 @@ export function FlagTag({ note, children }: { note?: string; children: React.Rea
 
 const SMALL = "px-1 text-[0.65rem] leading-tight";
 
-/** One field's mean score, said as what it is: "Quality: mean score 2.3". */
-const score = (field: string, mean: number) => `${field}: mean score ${Number.isInteger(mean) ? mean : mean.toFixed(1)}`;
-
 /**
- * The scores a paper's reviewers gave, as tags: the mean per field, and on hover every reviewer's score with
- * what it means. Scales differ between conferences, so fields are never merged into one number.
+ * The scores a paper's reviewers gave, as tags: per field its name and the mean as stars out of the scale's own
+ * points, and on hover the score ("3.8/4 Average Score") with every reviewer's score and what it means. Scales differ
+ * between conferences, so fields are never merged into one number; a field whose scale is not known says its mean
+ * as a plain number.
  */
 export function RatingTags({ ratings, small, most }: { ratings: Ratings | null | undefined; small?: boolean; most?: number }) {
 	if (!ratings) return null;
 	const fields = Object.entries(ratings.ratings).filter(([field]) => field !== "Confidence");
 	return (
 		<>
-			{fields.slice(0, most).map(([field, { values, mean, meanings }]) => (
-				<span
-					key={field}
-					title={
-						`${field}, as scored by ${values.length} reviewer${values.length === 1 ? "" : "s"}: ` +
-						values.map((value, index) => (meanings[index] ? `${value} (${meanings[index]})` : value)).join(", ") +
-						". Read from the paper's OpenReview page; the scale is the conference's own."
-					}
-					className={cn(TAG, small && SMALL, "border-border text-muted-foreground")}
-				>
-					{score(field, mean)}
-				</span>
-			))}
+			{fields.slice(0, most).map(([field, figures]) => {
+				const stars = figures.scale && starsOf(figures.mean, figures.scale) ? figures.scale : null;
+				return (
+					<span
+						key={field}
+						title={ratingTitle(field, figures)}
+						className={cn(TAG, small && SMALL, "flex-wrap gap-x-1 border-border text-muted-foreground")}
+					>
+						{stars ? (
+							<>
+								<span className="min-w-0">{field}</span>
+								<Stars value={figures.mean} scale={stars} label={averageScore(figures.mean, stars)} size={small ? "size-2" : "size-2.5"} />
+							</>
+						) : (
+							plainChip(field, figures.mean)
+						)}
+					</span>
+				);
+			})}
 		</>
 	);
 }

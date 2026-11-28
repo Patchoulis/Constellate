@@ -475,6 +475,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn building_the_training_set_is_priced_for_the_naming_model_not_the_one_that_reads_papers() {
+        use crate::api::other_providers::reading_router;
+        let data = data_with_papers();
+        // OpenAI reads papers; the naming model, which writes the training texts, is the server on this computer
+        let router = reading_router(data.path(), Asked::OpenAi, &quiet());
+        let (_, estimate) = call(&router, "GET", "/api/detector/estimate", None).await;
+        assert_eq!(estimate["provider"], "compatible", "{estimate}");
+    }
+
+    #[tokio::test]
     async fn the_switch_turns_it_off_and_back_through_the_settings() {
         let data = data_with_papers();
         let router = router(data.path(), Asked::OpenAi, &quiet());

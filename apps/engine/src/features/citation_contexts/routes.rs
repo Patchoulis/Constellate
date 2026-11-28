@@ -44,7 +44,7 @@ use crate::jobs::{Finished, Progress};
 use crate::library::{AnswerKey, Feature, Library, PaperReading, Subject};
 use crate::model::batch::{Asking, BatchEstimate, IN_FLIGHT, estimate_batch};
 use crate::model::chosen::{Accepted, Chosen, Refused, Terms, budget};
-use crate::model::language::Provider;
+use crate::model::language::{ForRun, Provider};
 use crate::text::pdf::passages::Passages;
 use crate::text::pdf::references::Citing;
 use crate::usage::Usd;
@@ -214,7 +214,7 @@ fn contexts_of_paper(
 ) -> Result<PaperCitationContexts, ApiError> {
     let library = engine.library()?;
     library.paper(paper)?.ok_or(ApiError::NotFound)?;
-    let chosen = engine.chosen()?;
+    let chosen = engine.reading()?;
     let model = chosen.model().to_owned();
     let run_ids = run.map(|run| papers_of(engine, run, None)).transpose()?;
     let citing_ids = match (run, tree_path(community)?) {
@@ -465,7 +465,7 @@ fn on_the_pages(library: &Library, cases: &[Case], mut verdicts: Vec<Verdict>) -
 
 fn summary_of(engine: &Shared, run: &str, community: Option<&str>) -> Result<KindsSummary, ApiError> {
     let library = engine.library()?;
-    let chosen = engine.chosen()?;
+    let chosen = engine.reading()?;
     let model = chosen.model().to_owned();
     let found = citations_of(engine, &library, run, community)?;
     let readings = kept_readings(&library, &chosen, &found.cases)?;
@@ -537,7 +537,7 @@ fn plan_of(
     community: Option<&str>,
     scope: Scope,
 ) -> Result<Plan, ApiError> {
-    let chosen = engine.chosen()?;
+    let chosen = engine.reading()?;
     let found = citations_of(engine, library, run, community)?;
     let cases = match scope {
         Scope::Sample => {
@@ -630,7 +630,7 @@ async fn classify_run(
     };
     one_name(&run)?;
     let started = on_the_side(move || {
-        let chosen = engine.chosen()?;
+        let chosen = engine.reading()?;
         let endpoint =
             chosen.endpoint().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
         let library = engine.library()?;
@@ -667,11 +667,13 @@ async fn classify_run(
                 plan.kept,
                 plan.calls.len()
             ));
+            // the citations of the run or of one of its communities: the run's cost
+            let recorder = ForRun::new(&*library, Some(&run));
             let asking = Asking {
                 library: &library,
                 transport: &*transport,
                 endpoint,
-                recorder: &*library,
+                recorder: &recorder,
                 in_flight: IN_FLIGHT,
             };
             let done = kinds::classify(asking, &plan, &budget, tracker).map_err(|error| error.to_string())?;
@@ -696,7 +698,7 @@ async fn redo(
     let Query(InCommunity { community }) = query?;
     let forgotten = on_the_side(move || {
         let library = engine.library()?;
-        let chosen = engine.chosen()?;
+        let chosen = engine.reading()?;
         let found = citations_of(&engine, &library, &run, community.as_deref())?;
         // the chosen model's readings of the scope's own citing sentences, and the calls the next run would make
         // for them (whose kept answers it would otherwise read them from again): not another model's, nor those
@@ -783,6 +785,7 @@ mod tests {
             {"tree_path": "c0", "members": [0], "children": []},
             {"tree_path": "c1", "members": [1, 2], "children": []}]});
         std::fs::write(run.join("communities.json"), tree.to_string()).unwrap();
+        crate::api::other_providers::reads_with_naming(data.path());
         data
     }
 
@@ -954,7 +957,8 @@ mod tests {
     #[tokio::test]
     async fn another_provider_is_priced_asked_in_its_own_shape_kept_and_asked_again_when_the_provider_changes() {
         use crate::api::other_providers::{
-            BUDGET, Chosen as Asked, MODEL, Scripted, accepting, call, choose, finished, priced_for, router, sent_to,
+            BUDGET, Chosen as Asked, MODEL, Scripted, accepting, call, choose_reading as choose, finished, priced_for,
+            reading_router as router, sent_to,
         };
 
         let data = data();
@@ -995,6 +999,9 @@ mod tests {
             assert_eq!(all.len() - sent, 2, "one call per cited paper");
             sent_to(&all[sent..], chosen);
             sent = all.len();
+            // the run's citations are its cost
+            let (_, spent) = call(&router, "GET", "/api/usage?run=r1", None).await;
+            assert_eq!((spent["run_calls"].clone(), spent["calls"].clone()), (json!(sent), json!(sent)), "{spent}");
 
             let (_, summary) = call(&router, "GET", "/api/runs/r1/citation-kinds", None).await;
             assert_eq!(summary["model"], MODEL);

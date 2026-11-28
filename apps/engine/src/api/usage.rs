@@ -1,10 +1,11 @@
 //! What the language model has cost, for the line under the model in the sidebar.
 //!
 //! ```text
-//! GET /api/usage?currency=CAD   everything spent (`Usage` in the contracts): in all, by model and by purpose, with
-//!                               the tokens by how they are billed; what this engine has spent since it started; who
-//!                               answers (the chosen provider, and whether its key is set, never the key) and with
-//!                               which model; and what a US dollar is worth in the currency asked for, and on which day
+//! GET /api/usage?currency=CAD&run=r1   everything spent (`Usage` in the contracts): in all, by model and by purpose,
+//!                                      with the tokens by how they are billed; what the run `run` cost, when one is
+//!                                      named; who answers (the chosen provider, and whether its key is set, never the
+//!                                      key) and with which model, and who reads papers with which; and what a US
+//!                                      dollar is worth in the currency asked for, and on which day
 //! ```
 //!
 //! Every amount is in US dollars, the currency the providers bill in; the interface multiplies by the rate. The
@@ -14,13 +15,14 @@
 //! A call to a model whose price is not known is counted (in calls, tokens and `unpriced_calls`) and never priced
 //! at nothing: a model or a purpose whose every call is unpriced has no `usd` at all (`null`), so that it cannot
 //! read as having cost 0. One with some priced calls has the cost of those, and its `unpriced_calls` says it is
-//! short. The same holds of the totals, in all and this session: `usd` and `session_usd` are `null` when calls
-//! were made and none had a price, and the cost of the priced ones when some had.
+//! short. The same holds of the totals, in all and of the run: `usd` and `run_usd` are `null` when calls were made
+//! and none had a price, and the cost of the priced ones when some had.
 //!
-//! This session's totals are the ledger's rows stamped at or after the moment the engine built its routes (its
-//! start; [`started`]): every row carries the instant it was recorded at, so nothing is counted twice or kept in
-//! memory beside the ledger, and an engine that restarts starts its session again at nothing. The rows moved in from
-//! the Python's ledger are stamped with the day it started, long before.
+//! Every figure is read from the library's ledger as it is on disk, at every request: nothing is kept in memory, so
+//! what is told is the same after the app is closed and opened again. A run's figure is the ledger's rows recorded
+//! for its name ([`crate::library::Library::run_spending`]): a run deleted keeps its rows (the money was spent, and
+//! the total never goes down), and one made again under the same name goes on counting under it. Rows recorded
+//! before calls were counted by run name no run; `run_counted_since` then says from which day a run's figure counts.
 //!
 //! The Python's ledger (`usage.json` in the library folder) is moved into the database when the library is first
 //! opened, as a part of moving the earlier version's data in ([`crate::library::Library::import_old`]): once, recorded as moved,
@@ -28,50 +30,41 @@
 //! `/api/library` and `/api/status`; the answer is given without it, and the move is tried again at the next start.
 
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
-use std::time::SystemTime;
 
 use axum::Json;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Query, State};
 use axum::routing::{MethodRouter, get};
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::routes::{ApiError, Shared, on_the_side};
-use crate::library::{Spending, Totals};
+use super::routes::{ApiError, Shared, on_the_side, one_name};
+use crate::library::{RunSpending, Spending, Totals};
 use crate::model::chosen::Chosen;
 use crate::usage::{Rate, rate};
 
 /// The longest `?currency=` read: a code is three letters, and anything longer is the dollar without being read.
 const LONGEST_CODE: usize = 8;
 
-/// When the engine started: set when its routes are built, before the first request.
-static STARTED: OnceLock<DateTime<Utc>> = OnceLock::new();
-
-/// The routes of this module, for [`super::routes::table`]. Building them is the engine starting: the session's
-/// totals count from here.
+/// The routes of this module, for [`super::routes::table`].
 pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
-    started();
     vec![("/api/usage", get(usage))]
 }
 
-/// When this engine started: from then on is "this session".
-pub fn started() -> DateTime<Utc> {
-    *STARTED.get_or_init(|| DateTime::<Utc>::from(SystemTime::now()))
-}
-
-/// The query: the currency to show the amounts in.
+/// The query: the currency to show the amounts in, and the run whose cost is told beside the total.
 #[derive(Deserialize)]
 struct Asked {
     currency: Option<String>,
+    run: Option<String>,
 }
 
 /// What `GET /api/usage` answers: `Usage` in the contracts.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Told {
+    /// Who answers and with which model, for naming communities and writing overviews.
     pub provider: Answerer,
     pub model: ModelTold,
+    /// The same, for reading papers: the naming model's while it has not been chosen on its own.
+    pub reading: Reader,
     /// The day of the first call in the ledger; none when nothing has been spent.
     pub since: Option<String>,
     pub currency: Rate,
@@ -80,9 +73,14 @@ pub struct Told {
     pub usd: Option<f64>,
     pub calls: i64,
     pub unpriced_calls: i64,
-    /// US dollars spent since the engine started; none as `usd` is.
-    pub session_usd: Option<f64>,
-    pub session_calls: i64,
+    /// US dollars spent on the run asked about; none when none was asked about, or as `usd` is.
+    pub run_usd: Option<f64>,
+    pub run_calls: i64,
+    pub run_unpriced_calls: i64,
+    /// The run's calls by what they were for.
+    pub run_purposes: BTreeMap<String, Entry>,
+    /// The day the run's figure counts from, when calls were recorded before calls were counted by run.
+    pub run_counted_since: Option<String>,
     pub models: BTreeMap<String, Entry>,
     pub purposes: BTreeMap<String, Entry>,
 }
@@ -100,6 +98,19 @@ pub struct Answerer {
 pub struct ModelTold {
     pub name: String,
     pub label: String,
+}
+
+/// Who answers the features that read papers, and with which model.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Reader {
+    pub provider: Answerer,
+    pub model: ModelTold,
+}
+
+impl Reader {
+    fn of(chosen: &Chosen) -> Self {
+        Reader { provider: answerer(chosen), model: model_told(chosen) }
+    }
 }
 
 /// `UsageEntry` in the contracts: one model's or one purpose's calls.
@@ -153,22 +164,34 @@ fn model_told(chosen: &Chosen) -> ModelTold {
     ModelTold { name, label }
 }
 
-/// The answer, from the ledger's totals, this session's, the chosen model and the currency.
-pub fn told(spending: &Spending, session: &Totals, chosen: &Chosen, currency: Rate) -> Told {
+/// The answer, from the ledger's totals, the run's (when one was asked about), the chosen model (which reads papers
+/// too, until [`Told::read_by`] says another does) and the currency.
+pub fn told(spending: &Spending, run: Option<&RunSpending>, chosen: &Chosen, currency: Rate) -> Told {
     let entries =
         |table: &BTreeMap<String, Totals>| table.iter().map(|(key, totals)| (key.clone(), totals.into())).collect();
     Told {
         provider: answerer(chosen),
         model: model_told(chosen),
+        reading: Reader::of(chosen),
         since: spending.since.clone(),
         currency,
         usd: known_usd(&spending.total),
         calls: spending.total.calls,
         unpriced_calls: spending.total.unpriced_calls,
-        session_usd: known_usd(session),
-        session_calls: session.calls,
+        run_usd: run.and_then(|run| known_usd(&run.total)),
+        run_calls: run.map_or(0, |run| run.total.calls),
+        run_unpriced_calls: run.map_or(0, |run| run.total.unpriced_calls),
+        run_purposes: run.map(|run| entries(&run.purposes)).unwrap_or_default(),
+        run_counted_since: run.and_then(|run| run.counted_since.clone()),
         models: entries(&spending.models),
         purposes: entries(&spending.purposes),
+    }
+}
+
+impl Told {
+    /// The same answer, with `reading` as the model that reads papers.
+    pub fn read_by(self, reading: &Chosen) -> Told {
+        Told { reading: Reader::of(reading), ..self }
     }
 }
 
@@ -185,13 +208,17 @@ async fn usage(
     asked: Result<Query<Asked>, QueryRejection>,
 ) -> Result<Json<Told>, ApiError> {
     // a query that is not one currency (two of them, say) is the dollar, as the Python had it
-    let currency = currency_of(asked.ok().and_then(|Query(asked)| asked.currency).as_deref());
+    let (currency, run) = asked.ok().map_or((None, None), |Query(asked)| (asked.currency, asked.run));
+    let currency = currency_of(currency.as_deref());
+    // a name that cannot be a run's is no run; one that was a run's, deleted since, still has what it cost
+    let run = run.filter(|run| one_name(run).is_ok());
     let answer = on_the_side(move || {
         let chosen = engine.chosen()?;
+        let reading = engine.reading()?;
         let library = engine.library()?;
         let spending = library.spending()?;
-        let session = library.spending_since(started())?;
-        Ok(told(&spending, &session, &chosen, currency))
+        let run = run.map(|run| library.run_spending(&run)).transpose()?;
+        Ok(told(&spending, run.as_ref(), &chosen, currency).read_by(&reading))
     })
     .await?;
     Ok(Json(answer))
@@ -236,7 +263,22 @@ mod tests {
     fn call<'a>(model: &'a str, purpose: &'a str, input_tokens: i64, output_tokens: i64) -> Call<'a> {
         let price = crate::usage::price(model, input_tokens as u64, output_tokens as u64);
         let price_micros = price.map(|usd| usd.picodollars().div_ceil(1_000_000) as i64);
-        Call { model, purpose, input_tokens, output_tokens, cache_read_tokens: 0, cache_write_tokens: 0, price_micros }
+        let run = None;
+        Call {
+            run,
+            model,
+            purpose,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            price_micros,
+        }
+    }
+
+    /// The same call, made for the run `run`.
+    fn for_run<'a>(run: &'a str, model: &'a str, purpose: &'a str, input_tokens: i64, output_tokens: i64) -> Call<'a> {
+        Call { run: Some(run), ..call(model, purpose, input_tokens, output_tokens) }
     }
 
     fn totals(calls: i64, price_micros: i64, unpriced_calls: i64) -> Totals {
@@ -291,16 +333,20 @@ mod tests {
     fn the_answer_has_the_fields_of_the_contracts_usage_and_usage_entry_and_no_others() {
         let data = tempfile::tempdir().unwrap();
         let library = Library::open(&data.path().join("library")).unwrap();
-        library.record_call(&call("claude-opus-5-5", "naming communities", 10_000, 1_000)).unwrap();
+        library.record_call(&for_run("r1", "claude-opus-5-5", "naming communities", 10_000, 1_000)).unwrap();
         let spending = library.spending().unwrap();
-        let told = told(&spending, &Totals::default(), &Chosen::claude("claude-opus-5-5"), rate("EUR"));
+        let run = library.run_spending("r1").unwrap();
+        let told = told(&spending, Some(&run), &Chosen::claude("claude-opus-5-5"), rate("EUR"));
         let told = serde_json::to_value(told).unwrap();
         assert_eq!(keys(&told), contract_fields("Usage"));
         assert_eq!(keys(&told["models"]["claude-opus-5-5"]), contract_fields("UsageEntry"));
         assert_eq!(keys(&told["purposes"]["naming communities"]), contract_fields("UsageEntry"));
+        assert_eq!(keys(&told["run_purposes"]["naming communities"]), contract_fields("UsageEntry"));
         let names = |fields: &[&str]| fields.iter().map(|field| (*field).to_owned()).collect::<BTreeSet<_>>();
         assert_eq!(keys(&told["provider"]), names(&["name", "ready"]));
         assert_eq!(keys(&told["model"]), names(&["name", "label"]));
+        assert_eq!(keys(&told["reading"]), names(&["provider", "model"]));
+        assert_eq!(told["reading"]["model"], told["model"], "the naming model reads papers until another is chosen");
         assert_eq!(keys(&told["currency"]), names(&["code", "rate", "date"]));
         assert_eq!(told["currency"]["date"], json!(bundled().unwrap().rates_date.to_string()));
     }
@@ -313,10 +359,11 @@ mod tests {
         library.record_call(&call("claude-opus-5-5", "naming communities", 10_000, 1_000)).unwrap();
         library.record_call(&call("claude-opus-5-5", "community overviews", 100_000, 5_000)).unwrap();
         library.record_call(&call("some-other-model", "naming communities", 500, 500)).unwrap();
-        let session = library.spending_since(started()).unwrap();
-        let told = told(&library.spending().unwrap(), &session, &Chosen::claude("claude-opus-5-5"), Rate::dollar());
-        assert_eq!((told.calls, told.session_calls, told.unpriced_calls), (3, 3, 1));
-        assert!((told.usd.unwrap() - (0.06 + 0.5)).abs() < 1e-12 && told.usd == told.session_usd);
+        let told = told(&library.spending().unwrap(), None, &Chosen::claude("claude-opus-5-5"), Rate::dollar());
+        assert_eq!((told.calls, told.unpriced_calls), (3, 1));
+        assert!((told.usd.unwrap() - (0.06 + 0.5)).abs() < 1e-12);
+        // no run asked about: none told, and no cost for it
+        assert_eq!((told.run_usd, told.run_calls, told.run_purposes.len()), (None, 0, 0));
         assert_eq!(told.models["claude-opus-5-5"].input_tokens, 110_000);
         assert_eq!(told.purposes["naming communities"].calls, 2);
         assert_eq!(told.purposes["naming communities"].unpriced_calls, 1);
@@ -339,20 +386,21 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let library = Library::open(&data.path().join("library")).unwrap();
         let chosen = Chosen::claude("claude-opus-5-5");
-        let nothing =
-            told(&library.spending().unwrap(), &library.spending_since(started()).unwrap(), &chosen, Rate::dollar());
-        assert_eq!((nothing.usd, nothing.session_usd), (Some(0.0), Some(0.0)), "nothing spent is a known 0");
-        library.record_call(&call("some-other-model", "naming communities", 500, 500)).unwrap();
-        let unpriced =
-            told(&library.spending().unwrap(), &library.spending_since(started()).unwrap(), &chosen, Rate::dollar());
-        assert_eq!((unpriced.usd, unpriced.session_usd), (None, None));
+        let now = |library: &Library| {
+            told(&library.spending().unwrap(), Some(&library.run_spending("r1").unwrap()), &chosen, Rate::dollar())
+        };
+        let nothing = now(&library);
+        assert_eq!((nothing.usd, nothing.run_usd), (Some(0.0), Some(0.0)), "nothing spent is a known 0");
+        library.record_call(&for_run("r1", "some-other-model", "naming communities", 500, 500)).unwrap();
+        let unpriced = now(&library);
+        assert_eq!((unpriced.usd, unpriced.run_usd, unpriced.run_unpriced_calls), (None, None, 1));
         let json = serde_json::to_value(&unpriced).unwrap();
-        assert_eq!((json["usd"].clone(), json["session_usd"].clone()), (Value::Null, Value::Null));
-        library.record_call(&call("claude-opus-5-5", "naming communities", 10_000, 1_000)).unwrap();
-        let both =
-            told(&library.spending().unwrap(), &library.spending_since(started()).unwrap(), &chosen, Rate::dollar());
+        assert_eq!((json["usd"].clone(), json["run_usd"].clone()), (Value::Null, Value::Null));
+        assert_eq!(json["run_purposes"]["naming communities"]["usd"], Value::Null);
+        library.record_call(&for_run("r1", "claude-opus-5-5", "naming communities", 10_000, 1_000)).unwrap();
+        let both = now(&library);
         assert!((both.usd.unwrap() - 0.06).abs() < 1e-12, "{:?}", both.usd);
-        assert_eq!((both.session_usd, both.unpriced_calls), (both.usd, 1));
+        assert_eq!((both.run_usd, both.unpriced_calls, both.run_calls), (both.usd, 1, 2));
     }
 
     // test_many_tiny_calls_do_not_drift
@@ -361,21 +409,20 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let library = Library::open(&data.path().join("library")).unwrap();
         for _ in 0..320 {
-            library.record_call(&call("claude-haiku-5-5", "naming communities", 70_000, 30_000)).unwrap();
+            library.record_call(&for_run("r1", "claude-haiku-5-5", "naming communities", 70_000, 30_000)).unwrap();
         }
-        let session = library.spending_since(started()).unwrap();
-        let told = told(&library.spending().unwrap(), &session, &Chosen::claude("claude-haiku-5-5"), Rate::dollar());
+        let run = library.run_spending("r1").unwrap();
+        let told = told(&library.spending().unwrap(), Some(&run), &Chosen::claude("claude-haiku-5-5"), Rate::dollar());
         // 320 * (70000 * 0.10 + 30000 * 0.50) dollars per million tokens: summed in whole millionths, exactly
         assert_eq!(told.models["claude-haiku-5-5"].usd, Some(7_040_000.0 / 1e6));
-        assert_eq!(told.usd, told.session_usd);
+        assert_eq!(told.usd, told.run_usd);
         assert!(told.usd.is_some());
     }
 
     // test_the_interface_is_told_who_provides_the_model
     #[test]
     fn the_provider_is_named_with_whether_its_key_is_set_and_the_model_with_its_label() {
-        let without =
-            told(&Spending::default(), &Totals::default(), &Chosen::claude("claude-opus-5-5"), Rate::dollar());
+        let without = told(&Spending::default(), None, &Chosen::claude("claude-opus-5-5"), Rate::dollar());
         assert_eq!(without.provider, Answerer { name: "Anthropic".to_owned(), ready: false });
         assert_eq!(
             without.model,
@@ -383,6 +430,12 @@ mod tests {
         );
         let typed = Chosen::of(Provider::Anthropic, "claude-next", Effort::Medium, Err(Unavailable::NoKey));
         assert_eq!(model_told(&typed).label, "claude-next");
+        // another model reads papers: told apart, the naming one as it was
+        let local = Chosen::of(Provider::Compatible, "qwen3:32b", Effort::Medium, Err(Unavailable::NoKey));
+        let apart = without.clone().read_by(&local);
+        assert_eq!((apart.model.clone(), apart.provider.clone()), (without.model.clone(), without.provider.clone()));
+        assert_eq!(apart.reading.model, ModelTold { name: "qwen3:32b".to_owned(), label: "qwen3:32b".to_owned() });
+        assert_eq!(apart.reading.provider.name, "OpenAI-compatible endpoint");
         // a gateway set in place of the provider's own address is named by its host
         let gateway = Environment::from_pairs([
             ("ANTHROPIC_API_KEY", "test-key-not-real-0123456789"),
@@ -405,7 +458,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_route_answers_with_the_python_ledger_moved_in_once_and_this_sessions_calls_apart() {
+    async fn the_route_answers_with_the_python_ledger_moved_in_once_and_the_runs_calls_apart() {
         let data = tempfile::tempdir().unwrap();
         let folder = data.path().join("library");
         std::fs::create_dir_all(&folder).unwrap();
@@ -421,10 +474,10 @@ mod tests {
         let router = engine(data.path(), Some(key));
         Library::open(&folder)
             .unwrap()
-            .record_call(&call("claude-opus-5-5", "naming communities", 1_000_000, 0))
+            .record_call(&for_run("r1", "claude-opus-5-5", "naming communities", 1_000_000, 0))
             .unwrap();
 
-        let (status, told) = ask(&router, "/api/usage?currency=cad").await;
+        let (status, told) = ask(&router, "/api/usage?currency=cad&run=r1").await;
         assert_eq!(status, StatusCode::OK);
         assert!(!told.to_string().contains(key), "a key is told");
         assert_eq!(told["provider"], json!({"name": "Anthropic", "ready": true}));
@@ -433,16 +486,34 @@ mod tests {
         assert_eq!(told["currency"]["code"], "CAD");
         assert_eq!((told["calls"].clone(), told["unpriced_calls"].clone()), (json!(6), json!(2)));
         assert!((told["usd"].as_f64().unwrap() - 4.0123).abs() < 1e-9);
-        // this session: the call made since the engine started, not the Python's
-        assert_eq!((told["session_calls"].clone(), told["session_usd"].clone()), (json!(1), json!(4.0)));
+        // the run: the call made for it, not the Python's, which names no run; and from which day it counts
+        assert_eq!((told["run_calls"].clone(), told["run_usd"].clone()), (json!(1), json!(4.0)));
+        assert_eq!(told["run_purposes"]["naming communities"]["calls"], 1);
+        assert!(told["run_purposes"].get("imported").is_none());
+        let counted = told["run_counted_since"].as_str().unwrap();
+        assert!(counted.len() == "2026-11-28".len() && counted > "2026-10-01", "{counted}");
         assert_eq!(told["models"]["mystery"]["usd"], Value::Null);
         assert_eq!(told["models"]["mystery"]["unpriced_calls"], 2);
         assert_eq!(told["purposes"]["imported"]["calls"], 5);
 
-        // asked again: the ledger is not moved twice
+        // asked again: the ledger is not moved twice; two currencies are the dollar, and the run is not read
         let (_, again) = ask(&router, "/api/usage?currency=XX&currency=YY").await;
         assert_eq!(again["calls"], 6);
         assert_eq!(again["currency"], json!({"code": "USD", "rate": 1.0, "date": null}));
+        assert_eq!((again["run_usd"].clone(), again["run_calls"].clone()), (Value::Null, json!(0)));
+
+        // a name that cannot be a run's is no run; a run with nothing spent on it cost a known 0
+        let (_, odd) = ask(&router, "/api/usage?run=..%2Fr1").await;
+        assert_eq!((odd["run_usd"].clone(), odd["run_calls"].clone()), (Value::Null, json!(0)));
+        let (_, other) = ask(&router, "/api/usage?run=r2").await;
+        assert_eq!((other["run_usd"].clone(), other["run_calls"].clone()), (json!(0.0), json!(0)));
+
+        // the app closed and opened again: a new engine on the same data folder reads the same figures from disk
+        drop(router);
+        let (_, reopened) = ask(&engine(data.path(), Some(key)), "/api/usage?currency=cad&run=r1").await;
+        for field in ["usd", "calls", "unpriced_calls", "run_usd", "run_calls", "run_counted_since", "since"] {
+            assert_eq!(reopened[field], told[field], "{field}");
+        }
     }
 
     #[tokio::test]

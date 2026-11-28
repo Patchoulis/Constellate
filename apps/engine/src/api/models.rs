@@ -18,7 +18,7 @@ use serde::Serialize;
 
 use super::routes::{ApiError, Shared, on_the_side};
 use crate::model::language::{self, Effort, Https, Listed, Provider, Providers};
-use crate::settings::{self, Settings};
+use crate::settings::{self, ModelRole, ReadingState, Settings};
 
 /// The routes of this module, for [`super::routes::table`].
 pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
@@ -29,7 +29,10 @@ pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
 #[derive(Serialize)]
 pub struct Told {
     pub providers: Vec<Listed>,
+    /// The model that names communities and writes overviews.
     pub chosen: Chosen,
+    /// The model that reads papers, chosen from the same providers and models.
+    pub reading: Reading,
 }
 
 /// The model the settings choose.
@@ -40,15 +43,27 @@ pub struct Chosen {
     pub effort: Effort,
 }
 
+/// The model the settings choose to read papers, and how it is chosen: by default, as the naming model, or its own.
+#[derive(Serialize)]
+pub struct Reading {
+    #[serde(flatten)]
+    pub chosen: Chosen,
+    pub state: ReadingState,
+}
+
+impl Chosen {
+    fn of(settings: &Settings, role: ModelRole) -> Self {
+        let picked = settings.model_for(role);
+        Chosen { provider: picked.provider.id().to_owned(), model: picked.model.to_owned(), effort: picked.effort }
+    }
+}
+
 /// The answer for these providers and settings.
 pub fn told(providers: &Providers, settings: &Settings) -> Told {
     Told {
         providers: providers.listing(),
-        chosen: Chosen {
-            provider: settings.describe_provider.id().to_owned(),
-            model: settings.describe_model.clone(),
-            effort: settings.describe_effort,
-        },
+        chosen: Chosen::of(settings, ModelRole::Naming),
+        reading: Reading { chosen: Chosen::of(settings, ModelRole::Reading), state: settings.reading_state() },
     }
 }
 
@@ -100,5 +115,39 @@ mod tests {
         assert_eq!(compatible["available"]["why"], "set CONSTELLATE_MODEL_BASE_URL");
         assert_eq!(compatible["ids"], "typed");
         assert!(compatible["limits"].as_array().unwrap().len() >= 2);
+        crate::api::contract::assert_fits("ModelCatalog", &told, &["providers"]);
+    }
+
+    #[test]
+    fn the_model_that_reads_papers_is_told_from_the_same_providers_and_how_it_is_chosen() {
+        let providers = Providers::from_lookup(|_| None);
+        let default = serde_json::to_value(told(&providers, &Settings::default())).unwrap();
+        assert_eq!(
+            default["reading"],
+            serde_json::json!({"provider": "anthropic", "model": "claude-haiku-5-5", "effort": "medium", "state": "default"})
+        );
+        // the Claude API's row says it reads with Haiku by default; another provider's says nothing
+        let rows = default["providers"].as_array().unwrap();
+        assert_eq!(rows[0]["reading_default"], serde_json::json!({"model": "claude-haiku-5-5", "effort": "medium"}));
+        assert!(rows.iter().skip(1).all(|row| row["reading_default"].is_null()));
+        let same = Settings { reading_same_as_naming: true, ..Settings::default() };
+        let same = serde_json::to_value(told(&providers, &same)).unwrap();
+        assert_eq!(
+            same["reading"],
+            serde_json::json!({"provider": "anthropic", "model": "claude-opus-5-5", "effort": "medium", "state": "same_as_naming"})
+        );
+        let own = Settings {
+            reading_provider: Some(Provider::Compatible),
+            reading_model: Some("qwen3:32b".to_owned()),
+            reading_effort: Some(Effort::Low),
+            ..Settings::default()
+        };
+        let own = serde_json::to_value(told(&providers, &own)).unwrap();
+        assert_eq!(
+            own["reading"],
+            serde_json::json!({"provider": "compatible", "model": "qwen3:32b", "effort": "low", "state": "chosen"})
+        );
+        assert_eq!(own["chosen"]["model"], "claude-opus-5-5", "the naming model is told as it was");
+        crate::api::contract::assert_fits("ModelCatalog", &own, &["providers"]);
     }
 }
