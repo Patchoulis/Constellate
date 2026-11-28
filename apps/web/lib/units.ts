@@ -40,6 +40,21 @@ export function onScale(value: number, scale: ScoreScale, what: string): string 
 	return `${score(value)} of ${top} ${what}`;
 }
 
+/** The most stars a scale is drawn with: a longer scale (1 to 100) is said in words only. */
+export const MOST_STARS = 10;
+
+/**
+ * A score as stars out of its scale's own number of points: 4 on a 1 to 5 scale is 4 of 5 stars, 5.5 on a 1 to 10
+ * scale 5.5 of 10. A scale that starts at 0 or below counts from its lowest point (0 to 10 has 10 stars, and 4 is 4 of
+ * them). `filled` is kept within the stars there are. Null when the scale has no points or more than MOST_STARS.
+ */
+export function starsOf(value: number, scale: ScoreScale): { total: number; filled: number } | null {
+	const from = scale.minimum >= 1 ? 0 : scale.minimum;
+	const total = scale.maximum - from;
+	if (!Number.isFinite(total) || !Number.isInteger(total) || total < 1 || total > MOST_STARS) return null;
+	return { total, filled: Math.min(total, Math.max(0, value - from)) };
+}
+
 /** How far apart reviewers' scores are, in points of the scale: "1.2 points spread". */
 export function spreadPoints(spread: number): string {
 	return `${spread.toFixed(1)} points spread`;

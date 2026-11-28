@@ -7,12 +7,13 @@
  * user opened, and says so on hover.
  */
 import { useState } from "react";
+import { Star } from "lucide-react";
 import type { FieldFigures, RankedPaper, ReviewTheme, Scale, Signer, VenueRatings } from "@rp/contracts";
 import { MathText } from "@/components/math-text";
 import { Heading, RowButton } from "@/components/ui/button";
 import { api } from "@/lib/net/api";
 import { ready, useAsync } from "@/lib/use-async";
-import { count, normalised, onScale, percent, scaleName, spreadPoints } from "@/lib/units";
+import { count, normalised, onScale, percent, scaleName, spreadPoints, starsOf } from "@/lib/units";
 
 /** Said wherever reviewers' figures are shown. */
 export const REVIEWS_NOTE =
@@ -40,22 +41,51 @@ function signerName(signer: Signer): string {
 	}[signer.role];
 }
 
-/** One field of one paper: "Rating: 5.5 of 10 mean rating, range 4 to 7 of 10, 4 reviews". */
+/** A score as stars out of its scale's points: grey outlines, and over them as much of the row filled as the score. */
+function Stars({ value, scale, label }: { value: number; scale: Scale; label: string }) {
+	const stars = starsOf(value, scale);
+	if (!stars) return null; // a scale too long for stars: the words beside it say the score
+	const row = (filled: boolean) =>
+		Array.from({ length: stars.total }, (_, index) => (
+			<Star key={index} className="size-3.5 shrink-0" fill={filled ? "currentColor" : "none"} />
+		));
+	return (
+		<span role="img" aria-label={label} className="relative inline-flex shrink-0 align-middle">
+			<span className="flex text-muted-foreground/40">{row(false)}</span>
+			<span
+				className="absolute inset-y-0 left-0 flex overflow-hidden text-mark"
+				style={{ width: `${(100 * stars.filled) / stars.total}%` }}
+			>
+				{row(true)}
+			</span>
+		</span>
+	);
+}
+
+/**
+ * One field of one paper: its name, its mean as stars out of the scale's points, and the mean in words ("4 of 5").
+ * The range, the number of reviews and the confidence-weighted mean are said on hover: the row itself is the mean.
+ */
 function FieldLine({ figures }: { figures: FieldFigures }) {
 	const what = figures.field.toLowerCase();
 	const weighted = figures.confidence_weighted;
+	const mean = onScale(figures.mean, figures.scale, `mean ${what}`);
+	const more = [
+		`${mean}, range ${figures.minimum} to ${figures.maximum}, ${count(figures.reviews, "review")}.`,
+		...(weighted
+			? [
+					`${onScale(weighted.mean, figures.scale, "weighted by the reviewers' confidence")} (${count(weighted.reviews, "review")} gave one).`,
+				]
+			: []),
+		scaleNote(figures.scale),
+		REVIEWS_NOTE,
+	].join(" ");
 	return (
-		<span title={`${scaleNote(figures.scale)} ${REVIEWS_NOTE}`}>
-			{`${onScale(figures.mean, figures.scale, `mean ${what}`)}, range ${figures.minimum} to ${onScale(figures.maximum, figures.scale, "").trim()}, ${count(figures.reviews, "review")}`}
-			{weighted && (
-				<span
-					className="ml-2"
-					title={`Each review counted as much as the confidence its reviewer gave; ${count(weighted.reviews, "review")} of ${figures.reviews} gave one. ${REVIEWS_NOTE}`}
-				>
-					· {onScale(weighted.mean, figures.scale, `confidence-weighted mean ${what}`)}
-				</span>
-			)}
-		</span>
+		<div className="flex flex-wrap items-center gap-x-2 gap-y-0.5" title={more}>
+			<span className="min-w-0 flex-1 text-foreground">{figures.field}</span>
+			<Stars value={figures.mean} scale={figures.scale} label={mean} />
+			<span className="w-16 shrink-0 text-right">{onScale(figures.mean, figures.scale, "").trim()}</span>
+		</div>
 	);
 }
 
@@ -64,23 +94,13 @@ export function PaperReviewFigures({ id, version }: { id: string; version?: unkn
 	const kept = ready(useAsync(() => api.paperReviews(id), [id, version]));
 	if (!kept || kept.figures.reviews === 0) return null;
 	const { figures } = kept;
-	const disagreement = figures.disagreement;
 	return (
-		<div className="flex shrink-0 flex-col gap-0.5 border-b px-3 py-1.5 font-ui text-xs text-muted-foreground tabular-nums">
+		<div className="flex shrink-0 flex-col gap-1 border-b px-3 py-2 font-ui text-xs text-muted-foreground tabular-nums">
 			{figures.fields
 				.filter((field) => field.field !== "Confidence")
 				.map((field) => (
-					<div key={field.field}>
-						<span className="text-foreground">{field.field}: </span>
-						<FieldLine figures={field} />
-					</div>
+					<FieldLine key={field.field} figures={field} />
 				))}
-			{disagreement && (
-				<div title={`How far apart the reviewers' ${disagreement.field.toLowerCase()} scores are (standard deviation). ${REVIEWS_NOTE}`}>
-					Reviewers disagreed by {spreadPoints(disagreement.spread)} on {scaleName(disagreement.scale)} (
-					{normalised(disagreement.normalised_spread)})
-				</div>
-			)}
 		</div>
 	);
 }
