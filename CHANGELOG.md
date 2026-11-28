@@ -56,6 +56,11 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A page that stops working shows the app's own screen in place of a bare "This page couldn't load": what happened,
+  the reason as far as it is known, "Try again" and "Load the window again", and where the log is. It says when the
+  cause is only that the app was updated or restarted under an open window.
+- A community selected while the run's figures were still arriving (its citations being counted, its communities
+  just named) could stop the whole page; the selected community is now found again in the run's data as it is.
 - A community's details show its "Cited by" again, beside "Cites".
 - In Settings, the language model menus light up and open only when the pointer is on them, not anywhere near the
   field.
