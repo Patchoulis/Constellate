@@ -3,7 +3,8 @@
 //! ```text
 //! POST /api/papers/{id}/reviews    {text, url}: the text of the paper's reviews page as the reader shows it,
 //!                                  and the page's address. Answers what is kept now ([`Read`])
-//! GET  /api/papers/{id}/reviews    the kept notes and their figures ([`PaperReviews`]), or null
+//! GET  /api/papers/{id}/reviews    the kept notes, their figures and what the reviewers have in common
+//!                                  ([`PaperReviews`]), or null
 //! GET  /api/runs/{run}/reviews/summary                          the run's [`ReviewSummary`]
 //! GET  /api/runs/{run}/communities/{community}/reviews/summary  one community's (by its tree path)
 //! ```
@@ -24,7 +25,9 @@ use axum::extract::{Path, State};
 use axum::routing::{MethodRouter, get};
 use serde::{Deserialize, Serialize};
 
-use crate::analysis::reviews::{PaperFigures, ReviewSummary, Reviewed, paper_figures, summarise, venue_of};
+use crate::analysis::reviews::{
+    InCommon, PaperFigures, ReviewSummary, Reviewed, in_common, paper_figures, summarise, venue_of,
+};
 use crate::api::routes::{ApiError, Shared, on_the_side, one_name};
 use crate::library::core::store::read_json;
 use crate::library::{Keeping, KeptReviews, Library, Ratings};
@@ -40,7 +43,9 @@ pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
     ]
 }
 
-/// A paper's kept reviews: where and when they were read, the notes, and what their scores come to.
+/// A paper's kept reviews: where and when they were read, the notes, what their scores come to, and what the
+/// reviewers commonly praise and criticise (`praise`, `criticism`). The last are counted from the kept notes each
+/// time they are asked for, so reviews kept before they existed have them too.
 #[derive(Serialize)]
 pub struct PaperReviews {
     pub paper_id: String,
@@ -49,18 +54,23 @@ pub struct PaperReviews {
     #[serde(flatten)]
     pub discussion: Discussion,
     pub figures: PaperFigures,
+    #[serde(flatten)]
+    pub in_common: InCommon,
 }
 
 impl PaperReviews {
     fn of(kept: KeptReviews) -> Self {
         let venue = venue_of(&kept.paper_id, &kept.discussion);
-        let figures = paper_figures(&Reviewed::new(&kept.paper_id, venue.as_ref(), &kept.discussion));
+        let reviewed = Reviewed::new(&kept.paper_id, venue.as_ref(), &kept.discussion);
+        let figures = paper_figures(&reviewed);
+        let in_common = in_common(&reviewed);
         Self {
             paper_id: kept.paper_id,
             address: kept.address,
             read_at: kept.read_at,
             discussion: kept.discussion,
             figures,
+            in_common,
         }
     }
 }
@@ -344,6 +354,20 @@ mod tests {
         let rating = &kept["figures"]["fields"][0];
         assert_eq!((rating["field"].clone(), rating["mean"].clone()), (json!("Rating"), json!(7.0)));
         assert_eq!(rating["scale"], json!({"minimum": 1, "maximum": 10, "source": "assumed"}));
+        // both reviewers praise the novel convergence proof ("novel" first: the summaries never say it); they
+        // criticise nothing in common
+        let praised: Vec<(&str, &Value, &Value)> = kept["praise"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|theme| (theme["term"].as_str().unwrap(), &theme["reviewers"], &theme["all_reviewers"]))
+            .collect();
+        assert_eq!(praised, [("novel", &json!(2), &json!(2)), ("convergence proof", &json!(2), &json!(2))]);
+        assert_eq!(kept["criticism"], json!([]));
+        let source = &kept["praise"][0]["sources"][0];
+        assert_eq!(source["signer"], json!({"role": "reviewer", "id": "Uv78"}));
+        assert_eq!(source["excerpt"], "The convergence proof is novel and the writing is clear.");
+        crate::api::contract::assert_fits("PaperReviews", &kept, &[]);
         let (_, again) =
             ask(&router, "POST", "/api/papers/iclr-2024-1/reviews", Some(json!({"text": "Loading...", "url": FORUM})))
                 .await;
