@@ -75,6 +75,13 @@ own declarations: Knuth's Computer Modern (cmsy, cmmi, cmex) as LaTeX declares t
 maps and CFF font programs are parsed with the crates `adobe-cmap-parser` (MIT) and `cff-parser` (MIT or Apache-2.0),
 the ones `pdf-extract` uses.
 
+## pdf.js
+
+The Text tab draws a paper's figures from its PDF with pdf.js (https://github.com/mozilla/pdf.js), the `pdfjs-dist`
+package, version 6.5.438, run in a sandboxed frame of its own (`apps/web/lib/reader/figure-frame.ts`). It is
+Copyright Mozilla Foundation and its contributors, under the Apache License, Version 2.0
+(https://www.apache.org/licenses/LICENSE-2.0); its licence text is installed with the app with the other packages'.
+
 ## The embedding model
 
 The model the app downloads at its first run, Qwen3-Embedding-0.6B in the ONNX form published by onnx-community on

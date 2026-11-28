@@ -979,6 +979,34 @@ export interface PaperPassages {
 	reader: number;
 	pages: { number: number; text: string }[];
 	passages: Passage[];
+	/** where its figures and tables are drawn (absent from an engine that does not place them) */
+	figures?: PaperFigure[];
+	/** captions whose figure the engine's rules could not place */
+	figures_missed?: number;
+}
+
+/** A rectangle of a PDF page in points, in the page's own coordinates: x right and y up from its user space's origin. */
+export interface PdfRect {
+	x0: number;
+	y0: number;
+	x1: number;
+	y1: number;
+}
+
+/** A figure or a table of a paper, found by rules from what its PDF draws (engine text/pdf/figures.rs). */
+export interface PaperFigure {
+	/** "Figure 1", "Table 2" */
+	label: string;
+	kind: "figure" | "table";
+	/** the PDF's page number, from 1 */
+	page: number;
+	rect: PdfRect;
+	/** the page's crop box and how many degrees clockwise it is turned when shown */
+	page_box: { crop: PdfRect; rotation: number };
+	/** the passage that is its caption */
+	caption: number;
+	/** the passages of text drawn inside it */
+	inside: number[];
 }
 
 /** How a quote was found: letter for letter (spacing, hyphens, ligatures, quote marks and case aside), or with a

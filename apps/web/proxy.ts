@@ -11,6 +11,7 @@ import {
 	newNonce,
 	windowAdmitted,
 } from "@/lib/net/page-policy";
+import { FIGURE_FRAME } from "@/lib/reader/figure-frame";
 
 /**
  * Runs before every request the interface's server answers (lib/net/page-policy.ts says why): a request addressed to
@@ -36,6 +37,8 @@ export function proxy(request: NextRequest) {
 		const headers = engineRequestHeaders(request.headers, process.env.CONSTELLATE_ENGINE_TOKEN);
 		return NextResponse.rewrite(engineUrl(engine, request.nextUrl), { request: { headers } });
 	}
+	// the frame figures are drawn in sets a stricter policy of its own (app/figure-frame/route.ts)
+	if (request.nextUrl.pathname === FIGURE_FRAME) return NextResponse.next();
 	const policy = contentSecurityPolicy(newNonce(), process.env.NODE_ENV === "development");
 	const headers = new Headers(request.headers);
 	headers.set("Content-Security-Policy", policy); // Next reads the nonce from here while it renders the page

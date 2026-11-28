@@ -5,6 +5,7 @@ import { AlignLeft, FileText, MessageSquareText, Sparkles } from "lucide-react";
 import type { Passage, PassageAddress, PassageKind } from "@rp/contracts";
 import { PassageExplainer, type AskedOnce, type ExplainMode } from "@/components/features/explanation/passage-explainer";
 import { Button } from "@/components/ui/button";
+import { FigureView, useFigureRenderer } from "@/components/reader/figure-view";
 import { api } from "@/lib/net/api";
 import { highlighted, pages, passageAt, unreadableParts, whollyUnreadable } from "@/lib/reader/evidence";
 import { explainable, placeKey, resolveSelection, selectionQuote } from "@/lib/features/explanation/explanation";
@@ -151,6 +152,10 @@ export function PaperText({
 	const mark = at?.address ?? (found?.found ? found.address : null);
 	const markRef = useRef<HTMLElement | null>(null);
 	const passages = ready(read);
+	// where figures are drawn, by their caption; the words drawn inside one that is shown are folded under it
+	const figureAt = new Map((passages?.figures ?? []).map((figure) => [figure.caption, figure]));
+	const folded = new Set((passages?.figures ?? []).flatMap((figure) => figure.inside));
+	const renderer = useFigureRenderer(api.pdfUrl(id), figureAt.size > 0);
 	const target = passages && mark ? passageAt(passages, mark) : -1;
 
 	// the passages explained before; an engine without the route has no explaining at all
@@ -300,6 +305,17 @@ export function PaperText({
 				const newPart = passage.part in PART_NAME && previous?.part !== passage.part;
 				const canExplain = enabled && explainable(passage.kind) && !whollyUnreadable(passage);
 				const kept = explained.has(placeKey(passage.address));
+				const figure = figureAt.get(index);
+				// words drawn inside a figure that is shown: folded under it, unless a citation points at them
+				const hidden = folded.has(index) && index !== target;
+				const shown = (
+					<Shown
+						passage={passage}
+						mark={index === target ? mark : null}
+						markRef={index === target ? markRef : undefined}
+						onOpenPdf={onOpenPdf}
+					/>
+				);
 				return (
 					<Fragment key={`${passage.address.page}-${passage.address.start}`}>
 						{newPart && (
@@ -325,7 +341,7 @@ export function PaperText({
 								<span className="h-px flex-1 bg-border" />
 							</div>
 						)}
-						<div data-passage={index} className="group relative">
+						<div data-passage={index} className={cn("group relative", hidden && "hidden")}>
 							{canExplain && (
 								<button
 									type="button"
@@ -339,12 +355,17 @@ export function PaperText({
 									{kept ? <MessageSquareText /> : <Sparkles />}
 								</button>
 							)}
-							<Shown
-								passage={passage}
-								mark={index === target ? mark : null}
-								markRef={index === target ? markRef : undefined}
-								onOpenPdf={onOpenPdf}
-							/>
+							{figure ? (
+								<FigureView
+									figure={figure}
+									renderer={renderer}
+									inside={figure.inside.map((at) => passages.passages[at]?.text ?? "")}
+									onOpenPdf={onOpenPdf}
+									caption={shown}
+								/>
+							) : (
+								shown
+							)}
 						</div>
 						{chosen?.index === index && (
 							<div data-explainer>

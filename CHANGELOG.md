@@ -7,6 +7,10 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- A paper's Text tab shows its figures and tables as the paper draws them, each above its caption, with a link to
+  its page in the PDF; a click shows it larger. The words drawn inside a figure, which used to stand in the text as
+  "Figure or table text" lines, are folded under it. Where a figure is on its page is found by fixed rules from what
+  the PDF draws, not by a model; a figure the rules cannot place soundly is left out and its caption stands alone.
 - Under a paper's review scores in the reader, "Common praise and criticism" lists what at least two of its reviewers
   praise and criticise alike, each point with how many of the reviewers make it ("3 of 4 reviewers"); open a point
   to read the reviewers' own sentences, each with who wrote it. It is counted from the words of the reviews, with no
