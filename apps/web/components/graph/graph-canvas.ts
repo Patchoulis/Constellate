@@ -37,7 +37,9 @@ import { Glide, prefersLessMotion, type Size, type View } from "@/lib/graph/glid
 import { GLOW_LAYER_MOST_PIXELS, glowLayerGeometry, inside, visibleWorld, type GlowLayerGeometry } from "@/lib/graph/glow-layer";
 import type { MarkedPlace } from "@/lib/graph/labels";
 import type { Box } from "@/lib/graph/layout";
+import { LASSO_MIN, lassoed, reach, type Place } from "@/lib/graph/lasso";
 import { nearestPaper } from "@/lib/graph/pick";
+import { selectKeyHeld, type SelectKey } from "@/lib/ui/prefs";
 import { hsl } from "@/lib/utils";
 
 export interface CanvasGroup {
@@ -87,8 +89,10 @@ export interface RendererCallbacks {
 	 *  moves, so whatever is shown beside the paper stays beside it. */
 	onHover: (index: number | null, x: number, y: number, linked: { index: number; x: number; y: number }[]) => void;
 	onPick: (index: number | null) => void;
-	/** A paper was right-clicked: mark it, or unmark it. */
+	/** A paper was right-clicked, or clicked with the select key held: mark it, or unmark it. */
 	onMark: (index: number) => void;
+	/** A lasso was drawn (a drag with the select key held): mark the papers inside it. */
+	onMarkMany: (indexes: number[]) => void;
 	/** Where the marked papers and the papers they are linked to are inside the canvas, newest mark first. Told
 	 *  again whenever the camera moves, like onHover. */
 	onMarked: (marked: MarkedPlace[]) => void;
@@ -108,6 +112,9 @@ const MARKED_LINK = "rgba(255, 255, 255, 0.8)";
 const MARK = "#fde047";
 const MARK_LINK = "rgba(253, 224, 71, 0.45)";
 const MARK_EDGE = "rgba(20, 20, 20, 0.85)"; // dark rim under the ring, so it reads over a bright glow too
+const LASSO_FILL = "rgba(253, 224, 71, 0.08)";
+/** A click this soon after a lasso or a select-click ended is the same press: it opens nothing. */
+const SAME_PRESS_MS = 300;
 const LABEL_LINE = 13; // px between the lines of a label
 const LABEL_CHAR = 6.7; // px one character of the label font takes
 const LABEL_MIN_CHARS = 24; // a label line may always be this long, however small the group is on screen
@@ -171,6 +178,14 @@ export class GraphCanvasRenderer {
 	private hovered: number | null = null;
 	/** the marked papers, newest first */
 	private marked: number[] = [];
+	/** whether the marked papers' rings and links are drawn, and their places told */
+	private marksShown = true;
+	/** the key that selects: with it held, a click marks a paper and a drag draws a lasso instead of moving the graph */
+	private selectKey: SelectKey = "primary";
+	/** the lasso being drawn: the pointer drawing it and where it went, in the canvas's CSS pixels */
+	private lasso: { pointer: number; line: Place[] } | null = null;
+	/** when the last press with the select key ended: the click the browser sends after it is not a pick */
+	private selectedAt = -Infinity;
 	/** papers drawn by a feature's groups instead of their communities (lib/graph/graph-colouring.ts); null: by community */
 	private colouring: { of: Int16Array; hues: (number | null)[] } | null = null;
 	/** the glows of the levels seen under the current focus, oldest first (glowLayerOf) */
@@ -191,6 +206,14 @@ export class GraphCanvasRenderer {
 		this.ctx = canvas.getContext("2d")!;
 		this.zoomBehavior = zoom<HTMLCanvasElement, unknown>()
 			.scaleExtent([0.03, 40])
+			// d3-zoom's own rule (no secondary button; Ctrl only with the wheel, which is a pinch), and not a press
+			// with the select key held: that one marks or draws a lasso
+			.filter(
+				(event: MouseEvent | WheelEvent | TouchEvent) =>
+					(!event.ctrlKey || event.type === "wheel") &&
+					!("button" in event && event.button) &&
+					(event.type === "wheel" || !selectKeyHeld(this.selectKey, event)),
+			)
 			.on("zoom", (event) => {
 				this.transform = event.transform;
 				this.updateLevel();
@@ -205,6 +228,10 @@ export class GraphCanvasRenderer {
 		canvas.addEventListener("mouseleave", this.onLeave);
 		canvas.addEventListener("click", this.onClick);
 		canvas.addEventListener("contextmenu", this.onContextMenu);
+		canvas.addEventListener("pointerdown", this.onPointerDown);
+		canvas.addEventListener("pointermove", this.onPointerMove);
+		canvas.addEventListener("pointerup", this.onPointerUp);
+		canvas.addEventListener("pointercancel", this.onPointerCancel);
 		this.observer = new ResizeObserver(() => this.resize());
 		this.observer.observe(canvas);
 		this.resize();
@@ -221,6 +248,10 @@ export class GraphCanvasRenderer {
 		this.canvas.removeEventListener("mouseleave", this.onLeave);
 		this.canvas.removeEventListener("click", this.onClick);
 		this.canvas.removeEventListener("contextmenu", this.onContextMenu);
+		this.canvas.removeEventListener("pointerdown", this.onPointerDown);
+		this.canvas.removeEventListener("pointermove", this.onPointerMove);
+		this.canvas.removeEventListener("pointerup", this.onPointerUp);
+		this.canvas.removeEventListener("pointercancel", this.onPointerCancel);
 		this.dropGlowLayers(this.glowLayers);
 		this.glowLayers = [];
 	}
@@ -265,6 +296,19 @@ export class GraphCanvasRenderer {
 		this.marked = indexes.filter((index) => this.data?.points[index]);
 		this.tellMarked();
 		this.markDirty();
+	}
+
+	/** Whether the marked papers are shown as marked on the graph (they stay marked either way). */
+	setMarksShown(shown: boolean) {
+		if (shown === this.marksShown) return;
+		this.marksShown = shown;
+		this.tellMarked();
+		this.markDirty();
+	}
+
+	/** The key that, held, makes a click mark a paper and a drag draw a lasso. */
+	setSelectKey(key: SelectKey) {
+		this.selectKey = key;
 	}
 
 	/** Move the camera so a paper is in the middle of the part of the canvas left of `right` px from its right
@@ -503,6 +547,7 @@ export class GraphCanvasRenderer {
 
 	/** The marked papers that are shown: all of them, or with a focus only those in it. */
 	private shownMarked(): number[] {
+		if (!this.marksShown) return [];
 		return this.focus === null ? this.marked : this.marked.filter((index) => this.lit(index));
 	}
 
@@ -536,7 +581,66 @@ export class GraphCanvasRenderer {
 	private onLeave = () => this.hover(null);
 
 	// d3-zoom swallows the click that ends a drag, so this only fires for a real click.
-	private onClick = (event: MouseEvent) => this.callbacks.onPick(this.pick(event));
+	private onClick = (event: MouseEvent) => {
+		if (performance.now() - this.selectedAt < SAME_PRESS_MS) return; // the end of a lasso or of a select-click
+		this.callbacks.onPick(this.pick(event));
+	};
+
+	/** Where a pointer is inside the canvas, in CSS pixels. */
+	private placeOf(event: MouseEvent): Place {
+		const rect = this.canvas.getBoundingClientRect();
+		return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+	}
+
+	// A press with the select key held starts a lasso (d3-zoom was told to leave it alone).
+	private onPointerDown = (event: PointerEvent) => {
+		if (event.button !== 0 || this.lasso || !selectKeyHeld(this.selectKey, event)) return;
+		try {
+			this.canvas.setPointerCapture(event.pointerId); // the lasso goes on when the pointer leaves the canvas
+		} catch (error) {
+			// a pointer the browser no longer knows: the lasso is still drawn while it stays over the canvas
+		}
+		this.stopGliding();
+		this.lasso = { pointer: event.pointerId, line: [this.placeOf(event)] };
+		this.canvas.style.cursor = "crosshair";
+	};
+
+	private onPointerMove = (event: PointerEvent) => {
+		if (event.pointerId !== this.lasso?.pointer) return;
+		this.lasso.line.push(this.placeOf(event));
+		this.markDirty();
+	};
+
+	// Released: a press that hardly moved marks the paper under it; a lasso marks the papers in focus inside it.
+	private onPointerUp = (event: PointerEvent) => {
+		const lasso = this.endLasso(event);
+		if (!lasso || !this.data) return;
+		this.selectedAt = performance.now();
+		if (reach(lasso.line) < LASSO_MIN) {
+			const index = this.pick(event);
+			if (index !== null) this.callbacks.onMark(index);
+			return;
+		}
+		const places = this.data.points.map((point) => {
+			const [x, y] = this.transform.apply([point.x, point.y]);
+			return { x, y };
+		});
+		const found = lassoed(lasso.line, places, (index) => this.lit(index));
+		if (found.length > 0) this.callbacks.onMarkMany(found);
+	};
+
+	private onPointerCancel = (event: PointerEvent) => void this.endLasso(event);
+
+	/** Stop drawing the lasso this pointer was drawing, and hand it back; null when it was drawing none. */
+	private endLasso(event: PointerEvent) {
+		const lasso = this.lasso;
+		if (event.pointerId !== lasso?.pointer) return null;
+		this.lasso = null;
+		if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
+		this.canvas.style.cursor = "";
+		this.markDirty();
+		return lasso;
+	}
 
 	// Right-click marks a paper. The browser's own menu has nothing to offer on the graph, so it never opens here.
 	private onContextMenu = (event: MouseEvent) => {
@@ -719,6 +823,22 @@ export class GraphCanvasRenderer {
 				ctx.fillStyle = hsl(group.hue, 86);
 				ctx.fillText(line, x, lineY);
 			});
+		}
+
+		// 6. The lasso being drawn, in screen space: the line the pointer took, closed back to where it began.
+		if (this.lasso && this.lasso.line.length > 1) {
+			const [start, ...rest] = this.lasso.line;
+			ctx.beginPath();
+			ctx.moveTo(start.x, start.y);
+			for (const place of rest) ctx.lineTo(place.x, place.y);
+			ctx.closePath();
+			ctx.fillStyle = LASSO_FILL;
+			ctx.fill("evenodd");
+			ctx.strokeStyle = MARK;
+			ctx.lineWidth = 1.5;
+			ctx.setLineDash([5, 4]);
+			ctx.stroke();
+			ctx.setLineDash([]);
 		}
 	}
 }

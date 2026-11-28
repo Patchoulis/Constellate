@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { communityLabel, groupsAt, treeDepth, type CommunityNode } from "@/lib/community/community";
 import { pickMarkedLabels, placeLabels, type MarkedPlace, type PaperPlace } from "@/lib/graph/labels";
 import type { Marks } from "@/lib/community/marks";
+import { useSelectKeyName, type SelectKey } from "@/lib/ui/prefs";
 import { panelSize } from "@/lib/ui/use-resizable";
 import { count } from "@/lib/units";
 import { countKinds, kindNotes, PAPER_KINDS, shownPapers, type PaperKind } from "@/lib/graph/paper-filter";
@@ -74,9 +75,12 @@ export function GraphView({
 	selectedPaper,
 	ratings,
 	marked,
+	marksShown,
+	selectKey,
 	goTo,
 	onPickPaper,
 	onMarkPaper,
+	onMarkPapers,
 }: {
 	graph: GraphData;
 	/** the run's communities, indexed like GraphNode.community */
@@ -88,11 +92,17 @@ export function GraphView({
 	ratings: Record<string, Ratings>;
 	/** the papers the user marked, newest first */
 	marked: Marks;
+	/** whether the marked papers are shown as marked on the graph */
+	marksShown: boolean;
+	/** the key that, held, makes a click mark a paper and a drag draw a lasso */
+	selectKey: SelectKey;
 	/** a paper to move the camera to; each new request moves it again, even to the same paper */
 	goTo: { id: string } | null;
 	onPickPaper: (id: string | null) => void;
 	/** mark the paper, or unmark it */
 	onMarkPaper: (id: string) => void;
+	/** mark these papers: those a lasso went round */
+	onMarkPapers: (ids: string[]) => void;
 }) {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const rendererRef = useRef<GraphCanvasRenderer | null>(null);
@@ -100,6 +110,8 @@ export function GraphView({
 	pickRef.current = onPickPaper;
 	const markRef = useRef(onMarkPaper);
 	markRef.current = onMarkPaper;
+	const markManyRef = useRef(onMarkPapers);
+	markManyRef.current = onMarkPapers;
 	const [hover, setHover] = useState<{ index: number; x: number; y: number; linked: PaperPlace[] } | null>(null);
 	// where the marked papers are on screen, and how large the screen is
 	const [markedView, setMarkedView] = useState<{ places: MarkedPlace[]; frame: { width: number; height: number } }>({
@@ -107,6 +119,7 @@ export function GraphView({
 		frame: { width: 0, height: 0 },
 	});
 	const [level, setLevel] = useState(0);
+	const keyName = useSelectKeyName(selectKey);
 	const layout = useMemo(() => layoutGraph(graph, roots), [graph, roots]);
 	const indexOf = useMemo(() => new Map(graph.nodes.map((node, index) => [node.id, index])), [graph]);
 
@@ -118,6 +131,7 @@ export function GraphView({
 			onHover: (index, x, y, linked) => setHover(index === null ? null : { index, x, y, linked }),
 			onPick: (index) => pickRef.current(index === null ? null : graph.nodes[index].id),
 			onMark: (index) => markRef.current(graph.nodes[index].id),
+			onMarkMany: (indexes) => markManyRef.current(indexes.map((index) => graph.nodes[index].id)),
 			// told on every camera move: with nothing marked, nothing changes, so nothing is rendered again
 			onMarked: (places) =>
 				setMarkedView((before) =>
@@ -166,6 +180,12 @@ export function GraphView({
 	useEffect(() => {
 		rendererRef.current?.setMarked(marked.flatMap((id) => indexOf.get(id) ?? []));
 	}, [layout, indexOf, marked]);
+	useEffect(() => {
+		rendererRef.current?.setMarksShown(marksShown);
+	}, [layout, marksShown]);
+	useEffect(() => {
+		rendererRef.current?.setSelectKey(selectKey);
+	}, [layout, selectKey]);
 
 	// A feature's groups of papers, drawn in their hues instead of the communities' (lib/graph/graph-colouring.ts).
 	const colourings = useGraphColouring();
@@ -253,14 +273,15 @@ export function GraphView({
 				</div>
 				{/* How to mark: plain to see until something is marked, quieter after. */}
 				<div
-					title="Right-click a paper's dot to mark it, and again to unmark it. A marked paper gets a yellow ring, its links stay shown, and it is listed under Marked on the right. While one community is in focus, only the marked papers inside it are shown. Marks are kept for this run, in this browser."
+					title={`Right-click a paper's dot to mark it, and again to unmark it. Or hold ${keyName}: a click marks a paper, and a drag draws a lasso that marks every paper inside it (the key can be changed in Settings). A marked paper gets a yellow ring, its links stay shown, and it is listed under Marked on the right, where the eye hides and shows the marks on the graph. While one community is in focus, only the marked papers inside it are shown. Marks are kept for this run, in this browser.`}
 					className={cn(
 						"flex items-center gap-1.5 rounded-md border px-2.5 py-1 tabular-nums",
 						marked.length === 0 ? "border-mark/50 bg-card/90 text-foreground" : "bg-card/70 text-muted-foreground",
 					)}
 				>
 					<Star className={cn("size-3 text-mark", marked.length > 0 && "fill-current")} />
-					{MARK_HINT}
+					{MARK_HINT}, or {keyName} + drag a lasso
+					{marked.length > 0 && !marksShown && <span>· marks hidden</span>}
 					{marked.length > 0 && <span>· {count(marked.length, "paper")} marked</span>}
 				</div>
 				{/* Which kinds of paper are shown in full: click one to dim it, again to bring it back. */}

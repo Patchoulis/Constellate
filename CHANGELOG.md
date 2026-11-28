@@ -5,10 +5,24 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Papers can be marked many at a time: hold Ctrl (Command on a Mac) on the graph and drag to draw a lasso, which
+  marks every paper inside it, or click a paper with the key held to mark or unmark it without opening it. The key
+  can be changed to Shift or Alt in Settings.
+- An eye beside the Marked tab hides and shows the marked papers' rings, links and names on the graph; the papers
+  stay marked and listed. Settings say whether marking a paper while they are hidden shows them again.
+
 ### Changed
 
 - The dependencies are updated: TypeScript 7, KaTeX 0.19, jsonwebtoken 11, tower-http 0.7, tokenizers 0.23, sha1
   0.11 and others, and the GitHub Actions the checks and releases run on.
+
+### Fixed
+
+- A community whose papers hold composed characters (a fraction such as "½", a ligature, "™") no longer stops its
+  Agree / disagree and Table sections with "the engine failed unexpectedly".
+- The red line a section shows when it could not be read has the section's own margins.
 
 ## [0.2.1] - 2026-11-28
 

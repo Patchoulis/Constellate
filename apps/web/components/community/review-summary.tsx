@@ -188,7 +188,8 @@ export function CommunityReviews({ run, treePath, onOpenPaper }: { run: string; 
 	// one community's figures are never shown under another's name while its own are asked for
 	const loaded = useAsync(() => api.reviewSummary(run, treePath), [run, treePath], { keep: false });
 	const summary = ready(loaded);
-	if (loaded.status === "failed") return <p className="font-ui text-xs text-destructive">The reviews could not be read: {loaded.error}</p>;
+	if (loaded.status === "failed")
+		return <p className="px-4 pb-4 font-ui text-xs leading-relaxed text-destructive">The reviews could not be read: {loaded.error}</p>;
 	if (!summary) return null;
 	const disagreed = summary.most_disagreed.filter((paper) => paper.overall.spread > 0);
 	return (

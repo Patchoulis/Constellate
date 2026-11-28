@@ -30,6 +30,12 @@ export function addMark(marks: Marks, id: string): Marks {
 	return isMarked(marks, id) ? marks : [id, ...marks];
 }
 
+/** Mark several papers at once (a lasso's): those not marked yet become the newest, in the order given. */
+export function addMarks(marks: Marks, ids: readonly string[]): Marks {
+	const fresh = [...new Set(ids)].filter((id) => !isMarked(marks, id));
+	return fresh.length === 0 ? marks : [...fresh, ...marks];
+}
+
 export function removeMark(marks: Marks, id: string): Marks {
 	return isMarked(marks, id) ? marks.filter((other) => other !== id) : marks;
 }
@@ -96,6 +102,8 @@ export interface MarksOf {
 	marked: Marks;
 	has: (id: string) => boolean;
 	toggle: (id: string) => void;
+	/** mark every one of these that is not marked yet */
+	addMany: (ids: readonly string[]) => void;
 	remove: (id: string) => void;
 	clear: () => void;
 }
@@ -135,6 +143,7 @@ export function useMarks(run: string, known: ReadonlySet<string> | null): MarksO
 		marked,
 		has: useCallback((id: string) => isMarked(marked, id), [marked]),
 		toggle: useCallback((id: string) => change((marks) => toggleMark(marks, id)), [change]),
+		addMany: useCallback((ids: readonly string[]) => change((marks) => addMarks(marks, ids)), [change]),
 		remove: useCallback((id: string) => change((marks) => removeMark(marks, id)), [change]),
 		clear: useCallback(() => change(() => []), [change]),
 	};

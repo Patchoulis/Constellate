@@ -587,19 +587,28 @@ fn terms_of(records: &[Record<'_>]) -> (Vec<HashSet<String>>, HashMap<String, St
         .par_iter()
         .map(|record| {
             let text = format!("{} {}", record.title, record.abstract_text);
-            let raw: Vec<&str> = text.split(|c: char| !c.is_alphanumeric()).filter(|word| !word.is_empty()).collect();
             let folded = content_words(&text);
+            // Each word as the paper writes it, in lower case. `content_words` cuts the text after taking composed
+            // characters apart ("½" is "1⁄2", "™" is "TM"), so a text with one of those has other words than a cut
+            // of the text as written: there the words as cut (accents dropped) stand for the wording, which keeps
+            // the two lists the same length whatever a paper holds.
+            let written: Vec<String> = text
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|word| !word.is_empty())
+                .map(str::to_lowercase)
+                .collect();
+            let raw = if written.len() == folded.len() { written } else { words::split(&text) };
             let mut terms = HashSet::new();
             let mut wording = Vec::new();
             for (index, term) in folded.iter().enumerate() {
                 let Some(term) = term else { continue };
                 if terms.insert(term.clone()) {
-                    wording.push((term.clone(), raw[index].to_lowercase()));
+                    wording.push((term.clone(), raw[index].clone()));
                 }
                 if let Some(Some(next)) = folded.get(index + 1) {
                     let pair = format!("{term} {next}");
                     if terms.insert(pair.clone()) {
-                        wording.push((pair, format!("{} {}", raw[index], raw[index + 1]).to_lowercase()));
+                        wording.push((pair, format!("{} {}", raw[index], raw[index + 1])));
                     }
                 }
             }
@@ -972,6 +981,21 @@ mod tests {
         let one = run(1);
         assert_eq!(one, run(4));
         assert_eq!(one, run(9));
+    }
+
+    #[test]
+    fn a_paper_with_composed_characters_is_read_like_any_other() {
+        // "½" is one word as written and two once taken apart ("1⁄2"); "ﬁ" is one letter and then two: the papers'
+        // words and their wording were counted differently, and the engine stopped on such a paper
+        let texts =
+            ["Sparse ﬁne tuning keeps ½ the weights", "Sparse ﬁne tuning at ½ rank™", "Sparse ﬁne tuning of ½ a model"];
+        let community: Vec<Record<'_>> = texts.iter().map(|text| Record { title: text, abstract_text: "" }).collect();
+        let other =
+            ["Graph matching", "Protein folding", "Bandit regret", "Image depth", "Speech codecs", "Robot grasping"];
+        let mut run = community.clone();
+        run.extend(other.iter().map(|text| Record { title: text, abstract_text: "" }));
+        let found = recurring_terms(&community, &run, 5);
+        assert!(found.iter().any(|term| term.term.contains("sparse")), "{found:?}");
     }
 
     #[test]

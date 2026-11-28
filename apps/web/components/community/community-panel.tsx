@@ -1,7 +1,20 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronLeft, Loader2, Square, Star, Tags, Telescope, Trash2, X } from "lucide-react";
+import {
+	ArrowDownWideNarrow,
+	ArrowUpNarrowWide,
+	ChevronLeft,
+	Eye,
+	EyeOff,
+	Loader2,
+	Square,
+	Star,
+	Tags,
+	Telescope,
+	Trash2,
+	X,
+} from "lucide-react";
 import type { Community, GraphNode, RunResult } from "@rp/contracts";
 import { CommunityAsk } from "@/components/features/answers/ask";
 import { useAskNaming } from "@/components/shell/run-dialogs";
@@ -348,6 +361,8 @@ export function CommunityPanel({
 	onOpenPaper,
 	marks,
 	markedPapers,
+	marksShown,
+	onMarksShown,
 	onGoToPaper,
 	onNamed,
 	title,
@@ -365,6 +380,9 @@ export function CommunityPanel({
 	marks: MarksOf;
 	/** the run's marked papers, newest first */
 	markedPapers: MarkedPaper[];
+	/** whether the marked papers are shown as marked on the graph, and the eye that changes it */
+	marksShown: boolean;
+	onMarksShown: (shown: boolean) => void;
 	/** open a paper and move the graph to it */
 	onGoToPaper: (id: string) => void;
 }) {
@@ -386,8 +404,23 @@ export function CommunityPanel({
 	return (
 		<aside ref={ref} style={style} className="relative flex w-(--panel-size) shrink-0 flex-col border-l bg-card">
 			<ResizeHandle {...handle} />
-			<div className="flex shrink-0 border-b px-3 py-2">
-				<Segmented className="w-full" options={tabs} value={tab} onChange={setTab} />
+			<div className="flex shrink-0 items-center gap-1 border-b px-3 py-2">
+				<Segmented className="min-w-0 flex-1" options={tabs} value={tab} onChange={setTab} />
+				{/* the marks stay; this only hides or shows their rings, links and names on the graph */}
+				<Button
+					variant="ghost"
+					size="icon"
+					className="shrink-0"
+					aria-pressed={marksShown}
+					title={
+						marksShown
+							? "The marked papers are shown on the graph. Click to hide them there: they stay marked and listed here."
+							: "The marked papers are hidden on the graph. Click to show their rings and links again."
+					}
+					onClick={() => onMarksShown(!marksShown)}
+				>
+					{marksShown ? <Eye /> : <EyeOff />}
+				</Button>
 			</div>
 			{tab === "marked" ? (
 				markedPapers.length > 0 ? (
