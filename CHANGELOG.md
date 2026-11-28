@@ -16,6 +16,9 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - A paper's review scores are shown as stars out of each scale's own number of points (4 of 5 stars, 2.8 of 4) with
   the mean beside them; the range, the number of reviews and the confidence-weighted mean are said on hover.
+- A paper's rating chips show stars too: each field's name with stars out of its conference's scale, and the score on
+  hover ("3.8/4 Average Score"), with every reviewer's score and whether the scale is the conference's published one
+  or assumed.
 
 ## [0.2.2] - 2026-11-28
 

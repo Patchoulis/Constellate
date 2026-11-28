@@ -7,7 +7,7 @@
  * user opened, and says so on hover.
  */
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Star } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import type {
 	FieldFigures,
 	PaperReviews,
@@ -21,10 +21,12 @@ import type {
 } from "@rp/contracts";
 import { MathText } from "@/components/math-text";
 import { Heading, RowButton } from "@/components/ui/button";
+import { Stars } from "@/components/ui/stars";
 import { commonPoints, commonPointsLine, firstPoints, reviewersSharing, SHOWN_POINTS } from "@/lib/community/common-points";
 import { api } from "@/lib/net/api";
+import { scaleNote } from "@/lib/ratings";
 import { ready, useAsync } from "@/lib/use-async";
-import { count, normalised, onScale, percent, scaleName, spreadPoints, starsOf } from "@/lib/units";
+import { count, normalised, onScale, percent, scaleName, spreadPoints } from "@/lib/units";
 
 /** Said wherever reviewers' figures are shown. */
 export const REVIEWS_NOTE =
@@ -32,12 +34,6 @@ export const REVIEWS_NOTE =
 
 const COVERAGE_NOTE =
 	"Reviews are known only for papers whose OpenReview page you opened in the reader's Reviews tab: the figures cover those papers, not the whole community.";
-
-function scaleNote(scale: Scale): string {
-	return scale.source === "assumed"
-		? `On ${scaleName(scale)}, assumed: Constellate does not know this venue's form for that year, so the scale is an estimate.`
-		: `On ${scaleName(scale)}, as the venue published it for that year.`;
-}
 
 function signerName(signer: Signer): string {
 	if (signer.role === "reviewer") return `Reviewer ${signer.id}`;
@@ -50,27 +46,6 @@ function signerName(signer: Signer): string {
 		public: "A public comment",
 		not_shown: "A reviewer",
 	}[signer.role];
-}
-
-/** A score as stars out of its scale's points: grey outlines, and over them as much of the row filled as the score. */
-function Stars({ value, scale, label }: { value: number; scale: Scale; label: string }) {
-	const stars = starsOf(value, scale);
-	if (!stars) return null; // a scale too long for stars: the words beside it say the score
-	const row = (filled: boolean) =>
-		Array.from({ length: stars.total }, (_, index) => (
-			<Star key={index} className="size-3.5 shrink-0" fill={filled ? "currentColor" : "none"} />
-		));
-	return (
-		<span role="img" aria-label={label} className="relative inline-flex shrink-0 align-middle">
-			<span className="flex text-muted-foreground/40">{row(false)}</span>
-			<span
-				className="absolute inset-y-0 left-0 flex overflow-hidden text-mark"
-				style={{ width: `${(100 * stars.filled) / stars.total}%` }}
-			>
-				{row(true)}
-			</span>
-		</span>
-	);
 }
 
 /**
