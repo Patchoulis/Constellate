@@ -1,6 +1,6 @@
 "use client";
 
-import { useReducer, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { REDO_STEPS, type RunRequest, type Settings } from "@rp/contracts";
 import { useAskNaming, useAskRun } from "@/components/shell/run-dialogs";
 import { SettingsDialog } from "@/components/shell/settings-dialog";
@@ -18,6 +18,7 @@ import { namingRequest } from "@/lib/features/writing/naming";
 import { NO_SAVES, saveStep, type SaveEvent, type Saves } from "@/lib/shell/settings-saves";
 import { ready, useAsync } from "@/lib/use-async";
 import { useJob } from "@/lib/shell/use-job";
+import { openingOf, type Opening } from "@/lib/graph/intro";
 
 /** Said when a run is made again without naming its communities again. */
 const NAMES_KEPT = "The communities were not named again: their names are kept as they are.";
@@ -73,8 +74,10 @@ export default function Home() {
 	const [told, setTold] = useState<string | null>(null);
 	// Counts finished runs. A run done again keeps its name, so the name alone would not show the new result.
 	const [finishedRuns, setFinishedRuns] = useState(0);
-	// the run a job just made and opened, until another run is opened: its graph may come up with the intro
-	const [made, setMade] = useState<string | null>(null);
+	// why the run on screen is shown (made, opened, or only shown again): whether its graph comes up with the intro
+	const [opening, setOpening] = useState<Opening>("opened");
+	// the run on screen, for a job that finishes: the same run shown again is not an opening
+	const shown = useRef<string | null>(null);
 	const askRun = useAskRun(ready(catalog));
 	const askNaming = useAskNaming();
 	const {
@@ -85,12 +88,12 @@ export default function Home() {
 		runs.reload();
 		library.reload();
 		setChosen(finished);
-		setMade(madeNow ? finished : null);
+		setOpening(openingOf(finished, madeNow, shown.current));
 		setFinishedRuns((count) => count + 1);
 	}, askRun);
 	const open = (name: string | null) => {
 		setChosen(name);
-		setMade(null);
+		setOpening("opened");
 	};
 	// a start being asked about or sent: nothing else is started meanwhile (a second click would queue a second
 	// question about the same run, answered on what was true before the first)
@@ -127,6 +130,9 @@ export default function Home() {
 
 	const known = ready(runs) ?? [];
 	const current = chosen ?? known[0]?.name ?? null; // until one is picked, the most recent run is shown
+	useEffect(() => {
+		shown.current = current;
+	}, [current]);
 	const running = job.state === "running";
 	const busy = running || starting;
 	const log = <ActivityLog job={job} />;
@@ -180,7 +186,7 @@ export default function Home() {
 						title={known.find((run) => run.name === current)?.title ?? current}
 						catalog={ready(catalog)}
 						model={settings?.describe_model}
-						made={made === current}
+						opening={opening}
 					>
 						{log}
 					</Workspace>

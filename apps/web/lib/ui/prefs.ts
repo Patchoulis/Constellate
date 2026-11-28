@@ -21,11 +21,11 @@ export interface Prefs {
 	marksShown: boolean;
 	/** marking a paper while the marks are hidden shows them again */
 	showMarksOnMark: boolean;
-	/** when the constellation intro plays (lib/graph/intro.ts): when a run is made, whenever one is opened, or never */
+	/** when the constellation intro plays (lib/graph/intro.ts): whenever a run is opened (the initial choice), only when one is made, or never */
 	intro: IntroWhen;
 }
 
-export const INITIAL_PREFS: Prefs = { selectKey: "primary", marksShown: true, showMarksOnMark: true, intro: "made" };
+export const INITIAL_PREFS: Prefs = { selectKey: "primary", marksShown: true, showMarksOnMark: true, intro: "opened" };
 
 export const SELECT_KEYS: readonly SelectKey[] = ["primary", "shift", "alt"];
 

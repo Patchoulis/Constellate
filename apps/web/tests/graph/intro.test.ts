@@ -15,6 +15,7 @@ import {
 	introFrame,
 	introPlan,
 	introPlays,
+	openingOf,
 	introProgress,
 	packConstellations,
 	paperGathered,
@@ -195,14 +196,25 @@ test("every community of a large run gets a constellation inside it, packed flat
 	lines.forEach((line, index) => assert.deepEqual([...packed.papers.slice(packed.offsets[index], packed.offsets[index + 1])], line));
 });
 
-test("the intro plays for a run just made, or for every run opened, as chosen, and never with less motion", () => {
-	assert.deepEqual([...INTRO_WHENS], ["made", "opened", "never"]);
-	assert.equal(introPlays("made", true, false), true, "made");
-	assert.equal(introPlays("made", false, false), false, "made, but this run was only opened");
-	assert.equal(introPlays("opened", true, false), true);
-	assert.equal(introPlays("opened", false, false), true, "any run opened");
-	assert.equal(introPlays("never", true, false), false);
-	assert.equal(introPlays("never", false, false), false);
-	for (const when of INTRO_WHENS)
-		for (const made of [true, false]) assert.equal(introPlays(when, made, true), false, `${when}, less motion`);
+test("the intro plays for every run opened, or only for one just made, as chosen, and never with less motion", () => {
+	assert.deepEqual([...INTRO_WHENS], ["opened", "made", "never"]);
+	assert.equal(introPlays("opened", "opened", false), true, "any run opened");
+	assert.equal(introPlays("opened", "made", false), true);
+	assert.equal(introPlays("made", "made", false), true, "made");
+	assert.equal(introPlays("made", "opened", false), false, "made, but this run was only opened");
+	assert.equal(introPlays("never", "made", false), false);
+	assert.equal(introPlays("never", "opened", false), false);
+	const openings = ["made", "opened", "refreshed"] as const;
+	for (const when of INTRO_WHENS) {
+		for (const opening of openings) assert.equal(introPlays(when, opening, true), false, `${when}, ${opening}, less motion`);
+		assert.equal(introPlays(when, "refreshed", false), false, `${when}: a run only shown again is not an opening`);
+	}
+});
+
+test("a job that finishes opens its run as made, as the open run shown again, or as another run opened", () => {
+	assert.equal(openingOf("iclr", true, "iclr"), "made", "made again, the same name");
+	assert.equal(openingOf("iclr", true, null), "made", "the first run");
+	assert.equal(openingOf("iclr", false, "iclr"), "refreshed", "its communities named again: the same run, not an opening");
+	assert.equal(openingOf("iclr", false, "neurips"), "opened", "another run's job finished: that run is opened");
+	assert.equal(openingOf("iclr", false, null), "opened");
 });

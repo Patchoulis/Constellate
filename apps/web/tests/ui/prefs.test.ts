@@ -78,16 +78,18 @@ test("the initial choices are a key every keyboard has, with marks shown", () =>
 	assert.equal(INITIAL_PREFS.showMarksOnMark, true);
 });
 
-test("the constellation intro plays when a run is made unless chosen otherwise, and a choice that is not one is not kept", () => {
-	assert.equal(INITIAL_PREFS.intro, "made");
+test("the constellation intro plays whenever a run is opened unless chosen otherwise, and a choice that is not one is not kept", () => {
+	assert.equal(INITIAL_PREFS.intro, "opened");
+	// a choice made explicitly is kept, whichever it is: nothing falls through to "never"
 	for (const intro of INTRO_WHENS) assert.equal(parsePrefs(serialisePrefs({ ...INITIAL_PREFS, intro })).intro, intro);
-	for (const intro of ["always", "", 1, null, true, { made: true }, ["opened"]]) {
+	for (const intro of ["always", "", "Never", 1, null, true, { made: true }, ["never"], undefined]) {
 		const stored = JSON.stringify({ version: 1, prefs: { selectKey: "shift", intro } });
 		assert.deepEqual(parsePrefs(stored), { ...INITIAL_PREFS, selectKey: "shift" }, JSON.stringify(intro));
 	}
 	// choices stored before the intro existed keep what they were, and the intro gets its initial choice
 	const older = JSON.stringify({ version: 1, prefs: { selectKey: "alt", marksShown: false, showMarksOnMark: true } });
-	assert.deepEqual(parsePrefs(older), { selectKey: "alt", marksShown: false, showMarksOnMark: true, intro: "made" });
+	assert.deepEqual(parsePrefs(older), { selectKey: "alt", marksShown: false, showMarksOnMark: true, intro: "opened" });
+	assert.equal(parsePrefs(null).intro, "opened", "nothing stored");
 });
 
 test("Settings offers every choice of the intro once, in words, the initial one first", () => {
@@ -97,7 +99,7 @@ test("Settings offers every choice of the intro once, in words, the initial one 
 	);
 	assert.deepEqual(
 		INTRO_CHOICES.map((choice) => choice.label),
-		["When a run is made", "Whenever a run is opened", "Never"],
+		["Whenever a run is opened", "When a run is made", "Never"],
 	);
 	assert.equal(INTRO_CHOICES[0].value, INITIAL_PREFS.intro);
 });

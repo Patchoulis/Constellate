@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { Dialog } from "radix-ui";
 import { FileSearch, RotateCcw, X } from "lucide-react";
 import { REDO_STEPS, type Catalog, type Library, type ModelProvider, type RedoStep, type Settings } from "@rp/contracts";
@@ -13,6 +14,7 @@ import { Choice, GroupedPicker } from "@/components/ui/picker";
 import { splitByOwner } from "@/lib/net/engine";
 import { SELECT_KEYS, selectKeyName, setPrefs, usePrefs, useSelectKeyName } from "@/lib/ui/prefs";
 import type { IntroWhen } from "@/lib/graph/intro";
+import { prefersLessMotion } from "@/lib/graph/glide";
 import { cn } from "@/lib/utils";
 
 /** The whole dialog as data: every setting appears once here, with how it is edited. */
@@ -29,8 +31,8 @@ type Field = { key: keyof Settings; label: string; hint?: string } & (
 
 /** When the constellation intro plays, as the choice is offered. */
 export const INTRO_CHOICES: readonly { value: IntroWhen; label: string }[] = [
-	{ value: "made", label: "When a run is made" },
 	{ value: "opened", label: "Whenever a run is opened" },
+	{ value: "made", label: "When a run is made" },
 	{ value: "never", label: "Never" },
 ];
 
@@ -44,6 +46,9 @@ function GraphChoices() {
 	// the names as on this keyboard: Ctrl is Command on a Mac, Alt is Option
 	const mac = useSelectKeyName("primary") !== "Ctrl";
 	const keys = SELECT_KEYS.map((key) => ({ value: key, label: selectKeyName(key, mac) }));
+	// the choice stays the person's own; when the system asks for less motion, the hint says why nothing plays
+	const [lessMotion, setLessMotion] = useState(false);
+	useEffect(() => setLessMotion(prefersLessMotion()), []);
 	return (
 		<section className="flex flex-col gap-2">
 			<Heading>The graph</Heading>
@@ -74,9 +79,12 @@ function GraphChoices() {
 				<span className="flex flex-col gap-0.5">
 					<span className="text-sm text-foreground">Play the constellation intro</span>
 					<span className="text-xs text-muted-foreground">
-						The papers gather as stars into their communities, which then light up. It lasts a few seconds; a click, a key or the wheel ends
-						it. It never plays when your system is set to reduce motion.
+						The papers gather as stars into their communities, which then light up. It lasts a few seconds; a click, a key, the wheel or a
+						drag ends it. It never plays when your system is set to reduce motion.
 					</span>
+					{lessMotion && prefs.intro !== "never" && (
+						<span className="text-xs text-warning">It is not playing now: your system asks for less motion.</span>
+					)}
 				</span>
 				<Segmented options={INTRO_CHOICES} value={prefs.intro} onChange={(intro) => setPrefs({ intro })} />
 			</div>

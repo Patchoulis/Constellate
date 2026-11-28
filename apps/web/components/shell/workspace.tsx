@@ -22,7 +22,7 @@ import { stepLine } from "@/lib/shell/run-step";
 import { SkyLoading } from "@/components/graph/sky-loading";
 import { LoadingWords } from "@/components/ui/loading-dots";
 import { prefersLessMotion } from "@/lib/graph/glide";
-import { BEATS, INTRO_MS, introPlays } from "@/lib/graph/intro";
+import { BEATS, INTRO_MS, introPlays, type Opening } from "@/lib/graph/intro";
 
 /** The run's log, folded to its last line until opened. */
 export function ActivityLog({ job }: { job: Job }) {
@@ -87,12 +87,13 @@ export function Workspace({
 	title,
 	catalog,
 	model,
-	made = false,
+	opening = "opened",
 	children,
 }: {
 	name: string;
-	/** the run was just made by a job that finished: the intro may play (Settings, "Play the constellation intro") */
-	made?: boolean;
+	/** why the run is shown: made by a job just now, opened, or only shown again; the intro may play for the first two
+	 *  (Settings, "Play the constellation intro") */
+	opening?: Opening;
 	/** the run's title, as the list shows it */
 	title?: string;
 	catalog: Catalog | undefined;
@@ -116,7 +117,7 @@ export function Workspace({
 	const stored = useMarks(name, known);
 	const prefs = usePrefs();
 	// Whether the graph comes up with the intro: decided once, as the run is opened.
-	const [intro] = useState(() => introPlays(prefs.intro, made, prefersLessMotion()));
+	const [intro] = useState(() => introPlays(prefs.intro, opening, prefersLessMotion()));
 	// the loading sky, fading out over the intro's first stars once the graph is there
 	const [skyLeft, setSkyLeft] = useState(!intro);
 	// Marking while the marks are hidden shows them again, where the person chose that (Settings).

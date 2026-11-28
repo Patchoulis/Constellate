@@ -219,14 +219,28 @@ export function packConstellations(lines: readonly (readonly number[])[]): Const
 }
 
 /** What "Play the constellation intro" can be set to (lib/ui/prefs.ts). */
-export type IntroWhen = "made" | "opened" | "never";
+export type IntroWhen = "opened" | "made" | "never";
 
-export const INTRO_WHENS: readonly IntroWhen[] = ["made", "opened", "never"];
+export const INTRO_WHENS: readonly IntroWhen[] = ["opened", "made", "never"];
 
-/** Whether the intro plays for a run opened now: just made, or any run, as chosen; never for someone who asked
- *  their system for less motion. */
-export function introPlays(when: IntroWhen, justMade: boolean, lessMotion: boolean): boolean {
-	if (lessMotion) return false;
+/** Whether the intro plays for a run shown now: whenever one is opened (the initial choice), only one just made, or
+ *  never, as chosen; never for a run only shown again, nor for someone who asked their system for less motion. */
+export function introPlays(when: IntroWhen, opening: Opening, lessMotion: boolean): boolean {
+	if (lessMotion || opening === "refreshed") return false;
 	if (when === "opened") return true;
-	return when === "made" && justMade;
+	return when === "made" && opening === "made";
+}
+
+/**
+ * Why a run's graph is being shown: a job just made it; it was opened (from the list, or the app started on it); or
+ * it was already open and is only shown again (a job named its communities again or read its declarations), which
+ * is not an opening and never plays the intro.
+ */
+export type Opening = "made" | "opened" | "refreshed";
+
+/** How a run comes to be shown when a job that finished opens it: made by that job, the run already open shown
+ *  again, or another run opened. */
+export function openingOf(finished: string, made: boolean, open: string | null): Opening {
+	if (made) return "made";
+	return finished === open ? "refreshed" : "opened";
 }
