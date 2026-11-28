@@ -32,6 +32,11 @@ test("a glow layer too large to keep, or with nothing in it, is not made", () =>
 	assert.equal(glowLayerGeometry([], 48, 96), null);
 });
 
+test("papers with no finite place make no glow layer: a canvas of no size cannot be drawn", () => {
+	assert.equal(glowLayerGeometry([{ x: Number.NaN, y: Number.NaN }], 48, 96), null);
+	assert.equal(glowLayerGeometry([{ x: Infinity, y: 0 }], 48, 96), null);
+});
+
 test("the visible part of the world is the canvas seen through the camera", () => {
 	const camera = { x: 100, y: -50, k: 2 };
 	const box = visibleWorld(camera, 800, 600);

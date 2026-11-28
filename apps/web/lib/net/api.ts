@@ -37,6 +37,7 @@ import type {
 	ClassifyCitationsRequest,
 	PaperCitationContexts,
 } from "@rp/contracts";
+import { graphOf, runOf } from "@/lib/community/run-file";
 import { estimateQuery, type NamingMode } from "@/lib/features/writing/naming";
 import { changesSomething, csrfOf, signInRedirect, withCsrf } from "@/lib/net/engine";
 import { answered, currentSignal, POLLING, QUICK, READS_PAPERS, request, STARTS_JOB, type Patience } from "@/lib/net/request";
@@ -89,8 +90,10 @@ const readReviews = (id: string, text: string, url: string) =>
 
 export const api = {
 	runs: () => call<RunSummary[]>("/api/runs"),
-	run: (name: string) => call<RunResult>(run(name)),
-	graph: (name: string) => call<GraphData>(`${run(name)}/graph`),
+	/** a run's communities and its graph, as written by whichever version made the run: every field the page reads
+	 *  given a value of its type (lib/community/run-file.ts) */
+	run: (name: string): Promise<RunResult> => call<unknown>(run(name)).then((answer) => runOf(answer, name)),
+	graph: (name: string): Promise<GraphData> => call<unknown>(`${run(name)}/graph`).then(graphOf),
 	/** what the run and each of its communities cite and are cited, counted from every reference list of the library read so far */
 	runCitations: (name: string) => reading<RunCitations>(`${run(name)}/citations`),
 	rename: (name: string, title: string) => call<{ title: string }>(run(name), send("PATCH", { title })),

@@ -86,3 +86,21 @@ test("a scale too long for stars, or with no points, has none: its score is said
 	assert.equal(starsOf(1, { minimum: 0.5, maximum: 4 }), null);
 	assert.equal(MOST_STARS, 10);
 });
+
+test("a figure missing from what the engine sent, or NaN, is said to be not known and never thrown on", () => {
+	const missing = undefined as unknown as number;
+	assert.equal(count(missing, "paper"), "papers not known");
+	assert.equal(count(Number.NaN, "community", "communities"), "communities not known");
+	assert.equal(similarity(missing), "cosine similarity not known");
+	assert.equal(similarity(Number.POSITIVE_INFINITY), "cosine similarity not known");
+	assert.equal(percent(0 / 0), "?%");
+	assert.equal(spreadPoints(missing), "spread not known");
+});
+
+test("a currency the engine sent that cannot be used is shown in US dollars, as billed", () => {
+	const usd = money(1.5, { code: "USD", rate: 1, date: null }, "en-US");
+	assert.equal(money(1.5, { code: "", rate: 1.3, date: null }, "en-US"), usd);
+	assert.equal(money(1.5, { code: "EUR", rate: Number.NaN, date: null }, "en-US"), usd);
+	assert.equal(money(1.5, { code: "EURO", rate: 0.9, date: null }, "en-US"), usd);
+	assert.equal(money(1.5, undefined as never, "en-US"), usd);
+});

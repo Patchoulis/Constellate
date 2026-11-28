@@ -3,19 +3,27 @@
  * "CAD 1.42", "12k tokens". A bare figure means nothing to someone who did not write the code.
  */
 
-/** "523 papers", "1 paper", "12,487 papers". */
+/**
+ * Is this a figure that can be shown? A figure missing from what the engine sent (a run saved by an older version,
+ * an optional field) or one that came out NaN is said to be not known, never shown as "NaN" and never thrown on:
+ * every formatter below is called while a page is drawn.
+ */
+const known = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+
+/** "523 papers", "1 paper", "12,487 papers"; "papers not known" for a count that is not one. */
 export function count(amount: number, one: string, many = `${one}s`): string {
+	if (!known(amount)) return `${many} not known`;
 	return `${amount.toLocaleString()} ${amount === 1 ? one : many}`;
 }
 
 /** Cosine similarity of two embeddings: 1 is the same direction, 0 unrelated. */
 export function similarity(value: number, digits = 2): string {
-	return `${value.toFixed(digits)} cosine similarity`;
+	return known(value) ? `${value.toFixed(digits)} cosine similarity` : "cosine similarity not known";
 }
 
 /** A cosine distance (1 minus a cosine similarity), said with what it is: "0.29 cosine distance". */
 export function distance(value: number, digits = 2): string {
-	return `${value.toFixed(digits)} cosine distance`;
+	return known(value) ? `${value.toFixed(digits)} cosine distance` : "cosine distance not known";
 }
 
 export const SIMILARITY_NOTE =
@@ -23,7 +31,7 @@ export const SIMILARITY_NOTE =
 
 /** "12%" of something named by the caller. */
 export function percent(share: number): string {
-	return `${Math.round(100 * share)}%`;
+	return known(share) ? `${Math.round(100 * share)}%` : "?%";
 }
 
 /** A score's scale: its lowest and highest possible score. Reviewers' scales differ by venue and year. */
@@ -62,7 +70,7 @@ export function starsOf(value: number, scale: ScoreScale): { total: number; fill
 
 /** How far apart reviewers' scores are, in points of the scale: "1.2 points spread". */
 export function spreadPoints(spread: number): string {
-	return `${spread.toFixed(1)} points spread`;
+	return known(spread) ? `${spread.toFixed(1)} points spread` : "spread not known";
 }
 
 /** A position within a scale (0 at its lowest, 1 at its highest), said to be normalised: "56% of the scale, normalised". */
@@ -136,6 +144,9 @@ export function knownMoney(usd: number | null | undefined, currency: Currency, l
  * Amounts under one unit keep four decimals: one call to a small model costs a fraction of a cent.
  */
 export function money(usd: number, currency: Currency, locale?: string): string {
+	// A rate or code the engine sent that cannot be used (missing, NaN, not a currency): the amount as billed, in US
+	// dollars, rather than "EUR NaN" or a RangeError while the page is drawn.
+	if (!known(currency?.rate) || currency.rate <= 0 || !supportedCurrency(currency.code)) currency = DOLLAR;
 	const amount = usd * currency.rate;
 	const whole = new Intl.NumberFormat(locale, { style: "currency", currency: currency.code }).resolvedOptions().maximumFractionDigits ?? 2;
 	const digits = Math.abs(amount) >= 1 || amount === 0 ? whole : Math.max(whole, 4);
@@ -148,4 +159,17 @@ export function money(usd: number, currency: Currency, locale?: string): string 
 	})
 		.format(amount)
 		.replace(/ /g, " ");
+}
+
+const DOLLAR: Currency = { code: "USD", rate: 1, date: null };
+
+/** Can this browser write amounts in `code`? */
+function supportedCurrency(code: unknown): code is string {
+	if (typeof code !== "string" || !/^[A-Za-z]{3}$/.test(code)) return false;
+	try {
+		new Intl.NumberFormat(undefined, { style: "currency", currency: code });
+		return true;
+	} catch (error) {
+		return false;
+	}
 }

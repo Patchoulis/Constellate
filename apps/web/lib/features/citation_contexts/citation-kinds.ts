@@ -102,17 +102,24 @@ export function groupingNote(grouping: CitationGrouping): string {
 export function judgementLabel(judgement: CitationJudgement): { label: string; note: string; kind: CitationKind | null } {
 	switch (judgement.state) {
 		case "justified":
-			return { label: KIND_LABEL[judgement.kind], note: KINDS_NOTE, kind: judgement.kind };
+			return { label: KIND_LABEL[judgement.kind] ?? judgement.kind, note: KINDS_NOTE, kind: judgement.kind };
 		case "mention":
 			return { label: KIND_LABEL.mention, note: KINDS_NOTE, kind: "mention" };
 		case "not_justified":
 			return {
 				label: "mention (not justified)",
-				note: `The model read it as “${KIND_LABEL[judgement.claimed]}”, but the words it gave were not found in the sentence or beside it: it is counted as a mention.`,
+				note: `The model read it as “${KIND_LABEL[judgement.claimed] ?? judgement.claimed}”, but the words it gave were not found in the sentence or beside it: it is counted as a mention.`,
 				kind: null,
 			};
 		case "not_classified":
 			return { label: "not classified", note: "The model has not been asked about this sentence.", kind: null };
+		default:
+			// a reading this version does not know (a newer engine): said as not classified, never thrown on
+			return {
+				label: "not classified",
+				note: "This reading of the sentence is of a kind this version of Constellate does not show.",
+				kind: null,
+			};
 	}
 }
 

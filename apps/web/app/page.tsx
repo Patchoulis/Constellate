@@ -4,6 +4,7 @@ import { useEffect, useReducer, useRef, useState } from "react";
 import { REDO_STEPS, type RunRequest, type Settings } from "@rp/contracts";
 import { useAskNaming, useAskRun } from "@/components/shell/run-dialogs";
 import { SettingsDialog } from "@/components/shell/settings-dialog";
+import { SectionBoundary } from "@/components/ui/section-boundary";
 import { TitleBar } from "@/components/shell/title-bar";
 import { Sidebar } from "@/components/shell/sidebar";
 import { ActivityLog, Notice, Workspace } from "@/components/shell/workspace";
@@ -215,42 +216,48 @@ export default function Home() {
 					</main>
 				)}
 			</div>
-			<SettingsDialog
-				open={settingsOpen}
-				settings={settings}
-				catalog={ready(catalog)}
-				validation={ready(library)?.ai_validation}
-				detector={ready(library)?.ai_detector}
-				machine={ready(library)?.machine}
-				serverOwned={owned}
-				choosable={choosable}
-				onOpenChange={setSettingsOpen}
-				onChange={(changes) => void change(changes).then(library.reload)} // what the library reports depends on some settings
-				refused={refused}
-				importProblems={ready(library)?.import_problems}
-				onDetectorChanged={library.reload}
-				onReadDeclarations={
-					current && !busy
-						? () => {
-								setSettingsOpen(false);
-								void api.readDeclarations(current).then(follow, (error: Error) => {
-									setFailed(error.message);
-									follow(); // refused as busy: what is running is shown
-								});
-							}
-						: undefined
-				}
-				onRedo={
-					current && !busy
-						? (steps) => {
-								setSettingsOpen(false); // the run's log, behind the dialog, is what to watch now
-								// naming again alone does not make the run again: its communities stay as they are
-								if (steps.length === 1 && steps[0] === "descriptions") void describeAgain(current);
-								else start({ rerun: current, redo: steps });
-							}
-						: undefined
-				}
-			/>
+			<SectionBoundary
+				what="Settings"
+				keys={[settingsOpen, settings]}
+				className="fixed right-3 bottom-3 z-50 max-w-sm rounded-md border bg-card shadow-lg"
+			>
+				<SettingsDialog
+					open={settingsOpen}
+					settings={settings}
+					catalog={ready(catalog)}
+					validation={ready(library)?.ai_validation}
+					detector={ready(library)?.ai_detector}
+					machine={ready(library)?.machine}
+					serverOwned={owned}
+					choosable={choosable}
+					onOpenChange={setSettingsOpen}
+					onChange={(changes) => void change(changes).then(library.reload)} // what the library reports depends on some settings
+					refused={refused}
+					importProblems={ready(library)?.import_problems}
+					onDetectorChanged={library.reload}
+					onReadDeclarations={
+						current && !busy
+							? () => {
+									setSettingsOpen(false);
+									void api.readDeclarations(current).then(follow, (error: Error) => {
+										setFailed(error.message);
+										follow(); // refused as busy: what is running is shown
+									});
+								}
+							: undefined
+					}
+					onRedo={
+						current && !busy
+							? (steps) => {
+									setSettingsOpen(false); // the run's log, behind the dialog, is what to watch now
+									// naming again alone does not make the run again: its communities stay as they are
+									if (steps.length === 1 && steps[0] === "descriptions") void describeAgain(current);
+									else start({ rerun: current, redo: steps });
+								}
+							: undefined
+					}
+				/>
+			</SectionBoundary>
 		</div>
 	);
 }

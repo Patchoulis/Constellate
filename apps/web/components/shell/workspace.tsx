@@ -10,9 +10,11 @@ import { GraphView } from "@/components/graph/graph-view";
 import { OverviewPanel } from "@/components/community/overview";
 import { PaperReader } from "@/components/reader/paper-reader";
 import { ResizeHandle } from "@/components/ui/resize-handle";
+import { SectionBoundary } from "@/components/ui/section-boundary";
 import { api } from "@/lib/net/api";
 import { communityTree, nodeAt, type CommunityNode } from "@/lib/community/community";
 import { withCounted } from "@/lib/reader/citations";
+import { linkedPapers } from "@/lib/graph/related";
 import { ANSWER_OWNER, GraphColouringContext, colouringStep, type GraphColouring, type PaperColouring } from "@/lib/graph/graph-colouring";
 import { useMarks } from "@/lib/community/marks";
 import type { Job } from "@/lib/shell/use-job";
@@ -219,35 +221,36 @@ export function Workspace({
 			</main>
 		);
 	}
-	const paperIndex = paper === null ? -1 : graph.nodes.findIndex((node) => node.id === paper);
-	const paperNode = graph.nodes[paperIndex];
+	// The open paper may not be in the run as it is now (read again since it was opened): it is still read, with no
+	// community and no linked papers.
+	const paperNode = paper === null ? undefined : graph.nodes.find((node) => node.id === paper);
 	// The papers the open one is linked to, closest first.
-	const related = graph.edges
-		.filter(([a, b]) => a === paperIndex || b === paperIndex)
-		.map(([a, b, similarity]) => ({ ...graph.nodes[a === paperIndex ? b : a], similarity }))
-		.sort((a, b) => b.similarity - a.similarity);
+	const related = linkedPapers(graph, paper);
 	return (
 		<EvidenceProvider value={evidence}>
 			<GraphColouringContext value={colourings}>
 				<main className="relative min-w-0 flex-1">
-					<GraphView
-						graph={graph}
-						roots={roots}
-						focus={selected}
-						selectedPaper={paper}
-						ratings={ratings}
-						marked={marks.marked}
-						hiddenMarks={marks.hidden}
-						marksWithoutLinks={marks.noLinks}
-						selectKey={prefs.selectKey}
-						goTo={goTo}
-						intro={intro}
-						stars={prefs.stars}
-						regionFrom={prefs.regionFrom}
-						onPickPaper={openPaper}
-						onMarkPaper={marks.toggle}
-						onMarkPapers={marks.addMany}
-					/>
+					{/* each part of the window stops on its own: odd data in one leaves the others working */}
+					<SectionBoundary what="the graph" keys={[graph, roots]} className="size-full justify-center">
+						<GraphView
+							graph={graph}
+							roots={roots}
+							focus={selected}
+							selectedPaper={paper}
+							ratings={ratings}
+							marked={marks.marked}
+							hiddenMarks={marks.hidden}
+							marksWithoutLinks={marks.noLinks}
+							selectKey={prefs.selectKey}
+							goTo={goTo}
+							intro={intro}
+							stars={prefs.stars}
+							regionFrom={prefs.regionFrom}
+							onPickPaper={openPaper}
+							onMarkPaper={marks.toggle}
+							onMarkPapers={marks.addMany}
+						/>
+					</SectionBoundary>
 					{!skyLeft && (
 						<div
 							className="leave-fade pointer-events-none absolute inset-0"
@@ -258,48 +261,70 @@ export function Workspace({
 						</div>
 					)}
 					{children}
-					<RunAsk run={name} papers={graph.nodes.length} onCitedPapers={onCitedPapers} />
+					<SectionBoundary
+						what="asking about the run"
+						keys={[name]}
+						className="absolute top-3 right-3 z-20 max-w-sm rounded-md border bg-card shadow-lg"
+					>
+						<RunAsk run={name} papers={graph.nodes.length} onCitedPapers={onCitedPapers} />
+					</SectionBoundary>
 					{overview && (
-						<OverviewPanel
+						<SectionBoundary
 							key={overview.community.tree_path}
-							run={name}
-							node={overview}
-							model={model}
-							onOpenPaper={openPaper}
-							onClose={() => setOverview(null)}
-						/>
+							what="the overview"
+							keys={[overview]}
+							className="absolute top-3 right-3 z-20 max-w-sm rounded-md border bg-card shadow-lg"
+						>
+							<OverviewPanel
+								key={overview.community.tree_path}
+								run={name}
+								node={overview}
+								model={model}
+								onOpenPaper={openPaper}
+								onClose={() => setOverview(null)}
+							/>
+						</SectionBoundary>
 					)}
 					{paper && (
-						<PaperReader
+						<SectionBoundary
 							key={paper}
-							id={paper}
-							community={paperNode && roots[paperNode.community]}
-							related={related.map((other) => ({ ...other, community: roots[other.community] }))}
-							catalog={catalog}
-							marked={marks.has(paper)}
-							onToggleMark={() => marks.toggle(paper)}
-							run={name}
-							at={place}
-							onRatings={onRatings}
-							onOpen={openPaper}
-							onClose={() => openPaper(null)}
-						/>
+							what="the paper's reader"
+							keys={[paperNode]}
+							className="absolute top-3 right-3 z-20 max-w-sm rounded-md border bg-card shadow-lg"
+						>
+							<PaperReader
+								key={paper}
+								id={paper}
+								community={paperNode && roots[paperNode.community]}
+								related={related.map((other) => ({ ...other, community: roots[other.community] }))}
+								catalog={catalog}
+								marked={marks.has(paper)}
+								onToggleMark={() => marks.toggle(paper)}
+								run={name}
+								at={place}
+								onRatings={onRatings}
+								onOpen={openPaper}
+								onClose={() => openPaper(null)}
+							/>
+						</SectionBoundary>
 					)}
 				</main>
-				<CommunityPanel
-					result={result}
-					roots={roots}
-					selected={selected}
-					onSelect={setSelected}
-					onOverview={setOverview}
-					onOpenPaper={openPaper}
-					marks={marks}
-					markedPapers={markedPapers}
-					onGoToPaper={goToPaper}
-					onNamed={run.reload}
-					title={title ?? name}
-					citations={counted ?? null}
-				/>
+				<SectionBoundary what="the communities panel" keys={[result, roots]} className="w-80 shrink-0 border-l bg-card">
+					<CommunityPanel
+						result={result}
+						roots={roots}
+						selected={selected}
+						onSelect={setSelected}
+						onOverview={setOverview}
+						onOpenPaper={openPaper}
+						marks={marks}
+						markedPapers={markedPapers}
+						onGoToPaper={goToPaper}
+						onNamed={run.reload}
+						title={title ?? name}
+						citations={counted ?? null}
+					/>
+				</SectionBoundary>
 			</GraphColouringContext>
 		</EvidenceProvider>
 	);

@@ -104,7 +104,7 @@ function canvasData(graph: GraphData, roots: CommunityNode[], layout: Layout): C
 		});
 	}
 	// orals and spotlights are drawn larger: they are the papers a conference singled out
-	const sizes = Float32Array.from(graph.nodes, (node) => ({ oral: 1.9, spotlight: 1.45, poster: 1 })[node.acceptance ?? "poster"]);
+	const sizes = Float32Array.from(graph.nodes, (node) => ({ oral: 1.9, spotlight: 1.45, poster: 1 })[node.acceptance ?? "poster"] ?? 1); // a tier this version does not know: usual size
 	return { points: layout.points, sizes, links: graph.edges, levels };
 }
 
@@ -184,11 +184,18 @@ export function GraphView({
 	markRef.current = onMarkPaper;
 	const markManyRef = useRef(onMarkPapers);
 	markManyRef.current = onMarkPapers;
-	const [hover, setHover] = useState<Hovered>(null);
+	// The hovered paper and the marked papers' places are told by the renderer as indexes into the graph it was given,
+	// and kept with that graph: a run's graph read again (its papers renamed, the run made again) has other papers at
+	// those indexes, or fewer, and for the render before the new renderer tells anything they would name papers that
+	// are not there.
+	const [hoverHeld, setHover] = useState<(NonNullable<Hovered> & { graph: GraphData }) | null>(null);
+	const hover: Hovered = hoverHeld?.graph === graph ? hoverHeld : null;
 	// Where the marked papers are on screen, and how large the screen is: told on every move of the camera. Moving
 	// the camera only moves their labels, which is done here without rendering again (onMarked); the graph view is
 	// rendered again only when other papers are to be named.
-	const markedRef = useRef<MarkedView>({ places: [], frame: { width: 0, height: 0 } });
+	const markedRef = useRef<MarkedView & { graph: GraphData | null }>({ graph: null, places: [], frame: { width: 0, height: 0 } });
+	const markedNow = (): MarkedView =>
+		markedRef.current.graph === graph ? markedRef.current : { places: [], frame: markedRef.current.frame };
 	const [, setMarkedLabels] = useState(0);
 	const hoverRef = useRef<Hovered>(null);
 	const frameRef = useRef<HTMLDivElement>(null);
@@ -209,7 +216,7 @@ export function GraphView({
 		const canvas = canvasRef.current;
 		if (!canvas) return;
 		const renderer = new GraphCanvasRenderer(canvas, {
-			onHover: (index, x, y, linked) => setHover(index === null ? null : { index, x, y, linked }),
+			onHover: (index, x, y, linked) => setHover(index === null ? null : { graph, index, x, y, linked }),
 			onPick: (index) => pickRef.current(index === null ? null : graph.nodes[index].id),
 			onMark: (index) => markRef.current(graph.nodes[index].id),
 			onMarkMany: (indexes) => markManyRef.current(indexes.map((index) => graph.nodes[index].id)),
@@ -217,7 +224,7 @@ export function GraphView({
 			// papers named, their labels are only moved
 			onMarked: (places) => {
 				if (places.length === 0 && markedRef.current.places.length === 0) return;
-				markedRef.current = { places, frame: { width: canvas.clientWidth, height: canvas.clientHeight } };
+				markedRef.current = { graph, places, frame: { width: canvas.clientWidth, height: canvas.clientHeight } };
 				const now = labelsOf(hoverRef.current, markedRef.current);
 				const frame = frameRef.current;
 				if (frame && labelKey(now) === shownKey.current) placeOnGraph(frame, now, labels.current, sizes.current);
@@ -331,7 +338,7 @@ export function GraphView({
 
 	// Every label on the graph, most important first.
 	hoverRef.current = hover;
-	const labelled = labelsOf(hover, markedRef.current);
+	const labelled = labelsOf(hover, markedNow());
 
 	// Place the labels once they have been measured and before the browser paints, together, so that each stays
 	// inside the graph and none covers another; a marked paper's label that finds no free place is hidden. Their sizes

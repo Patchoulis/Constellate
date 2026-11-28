@@ -148,6 +148,8 @@ const LABEL_MIN_CHARS = 24; // a label line may always be this long, however sma
 const LABEL_MIN_LINES = 3; // ... and a label may always have this many lines
 /** Zoom, relative to the whole graph fitting the view, at which each finer level takes over. */
 const LEVEL_ZOOM = [2.2, 4.6, 9, 16];
+/** The closest the camera goes. */
+const MOST_ZOOM = 40;
 /** The intro's stars: pale white-blue, as the loading sky's (components/graph/sky-loading.tsx). */
 const STAR = STAR_COLOUR;
 const STAR_LINE = "#ffffff";
@@ -304,7 +306,7 @@ export class GraphCanvasRenderer {
 	) {
 		this.ctx = canvas.getContext("2d")!;
 		this.zoomBehavior = zoom<HTMLCanvasElement, unknown>()
-			.scaleExtent([0.03, 40])
+			.scaleExtent([0.03, MOST_ZOOM])
 			// d3-zoom's own rule (no secondary button; Ctrl only with the wheel, which is a pinch), and not a press
 			// with the select key held: that one marks or draws a lasso
 			.filter(
@@ -390,6 +392,7 @@ export class GraphCanvasRenderer {
 		this.linked = (data?.points ?? []).map(() => []);
 		// closest first, so that where only some of a paper's linked papers can be named, those are the closest
 		for (const [a, b] of [...(data?.links ?? [])].sort((one, other) => other[2] - one[2])) {
+			if (!this.linked[a] || !this.linked[b] || a === b) continue; // a link to a paper the graph does not have
 			this.linked[a].push(b);
 			this.linked[b].push(a);
 		}
@@ -583,6 +586,7 @@ export class GraphCanvasRenderer {
 	/** Move the camera so the given world rectangle fills the canvas. `whole` marks it as the full graph;
 	 *  `atOnce` skips the glide (a graph's first view, a canvas that changed size). */
 	fit(box: Box, whole = false, atOnce = false) {
+		if (![box.minX, box.minY, box.maxX, box.maxY].every(Number.isFinite)) return; // a camera at NaN shows nothing again
 		if (whole) this.whole = box;
 		const width = this.canvas.clientWidth;
 		const height = this.canvas.clientHeight;
@@ -603,7 +607,9 @@ export class GraphCanvasRenderer {
 
 	/** The zoom at which a world rectangle just fits the canvas (or a picture of `size`), with a little margin. */
 	private zoomToFit(box: Box, size: Size = { width: this.canvas.clientWidth, height: this.canvas.clientHeight }): number {
-		return Math.min(size.width / (box.maxX - box.minX || 1), size.height / (box.maxY - box.minY || 1)) * 0.9;
+		// never past the closest zoom d3-zoom allows: a box of one paper is a point, and fitting it would zoom without end
+		const k = Math.min(size.width / (box.maxX - box.minX || 1), size.height / (box.maxY - box.minY || 1)) * 0.9;
+		return Number.isFinite(k) && k > 0 ? Math.min(k, MOST_ZOOM) : 1;
 	}
 
 	/** The level of detail the current zoom shows. */
@@ -865,10 +871,13 @@ export class GraphCanvasRenderer {
 		if (this.canvas.width !== width) this.canvas.width = width;
 		if (this.canvas.height !== height) this.canvas.height = height;
 		// a glide under way was aimed for the old size: it ends at once where it now should (lib/graph/glide.ts)
-		if (this.whole) this.fitZoom = this.zoomToFit(this.whole);
+		// A canvas of no size (a hidden tab, a panel dragged over it) has no zoom that fits: the last one stays, so the
+		// level of detail does not jump while it is hidden.
+		const sized = this.canvas.clientWidth > 0 && this.canvas.clientHeight > 0;
+		if (this.whole && sized) this.fitZoom = this.zoomToFit(this.whole);
 		this.glide.resized({ width: this.canvas.clientWidth, height: this.canvas.clientHeight });
 		if (this.fitted && this.fitted.transform === this.transform) this.fit(this.fitted.box, false, true);
-		else if (this.whole) {
+		else if (this.whole && sized) {
 			this.fitZoom = this.zoomToFit(this.whole);
 			this.updateLevel();
 		}
@@ -1203,7 +1212,8 @@ export class GraphCanvasRenderer {
 		const now = performance.now();
 		const { x: tx, y: ty, k } = this.transform;
 		const level = data.levels[Math.min(this.level, data.levels.length - 1)];
-		const groupOf = (index: number) => level.groups[level.of[index]];
+		// a paper in no group of this level (a run whose communities do not list it) is drawn in the first one's hue
+		const groupOf = (index: number) => level.groups[level.of[index]] ?? level.groups[0] ?? { hue: 0 };
 		// how strongly each of the usual layers is drawn: in full, unless the intro is bringing it up
 		const lit = frame ? frame.light : 1;
 		const named = frame ? frame.names : 1;
