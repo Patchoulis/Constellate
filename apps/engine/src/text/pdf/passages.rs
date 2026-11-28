@@ -42,7 +42,10 @@ use crate::text::declarations::{DANGLING, FURNITURE, RUNNING};
 use crate::text::pattern;
 
 /// The version of this reader. Raise it when what it reads changes: addresses are only stable for one version.
-pub const READER: u32 = 1;
+///
+/// 2: the characters of math fonts are read through the fonts' own encodings (`super::fonts`), what cannot be read
+/// is marked [`super::UNREADABLE`], and the pieces of one displayed formula are kept together.
+pub const READER: u32 = 2;
 
 /// Top and bottom lines of a page looked at for running headers, footers and page numbers.
 const EDGE_LINES: usize = 3;
@@ -128,6 +131,14 @@ pub struct Passage {
     pub text: String,
     /// Its sentences, as places in the page's text.
     pub sentences: Vec<Span>,
+}
+
+impl Passage {
+    /// Is it all a formula the PDF does not say the characters of ([`super::UNREADABLE`]), with hardly a letter or
+    /// digit of its own (an equation number at most)? Nothing in it can be explained or quoted.
+    pub fn unreadable(&self) -> bool {
+        self.text.contains(super::UNREADABLE) && letters_in(&self.text) < 4
+    }
 }
 
 /// A page's text as rebuilt from what is kept of it; addresses count characters in it.
@@ -1246,6 +1257,48 @@ We prove that the bound holds for every task.\n\n3\n",
                 assert!(sentence.start >= passage.address.start && sentence.end <= passage.address.end);
             }
         }
+    }
+
+    /// A page with formulas the PDF could not say the characters of, as the PDF reader marks them.
+    fn page_with_unreadable_formulas() -> Vec<String> {
+        let mark = crate::text::pdf::UNREADABLE;
+        vec![format!(
+            "1. Analysis\n\nConditioned on the event E, we have that for every (k, u) ∈ [K] × [H − 1] the bound {mark}\n\
+             holds with probability at least 1 − δ, which is what the proof needs.\n\n{mark} (12)\n\n\
+             The rest of the argument follows the standard route through the elliptical potential lemma."
+        )]
+    }
+
+    #[test]
+    fn an_unreadable_formula_is_one_mark_and_every_address_still_points_at_its_words() {
+        let read = read_passages(&page_with_unreadable_formulas());
+        let page = &read.pages[0];
+        for passage in &read.passages {
+            assert_eq!(chars_of(&page.text, passage.address.start, passage.address.end), passage.text);
+        }
+        // a quote after the mark lands on its own words
+        let found = read.locate("holds with probability at least 1 − δ, which is what the proof needs").unwrap();
+        assert_eq!(found.matched, Match::Exact);
+        assert_eq!(chars_of(&page.text, found.address.start, found.address.end), found.wording);
+        assert!(found.wording.starts_with("holds with probability"));
+        let after = read.locate("follows the standard route through the elliptical potential lemma").unwrap();
+        assert_eq!(chars_of(&page.text, after.address.start, after.address.end), after.wording);
+        // a quote across the mark matches the words around it, never anything standing for the formula
+        let across = read.locate("the bound holds with probability").unwrap();
+        assert!(across.wording.contains(crate::text::pdf::UNREADABLE));
+    }
+
+    #[test]
+    fn a_passage_that_is_all_unreadable_formula_is_marked_and_cannot_be_quoted() {
+        let read = read_passages(&page_with_unreadable_formulas());
+        let formula =
+            read.passages.iter().find(|passage| passage.text.starts_with(crate::text::pdf::UNREADABLE)).unwrap();
+        assert!(formula.unreadable(), "{formula:?}");
+        let prose = read.passages.iter().find(|passage| passage.text.starts_with("Conditioned")).unwrap();
+        assert!(!prose.unreadable(), "a paragraph with a formula in it is still readable");
+        // nothing garbled stands in the text to be matched: only the equation number is left of the formula
+        assert!(read.locate("pk, uq P rKs ˆ rH ´ 1s").is_none());
+        assert_eq!(letters_in(&formula.text), 2);
     }
 
     #[test]

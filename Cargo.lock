@@ -402,11 +402,13 @@ checksum = "be95d4a884358a21a199689323c29e9256b4a1b315e22f183d155422041d3a9a"
 name = "constellate"
 version = "0.2.2"
 dependencies = [
+ "adobe-cmap-parser",
  "argon2",
  "axum",
  "axum-server",
  "base64 0.22.1",
  "cap",
+ "cff-parser",
  "chrono",
  "getrandom 0.3.4",
  "half",

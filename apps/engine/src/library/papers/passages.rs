@@ -581,6 +581,26 @@ mod tests {
     }
 
     #[test]
+    fn a_paper_read_before_math_fonts_were_read_right_is_read_again_when_next_opened() {
+        // version 1 read the codes of TeX's math fonts through a text encoding ("pk, uq P rKs")
+        const BEFORE_MATH_FONTS: i64 = 1;
+        assert!(i64::from(READER) > BEFORE_MATH_FONTS);
+        let (_folder, library) = library_with(&["2502.10158"]);
+        library.keep_pdf("2502.10158", format!("%PDF {PAGE}").as_bytes()).unwrap();
+        let reader = Counting::default();
+        texts(&library, &reader, &["2502.10158"]);
+        library
+            .connection()
+            .execute("UPDATE paper_passages SET reader = ?1, content = ?2", rusqlite::params![BEFORE_MATH_FONTS, "{}"])
+            .unwrap();
+        let again = texts(&library, &reader, &["2502.10158"]);
+        assert_eq!(reader.times()[PAGE], 2, "read again, here, by this reader");
+        assert!(matches!(&again[0], PaperReading::Read(passages) if passages.reader == READER));
+        texts(&library, &reader, &["2502.10158"]);
+        assert_eq!(reader.times()[PAGE], 2, "and kept from then on");
+    }
+
+    #[test]
     fn a_paper_without_a_pdf_or_not_in_the_library_says_so_and_still_has_its_record() {
         let (_folder, library) = library_with(&["iclr-2026-4"]);
         let reader = Counting::default();

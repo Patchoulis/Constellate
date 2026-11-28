@@ -47,6 +47,7 @@
 //! What is read from a paper's PDF: this text, page by page, its passages ([`passages`]) and its reference list
 //! ([`references`]).
 
+pub mod fonts;
 pub mod passages;
 pub mod references;
 
@@ -61,6 +62,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::threads::{self, Outcome, Progress};
 
+/// Where the PDF draws something its fonts do not say the characters of (most often a formula in a math font
+/// with no usable encoding): one of these stands in the page's text for each such stretch, in place of characters
+/// that would be wrong. It is not a letter or a digit, so no quote is ever matched on it; the reader shows a note
+/// with a link to the page in its place. U+FFFC, the object replacement character, is what Unicode has for "an
+/// object that is not text stands here".
+pub const UNREADABLE: char = '\u{FFFC}';
 /// A PDF larger than this is not one paper (a scanned book, or not a PDF at all).
 pub const MAX_PDF_BYTES: usize = 80 * 1024 * 1024;
 /// The argument that makes the engine's program read one PDF from standard input and say its pages as JSON on
@@ -160,13 +167,184 @@ pub fn read_in_this_process(bytes: &[u8]) -> Result<Vec<String>, Unreadable> {
     if bytes.len() > MAX_PDF_BYTES {
         return Err(Unreadable::TooLarge(bytes.len()));
     }
-    let pages = catch_unwind(AssertUnwindSafe(|| pdf_extract::extract_text_from_mem_by_pages(bytes)))
+    let pages = catch_unwind(AssertUnwindSafe(|| read_pages(bytes)))
         .map_err(|_| Unreadable::Unhandled)?
         .map_err(|error| Unreadable::Damaged(error.to_string()))?;
     if pages.iter().all(|page| page.trim().is_empty()) {
         return Err(Unreadable::NoText);
     }
     Ok(pages)
+}
+
+/// The pages' text as `pdf-extract` reads it once the fonts say what their codes are ([`fonts::mend`]): what
+/// `pdf_extract::extract_text_from_mem_by_pages` does, with that step between loading the document and reading it.
+/// Pages are read from the first until one cannot be, as there.
+fn read_pages(bytes: &[u8]) -> Result<Vec<String>, pdf_extract::OutputError> {
+    let mut document = pdf_extract::Document::load_mem(bytes)?;
+    if document.is_encrypted() {
+        // as pdf-extract does: a PDF encrypted with an empty password is read, any other is not
+        document.decrypt("")?;
+    }
+    fonts::mend(&mut document);
+    let mut pages = Vec::new();
+    for number in 1.. {
+        let mut output = PageText::default();
+        if pdf_extract::output_doc_page(&document, &mut output, number).is_err() {
+            break;
+        }
+        pages.push(unreadable_marked(&output.text));
+    }
+    Ok(pages)
+}
+
+/// A page's text laid out as `pdf_extract::PlainTextOutput` lays it out (a space where the next glyph starts
+/// right of where the last ended, a line break where it starts lower or left, a blank line between lines further
+/// apart than one and a half times the glyph's size), but for one thing: between a glyph much smaller than the one
+/// before it or than the largest since the last blank line, and set over or under the glyph before it (the limits
+/// of a displayed sum), a blank line takes [`SCRIPT_GAP`] times that larger size. Its
+/// own small size made every such move look like a paragraph's end, and cut one displayed formula into a passage
+/// per piece ("R_K =", "K ∑", "k=1"). A heading or a footnote is not that much larger or smaller than the text
+/// around it, so it is still set apart as before.
+struct PageText {
+    text: String,
+    last_end: f64,
+    /// Where the glyph before began, and its baseline and size.
+    last_x: f64,
+    last_y: f64,
+    last_size: f64,
+    /// The largest glyph since the last blank line: what a script-size glyph is measured against.
+    line_size: f64,
+    first_char: bool,
+    /// The page's height: PDF space counts up from the bottom, the text is read from the top.
+    height: f64,
+}
+
+impl Default for PageText {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            last_end: 100_000.0,
+            last_x: 0.0,
+            last_y: 0.0,
+            last_size: 0.0,
+            line_size: 0.0,
+            first_char: false,
+            height: 0.0,
+        }
+    }
+}
+
+/// How much smaller than its neighbour a glyph is for its moves to be measured by the neighbour's size: script
+/// size is 0.7 of the text's in TeX, scriptscript 0.5; a section heading is 0.83, a footnote 0.8.
+const SCRIPT_SIZE: f64 = 0.75;
+/// How far, in the larger glyph's size, a script-size glyph may be from its neighbour before a blank line is put
+/// between them: the lower limit of a displayed sum sits below the sum's whole depth, a little over twice the
+/// size of the text (measured on papers set with Computer Modern and with mathabx).
+const SCRIPT_GAP: f64 = 2.4;
+
+impl pdf_extract::OutputDev for PageText {
+    fn begin_page(
+        &mut self,
+        _page: u32,
+        media_box: &pdf_extract::MediaBox,
+        _art_box: Option<(f64, f64, f64, f64)>,
+    ) -> Result<(), pdf_extract::OutputError> {
+        self.height = media_box.ury - media_box.lly;
+        Ok(())
+    }
+
+    fn end_page(&mut self) -> Result<(), pdf_extract::OutputError> {
+        Ok(())
+    }
+
+    fn output_character(
+        &mut self,
+        trm: &pdf_extract::Transform,
+        width: f64,
+        _spacing: f64,
+        font_size: f64,
+        char: &str,
+    ) -> Result<(), pdf_extract::OutputError> {
+        // as PlainTextOutput: the glyph's place with the page turned the right way up, and its size in text space
+        // (the side of the square with the area of the transformed size)
+        let (x, y) = (trm.m31, self.height - trm.m32);
+        let along = (font_size * trm.m11 + font_size * trm.m21, font_size * trm.m12 + font_size * trm.m22);
+        // NaN for rotated text, as there: every comparison with it is false, so it breaks no line
+        let size = (along.0 * along.1).sqrt();
+        if self.first_char {
+            // the largest glyph of the line so far (an operator whose limits are being set) or this one
+            let large = size.max(self.line_size);
+            // set over or under the glyph before it, as a limit is over or under its operator: not the start of
+            // the next line, which is far to the left
+            let stacked = (x - self.last_x).abs() <= large * 1.5;
+            let script = size.min(self.last_size) < large * SCRIPT_SIZE && stacked;
+            let gap = if script { large * SCRIPT_GAP } else { size * 1.5 };
+            let drop = (y - self.last_y).abs();
+            if drop > gap {
+                self.text.push('\n');
+                self.line_size = 0.0;
+            }
+            // moved to the left and down
+            if x < self.last_end && drop > size * 0.5 {
+                self.text.push('\n');
+            }
+            if x > self.last_end + size * 0.1 {
+                self.text.push(' ');
+            }
+        }
+        self.text.push_str(char);
+        self.first_char = false;
+        self.last_x = x;
+        self.last_y = y;
+        self.last_size = size;
+        self.line_size = self.line_size.max(size);
+        self.last_end = x + width * size;
+        Ok(())
+    }
+
+    fn begin_word(&mut self) -> Result<(), pdf_extract::OutputError> {
+        self.first_char = true;
+        Ok(())
+    }
+
+    fn end_word(&mut self) -> Result<(), pdf_extract::OutputError> {
+        Ok(())
+    }
+
+    fn end_line(&mut self) -> Result<(), pdf_extract::OutputError> {
+        Ok(())
+    }
+}
+
+/// A page's text with what its fonts could not say marked: the pieces of drawn glyphs ([`fonts::DROPPED`]) left
+/// out, and each run of glyphs no font could read ([`fonts::UNREADABLE`], with the spaces between them) made one
+/// [`UNREADABLE`]. A line break is never inside a run, so the lines stay as they were.
+fn unreadable_marked(page: &str) -> String {
+    let mut marked = String::with_capacity(page.len());
+    let mut pending_spaces = String::new();
+    let mut in_run = false;
+    for c in page.chars() {
+        match c {
+            fonts::DROPPED => {}
+            fonts::UNREADABLE => {
+                if !in_run {
+                    marked.push_str(&pending_spaces);
+                    marked.push(UNREADABLE);
+                }
+                pending_spaces.clear();
+                in_run = true;
+            }
+            ' ' | '\t' if in_run => pending_spaces.push(c),
+            _ => {
+                marked.push_str(&pending_spaces);
+                pending_spaces.clear();
+                in_run = false;
+                marked.push(c);
+            }
+        }
+    }
+    marked.push_str(&pending_spaces);
+    marked
 }
 
 /// What a child says on its standard output.
@@ -423,6 +601,33 @@ mod tests {
             pdf_text(&pdf_with(&["References", "Vaswani, A. Attention is all you need. In NeurIPS, 2017."])).unwrap();
         let lines: Vec<&str> = text.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
         assert_eq!(lines, ["References", "Vaswani, A. Attention is all you need. In NeurIPS, 2017."]);
+    }
+
+    #[test]
+    fn the_limits_of_a_displayed_sum_stay_with_it_and_headings_and_paragraphs_stay_apart() {
+        use fonts::fixtures::{Font, pdf_with_content};
+        let helvetica =
+            Font { dictionary: "/Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding", streams: &[] };
+        // a heading at 12 points, a paragraph at 10 a blank line below, then "R = sum_{k=1}^{K} r_k" set as TeX sets
+        // a display: the upper limit at 7 points above the sum, the lower limit at 7 points below it
+        let content = "BT /F0 12 Tf 72 740 Td (1. Analysis) Tj ET\n\
+                       BT /F0 10 Tf 72 722 Td (We bound the regret by a sum.) Tj ET\n\
+                       BT /F0 10 Tf 72 690 Td (R =) Tj ET\n\
+                       BT /F0 7 Tf 96 700 Td (K) Tj ET\n\
+                       BT /F0 10 Tf 94 690 Td (S) Tj ET\n\
+                       BT /F0 7 Tf 92 680 Td (k=1) Tj ET\n\
+                       BT /F0 10 Tf 108 690 Td (r) Tj ET\n\
+                       BT /F0 10 Tf 72 660 Td (which is what we wanted.) Tj ET";
+        let pages = read_in_this_process(&pdf_with_content(&[helvetica], content)).unwrap();
+        let blocks: Vec<Vec<&str>> = pages[0]
+            .split("\n\n")
+            .map(|block| block.lines().map(str::trim).filter(|line| !line.is_empty()).collect::<Vec<_>>())
+            .filter(|block| !block.is_empty())
+            .collect();
+        assert_eq!(blocks[0], ["1. Analysis"], "{pages:?}");
+        assert_eq!(blocks[1], ["We bound the regret by a sum."]);
+        assert_eq!(blocks[2].concat().replace(' ', ""), "R=KSk=1r", "the formula is one block: {blocks:?}");
+        assert_eq!(blocks[3], ["which is what we wanted."]);
     }
 
     #[test]

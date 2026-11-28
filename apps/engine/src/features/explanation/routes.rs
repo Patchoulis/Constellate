@@ -137,6 +137,12 @@ fn open(engine: &Shared, paper: &str, address: &Address) -> Result<Result<Opened
         Err(why) => return Ok(Err(why)),
     };
     let index = passage_at(&passages, address)?;
+    if passages.passages[index].unreadable() {
+        return Err(ApiError::Invalid(format!(
+            "this formula could not be read as text from the PDF: see it in the paper, page {}",
+            passages.passages[index].address.page
+        )));
+    }
     let question = Question::of(passages.passages[index].kind).ok_or_else(|| {
         ApiError::Invalid(
             "a title or a heading cannot be explained: choose a paragraph, an equation or a caption".into(),

@@ -14,6 +14,13 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - The graph no longer disappears while a side panel is dragged wider or narrower.
+- Formulas in a paper's Text tab read as the paper writes them: "(k, u) ∈ [K] × [H − 1]" and "ϵ ≤ √(1 − γ)/K", not
+  "pk, uq P rKs ˆ rH ´ 1s". The symbols of TeX's math fonts (mathabx, Computer Modern and the fonts made to their
+  layout) used to come out as accented letters. A formula whose characters the PDF does not say at all is shown as
+  a note linking to its page instead of wrong characters, and is never quoted or matched as evidence. A displayed
+  sum keeps its limits with it rather than splitting into a line each. Papers read before are read again, on this
+  computer and for free, when next opened; answers kept from the models were made from the old text, so they are
+  asked again when wanted.
 
 ## [0.2.2] - 2026-11-28
 
