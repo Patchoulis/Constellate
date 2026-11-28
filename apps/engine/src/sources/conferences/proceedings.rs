@@ -598,6 +598,34 @@ mod tests {
     }
 
     #[test]
+    fn a_publisher_is_one_of_the_listed_hosts_over_https_on_its_usual_port_with_or_without_www() {
+        let host = |address: &str| publisher_host(&Url::parse(address).unwrap());
+        for publisher in [
+            "https://arxiv.org/pdf/2601.00001",
+            "https://www.arxiv.org/pdf/2601.00001",
+            "https://proceedings.neurips.cc/paper/2025/file/a.pdf",
+            "https://proceedings.mlr.press/v267/a.pdf",
+            "https://raw.githubusercontent.com/a/b/main/c.pdf",
+            "https://openaccess.thecvf.com/content/a.pdf",
+            "https://ARXIV.org/pdf/1",
+            "https://arxiv.org:443/pdf/1",
+        ] {
+            assert!(host(publisher), "{publisher}");
+        }
+        for elsewhere in [
+            "http://arxiv.org/pdf/1",
+            "https://arxiv.org:8443/pdf/1",
+            "https://export.arxiv.org/pdf/1",
+            "https://arxiv.org.evil.example/pdf/1",
+            "https://www.www.arxiv.org/pdf/1",
+            "https://192.0.2.1/pdf/1",
+            "ftp://arxiv.org/pdf/1",
+        ] {
+            assert!(!host(elsewhere), "{elsewhere}");
+        }
+    }
+
+    #[test]
     fn a_batch_of_pdfs_is_downloaded_with_each_answer_in_its_place_and_a_bad_one_its_own() {
         let pdf = || ok("application/pdf", PDF);
         let addresses: Vec<String> = [
