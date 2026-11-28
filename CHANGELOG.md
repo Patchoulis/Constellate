@@ -20,6 +20,9 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The window has its own top bar in place of the system's title bar: the app's mark and name, Settings, and only
+  the system's minimise, maximise and close buttons at its end. The window is moved by dragging the bar.
+- The app's icon is the white mark on a dark tile everywhere: the window, the taskbar, the installer and shortcuts.
 - A paper's review scores are shown as stars out of each scale's own number of points (4 of 5 stars, 2.8 of 4) with
   the mean beside them; the range, the number of reviews and the confidence-weighted mean are said on hover.
 - A paper's rating chips show stars too: each field's name with stars out of its conference's scale, and the score on

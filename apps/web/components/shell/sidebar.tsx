@@ -1,9 +1,8 @@
 "use client";
 
 import { useEffect, useReducer, useRef, useState } from "react";
-import { Loader2, Pencil, Play, RotateCcw, Settings as SettingsIcon, Trash2 } from "lucide-react";
+import { Loader2, Pencil, Play, RotateCcw, Trash2 } from "lucide-react";
 import type { Catalog, Library, RunPage, RunRequest, RunSummary, Settings } from "@rp/contracts";
-import { Logo } from "@/components/brand";
 import { ModelChoice, chosenPrice } from "@/components/shell/model-choice";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
 import { useConfirm } from "@/components/shell/confirm";
@@ -41,7 +40,6 @@ import { ready, useAsync } from "@/lib/use-async";
 import { useResizable } from "@/lib/ui/use-resizable";
 import { runDetail, spentParts, usageLines } from "@/lib/shell/spent";
 import { count, currencyOf, money } from "@/lib/units";
-import { APP_NAME } from "@/lib/utils";
 
 const MODES = [
 	{ value: "venues", label: "Conferences" },
@@ -650,15 +648,6 @@ export function Sidebar({
 	return (
 		<aside ref={ref} style={style} className="relative flex w-(--panel-size) shrink-0 flex-col border-r bg-card">
 			<ResizeHandle {...handle} />
-			<div className="flex h-11 items-center justify-between border-b px-4">
-				<span className="flex items-center gap-2 text-sm font-semibold tracking-tight">
-					<Logo />
-					{APP_NAME}
-				</span>
-				<Button variant="ghost" size="icon" title="Settings" onClick={onOpenSettings}>
-					<SettingsIcon />
-				</Button>
-			</div>
 			<div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-4">
 				<Notices warnings={warnings ?? []} importProblems={library?.import_problems ?? []} onOpenSettings={onOpenSettings} />
 				<section>
