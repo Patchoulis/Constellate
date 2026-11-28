@@ -297,7 +297,7 @@ enum Ready {
 }
 
 fn prepared(engine: &Shared, library: &Arc<Library>, scope: &Scope, question: &str) -> Result<Ready, ApiError> {
-    let chosen = engine.chosen()?;
+    let chosen = engine.reading()?;
     Ok(match search(engine, library, scope, question)? {
         Searched::Ready { hits, coverage, texts } => {
             let prepared = Box::new(answers::prepare(&chosen, scope, question, &hits, &texts));
@@ -852,7 +852,8 @@ mod tests {
     #[tokio::test]
     async fn another_provider_is_priced_asked_in_its_own_shape_kept_and_asked_again_when_the_provider_changes() {
         use crate::api::other_providers::{
-            ACCEPTED, Chosen as Asked, MODEL, Scripted, accepting, call, choose, finished, priced_for, router, sent_to,
+            ACCEPTED, Chosen as Asked, MODEL, Scripted, accepting, call, choose_reading as choose, finished,
+            priced_for, reading_router as router, sent_to,
         };
 
         let data = data();

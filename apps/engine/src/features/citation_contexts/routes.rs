@@ -214,7 +214,7 @@ fn contexts_of_paper(
 ) -> Result<PaperCitationContexts, ApiError> {
     let library = engine.library()?;
     library.paper(paper)?.ok_or(ApiError::NotFound)?;
-    let chosen = engine.chosen()?;
+    let chosen = engine.reading()?;
     let model = chosen.model().to_owned();
     let run_ids = run.map(|run| papers_of(engine, run, None)).transpose()?;
     let citing_ids = match (run, tree_path(community)?) {
@@ -465,7 +465,7 @@ fn on_the_pages(library: &Library, cases: &[Case], mut verdicts: Vec<Verdict>) -
 
 fn summary_of(engine: &Shared, run: &str, community: Option<&str>) -> Result<KindsSummary, ApiError> {
     let library = engine.library()?;
-    let chosen = engine.chosen()?;
+    let chosen = engine.reading()?;
     let model = chosen.model().to_owned();
     let found = citations_of(engine, &library, run, community)?;
     let readings = kept_readings(&library, &chosen, &found.cases)?;
@@ -537,7 +537,7 @@ fn plan_of(
     community: Option<&str>,
     scope: Scope,
 ) -> Result<Plan, ApiError> {
-    let chosen = engine.chosen()?;
+    let chosen = engine.reading()?;
     let found = citations_of(engine, library, run, community)?;
     let cases = match scope {
         Scope::Sample => {
@@ -630,7 +630,7 @@ async fn classify_run(
     };
     one_name(&run)?;
     let started = on_the_side(move || {
-        let chosen = engine.chosen()?;
+        let chosen = engine.reading()?;
         let endpoint =
             chosen.endpoint().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
         let library = engine.library()?;
@@ -696,7 +696,7 @@ async fn redo(
     let Query(InCommunity { community }) = query?;
     let forgotten = on_the_side(move || {
         let library = engine.library()?;
-        let chosen = engine.chosen()?;
+        let chosen = engine.reading()?;
         let found = citations_of(&engine, &library, &run, community.as_deref())?;
         // the chosen model's readings of the scope's own citing sentences, and the calls the next run would make
         // for them (whose kept answers it would otherwise read them from again): not another model's, nor those
@@ -954,7 +954,8 @@ mod tests {
     #[tokio::test]
     async fn another_provider_is_priced_asked_in_its_own_shape_kept_and_asked_again_when_the_provider_changes() {
         use crate::api::other_providers::{
-            BUDGET, Chosen as Asked, MODEL, Scripted, accepting, call, choose, finished, priced_for, router, sent_to,
+            BUDGET, Chosen as Asked, MODEL, Scripted, accepting, call, choose_reading as choose, finished, priced_for,
+            reading_router as router, sent_to,
         };
 
         let data = data();

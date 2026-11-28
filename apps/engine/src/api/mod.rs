@@ -502,7 +502,7 @@ pub(crate) mod tests {
         assert!(told["warnings"][0].as_str().unwrap().contains("HTTPS is off"));
         assert_eq!(
             (told["mode"].clone(), told["server_owned"].clone()),
-            (json!("network"), json!(["embedding_model", "describe_provider"]))
+            (json!("network"), json!(["embedding_model", "describe_provider", "reading_provider"]))
         );
         let bad = Request::get("/api/status?since=many")
             .header(header::HOST, at)

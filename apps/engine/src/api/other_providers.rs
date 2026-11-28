@@ -147,6 +147,33 @@ pub(crate) fn choose(data: &Path, chosen: Chosen) {
     settings::save(&data.join("settings.json"), &changes, &choices()).unwrap_or_else(|why| panic!("{why}"));
 }
 
+/// The other of the two providers: what the naming model is while `chosen` reads papers, so that a feature that
+/// asked the naming model would be seen sending to the wrong address.
+pub(crate) fn other(chosen: Chosen) -> Chosen {
+    match chosen {
+        Chosen::OpenAi => Chosen::ThisComputer,
+        Chosen::ThisComputer => Chosen::OpenAi,
+    }
+}
+
+/// Choose `chosen` (with [`MODEL`]) as the model that reads papers in the settings of `data`, and the other
+/// provider as the naming model.
+pub(crate) fn choose_reading(data: &Path, chosen: Chosen) {
+    choose(data, other(chosen));
+    let changes: Map<String, Value> = json!({"reading_provider": chosen.provider().id(), "reading_model": MODEL})
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    settings::save(&data.join("settings.json"), &changes, &choices()).unwrap_or_else(|why| panic!("{why}"));
+}
+
+/// [`router`], with `chosen` as the model that reads papers and the other provider naming communities.
+pub(crate) fn reading_router(data: &Path, chosen: Chosen, transport: &Arc<Scripted>) -> Router {
+    let router = router(data, other(chosen), transport);
+    choose_reading(data, chosen);
+    router
+}
+
 /// The routes of an engine on `data` with `chosen` in its settings, an OpenAI key and a compatible server on this
 /// computer set up, and `transport` for every request to them.
 pub(crate) fn router(data: &Path, chosen: Chosen, transport: &Arc<Scripted>) -> Router {
@@ -241,4 +268,27 @@ pub(crate) fn accepting(cost: &Value, (usd, tokens): (&str, &str)) -> Value {
         None => accepted[tokens] = cost["most_tokens"].clone(),
     }
     accepted
+}
+
+/// Naming communities keeps the naming model when another reads papers, and the catalogue and the usage tell both.
+#[tokio::test]
+async fn naming_keeps_the_naming_model_and_both_models_are_told_apart() {
+    let data = tempfile::tempdir().unwrap_or_else(|why| panic!("{why}"));
+    let transport = Scripted::new(|_| String::new());
+    let router = reading_router(data.path(), Chosen::OpenAi, &transport);
+    let (status, naming) = call(&router, "GET", "/api/describe/estimate", None).await;
+    assert_eq!((status, naming["provider"].clone()), (StatusCode::OK, json!("compatible")), "{naming}");
+    let (_, catalogue) = call(&router, "GET", "/api/models", None).await;
+    assert_eq!(
+        (catalogue["chosen"]["provider"].clone(), catalogue["reading"]["provider"].clone()),
+        (json!("compatible"), json!("openai"))
+    );
+    assert_eq!(catalogue["reading"]["same_as_naming"], false);
+    let (_, usage) = call(&router, "GET", "/api/usage", None).await;
+    assert_eq!(
+        (usage["model"]["name"].clone(), usage["reading"]["model"]["name"].clone()),
+        (json!(MODEL), json!(MODEL))
+    );
+    assert_eq!(usage["reading"]["provider"]["name"], "OpenAI", "{usage}");
+    assert!(transport.sent().is_empty(), "nothing is sent by an estimate or a listing");
 }

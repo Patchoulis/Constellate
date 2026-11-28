@@ -137,7 +137,7 @@ fn paper(engine: &Shared, id: &str) -> Result<Paper, ApiError> {
     library.paper(id)?.ok_or(ApiError::NotFound)?;
     let kept = library.reviews(id)?;
     let page = library.review_page(id)?;
-    let chosen = engine.chosen()?;
+    let chosen = engine.reading()?;
     let text = match library.paper_texts(&[id])?.pop() {
         Some(PaperReading::Read(passages)) => {
             let plan = Plan::new(id, &chosen, &passages, kept.as_ref().map(|kept| &kept.discussion));
@@ -651,7 +651,8 @@ mod tests {
     #[tokio::test]
     async fn another_provider_is_priced_asked_in_its_own_shape_kept_and_asked_again_when_the_provider_changes() {
         use crate::api::other_providers::{
-            BUDGET, Chosen as Asked, Scripted, accepting, call, choose, finished, priced_for, router, sent_to,
+            BUDGET, Chosen as Asked, Scripted, accepting, call, choose_reading as choose, finished, priced_for,
+            reading_router as router, sent_to,
         };
 
         let data = data();
@@ -717,5 +718,52 @@ mod tests {
         .await;
         assert_eq!(refused.0, StatusCode::BAD_REQUEST, "{}", refused.1);
         assert_eq!(transport.sent().len(), sent);
+    }
+
+    #[tokio::test]
+    async fn a_reading_kept_under_the_naming_model_is_kept_for_that_model_chosen_to_read_and_estimates_follow_it() {
+        use crate::api::other_providers::{
+            BUDGET, Chosen as Asked, MODEL, Scripted, accepting, call, choices, choose_reading, finished, priced_for,
+            router, sent_to,
+        };
+
+        let data = data();
+        let answer = json!({
+            "points": [{"point": "p1", "located": "passage", "quote": "We test it on two small models only and leave larger ones to future work", "paper_says": ""}],
+            "weaknesses": []
+        })
+        .to_string();
+        let transport = Scripted::new(move |_| answer.clone());
+        // never chosen on its own: papers are read with the naming model
+        let router = router(data.path(), Asked::OpenAi, &transport);
+        let path = "/api/papers/iclr-2024-1/critique";
+        let (_, told) = call(&router, "GET", path, None).await;
+        priced_for(&told["model"]["estimate"], Asked::OpenAi);
+        let (_, started) = call(&router, "POST", path, Some(accepting(&told["model"]["estimate"], BUDGET))).await;
+        assert_eq!(finished(&router, &started["job"]).await["state"], "done");
+        sent_to(&transport.sent(), Asked::OpenAi);
+        let sent = transport.sent().len();
+        // the same model chosen to read on its own, the naming one moved elsewhere: the reading is kept, not paid again
+        choose_reading(data.path(), Asked::OpenAi);
+        let (_, told) = call(&router, "GET", path, None).await;
+        assert_eq!(told["model"]["state"], "answered", "{told}");
+        assert_eq!(transport.sent().len(), sent, "nothing asked again");
+        // an estimate seen for the model that reads papers is refused once another reads them, the naming model the same
+        let other = "/api/papers/2601.00002/critique";
+        let (_, shown) = call(&router, "GET", other, None).await;
+        priced_for(&shown["model"]["estimate"], Asked::OpenAi);
+        let to_local: serde_json::Map<String, Value> =
+            json!({"reading_provider": "compatible", "reading_model": MODEL}).as_object().cloned().unwrap();
+        crate::settings::save(&data.path().join("settings.json"), &to_local, &choices()).unwrap();
+        let (status, refused) =
+            call(&router, "POST", other, Some(accepting(&shown["model"]["estimate"], BUDGET))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        assert!(refused["error"].as_str().unwrap().contains("to read papers"), "{refused}");
+        assert_eq!(transport.sent().len(), sent, "nothing sent on an estimate seen for another model");
+        // set back to the naming model, which is the other provider's now: its estimate is the one shown
+        let back: serde_json::Map<String, Value> = json!({"reading_provider": null}).as_object().cloned().unwrap();
+        crate::settings::save(&data.path().join("settings.json"), &back, &choices()).unwrap();
+        let (_, told) = call(&router, "GET", other, None).await;
+        priced_for(&told["model"]["estimate"], Asked::ThisComputer);
     }
 }

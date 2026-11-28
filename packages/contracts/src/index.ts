@@ -27,6 +27,14 @@ export interface Settings {
 	describe_model: string;
 	/** how hard the model thinks */
 	describe_effort?: Effort;
+	/** the provider of the model that reads papers (tables, agree / disagree, questions, claims, weaknesses,
+	 *  explanations, citation kinds); null (or absent, from an older engine): that model is the naming one above.
+	 *  Sent as null, the model that reads papers is set back to the naming one */
+	reading_provider?: ProviderId | null;
+	/** one of that provider's models, or an id typed for a provider that takes one; null with reading_provider */
+	reading_model?: string | null;
+	/** how hard the model that reads papers thinks; null with reading_provider */
+	reading_effort?: Effort | null;
 }
 
 /** How hard a language model thinks before it answers (apps/engine/src/model/language). */
@@ -103,8 +111,11 @@ export interface ModelProvider {
 /** `GET /api/models` (apps/engine/src/api/models.rs). */
 export interface ModelCatalog {
 	providers: ModelProvider[];
-	/** the model the settings choose */
+	/** the model the settings choose to name communities and write overviews */
 	chosen: { provider: ProviderId; model: string; effort: Effort };
+	/** the model the settings choose to read papers, from the same providers; `same_as_naming` while it has not been
+	 *  chosen on its own (it is then `chosen`). Absent from an older engine, which reads papers with `chosen` */
+	reading?: { provider: ProviderId; model: string; effort: Effort; same_as_naming: boolean };
 }
 
 /** Tokens of a call or a batch, by how they are billed (engine usage/prices.rs `Tokens`). */
@@ -784,6 +795,9 @@ export interface Usage {
 	provider: { /** "Anthropic API", or the host requests are sent to */ name: string; /** are credentials set? */ ready: boolean };
 	/** the model that writes names and overviews (Settings) */
 	model: { name: string; label: string };
+	/** who answers the features that read papers, and with which model: the naming model's until another is
+	 *  chosen for reading (Settings.reading_provider). Absent from an older engine */
+	reading?: { provider: { name: string; ready: boolean }; model: { name: string; label: string } };
 	/** the day the ledger starts, or null if nothing has been spent */
 	since: string | null;
 	/** the currency asked for and what a US dollar is worth in it; the dollar itself when no rate could be had */

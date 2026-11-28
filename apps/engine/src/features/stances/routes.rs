@@ -508,7 +508,7 @@ fn estimate(engine: &Shared, run: &str, scope: Scope, asked: QuestionBody) -> Re
     let papers = read_run(engine, &library, run, scope)?;
     let plan = Plan::of(&papers, &question, asked.include_unrelated);
     let id = question_id(&question, scope_papers(&papers.scope));
-    let chosen = engine.chosen()?;
+    let chosen = engine.reading()?;
     let key = stances::key_question(&question, round_of(&library, run, &papers.scope, &id)?);
     let all = prepared(&library, &papers, plan.part(Part::All))?;
     let sample = &all[..all.len().min(SAMPLE)];
@@ -603,7 +603,7 @@ fn ask(
     approved: Approved,
 ) -> Result<Started, ApiError> {
     let question = checked(&asked.question)?;
-    let chosen = engine.chosen()?;
+    let chosen = engine.reading()?;
     chosen.endpoint().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
     let library = engine.library()?;
     let papers = read_run(engine, &library, run, scope)?;
@@ -738,7 +738,7 @@ fn result(engine: &Shared, run: &str, scope: &Scope, id: &str) -> Result<StanceR
     };
     let papers = read_run(engine, &library, run, scope)?;
     let plan = Plan::of(&papers, &asked.question, asked.include_unrelated);
-    let chosen = engine.chosen()?;
+    let chosen = engine.reading()?;
     let key = stances::key_question(&asked.question, asked.round);
     // an answer kept for either reading first (cheap), then the papers' texts only for those; the answer shown is
     // the one of what the paper reads as now
@@ -865,7 +865,7 @@ fn listing(engine: &Shared, run: &str, scope: Scope) -> Result<Listing, ApiError
         Scope::Marked(_) => None,
         Scope::Community(_) => {
             let sent = proposal_papers(&papers);
-            let chosen = engine.chosen()?;
+            let chosen = engine.reading()?;
             let shared = stances::proposal_text(&sent);
             let prompt = stances::proposal_prompt();
             let schema = stances::proposal_schema();
@@ -921,7 +921,7 @@ fn proposal_plan(engine: &Shared, run: &str, community: &str, fresh: bool) -> Re
     let papers = read_run(engine, &library, run, scope)?;
     let round = proposal_round(&library, run, &papers.scope, fresh)?;
     let sent = proposal_papers(&papers);
-    let chosen = engine.chosen()?;
+    let chosen = engine.reading()?;
     let shared = stances::proposal_text(&sent);
     let prompt = stances::proposal_prompt();
     let schema = stances::proposal_schema();
@@ -937,7 +937,7 @@ fn proposal_plan(engine: &Shared, run: &str, community: &str, fresh: bool) -> Re
 }
 
 fn propose(engine: &Shared, run: &str, community: &str, body: ProposeBody) -> Result<Started, ApiError> {
-    let chosen = engine.chosen()?;
+    let chosen = engine.reading()?;
     chosen.endpoint().map_err(|why| ApiError::Invalid(format!("the model cannot be asked: {why}")))?;
     let library = engine.library()?;
     let scope = Scope::Community(community.to_owned());
@@ -1252,8 +1252,8 @@ pub(super) mod tests {
     #[tokio::test]
     async fn another_provider_is_priced_asked_in_its_own_shape_kept_and_asked_again_when_the_provider_changes() {
         use crate::api::other_providers::{
-            ACCEPTED, Chosen as Asked, MODEL, Scripted, accepting, call as send, choose, finished, priced_for, router,
-            sent_to,
+            ACCEPTED, Chosen as Asked, MODEL, Scripted, accepting, call as send, choose_reading as choose, finished,
+            priced_for, reading_router as router, sent_to,
         };
 
         let (_, data) = engine(false);
