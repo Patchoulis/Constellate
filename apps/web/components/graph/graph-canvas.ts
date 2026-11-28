@@ -416,10 +416,9 @@ export class GraphCanvasRenderer {
 		}
 		this.hover(null);
 		this.stopGliding();
-		// what the communities light up into, made now rather than in the middle of the intro, where it would stall a frame
-		const level = data.levels[0];
-		this.glowLayerOf(level, data);
-		this.dotsOf(level, data, dotRadius(this.transform.k));
+		// The dots the papers settle into, made now rather than in the middle of the intro, where it would stall a frame.
+		// The glows are made by the intro's first frame, as by a graph's first frame without one, while nothing is lit.
+		this.dotsOf(data.levels[0], data, dotRadius(this.transform.k));
 		this.intro = {
 			started: performance.now(),
 			duration,
