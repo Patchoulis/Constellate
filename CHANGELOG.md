@@ -78,6 +78,26 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cause is only that the app was updated or restarted under an open window.
 - A community selected while the run's figures were still arriving (its citations being counted, its communities
   just named) could stop the whole page; the selected community is now found again in the run's data as it is.
+- The graph, the communities panel, the reader, an overview, Settings and each section of a community (reviews,
+  agree / disagree, the table of papers, citation kinds, questions) now stop on their own if something in them
+  cannot be shown: the section says so with the reason and "Try again", and the rest of the window keeps working.
+- Runs saved by an older version open: communities without paths, terms, figures or lists, a graph with links or
+  members naming papers it does not have, papers with no position. What such a run lacks is said to be "not known"
+  instead of shown as NaN or 0, and a community with no name or terms is called by its place in the tree.
+- A run whose files name a closest community that is not there, a community with no papers, or a single paper no
+  longer stops the graph; fitting the camera to one paper no longer zooms in without end, and a hidden graph keeps
+  its level of detail.
+- The list of communities sorted by a figure not counted yet (citations) shows empty bars, not full ones, and a
+  community of no papers has no share of orals and spotlights instead of NaN%.
+- What an engine of another version sends that this one does not know (a job's state, a kind of run in the list, a
+  citation's reading, how a quote was found, a kind of reference, a provider's state, an effort, an acceptance tier,
+  a currency or rate) is shown plainly instead of stopping the page. The list of runs says why when the engine's
+  answer cannot be read, instead of "Listing the runs…" for ever, and Settings opens with an older engine's settings.
+- A formula in a title or abstract that cannot be set is shown as written; a keyword such as "constructor" is
+  capitalised as a word.
+- In Ask, a search still running when a question asked before was picked no longer answers that question with the
+  first one's passages.
+- A reviewer's point whose place starts before its section's is marked from the section's start, not its end.
 - A community's details show its "Cited by" again, beside "Cites".
 - In Settings, the language model menus light up and open only when the pointer is on them, not anywhere near the
   field.
