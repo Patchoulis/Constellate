@@ -190,6 +190,9 @@ export function linkTag(link: CitationLink): { label: string; note: string } {
 				label: "Not found",
 				note: "Not in your library and no arXiv id is known for it: what was read of the reference is shown, and clicking it searches for its title in the browser.",
 			};
+		default:
+			// a kind this version does not know (a newer engine): said as found elsewhere, clicked as one not found
+			return { label: "Elsewhere", note: "Not in your library: clicking it searches for its title in the browser." };
 	}
 }
 
@@ -217,7 +220,7 @@ export function lookupsStoppedLine(stopped: CitationNetwork["lookups_stopped"]):
 	const why =
 		stopped.kind === "at_most"
 			? "the lookups of the works this paper cites stopped early: one reading looks up only so many"
-			: `the lookups of the works this paper cites stopped early: ${stopped.why}`;
+			: `the lookups of the works this paper cites stopped early${typeof stopped.why === "string" && stopped.why ? `: ${stopped.why}` : ""}`;
 	return `${why.charAt(0).toUpperCase()}${why.slice(1)}. ${left}; reading the references again continues where they stopped.`;
 }
 
@@ -246,9 +249,9 @@ export function withCounted(communities: Community[], counted: RunCitations | nu
 	const gather = (counts: CountedCommunity[]) =>
 		counts.forEach((one) => {
 			byPath.set(one.tree_path, one);
-			gather(one.children);
+			gather(one.children ?? []);
 		});
-	gather(counted.communities);
+	gather(counted.communities ?? []);
 	const figures = (one: CountedCommunity): CountedCitations => ({
 		papers_read: one.papers_read,
 		cited_by: one.cited_by,

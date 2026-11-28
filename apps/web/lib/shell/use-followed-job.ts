@@ -86,6 +86,9 @@ export function step(job: Extract<FollowedJob, { state: "running" }>, status: St
 			return { state: "done", id, about, outcome: status.outcome ?? null, progress: reached, log };
 		case "failed":
 			return { state: "failed", id, about, error: status.error ?? "The job failed.", progress: reached, log };
+		default:
+			// a state this version does not know (a newer engine): still under way until it says done or failed
+			return { ...job, log, unanswered: null };
 	}
 }
 

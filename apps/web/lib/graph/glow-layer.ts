@@ -47,7 +47,8 @@ export function glowLayerGeometry(
 	// whole pixels, so the layer is drawn back at exactly the scale it was drawn at
 	const width = Math.ceil((maxX - minX + 2 * glow) * scale);
 	const height = Math.ceil((maxY - minY + 2 * glow) * scale);
-	if (width * height > most) return null;
+	// no finite place among them (NaN positions): a canvas of no size could not be drawn, and drawing it would throw
+	if (!(width > 0 && height > 0) || width * height > most) return null;
 	const box = { minX: minX - glow, minY: minY - glow, maxX: minX - glow + width / scale, maxY: minY - glow + height / scale };
 	return { box, scale, width, height };
 }

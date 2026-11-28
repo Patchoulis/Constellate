@@ -31,5 +31,8 @@ const ACRONYMS: Record<string, string> = {
 
 /** "time series" -> "Time Series", "llms" -> "LLMs", "vision-language" -> "Vision-Language". */
 export function titleCase(text: string): string {
-	return text.replace(/[A-Za-z]+/g, (word) => ACRONYMS[word.toLowerCase()] ?? word[0].toUpperCase() + word.slice(1));
+	// own keys only: a term such as "constructor" is a word, not the object's own function
+	return text.replace(/[A-Za-z]+/g, (word) =>
+		Object.hasOwn(ACRONYMS, word.toLowerCase()) ? ACRONYMS[word.toLowerCase()] : word[0].toUpperCase() + word.slice(1),
+	);
 }

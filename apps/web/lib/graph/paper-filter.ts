@@ -50,5 +50,11 @@ export function kindNotes(nodes: GraphNode[]): Record<PaperKind, string> {
 export function shownPapers(nodes: GraphNode[], hidden: ReadonlySet<PaperKind>, members: number[] | null): Set<number> | null {
 	if (!members && hidden.size === 0) return null;
 	const candidates = members ?? nodes.map((_, index) => index);
-	return new Set(candidates.filter((index) => kindsOf(nodes[index]).every((kind) => !hidden.has(kind))));
+	// a member the graph does not have (a community file written halfway) is not shown, rather than read as a paper
+	return new Set(
+		candidates.filter((index) => {
+			const node = nodes[index];
+			return node !== undefined && kindsOf(node).every((kind) => !hidden.has(kind));
+		}),
+	);
 }

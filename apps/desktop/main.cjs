@@ -96,14 +96,16 @@ app.on("select-client-certificate", (event, _contents, _url, _certificates, call
 });
 
 /** The window's top bar is the page's own: its height in pixels (apps/web/lib/shell/title-bar.ts BAR_HEIGHT) and
- *  the colours of the page's bar, for the system's window buttons laid over it. */
+ *  the colours of the page's bar, for the system's window buttons laid over it. The buttons are one pixel
+ *  shorter than the bar (BAR_LINE), so that the line under the bar runs under them too, to the window's edge. */
 const BAR_HEIGHT = 36;
+const BAR_LINE = 1;
 const BAR_COLOURS = { color: "#1c1c1c", symbolColor: "#e5e5e5" };
 
 /** How a window of this system hides its own title bar and what it keeps of it. */
 function windowChrome(platform) {
 	if (platform === "darwin") return { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 14, y: 11 } };
-	return { titleBarStyle: "hidden", titleBarOverlay: { ...BAR_COLOURS, height: BAR_HEIGHT } };
+	return { titleBarStyle: "hidden", titleBarOverlay: { ...BAR_COLOURS, height: BAR_HEIGHT - BAR_LINE } };
 }
 
 const ICON_FILE = path.join(__dirname, "icon.png");

@@ -42,10 +42,11 @@ export function placeName(address: PassageAddress): string {
 	return address.section ? `${pages(address)}, ${address.section}` : pages(address);
 }
 
-function matchNote(matched: QuoteMatch): string {
-	return matched.kind === "exact"
-		? "Found word for word in the paper."
-		: `Found in the paper with ${count(matched.differences, "letter")} different from the model's quote; shown as the paper words it.`;
+function matchNote(matched: QuoteMatch | undefined): string {
+	if (matched?.kind === "exact") return "Found word for word in the paper.";
+	if (matched?.kind === "close" && typeof matched.differences === "number")
+		return `Found in the paper with ${count(matched.differences, "letter")} different from the model's quote; shown as the paper words it.`;
+	return "Found in the paper; shown as the paper words it."; // a match this version does not know (a newer engine)
 }
 
 /**
@@ -58,6 +59,7 @@ export function evidenceTitle(evidence: Evidence, label: string): string {
 	if (established.kind === "verified") {
 		return `${quote}\n${label}, ${placeName(established.address)}. ${matchNote(established.matched)} Click to open the paper there.`;
 	}
+	if (established.kind !== "abstract") return `${quote}\n${label}. Click to open the paper.`; // a kind this version does not know
 	return (
 		`${quote}\n${label}, ${established.field}. ${matchNote(established.matched)} ` +
 		"Only the paper's title and abstract were checked: its PDF had not been read, so no page is known. Click to open the paper."

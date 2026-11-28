@@ -95,7 +95,7 @@ function Statement({ statement }: { statement: ExplanationStatement }) {
 			<span title={MODEL_NOTE}>{said}</span>{" "}
 			<span className="font-ui text-xs text-muted-foreground">
 				(
-				{statement.evidence.map((piece, index) => (
+				{(statement.evidence ?? []).map((piece, index) => (
 					<span key={index}>
 						{index > 0 && "; "}
 						<Place evidence={piece} />
