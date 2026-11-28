@@ -30,7 +30,7 @@ hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 # It only verifies signatures with public keys, so RUSTSEC-2023-0071 (rsa) and RUSTSEC-2026-0387 (crypto-bigint),
 # timing leaks of private keys and secret integers, do not reach it (deny.toml); 12.x, a new API, brings the fixed
 # rsa 0.10 and crypto-bigint 0.7.
-jsonwebtoken = { version = "10.3", default-features = false, features = ["rust_crypto"] }
+jsonwebtoken = { version = "11.1", default-features = false, features = ["rust_crypto"] }
 # matrix products through matrixmultiply, on one thread each: the large ones are cut into rows on the engine's
 # own threads (src/threads.rs). matrixmultiply's own threading (at most 4, its own pool) would otherwise run under
 # those threads and multiply them.
