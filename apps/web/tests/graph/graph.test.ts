@@ -279,6 +279,8 @@ test("papers are shown or dimmed by kind, within the focused community", () => {
 	assert.deepEqual(countKinds(nodes), { oral: 1, spotlight: 1, poster: 1, none: 1, ai: 2, human: 2 });
 	assert.equal(shownPapers(nodes, new Set(), null), null); // everything: nothing to dim
 	assert.deepEqual([...shownPapers(nodes, new Set(["poster", "none"] as const), null)!], [0, 2]);
+	// a community naming a paper the graph does not have: that member is not shown, and nothing throws
+	assert.deepEqual([...shownPapers(nodes, new Set(), [0, nodes.length + 4])!], [0]);
 	assert.deepEqual([...shownPapers(nodes, new Set(["ai"] as const), null)!], [0, 2]);
 	assert.deepEqual([...shownPapers(nodes, new Set(), [2, 3])!], [2, 3]);
 	assert.deepEqual([...shownPapers(nodes, new Set(["human"] as const), [2, 3])!], [3]);
