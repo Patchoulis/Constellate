@@ -57,7 +57,7 @@ import {
 } from "@/lib/graph/intro";
 import { MOST_LABELS, type MarkedPlace } from "@/lib/graph/labels";
 import { screenDotRadius } from "@/lib/graph/dot-size";
-import { STAR_COLOUR } from "@/lib/graph/sky";
+import { FIELD_STARS, FIELD_TILE, STAR_COLOUR, fieldOffset, fieldStars, skyStarCount, type StarField } from "@/lib/graph/sky";
 import type { Box } from "@/lib/graph/layout";
 import { LASSO_MIN, lassoed, reach, type Place } from "@/lib/graph/lasso";
 import { nearestPaper } from "@/lib/graph/pick";
@@ -152,8 +152,8 @@ const STAR_WORD = (255 << 16) | (226 << 8) | 214;
 const STAR_SIDE = 1.6;
 /** The stars twinkle in this many groups, each in its own time, so that a frame changes the opacity only that often. */
 const TWINKLE_GROUPS = 4;
-/** Faint dots behind the papers while the sky comes up, in screen pixels. */
-const DUST = 220;
+/** The star field behind the graph (lib/graph/sky.ts), its brightest stars first: every level draws the first of them. */
+const FIELD = fieldStars(FIELD_STARS.many);
 
 /** The shown marked papers as drawn (GraphCanvasRenderer.marksOf). */
 interface MarkDrawing {
@@ -171,8 +171,6 @@ interface Intro {
 	order: Uint32Array;
 	groupEnds: Uint32Array;
 	constellations: Constellations;
-	/** the dust's places, as shares of the canvas: [u0, v0, u1, v1, ...] */
-	dust: Float32Array;
 	/** the pixels the gathering stars are written into (starPixelsOf) */
 	pixels: { canvas: HTMLCanvasElement; context: CanvasRenderingContext2D; image: ImageData; words: Uint32Array } | null;
 }
@@ -256,6 +254,11 @@ export class GraphCanvasRenderer {
 	/** told when the device pixel ratio stops being `dpr` (the window moved to another screen, the page was
 	 *  zoomed), which changes no CSS size and so tells the ResizeObserver nothing */
 	private dprQuery: MediaQueryList | null = null;
+	/** how many stars are drawn behind the graph, and one tile of them, drawn once (starTileOf) */
+	private stars: StarField = "few";
+	private starTile: { count: number; dpr: number; canvas: HTMLCanvasElement; pattern: CanvasPattern } | null = null;
+	/** the camera when the whole graph was first fitted: the star field moves with the pan from there */
+	private origin: { x: number; y: number } | null = null;
 	/** the camera moved since the hovered and marked papers' places were last told (draw tells them) */
 	private cameraMoved = false;
 	/** the intro, while it plays */
@@ -342,6 +345,7 @@ export class GraphCanvasRenderer {
 		this.glowLayers = [];
 		this.dotPaths = null;
 		this.markPaths = null;
+		this.origin = null;
 		this.linked = (data?.points ?? []).map(() => []);
 		// closest first, so that where only some of a paper's linked papers can be named, those are the closest
 		for (const [a, b] of [...(data?.links ?? [])].sort((one, other) => other[2] - one[2])) {
@@ -410,11 +414,6 @@ export class GraphCanvasRenderer {
 			const group = groupOf(index);
 			order[(group ? groupEnds[group - 1] : 0) + filled[group]++] = index;
 		}
-		const dust = new Float32Array(DUST * 2);
-		for (let index = 0; index < DUST; index++) {
-			dust[index * 2] = unitHash(index, 31);
-			dust[index * 2 + 1] = unitHash(index, 32);
-		}
 		this.hover(null);
 		this.stopGliding();
 		// what the communities light up into, made now rather than in the middle of the intro, where it would stall a frame
@@ -428,7 +427,6 @@ export class GraphCanvasRenderer {
 			order,
 			groupEnds,
 			constellations: packConstellations(lines.map((line) => line.filter((index) => data.points[index]))),
-			dust,
 			pixels: null,
 		};
 		cancelAnimationFrame(this.frame);
@@ -535,7 +533,11 @@ export class GraphCanvasRenderer {
 			const k = this.zoomToFit(box, size);
 			return { x: size.width / 2 - (k * (box.minX + box.maxX)) / 2, y: size.height / 2 - (k * (box.minY + box.maxY)) / 2, k };
 		};
-		this.glideTo(aim, atOnce, () => (this.fitted = { box, transform: this.transform }));
+		this.glideTo(aim, atOnce, () => {
+			this.fitted = { box, transform: this.transform };
+			// the star field is where the loading sky had it while the camera is where the graph first came up
+			if (whole && !this.origin) this.origin = { x: this.transform.x, y: this.transform.y };
+		});
 	}
 
 	/** The zoom at which a world rectangle just fits the canvas (or a picture of `size`), with a little margin. */
@@ -899,18 +901,49 @@ export class GraphCanvasRenderer {
 		return layer;
 	}
 
-	/** The intro's dust: faint stars behind everything, in screen space. */
-	private drawDust(intro: Intro, frame: IntroFrame, now: number) {
-		const { ctx } = this;
-		const { dust } = intro;
-		const width = this.canvas.clientWidth;
-		const height = this.canvas.clientHeight;
-		ctx.fillStyle = STAR;
-		for (let group = 0; group < 3; group++) {
-			ctx.globalAlpha = frame.dust * (0.22 + 0.1 * Math.sin(now / 700 + group * 2.1));
-			for (let index = group; index < DUST; index += 3) ctx.fillRect(dust[index * 2] * width, dust[index * 2 + 1] * height, 1, 1);
+	/** One tile of the star field with its first `count` stars, drawn once for this device pixel ratio and kept. */
+	private starTileOf(count: number): CanvasPattern | null {
+		const { dpr } = this;
+		if (this.starTile?.count === count && this.starTile.dpr === dpr) return this.starTile.pattern;
+		const side = Math.round(FIELD_TILE * dpr);
+		const canvas = this.starTile?.canvas ?? document.createElement("canvas");
+		canvas.width = canvas.height = side;
+		const tile = canvas.getContext("2d");
+		if (!tile) return null;
+		tile.fillStyle = STAR;
+		for (let index = 0; index < count; index++) {
+			const size = FIELD.size[index] * dpr;
+			tile.globalAlpha = FIELD.bright[index];
+			tile.fillRect(FIELD.place[index * 2] * side - size / 2, FIELD.place[index * 2 + 1] * side - size / 2, size, size);
 		}
+		const pattern = this.ctx.createPattern(canvas, "repeat");
+		if (!pattern) return null;
+		this.starTile = { count, dpr, canvas, pattern };
+		return pattern;
+	}
+
+	/** The star field behind everything (lib/graph/sky.ts), `count` stars a tile, as strong as `alpha`: one repeated
+	 *  image, in screen space, moved a small share of the camera's pan since the graph was first shown. */
+	private drawStarField(count: number, alpha: number) {
+		if (count <= 0 || alpha <= 0) return;
+		const pattern = this.starTileOf(count);
+		if (!pattern) return;
+		const { ctx, dpr } = this;
+		const { x, y } = this.transform;
+		const offset = fieldOffset(x - (this.origin?.x ?? x), y - (this.origin?.y ?? y));
+		pattern.setTransform(new DOMMatrix([1, 0, 0, 1, offset.x * dpr, offset.y * dpr]));
+		ctx.setTransform(1, 0, 0, 1, 0, 0);
+		ctx.globalAlpha = alpha;
+		ctx.fillStyle = pattern;
+		ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 		ctx.globalAlpha = 1;
+	}
+
+	/** How many stars behind the graph: none, a few or many (Settings, "Background stars"). */
+	setStars(stars: StarField) {
+		if (stars === this.stars) return;
+		this.stars = stars;
+		this.markDirty();
 	}
 
 	/** The pixels the gathering stars are written into: as large as the canvas, made once and kept while it keeps
@@ -1042,8 +1075,11 @@ export class GraphCanvasRenderer {
 		const lit = frame ? frame.light : 1;
 		const named = frame ? frame.names : 1;
 
-		// 0. The intro's dust, behind everything.
-		if (frame && intro && frame.dust > 0) this.drawDust(intro, frame, now);
+		// 0. The star field, behind everything (drawn first, the glows add over it). In the intro it comes up with the
+		// stars and stays as chosen in Settings; with none chosen, it is the intro's dust and goes as the communities light.
+		if (frame) this.drawStarField(skyStarCount(this.stars), this.stars === "off" ? frame.dust : frame.stars);
+		else this.drawStarField(FIELD_STARS[this.stars], 1);
+		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
 		// THE camera: one transform, then everything is world coordinates.
 		ctx.setTransform(dpr * k, 0, 0, dpr * k, dpr * tx, dpr * ty);

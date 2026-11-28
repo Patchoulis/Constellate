@@ -14,7 +14,8 @@ import {
 	type Prefs,
 } from "@/lib/ui/prefs";
 import { INTRO_WHENS } from "@/lib/graph/intro";
-import { INTRO_CHOICES } from "@/components/shell/settings-dialog";
+import { INTRO_CHOICES, STAR_CHOICES } from "@/components/shell/settings-dialog";
+import { STAR_FIELDS } from "@/lib/graph/sky";
 
 const keys = (held: Partial<Record<"ctrlKey" | "metaKey" | "shiftKey" | "altKey", boolean>>) => ({
 	ctrlKey: false,
@@ -48,7 +49,7 @@ test("a key is named as it is written on the keyboard in front of the person", (
 });
 
 test("the choices come back from storage as they were written", () => {
-	const chosen: Prefs = { selectKey: "alt", marksShown: false, showMarksOnMark: false, intro: "never" };
+	const chosen: Prefs = { selectKey: "alt", marksShown: false, showMarksOnMark: false, intro: "never", stars: "many" };
 	assert.deepEqual(parsePrefs(serialisePrefs(chosen)), chosen);
 	assert.deepEqual(parsePrefs(serialisePrefs(INITIAL_PREFS)), INITIAL_PREFS);
 });
@@ -88,7 +89,7 @@ test("the constellation intro plays whenever a run is opened unless chosen other
 	}
 	// choices stored before the intro existed keep what they were, and the intro gets its initial choice
 	const older = JSON.stringify({ version: 1, prefs: { selectKey: "alt", marksShown: false, showMarksOnMark: true } });
-	assert.deepEqual(parsePrefs(older), { selectKey: "alt", marksShown: false, showMarksOnMark: true, intro: "opened" });
+	assert.deepEqual(parsePrefs(older), { selectKey: "alt", marksShown: false, showMarksOnMark: true, intro: "opened", stars: "few" });
 	assert.equal(parsePrefs(null).intro, "opened", "nothing stored");
 });
 
@@ -102,6 +103,23 @@ test("Settings offers every choice of the intro once, in words, the initial one 
 		["Whenever a run is opened", "When a run is made", "Never"],
 	);
 	assert.equal(INTRO_CHOICES[0].value, INITIAL_PREFS.intro);
+});
+
+test("background stars start at a few, every choice is kept, and anything else reads as a few", () => {
+	assert.equal(INITIAL_PREFS.stars, "few");
+	for (const stars of STAR_FIELDS) assert.equal(parsePrefs(serialisePrefs({ ...INITIAL_PREFS, stars })).stars, stars);
+	for (const stars of ["lots", "", "Many", 2, null, false, ["many"]]) {
+		const stored = JSON.stringify({ version: 1, prefs: { intro: "never", stars } });
+		assert.deepEqual(parsePrefs(stored), { ...INITIAL_PREFS, intro: "never" }, JSON.stringify(stars));
+	}
+	assert.deepEqual(
+		STAR_CHOICES.map((choice) => [choice.value, choice.label]),
+		[
+			["off", "Off"],
+			["few", "A few"],
+			["many", "Many"],
+		],
+	);
 });
 
 test("a change of the choices is laid over the ones remembered and remembered with them, even after storage refused one", () => {

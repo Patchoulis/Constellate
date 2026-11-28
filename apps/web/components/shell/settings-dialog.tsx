@@ -14,6 +14,7 @@ import { Choice, GroupedPicker } from "@/components/ui/picker";
 import { splitByOwner } from "@/lib/net/engine";
 import { SELECT_KEYS, selectKeyName, setPrefs, usePrefs, useSelectKeyName } from "@/lib/ui/prefs";
 import type { IntroWhen } from "@/lib/graph/intro";
+import type { StarField } from "@/lib/graph/sky";
 import { prefersLessMotion } from "@/lib/graph/glide";
 import { cn } from "@/lib/utils";
 
@@ -34,6 +35,13 @@ export const INTRO_CHOICES: readonly { value: IntroWhen; label: string }[] = [
 	{ value: "opened", label: "Whenever a run is opened" },
 	{ value: "made", label: "When a run is made" },
 	{ value: "never", label: "Never" },
+];
+
+/** How many stars are drawn behind the graph, as the choice is offered. */
+export const STAR_CHOICES: readonly { value: StarField; label: string }[] = [
+	{ value: "off", label: "Off" },
+	{ value: "few", label: "A few" },
+	{ value: "many", label: "Many" },
 ];
 
 /**
@@ -87,6 +95,15 @@ function GraphChoices() {
 					)}
 				</span>
 				<Segmented options={INTRO_CHOICES} value={prefs.intro} onChange={(intro) => setPrefs({ intro })} />
+			</div>
+			<div className="flex items-start justify-between gap-4 py-1.5">
+				<span className="flex flex-col gap-0.5">
+					<span className="text-sm text-foreground">Background stars</span>
+					<span className="text-xs text-muted-foreground">
+						Tiny faint stars behind the graph, the same as the sky shown while a run loads. They move only a little as the graph is moved.
+					</span>
+				</span>
+				<Segmented className="shrink-0" options={STAR_CHOICES} value={prefs.stars} onChange={(stars) => setPrefs({ stars })} />
 			</div>
 		</section>
 	);

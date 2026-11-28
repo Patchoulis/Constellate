@@ -2,7 +2,23 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { RunStep } from "@rp/contracts";
-import { FIGURES, LOOP_MS, MOST_STARS, figureFrame, litStars, runShare, skyFigure, skyStars, starCount, twinkle } from "@/lib/graph/sky";
+import {
+	FIELD_STARS,
+	FIELD_TILE,
+	FIGURES,
+	LOOP_MS,
+	PARALLAX,
+	STAR_FIELDS,
+	fieldOffset,
+	fieldStars,
+	figureFrame,
+	runShare,
+	skyFigure,
+	skyStarCount,
+	starLit,
+	tilesCovering,
+	twinkle,
+} from "@/lib/graph/sky";
 
 const step = (number: number, count: RunStep["count"] = null): RunStep => ({
 	step: "embed",
@@ -48,23 +64,78 @@ test("with less motion the sky is still: one whole constellation", () => {
 		assert.deepEqual(skyFigure(ms, true), { figure: 0, whole: FIGURES[0].lines.length, part: 0, alpha: 1 });
 });
 
-test("the stars are always in the same places, a few hundred at most, and a larger sky only adds stars", () => {
-	const stars = skyStars();
-	assert.deepEqual(skyStars().place, stars.place);
-	assert.equal(stars.bright.length, MOST_STARS);
-	assert.ok(MOST_STARS <= 400);
-	for (let index = 0; index < MOST_STARS; index++) {
-		assert.ok(stars.place[index * 2] >= 0 && stars.place[index * 2] < 1);
-		assert.ok(stars.bright[index] >= 0.25 && stars.bright[index] <= 0.85);
+test("the field's stars are tiny, faint and always in the same places, and more stars only add stars", () => {
+	const many = fieldStars(FIELD_STARS.many);
+	assert.deepEqual(fieldStars(FIELD_STARS.many).place, many.place);
+	assert.deepEqual(fieldStars(FIELD_STARS.few).place, many.place.slice(0, FIELD_STARS.few * 2), "a few are the first of many");
+	for (let index = 0; index < FIELD_STARS.many; index++) {
+		assert.ok(many.place[index * 2] >= 0 && many.place[index * 2] < 1);
+		assert.ok(many.size[index] >= 0.5 && many.size[index] <= 1.4, `star ${index} is ${many.size[index]} px`);
+		assert.ok(many.bright[index] > 0 && many.bright[index] <= 0.7);
 	}
-	assert.equal(starCount(0, 500), 0);
-	assert.ok(starCount(300, 200) < starCount(1600, 900));
-	assert.equal(starCount(10_000, 10_000), MOST_STARS);
-	assert.ok(starCount(40, 40) >= 40, "even a small box has a sky");
+	const bright = [...many.bright].filter((value) => value >= 0.6).length;
+	assert.ok(bright > 0 && bright < FIELD_STARS.many / 5, `${bright} brighter stars`);
 	// twinkling stays near the star's own brightness
 	for (const ms of [0, 1000, 3333]) {
-		const bright = twinkle(0.6, 0.3, ms);
-		assert.ok(bright <= 0.6 + 1e-9 && bright >= 0.6 * 0.64 - 1e-9);
+		const shine = twinkle(0.6, 0.3, ms);
+		assert.ok(shine <= 0.6 + 1e-9 && shine >= 0.6 * 0.64 - 1e-9);
+	}
+});
+
+test("the choices give no stars, a few or many a tile, and the loading sky and the intro always have some", () => {
+	assert.deepEqual([...STAR_FIELDS], ["off", "few", "many"]);
+	assert.equal(FIELD_STARS.off, 0);
+	assert.ok(0 < FIELD_STARS.few && FIELD_STARS.few < FIELD_STARS.many);
+	// a few hundred at most on a large screen
+	const tiles = tilesCovering(1920, 1080, { x: 0, y: 0 }).length;
+	assert.ok(tiles * FIELD_STARS.many <= 1200, `${tiles * FIELD_STARS.many} stars on a 1920 x 1080 sky`);
+	assert.equal(skyStarCount("off"), FIELD_STARS.few);
+	assert.equal(skyStarCount("few"), FIELD_STARS.few);
+	assert.equal(skyStarCount("many"), FIELD_STARS.many);
+});
+
+test("the field's tiles cover any box from any offset, without a gap and without a tile that shows nothing", () => {
+	for (const [width, height] of [
+		[1, 1],
+		[300, 200],
+		[1600, 900],
+		[3840, 2160],
+	])
+		for (const offset of [
+			{ x: 0, y: 0 },
+			{ x: 100, y: 400 },
+			{ x: FIELD_TILE - 1, y: 1 },
+		]) {
+			const tiles = tilesCovering(width, height, offset);
+			for (const [x, y] of [
+				[0, 0],
+				[width - 0.5, 0],
+				[0, height - 0.5],
+				[width - 0.5, height - 0.5],
+				[width / 2, height / 2],
+			])
+				assert.ok(
+					tiles.some((tile) => x >= tile.x && x < tile.x + FIELD_TILE && y >= tile.y && y < tile.y + FIELD_TILE),
+					`${x},${y} of ${width}x${height} from ${JSON.stringify(offset)}`,
+				);
+			for (const tile of tiles) assert.ok(tile.x < width && tile.y < height && tile.x + FIELD_TILE > 0 && tile.y + FIELD_TILE > 0);
+			// tiles line up with the offset
+			for (const tile of tiles) assert.equal((((tile.x - offset.x) % FIELD_TILE) + FIELD_TILE) % FIELD_TILE, 0);
+		}
+});
+
+test("the field moves a small share of the camera's pan, the same way, and not at all before the camera has moved", () => {
+	assert.ok(PARALLAX >= 0.03 && PARALLAX <= 0.06);
+	assert.deepEqual(fieldOffset(0, 0), { x: 0, y: 0 }, "where the loading sky had it");
+	assert.deepEqual(fieldOffset(100, 0), { x: 100 * PARALLAX, y: 0 });
+	const back = fieldOffset(-100, -50);
+	assert.ok(
+		Math.abs(back.x - (FIELD_TILE - 100 * PARALLAX)) < 1e-9 && Math.abs(back.y - (FIELD_TILE - 50 * PARALLAX)) < 1e-9,
+		"wraps round",
+	);
+	for (const pan of [-1e6, -12345, 7, 1e6]) {
+		const { x, y } = fieldOffset(pan, pan);
+		assert.ok(x >= 0 && x < FIELD_TILE && y >= 0 && y < FIELD_TILE);
 	}
 });
 
@@ -93,11 +164,12 @@ test("how far a run has got is the steps done and the counted part of the step u
 	assert.equal(runShare(step(3, { done: 500, of: 100, unit: "papers" })), 0.3, "never past the step");
 });
 
-test("the share of stars lit is the share of the run done, and every star when there is no number", () => {
-	assert.equal(litStars(200, null), 200);
-	assert.equal(litStars(200, 0), 0);
-	assert.equal(litStars(200, 0.25), 50);
-	assert.equal(litStars(200, 1), 200);
-	assert.equal(litStars(200, 1.5), 200);
-	assert.equal(litStars(200, -1), 0);
+test("about the share of stars lit is the share of the run done, every star when there is no number", () => {
+	const lit = (share: number | null) => Array.from({ length: 1000 }, (_, index) => starLit(index, share)).filter(Boolean).length;
+	assert.equal(lit(null), 1000);
+	assert.equal(lit(0), 0);
+	assert.equal(lit(1), 1000);
+	assert.ok(Math.abs(lit(0.25) - 250) < 40, `${lit(0.25)} of 1,000 at a quarter`);
+	// a star lit stays lit as the run goes on
+	for (let index = 0; index < 1000; index++) if (starLit(index, 0.3)) assert.ok(starLit(index, 0.6));
 });

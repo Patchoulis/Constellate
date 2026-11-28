@@ -227,6 +227,7 @@ export function Workspace({
 						selectKey={prefs.selectKey}
 						goTo={goTo}
 						intro={intro}
+						stars={prefs.stars}
 						onPickPaper={openPaper}
 						onMarkPaper={marks.toggle}
 						onMarkPapers={marks.addMany}

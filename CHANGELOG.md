@@ -17,6 +17,9 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   itself again and again, and the dots after "Loading the run" and "Working" come one by one. While a run is made,
   the share of its stars that are lit is how far the run has got: the steps done, and the counted part of the step
   under way. With less motion the sky stands still.
+- Tiny faint stars behind the graph, the same as the loading sky's, so loading, the intro and the graph are one sky.
+  They move only a little as the graph is moved and keep their size when it is zoomed. Settings, under "The graph",
+  choose how many: off, a few (the default) or many.
 
 ### Changed
 

@@ -7,20 +7,38 @@
  */
 import { useEffect, useRef } from "react";
 import { prefersLessMotion } from "@/lib/graph/glide";
-import { FIGURES, STAR_COLOUR as STAR, figureFrame, litStars, skyFigure, skyStars, starCount, twinkle } from "@/lib/graph/sky";
+import {
+	FIELD_STARS,
+	FIELD_TILE,
+	FIGURES,
+	STAR_COLOUR as STAR,
+	figureFrame,
+	fieldStars,
+	skyFigure,
+	skyStarCount,
+	starLit,
+	tilesCovering,
+	twinkle,
+} from "@/lib/graph/sky";
+import { usePrefs } from "@/lib/ui/prefs";
 import { cn } from "@/lib/utils";
 
 const LINE = "rgba(255, 255, 255, 0.55)";
 /** How bright an unlit star is, as a share of its brightness, while a run being made has not reached it. */
 const UNLIT = 0.18;
+/** The sky is the field behind the graph, a little brighter while it is all there is to see. */
+const BRIGHTER = 1.5;
 
-const STARS = skyStars();
+const FIELD = fieldStars(FIELD_STARS.many);
 
 export function SkyLoading({ share = null, className }: { share?: number | null; className?: string }) {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
-	// the share changes while the run is made; the loop reads it without starting again
+	// the share changes while the run is made, and the stars with Settings; the loop reads them without starting again
 	const shareRef = useRef(share);
 	shareRef.current = share;
+	const { stars } = usePrefs();
+	const fieldRef = useRef(stars);
+	fieldRef.current = stars;
 
 	useEffect(() => {
 		const canvas = canvasRef.current;
@@ -37,15 +55,19 @@ export function SkyLoading({ share = null, className }: { share?: number | null;
 			const ms = still ? 0 : performance.now();
 			context.setTransform(dpr, 0, 0, dpr, 0, 0);
 			context.clearRect(0, 0, width, height);
-			const stars = starCount(width, height);
-			const lit = litStars(stars, shareRef.current);
+			// the field behind the graph, where the graph will have it when it is first shown (no pan yet)
+			const count = skyStarCount(fieldRef.current);
 			context.fillStyle = STAR;
-			for (let index = 0; index < stars; index++) {
-				const bright = still ? STARS.bright[index] : twinkle(STARS.bright[index], STARS.phase[index], ms);
-				context.globalAlpha = index < lit ? bright : bright * UNLIT;
-				const size = STARS.size[index];
-				context.fillRect(Math.round(STARS.place[index * 2] * width), Math.round(STARS.place[index * 2 + 1] * height), size, size);
-			}
+			for (const tile of tilesCovering(width, height, { x: 0, y: 0 }))
+				for (let index = 0; index < count; index++) {
+					const shine = Math.min(1, FIELD.bright[index] * BRIGHTER);
+					const bright = still ? shine : twinkle(shine, FIELD.phase[index], ms);
+					context.globalAlpha = starLit(index, shareRef.current) ? bright : bright * UNLIT;
+					const size = FIELD.size[index];
+					const x = tile.x + FIELD.place[index * 2] * FIELD_TILE;
+					const y = tile.y + FIELD.place[index * 2 + 1] * FIELD_TILE;
+					context.fillRect(x - size / 2, y - size / 2, size, size);
+				}
 			const { figure, whole, part, alpha } = skyFigure(ms, still);
 			if (alpha > 0) {
 				const { stars: points, lines } = FIGURES[figure];

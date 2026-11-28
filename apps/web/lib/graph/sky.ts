@@ -21,12 +21,6 @@ const DRAW = 0.5;
 const HOLD = 0.72;
 const FADE = 0.9;
 
-/** At most this many stars, however large the sky: the sky costs next to nothing to draw. */
-export const MOST_STARS = 320;
-const FEWEST_STARS = 40;
-/** CSS pixels of sky per star. */
-const SKY_PER_STAR = 3200;
-
 /** A figure: its stars, in a square from -1 to 1 (y down), and its lines as pairs of stars, in the order they are drawn. */
 export interface Figure {
 	stars: readonly (readonly [number, number])[];
@@ -136,39 +130,69 @@ export const FIGURES: readonly Figure[] = [
 	},
 ];
 
-/** How many stars a sky of this size has. */
-export function starCount(width: number, height: number): number {
-	if (!(width > 0 && height > 0)) return 0;
-	return Math.min(MOST_STARS, Math.max(FEWEST_STARS, Math.round((width * height) / SKY_PER_STAR)));
-}
+/**
+ * The star field: tiny stars on one square tile, repeated in every direction, in screen space (CSS pixels). It is
+ * the loading sky's stars, the intro's dust and the stars behind the graph (components/graph/graph-canvas.ts), so
+ * one hands over to the next without a star moving. Behind the graph it moves a little with the camera (PARALLAX),
+ * never scales, and is drawn as one image repeated, never star by star.
+ */
+export type StarField = "off" | "few" | "many";
 
-/** The sky's stars, worked out once: star i is always at the same share of the sky's width and height, so a sky
- *  that is resized keeps its stars where they were relative to it (and a larger one only adds stars). */
-export interface Stars {
-	/** [u0, v0, u1, v1, ...], from 0 to 1 */
+export const STAR_FIELDS: readonly StarField[] = ["off", "few", "many"];
+
+/** The side of the field's tile, in CSS pixels. */
+export const FIELD_TILE = 512;
+/** Stars on one tile, for each choice. "off" still has the few the loading sky and the intro show. */
+export const FIELD_STARS: Record<StarField, number> = { off: 0, few: 34, many: 90 };
+/** How far the field moves for the camera's pan: a small share, so the graph moves over a sky that barely moves. */
+export const PARALLAX = 0.04;
+
+/** The stars of one tile: where each is on it (0 to 1), how large (CSS pixels across) and how bright. Star i is the
+ *  same at every level, and a level with more stars only adds stars, so changing it moves none. */
+export interface Field {
 	place: Float32Array;
-	/** how bright each star is at its brightest, 0.25 to 0.85 */
+	size: Float32Array;
 	bright: Float32Array;
-	/** where each star is in its slow twinkle, 0 to 1 */
+	/** where each star is in its slow twinkle, 0 to 1 (only the loading sky twinkles) */
 	phase: Float32Array;
-	/** 1 or 2 CSS pixels */
-	size: Uint8Array;
 }
 
-export function skyStars(count = MOST_STARS): Stars {
+export function fieldStars(count: number): Field {
 	const place = new Float32Array(count * 2);
+	const size = new Float32Array(count);
 	const bright = new Float32Array(count);
 	const phase = new Float32Array(count);
-	const size = new Uint8Array(count);
 	for (let index = 0; index < count; index++) {
 		place[index * 2] = unitHash(index, 11);
 		place[index * 2 + 1] = unitHash(index, 12);
 		const shine = unitHash(index, 13);
-		bright[index] = 0.25 + 0.6 * shine * shine; // most stars faint, a few bright
+		// most faint and small, a few larger and brighter
+		size[index] = 0.5 + 0.9 * shine * shine;
+		bright[index] = shine > 0.93 ? 0.7 : 0.16 + 0.34 * shine;
 		phase[index] = unitHash(index, 14);
-		size[index] = shine > 0.86 ? 2 : 1;
 	}
-	return { place, bright, phase, size };
+	return { place, size, bright, phase };
+}
+
+/** Where the field's tiles begin, in CSS pixels from the canvas's corner (0 to FIELD_TILE), for a camera panned
+ *  (dx, dy) from where it was when the graph was first shown: then, the field is where the loading sky had it. */
+export function fieldOffset(dx: number, dy: number): { x: number; y: number } {
+	const wrap = (value: number) => ((value % FIELD_TILE) + FIELD_TILE) % FIELD_TILE;
+	return { x: wrap(dx * PARALLAX), y: wrap(dy * PARALLAX) };
+}
+
+/** The tiles a box of this size needs, from a tile beginning at `offset`: their corners, in CSS pixels. */
+export function tilesCovering(width: number, height: number, offset: { x: number; y: number }): { x: number; y: number }[] {
+	const tiles: { x: number; y: number }[] = [];
+	const left = offset.x > 0 ? offset.x - FIELD_TILE : 0;
+	const top = offset.y > 0 ? offset.y - FIELD_TILE : 0;
+	for (let y = top; y < height; y += FIELD_TILE) for (let x = left; x < width; x += FIELD_TILE) tiles.push({ x, y });
+	return tiles;
+}
+
+/** How many stars the loading sky and the intro show for a choice: the choice's own, or a few when it is off. */
+export function skyStarCount(field: StarField): number {
+	return field === "off" ? FIELD_STARS.few : FIELD_STARS[field];
 }
 
 /** How bright a star is at `ms`: it breathes slowly, between about two thirds of its brightness and all of it. */
@@ -220,8 +244,8 @@ export function runShare(step: RunStep | null | undefined): number | null {
 	return Math.min(1, Math.max(0, (step.number - 1 + within) / step.of));
 }
 
-/** How many of `stars` are lit for a share of the run done (null: all of them). */
-export function litStars(stars: number, share: number | null): number {
-	if (share === null) return stars;
-	return Math.round(Math.min(1, Math.max(0, share)) * stars);
+/** Whether star `index` of the field is lit for a share of the run done (null: every star is). The stars that light
+ *  first are scattered over the sky, and about that share of them is lit. */
+export function starLit(index: number, share: number | null): boolean {
+	return share === null || unitHash(index, 15) < share;
 }

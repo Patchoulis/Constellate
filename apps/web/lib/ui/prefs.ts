@@ -7,6 +7,7 @@
  */
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { INTRO_WHENS, type IntroWhen } from "@/lib/graph/intro";
+import { STAR_FIELDS, type StarField } from "@/lib/graph/sky";
 
 /**
  * The key held to select papers on the graph: with it down, a click marks a paper and a drag draws a lasso.
@@ -23,9 +24,11 @@ export interface Prefs {
 	showMarksOnMark: boolean;
 	/** when the constellation intro plays (lib/graph/intro.ts): whenever a run is opened (the initial choice), only when one is made, or never */
 	intro: IntroWhen;
+	/** how many tiny stars are drawn behind the graph (lib/graph/sky.ts): none, a few (the initial choice) or many */
+	stars: StarField;
 }
 
-export const INITIAL_PREFS: Prefs = { selectKey: "primary", marksShown: true, showMarksOnMark: true, intro: "opened" };
+export const INITIAL_PREFS: Prefs = { selectKey: "primary", marksShown: true, showMarksOnMark: true, intro: "opened", stars: "few" };
 
 export const SELECT_KEYS: readonly SelectKey[] = ["primary", "shift", "alt"];
 
@@ -75,6 +78,7 @@ export function parsePrefs(text: string | null | undefined): Prefs {
 		marksShown: flag("marksShown"),
 		showMarksOnMark: flag("showMarksOnMark"),
 		intro: INTRO_WHENS.includes(kept.intro as IntroWhen) ? (kept.intro as IntroWhen) : INITIAL_PREFS.intro,
+		stars: STAR_FIELDS.includes(kept.stars as StarField) ? (kept.stars as StarField) : INITIAL_PREFS.stars,
 	};
 }
 

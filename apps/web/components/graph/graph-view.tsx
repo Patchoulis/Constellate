@@ -19,6 +19,7 @@ import { canvasColouring, legendNote, useGraphColouring } from "@/lib/graph/grap
 import { cn, hsl } from "@/lib/utils";
 import { boxOf, layoutGraph, type Layout } from "@/lib/graph/layout";
 import { constellationPicks } from "@/lib/graph/intro";
+import type { StarField } from "@/lib/graph/sky";
 
 /** A paper's halo shrinks with the level, so the glows of smaller groups stay separate. */
 const GLOW = [48, 34, 24, 17];
@@ -138,6 +139,7 @@ export function GraphView({
 	selectKey,
 	goTo,
 	intro = false,
+	stars = "few",
 	onPickPaper,
 	onMarkPaper,
 	onMarkPapers,
@@ -160,6 +162,8 @@ export function GraphView({
 	goTo: { id: string } | null;
 	/** play the constellation intro when the graph is first drawn (once: not again when the communities are renamed) */
 	intro?: boolean;
+	/** how many tiny stars are drawn behind the graph (Settings, "Background stars") */
+	stars?: StarField;
 	onPickPaper: (id: string | null) => void;
 	/** mark the paper, or unmark it */
 	onMarkPaper: (id: string) => void;
@@ -266,6 +270,9 @@ export function GraphView({
 	useEffect(() => {
 		rendererRef.current?.setSelectKey(selectKey);
 	}, [layout, selectKey]);
+	useEffect(() => {
+		rendererRef.current?.setStars(stars);
+	}, [layout, stars]);
 
 	// A feature's groups of papers, drawn in their hues instead of the communities' (lib/graph/graph-colouring.ts).
 	const colourings = useGraphColouring();
