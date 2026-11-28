@@ -27,6 +27,7 @@ import { budgetWords, costTitle, costWords, shownModel } from "@/lib/cost";
 import { count, tokens } from "@/lib/units";
 import { ready, useAsync } from "@/lib/use-async";
 import { choiceKey, currentEstimate, useChosenModel } from "@/lib/chosen-model";
+import { ReadingModel } from "@/components/shell/model-choice";
 import { elsewhereLine, runSubject, useFollowedJob, type FollowedJob } from "@/lib/shell/use-followed-job";
 
 /** The sentences behind one count: the community's citing sentences of `paper` read as `kinds`. */
@@ -147,7 +148,7 @@ export function CommunityCitationKinds({
 	treePath: string;
 	onOpenPaper: (id: string) => void;
 }) {
-	const chosen = useChosenModel();
+	const chosen = useChosenModel("reading");
 	const loaded = useAsync(() => api.citationKinds(run, treePath), [run, treePath], { keep: false });
 	const summary = ready(loaded);
 	const sampleRead = summary ? summary.sample.length > 0 && summary.tally.not_classified < summary.tally.sentences : false;
@@ -211,6 +212,7 @@ export function CommunityCitationKinds({
 			<Ranked title="Methods used or extended" ranked={summary.used} kinds={["uses", "extends"]} {...lists} />
 			<Ranked title="Most contrasted" ranked={summary.contrasts} kinds={["contrasts"]} {...lists} />
 			<Ranked title="Most supported" ranked={summary.supports} kinds={["supports"]} {...lists} />
+			{summary.tally.sentences > 0 && estimated.status !== "idle" && !running && <ReadingModel className="font-ui" />}
 			{summary.tally.sentences > 0 && !estimate && estimated.status !== "failed" && estimated.status !== "idle" && (
 				<p className="font-ui text-xs text-muted-foreground">Working out the cost…</p>
 			)}

@@ -30,6 +30,7 @@ import {
 	scoreTitle,
 } from "@/lib/features/critique/critique";
 import { choiceKey, isFor, useChosenModel } from "@/lib/chosen-model";
+import { ReadingModel } from "@/components/shell/model-choice";
 import { accepting, shownModel } from "@/lib/cost";
 import { ready, useAsync } from "@/lib/use-async";
 import { elsewhereLine, useFollowedJob } from "@/lib/shell/use-followed-job";
@@ -262,6 +263,7 @@ function ModelPart({
 					{part.cut !== null &&
 						` The paper is too long to send whole: only its first ${count(part.cut, "character")} (as sent, with page marks) would be read.`}
 				</p>
+				{job.state !== "running" && <ReadingModel className="max-w-full" />}
 				{job.state === "running" ? (
 					<div className="flex items-center gap-2 text-xs text-muted-foreground">
 						<Loader2 className="size-3.5 animate-spin" />
@@ -355,7 +357,7 @@ function ModelPart({
 /** The Weaknesses section of a paper. `onReviews` opens the reader's Reviews tab, where reviews are read. */
 export function Weaknesses({ id, onReviews, className }: { id: string; onReviews?: () => void; className?: string }) {
 	const [shown, setShown] = useState(false);
-	const chosen = useChosenModel();
+	const chosen = useChosenModel("reading");
 	// read again when the model chosen changes (its estimate is the model's) or after asking; the reviewers' part
 	// stays in view meanwhile, and the estimate cannot be accepted until it is the new one
 	const loaded = useAsync(() => api.critique(id), [id, choiceKey(chosen)]);
