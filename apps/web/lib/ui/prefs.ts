@@ -6,6 +6,9 @@
  * holds the choices in React, shared by everything on the page.
  */
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { INTRO_WHENS, type IntroWhen } from "@/lib/graph/intro";
+import { STAR_FIELDS, type StarField } from "@/lib/graph/sky";
+import { REGION_FROM, regionFromOf } from "@/lib/graph/mark-look";
 
 /**
  * The key held to select papers on the graph: with it down, a click marks a paper and a drag draws a lasso.
@@ -16,13 +19,24 @@ export type SelectKey = "primary" | "shift" | "alt";
 
 export interface Prefs {
 	selectKey: SelectKey;
-	/** whether the marked papers' rings, links and names are drawn on the graph */
-	marksShown: boolean;
-	/** marking a paper while the marks are hidden shows them again */
+	/** marking a paper (always shown itself) also shows every marked paper hidden on the graph again. Which marks are
+	 *  shown is kept with the marks (lib/community/marks.ts); a `marksShown` stored by earlier versions is not read. */
 	showMarksOnMark: boolean;
+	/** when the constellation intro plays (lib/graph/intro.ts): whenever a run is opened (the initial choice), only when one is made, or never */
+	intro: IntroWhen;
+	/** how many tiny stars are drawn behind the graph (lib/graph/sky.ts): none, a few (the initial choice) or many */
+	stars: StarField;
+	/** from how many shown marked papers they are drawn as a highlighted region instead of rings (lib/graph/mark-look.ts) */
+	regionFrom: number;
 }
 
-export const INITIAL_PREFS: Prefs = { selectKey: "primary", marksShown: true, showMarksOnMark: true };
+export const INITIAL_PREFS: Prefs = {
+	selectKey: "primary",
+	showMarksOnMark: true,
+	intro: "opened",
+	stars: "few",
+	regionFrom: REGION_FROM.initial,
+};
 
 export const SELECT_KEYS: readonly SelectKey[] = ["primary", "shift", "alt"];
 
@@ -66,11 +80,13 @@ export function parsePrefs(text: string | null | undefined): Prefs {
 	const { version, prefs } = stored as { version?: unknown; prefs?: unknown };
 	if (version !== VERSION || typeof prefs !== "object" || prefs === null) return INITIAL_PREFS;
 	const kept = prefs as Record<string, unknown>;
-	const flag = (name: "marksShown" | "showMarksOnMark") => (typeof kept[name] === "boolean" ? kept[name] : INITIAL_PREFS[name]);
 	return {
 		selectKey: SELECT_KEYS.includes(kept.selectKey as SelectKey) ? (kept.selectKey as SelectKey) : INITIAL_PREFS.selectKey,
-		marksShown: flag("marksShown"),
-		showMarksOnMark: flag("showMarksOnMark"),
+		showMarksOnMark: typeof kept.showMarksOnMark === "boolean" ? kept.showMarksOnMark : INITIAL_PREFS.showMarksOnMark,
+		intro: INTRO_WHENS.includes(kept.intro as IntroWhen) ? (kept.intro as IntroWhen) : INITIAL_PREFS.intro,
+		stars: STAR_FIELDS.includes(kept.stars as StarField) ? (kept.stars as StarField) : INITIAL_PREFS.stars,
+		// a number out of bounds is brought within them; anything that is not a number gives the initial choice
+		regionFrom: typeof kept.regionFrom === "number" ? regionFromOf(kept.regionFrom) : INITIAL_PREFS.regionFrom,
 	};
 }
 

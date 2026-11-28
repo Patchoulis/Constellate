@@ -135,10 +135,31 @@
 .enter-fade {
 	animation: fade-in 140ms ease-out;
 }
+/* Words shown over the loading sky arrive with it (components/ui/loading-dots.tsx). */
+@keyframes rise-in {
+	from {
+		transform: translateY(4px);
+		opacity: 0;
+	}
+}
+.enter-rise {
+	display: inline-block;
+	animation: rise-in 400ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* The loading sky giving way to the graph's intro (components/shell/workspace.tsx sets how long). */
+@keyframes fade-out {
+	to {
+		opacity: 0;
+	}
+}
+.leave-fade {
+	animation: fade-out 800ms ease-out forwards;
+}
 @media (prefers-reduced-motion: reduce) {
 	.enter-from-right,
 	.enter-from-bottom,
-	.enter-fade {
+	.enter-fade,
+	.enter-rise {
 		animation: none;
 	}
 }

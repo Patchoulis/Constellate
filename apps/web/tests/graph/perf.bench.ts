@@ -11,7 +11,8 @@
 import { communityTree, groupsAt } from "@/lib/community/community";
 import { glowLayerGeometry } from "@/lib/graph/glow-layer";
 import { canvasColouring, MOST_GROUPS, spreadHues } from "@/lib/graph/graph-colouring";
-import { pickMarkedLabels, placeLabels, type LabelBox, type MarkedPlace } from "@/lib/graph/labels";
+import { MOST_LABELS, pickMarkedLabels, placeLabels, type LabelBox, type MarkedPlace } from "@/lib/graph/labels";
+import { screenDotRadius } from "@/lib/graph/dot-size";
 import { layoutGraph } from "@/lib/graph/layout";
 import { nearestPaper } from "@/lib/graph/pick";
 import { generatedRun, randomFrom } from "./generated-run";
@@ -107,3 +108,23 @@ const marked: MarkedPlace[] = Array.from({ length: 30 }, (_, index) => ({
 	linked: Array.from({ length: 4 }, (_, other) => ({ index: 100 + index * 4 + other, ...somewhere() })),
 }));
 time("pick the labels of 30 marked papers", () => pickMarkedLabels(frame, marked, new Set(), { marked: 12, linked: 24 }), { times: 200 });
+
+// Many marks: a lasso can mark 500 papers or more. On every frame the camera moves, the labels are picked from all of
+// them (components/graph/graph-view.tsx), and only the newest name their neighbours (MOST_LABELS).
+const lassoed: MarkedPlace[] = Array.from({ length: 500 }, (_, index) => ({
+	index,
+	...somewhere(),
+	linked: index < MOST_LABELS.marked ? Array.from({ length: 4 }, (_, other) => ({ index: 1000 + index * 4 + other, ...somewhere() })) : [],
+}));
+time("pick the labels of 500 marked papers", () => pickMarkedLabels(frame, lassoed, new Set(), MOST_LABELS), { times: 200 });
+
+// Zooming out: the dots' paths (12,500 arcs) are made again only when their size changes (lib/graph/dot-size.ts).
+let remade = 0;
+let dot = 0;
+let steps = 0;
+for (let k = 0.35; k > 0.35 / 8; k /= 1.01, steps++) {
+	const now = screenDotRadius(2.4, k);
+	if (now !== dot) remade++;
+	dot = now;
+}
+console.log(`zooming out 8 times in ${steps} steps of 1% makes the dots' paths again ${remade} times`);

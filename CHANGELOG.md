@@ -7,6 +7,28 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- A run's graph comes up with a short constellation intro when the run is opened: its papers appear as stars, gather
+  into their communities, a constellation is traced through each community, and the communities then light up in
+  their colours and are named. A click, a key, the wheel or a drag ends it at once. Settings, under "The graph", say
+  when it plays: whenever a run is opened (the default), only when a run is made, or never. It never plays when the
+  system is set to reduce motion, and not when the open run is only shown again, for example after its communities
+  are named again.
+- While a run is loaded or made, a quiet night sky is shown behind the words, with a small constellation that draws
+  itself again and again, and the dots after "Loading the run" and "Working" come one by one. While a run is made,
+  the share of its stars that are lit is how far the run has got: the steps done, and the counted part of the step
+  under way. With less motion the sky stands still.
+- Tiny faint stars behind the graph, the same as the loading sky's, so loading, the intro and the graph are one sky.
+  They move only a little as the graph is moved and keep their size when it is zoomed. Settings, under "The graph",
+  choose how many: off, a few (the default) or many.
+- Many marked papers are shown as a highlighted region: they keep their colours with a soft halo, every other paper
+  is dimmed and the community glows are turned down, in place of a ring, links and a name for each. A marked paper
+  hovered or opened still shows its ring, links and name. Settings, under "The graph", choose from how many marked
+  papers shown this is used (25 at first); fewer get their rings as before. The hint above the graph says when it is.
+- Under Marked, each marked paper can be hidden on the graph or shown again (the graph button), and its links drawn
+  or not (the eye); "Show all", "Hide all", "Links on" and "Links off" do it for all of them, and the eye beside the
+  Marked tab shows or hides them all. A hidden mark is drawn as any paper but stays marked, listed, and in the Table
+  and Agree / disagree. A paper marked is always shown with its links; Settings say whether marking one also shows
+  the hidden marks again. The setting "Show marked papers on the graph" is gone: the eye and the list do it.
 - A community's description is now in three sections with headings: Problem, Shared methods and What sets it
   apart. Under each, the papers it rests on are listed with the words quoted from them: click one to open the paper
   at those words. A section is shown only when its quotes were found in at least two of the community's papers, and
@@ -34,6 +56,9 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The graph stays smooth with hundreds of papers marked: moving it with 500 marked papers went from about 70 to
+  about 210 frames a second here. Zooming out no longer remakes every paper's dot on every frame, and the names of
+  marked papers move with the graph without the page laying itself out again.
 - The window has its own top bar in place of the system's title bar: the app's mark and name, Settings, and only
   the system's minimise, maximise and close buttons at its end. The window is moved by dragging the bar.
 - The app's icon is the white mark on a dark tile everywhere: the window, the taskbar, the installer and shortcuts.

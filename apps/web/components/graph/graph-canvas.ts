@@ -30,12 +30,35 @@
  *
  * Focus: an optional set of papers (one community or sub-community). Papers outside it are dim grey dots with
  * no glow, and cannot be picked.
+ *
+ * The intro (lib/graph/intro.ts): for a few seconds after a run is made, the same layers are drawn as a sky that
+ * becomes the graph. Pale stars gather to the papers' places, a line is traced through a few papers of each
+ * community, the glows and colours come up (the glow layer drawn fainter, the dots' paths in pale and then in their
+ * colours) and the labels last. Its last frame is the usual graph. While it plays, nothing is hovered, picked or
+ * marked; a press, a wheel or a key ends it at once.
  */
 import { select } from "d3-selection";
 import { zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from "d3-zoom";
 import { Glide, prefersLessMotion, type Size, type View } from "@/lib/graph/glide";
 import { GLOW_LAYER_MOST_PIXELS, glowLayerGeometry, inside, visibleWorld, type GlowLayerGeometry } from "@/lib/graph/glow-layer";
-import type { MarkedPlace } from "@/lib/graph/labels";
+import {
+	INTRO_MS,
+	LINE_ALPHA,
+	introFrame,
+	introPlan,
+	introProgress,
+	packConstellations,
+	paintGathering,
+	tracedTo,
+	TWINKLE_GROUPS,
+	type Constellations,
+	type IntroFrame,
+	type IntroPlan,
+} from "@/lib/graph/intro";
+import { MOST_LABELS, type MarkedPlace } from "@/lib/graph/labels";
+import { screenDotRadius } from "@/lib/graph/dot-size";
+import { REGION_FROM, REGION_GLOW, haloLayerFits, lookTowards, markLook } from "@/lib/graph/mark-look";
+import { FIELD_STARS, FIELD_TILE, STAR_COLOUR, fieldOffset, fieldStars, skyStarCount, type StarField } from "@/lib/graph/sky";
 import type { Box } from "@/lib/graph/layout";
 import { LASSO_MIN, lassoed, reach, type Place } from "@/lib/graph/lasso";
 import { nearestPaper } from "@/lib/graph/pick";
@@ -113,6 +136,10 @@ const MARK = "#fde047";
 const MARK_LINK = "rgba(253, 224, 71, 0.45)";
 const MARK_EDGE = "rgba(20, 20, 20, 0.85)"; // dark rim under the ring, so it reads over a bright glow too
 const LASSO_FILL = "rgba(253, 224, 71, 0.08)";
+/** How far a marked paper's soft halo reaches in the region look, in screen pixels (lib/graph/mark-look.ts). */
+const REGION_HALO_PX = 9;
+/** Pixels across one halo in the layer the halos are kept in: a soft blob needs few. */
+const HALO_TEXELS = 16;
 /** A click this soon after a lasso or a select-click ended is the same press: it opens nothing. */
 const SAME_PRESS_MS = 300;
 const LABEL_LINE = 13; // px between the lines of a label
@@ -123,6 +150,34 @@ const LABEL_MIN_LINES = 3; // ... and a label may always have this many lines
 const LEVEL_ZOOM = [2.2, 4.6, 9, 16];
 /** The closest the camera goes. */
 const MOST_ZOOM = 40;
+/** The intro's stars: pale white-blue, as the loading sky's (components/graph/sky-loading.tsx). */
+const STAR = STAR_COLOUR;
+const STAR_LINE = "#ffffff";
+/** The same colour as one pixel's red, green and blue, as a little-endian word (every machine the app runs on). */
+const STAR_WORD = (255 << 16) | (226 << 8) | 214;
+/** A star is drawn as a square of the dot's area, a little smaller: a square is far cheaper than a disc. */
+const STAR_SIDE = 1.6;
+/** The star field behind the graph (lib/graph/sky.ts), its brightest stars first: every level draws the first of them. */
+const FIELD = fieldStars(FIELD_STARS.many);
+
+/** The shown marked papers as drawn (GraphCanvasRenderer.marksOf). */
+interface MarkDrawing {
+	links: Float64Array;
+	ends: Path2D;
+	rings: Float64Array;
+}
+
+/** What the intro works out once, before its first frame. */
+interface Intro {
+	started: number;
+	duration: number;
+	plan: IntroPlan;
+	/** how strong each twinkle group is this frame (lib/graph/intro.ts paintGathering), made once */
+	groupAlpha: Float32Array;
+	constellations: Constellations;
+	/** the pixels the gathering stars are written into (starPixelsOf) */
+	pixels: { canvas: HTMLCanvasElement; context: CanvasRenderingContext2D; image: ImageData; words: Uint32Array } | null;
+}
 
 /** A label as whole words on at most `most` lines of about `chars` characters; only what still does not fit
  *  is cut, with an ellipsis. */
@@ -140,8 +195,8 @@ export function wrapLabel(label: string, chars: number, most: number): string[] 
 	return lines;
 }
 
-/** A paper's dot, in world units at zoom k: its true size, but never under ~1px on screen. */
-const dotRadius = (k: number) => Math.max(NODE_R, 0.85 / k);
+/** A paper's dot, in world units at zoom k: its true size, but never under ~1px on screen (lib/graph/dot-size.ts). */
+const dotRadius = (k: number) => screenDotRadius(NODE_R, k);
 
 function glowSprite(hue: number): HTMLCanvasElement {
 	const canvas = document.createElement("canvas");
@@ -180,8 +235,8 @@ export class GraphCanvasRenderer {
 	private hovered: number | null = null;
 	/** the marked papers, newest first */
 	private marked: number[] = [];
-	/** whether the marked papers' rings and links are drawn, and their places told */
-	private marksShown = true;
+	/** the marked papers drawn without their links (their ring and name only) */
+	private noLinks: ReadonlySet<number> = new Set();
 	/** the key that selects: with it held, a click marks a paper and a drag draws a lasso instead of moving the graph */
 	private selectKey: SelectKey = "primary";
 	/** the lasso being drawn: the pointer drawing it and where it went, in the canvas's CSS pixels */
@@ -194,12 +249,56 @@ export class GraphCanvasRenderer {
 	private glowLayers: GlowLayer[] = [];
 	/** the dots of one level, focus and size (dotsOf) */
 	private dotPaths: { level: CanvasLevel; focus: Set<number> | null; radius: number; dots: Path2D[]; dimmed: Path2D } | null = null;
+	/** the marked papers' links, ends and rings, and what they were made for (marksOf) */
+	private markPaths: {
+		marked: number[];
+		noLinks: ReadonlySet<number>;
+		focus: Set<number> | null;
+		radius: number;
+		drawn: MarkDrawing | null;
+	} | null = null;
 	private observer: ResizeObserver;
 	/** device pixels per CSS pixel the canvas's pixels were sized for: a frame draws at this, never at another */
 	private dpr = 1;
 	/** told when the device pixel ratio stops being `dpr` (the window moved to another screen, the page was
 	 *  zoomed), which changes no CSS size and so tells the ResizeObserver nothing */
 	private dprQuery: MediaQueryList | null = null;
+	/** how many stars are drawn behind the graph, and one tile of them, drawn once (starTileOf) */
+	private stars: StarField = "few";
+	private starTile: { count: number; dpr: number; canvas: HTMLCanvasElement; pattern: CanvasPattern } | null = null;
+	/** the camera when the whole graph was first fitted: the star field moves with the pan from there */
+	private origin: { x: number; y: number } | null = null;
+	/** from how many shown marked papers they are a highlighted region (lib/graph/mark-look.ts), and the look: 0 rings,
+	 *  1 region, and between while one gives way to the other */
+	private regionFrom: number = REGION_FROM.initial;
+	private look = { from: 0, target: 0, started: 0 };
+	/** the dots in the region look: the shown marked papers in their colours, every other paper dimmed (regionDotsOf) */
+	private regionDots: {
+		level: CanvasLevel;
+		focus: Set<number> | null;
+		marked: number[];
+		colouring: GraphCanvasRenderer["colouring"];
+		radius: number;
+		dots: Path2D[];
+		dimmed: Path2D;
+	} | null = null;
+	/** the soft pale-yellow halo of a marked paper in the region look, and all the shown ones drawn together (haloLayerOf) */
+	private markHalo: HTMLCanvasElement | null = null;
+	private haloLayer: {
+		marked: number[];
+		focus: Set<number> | null;
+		noLinks: ReadonlySet<number>;
+		k: number;
+		layer: { canvas: HTMLCanvasElement; box: Box } | null;
+	} | null = null;
+	/** the camera moved since the hovered and marked papers' places were last told (draw tells them) */
+	private cameraMoved = false;
+	/** the intro, while it plays */
+	private intro: Intro | null = null;
+	/** the press that ended the intro: the click or right-click it ends in opens and marks nothing */
+	private skipPress = false;
+	/** where the intro draws the labels it fades in (labelLayerOf) */
+	private labelLayer: CanvasRenderingContext2D | null = null;
 
 	constructor(
 		private canvas: HTMLCanvasElement,
@@ -219,12 +318,17 @@ export class GraphCanvasRenderer {
 			.on("zoom", (event) => {
 				this.transform = event.transform;
 				this.updateLevel();
-				this.tellHover(); // the hovered paper moved on screen
-				this.tellMarked();
+				// the hovered and marked papers moved on screen: told with the next frame, once however many moves
+				// come before it
+				this.cameraMoved = true;
 				this.markDirty();
 			})
 			// the person took hold of the graph (wheel, drag): a glide in progress gives way to them
 			.on("start", (event) => event.sourceEvent && this.stopGliding());
+		// Before anything else hears them: a press, a wheel or a key ends the intro, and then does what it always does.
+		canvas.addEventListener("pointerdown", this.onSkipPress, { capture: true });
+		canvas.addEventListener("wheel", this.onSkip, { capture: true, passive: true });
+		window.addEventListener("keydown", this.onSkip, { capture: true });
 		select(canvas).call(this.zoomBehavior).on("dblclick.zoom", null);
 		canvas.addEventListener("mousemove", this.onMove);
 		canvas.addEventListener("mouseleave", this.onLeave);
@@ -237,15 +341,26 @@ export class GraphCanvasRenderer {
 		this.observer = new ResizeObserver(() => this.resize());
 		this.observer.observe(canvas);
 		this.resize();
+		// The community labels are drawn in the page's own font, which may still be loading for the first frames: they
+		// are drawn again once it is there, rather than left in the fallback font until something else moves.
+		document.fonts?.addEventListener("loadingdone", this.onFontsLoaded);
+		void document.fonts?.ready.then(this.onFontsLoaded);
 	}
+
+	private onFontsLoaded = () => this.markDirty();
 
 	destroy() {
 		this.stopGliding();
 		cancelAnimationFrame(this.frame);
 		this.observer.disconnect();
+		document.fonts?.removeEventListener("loadingdone", this.onFontsLoaded);
 		this.dprQuery?.removeEventListener("change", this.onDprChange);
 		this.dprQuery = null;
 		select(this.canvas).on(".zoom", null);
+		this.endIntro();
+		this.canvas.removeEventListener("pointerdown", this.onSkipPress, { capture: true });
+		this.canvas.removeEventListener("wheel", this.onSkip, { capture: true });
+		window.removeEventListener("keydown", this.onSkip, { capture: true });
 		this.canvas.removeEventListener("mousemove", this.onMove);
 		this.canvas.removeEventListener("mouseleave", this.onLeave);
 		this.canvas.removeEventListener("click", this.onClick);
@@ -260,6 +375,7 @@ export class GraphCanvasRenderer {
 
 	setData(data: CanvasData | null) {
 		this.data = data;
+		this.endIntro(); // it was these papers' intro
 		this.hovered = null;
 		this.marked = [];
 		this.colouring = null; // its papers were the last data's
@@ -267,6 +383,12 @@ export class GraphCanvasRenderer {
 		this.dropGlowLayers(this.glowLayers);
 		this.glowLayers = [];
 		this.dotPaths = null;
+		this.markPaths = null;
+		this.regionDots = null;
+		if (this.haloLayer?.layer) this.haloLayer.layer.canvas.width = this.haloLayer.layer.canvas.height = 0;
+		this.haloLayer = null;
+		this.look = { from: 0, target: 0, started: 0 }; // nothing of these papers is marked yet
+		this.origin = null;
 		this.linked = (data?.points ?? []).map(() => []);
 		// closest first, so that where only some of a paper's linked papers can be named, those are the closest
 		for (const [a, b] of [...(data?.links ?? [])].sort((one, other) => other[2] - one[2])) {
@@ -294,25 +416,114 @@ export class GraphCanvasRenderer {
 		this.markDirty();
 	}
 
-	/** The marked papers, newest first. */
-	setMarked(indexes: number[]) {
+	/** The marked papers drawn as marked, newest first (those hidden on the graph are left out by the caller, and drawn
+	 *  as any paper), and those of them drawn without their links: with their ring and name only. */
+	setMarked(indexes: number[], noLinks: ReadonlySet<number> = new Set()) {
 		this.marked = indexes.filter((index) => this.data?.points[index]);
+		this.noLinks = noLinks;
+		this.updateLook();
 		this.tellMarked();
 		this.markDirty();
 	}
 
-	/** Whether the marked papers are shown as marked on the graph (they stay marked either way). */
-	setMarksShown(shown: boolean) {
-		if (shown === this.marksShown) return;
-		this.marksShown = shown;
+	/** From how many shown marked papers they are drawn as a highlighted region instead of rings. */
+	setRegionFrom(from: number) {
+		if (from === this.regionFrom) return;
+		this.regionFrom = from;
+		this.updateLook();
 		this.tellMarked();
 		this.markDirty();
+	}
+
+	/** In the region, the marked papers shown in full: the hovered one and the selected one, when they are shown marks.
+	 *  Looked up without going through every mark, as it is asked for on every frame. */
+	private markedInFull(): number[] {
+		const full: number[] = [];
+		for (const index of [this.hovered, this.selected])
+			if (index !== null && !full.includes(index) && this.lit(index) && this.marked.includes(index)) full.push(index);
+		return full;
+	}
+
+	/** Whether the shown marked papers are the region now (or becoming it). */
+	private get inRegion(): boolean {
+		return this.look.target === 1;
+	}
+
+	/** The look for the marked papers shown now; a change of look fades over LOOK_FADE_MS, or is at once with less
+	 *  motion. */
+	private updateLook() {
+		const target = markLook(this.shownMarked().length, this.regionFrom) === "region" ? 1 : 0;
+		if (target === this.look.target) return;
+		const now = performance.now();
+		this.look = { from: prefersLessMotion() ? target : this.lookNow(now), target, started: now };
+	}
+
+	/** How far the look is toward the region now: 0 rings, 1 region. */
+	private lookNow(now: number): number {
+		return lookTowards(this.look.from, this.look.target, now - this.look.started);
 	}
 
 	/** The key that, held, makes a click mark a paper and a drag draw a lasso. */
 	setSelectKey(key: SelectKey) {
 		this.selectKey = key;
 	}
+
+	/**
+	 * Play the intro over the papers set last (lib/graph/intro.ts), `lines` being each community's constellation (its
+	 * papers in the order the line goes through them), with the camera fitted to the whole graph by the caller. Not for someone
+	 * who asked their system for less motion: the graph is simply there.
+	 */
+	playIntro(lines: readonly (readonly number[])[], duration = INTRO_MS) {
+		const data = this.data;
+		if (!data || prefersLessMotion()) return;
+		// the camera is the one the graph was just fitted with (components/graph/graph-view.tsx): fitted again here, the
+		// graph after the intro could end a fraction of a pixel away from one opened without it
+		const plan = introPlan(data.points.length);
+		this.hover(null);
+		this.stopGliding();
+		// Nothing is made ahead here: the glows and dots are made by the frames that first need them, as for a graph
+		// without the intro, so that the graph after it is the same to the pixel.
+		this.intro = {
+			started: performance.now(),
+			duration,
+			plan,
+			groupAlpha: new Float32Array(TWINKLE_GROUPS),
+			constellations: packConstellations(lines.map((line) => line.filter((index) => data.points[index]))),
+			pixels: null,
+		};
+		cancelAnimationFrame(this.frame);
+		this.frame = 0;
+		this.markDirty();
+	}
+
+	/** Whether the intro is playing. */
+	get introPlaying(): boolean {
+		return this.intro !== null;
+	}
+
+	/** End the intro where it would have ended: the usual graph, at once. */
+	skipIntro() {
+		if (!this.intro) return;
+		this.endIntro();
+		this.markDirty();
+	}
+
+	/** Nothing of the intro is kept once it is over: its layer's pixels are given back now. */
+	private endIntro() {
+		const pixels = this.intro?.pixels;
+		if (pixels) pixels.canvas.width = pixels.canvas.height = 0;
+		this.intro = null;
+		if (this.labelLayer) this.labelLayer.canvas.width = this.labelLayer.canvas.height = 0;
+		this.labelLayer = null;
+	}
+
+	private onSkip = () => this.skipIntro();
+
+	private onSkipPress = () => {
+		// a press that ends the intro still moves the graph or draws a lasso; its click opens nothing
+		this.skipPress = this.intro !== null;
+		this.skipIntro();
+	};
 
 	/** Move the camera so a paper is in the middle of the part of the canvas left of `right` px from its right
 	 *  edge (what a panel laid over the graph leaves free), zoomed in at least far enough to see its neighbours. */
@@ -352,12 +563,14 @@ export class GraphCanvasRenderer {
 
 	setFocus(focus: Set<number> | null) {
 		this.focus = focus;
-		this.tellMarked(); // which marked papers are shown depends on the focus
+		this.updateLook(); // which marked papers are shown, and how many, depends on the focus
+		this.tellMarked();
 		this.markDirty();
 	}
 
 	setSelected(index: number | null) {
 		this.selected = index;
+		if (this.inRegion) this.tellMarked(); // in the region, a selected marked paper is named
 		this.markDirty();
 	}
 
@@ -385,7 +598,11 @@ export class GraphCanvasRenderer {
 			const k = this.zoomToFit(box, size);
 			return { x: size.width / 2 - (k * (box.minX + box.maxX)) / 2, y: size.height / 2 - (k * (box.minY + box.maxY)) / 2, k };
 		};
-		this.glideTo(aim, atOnce, () => (this.fitted = { box, transform: this.transform }));
+		this.glideTo(aim, atOnce, () => {
+			this.fitted = { box, transform: this.transform };
+			// the star field is where the loading sky had it while the camera is where the graph first came up
+			if (whole && !this.origin) this.origin = { x: this.transform.x, y: this.transform.y };
+		});
 	}
 
 	/** The zoom at which a world rectangle just fits the canvas (or a picture of `size`), with a little margin. */
@@ -472,6 +689,149 @@ export class GraphCanvasRenderer {
 		});
 		this.dotPaths = { level, focus: this.focus, radius, dots, dimmed };
 		return this.dotPaths;
+	}
+
+	/** The dots in the region look, as paths: the shown marked papers in their groups' colours, and one path for every
+	 *  other paper, dimmed. Kept while the marks, the focus, the level, the colouring and the dots' size stay the same. */
+	private regionDotsOf(level: CanvasLevel, data: CanvasData, radius: number) {
+		const kept = this.regionDots;
+		if (
+			kept &&
+			kept.level === level &&
+			kept.focus === this.focus &&
+			kept.marked === this.marked &&
+			kept.colouring === this.colouring &&
+			kept.radius === radius
+		)
+			return kept;
+		// only the shown marked papers: every other paper is the usual dots filled grey (draw), whose paths are kept, and
+		// are each a community's few hundred dots; one path of all the dimmed papers would take the slow way to draw
+		const paint = this.paintOf(level);
+		const dots = paint.hues.map(() => new Path2D());
+		for (const index of this.shownMarked()) {
+			const group = paint.of[index];
+			if (group < 0) continue;
+			const point = data.points[index];
+			const size = radius * data.sizes[index];
+			dots[group].moveTo(point.x + size, point.y);
+			dots[group].arc(point.x, point.y, size, 0, Math.PI * 2);
+		}
+		this.regionDots = { level, focus: this.focus, marked: this.marked, colouring: this.colouring, radius, dots, dimmed: new Path2D() };
+		return this.regionDots;
+	}
+
+	/** The shown marked papers' halos, drawn once into a layer at one zoom and kept while the marks, the focus and
+	 *  about the zoom stay the same (lib/graph/mark-look.ts haloLayerFits); null when such a layer would be too large
+	 *  (zoomed far in), and the halos in view are then drawn one by one. */
+	private haloLayerOf(data: CanvasData, k: number): { canvas: HTMLCanvasElement; box: Box } | null {
+		const kept = this.haloLayer;
+		if (kept && kept.marked === this.marked && kept.focus === this.focus && kept.noLinks === this.noLinks && haloLayerFits(kept.k, k))
+			return kept.layer;
+		if (kept?.layer) kept.layer.canvas.width = kept.layer.canvas.height = 0;
+		const reach = REGION_HALO_PX / k;
+		const marked = this.shownMarked();
+		const geometry = glowLayerGeometry(
+			marked.map((index) => data.points[index]),
+			reach,
+			HALO_TEXELS,
+			GLOW_LAYER_MOST_PIXELS / 4,
+		);
+		let layer: { canvas: HTMLCanvasElement; box: Box } | null = null;
+		if (geometry) {
+			const canvas = document.createElement("canvas");
+			canvas.width = geometry.width;
+			canvas.height = geometry.height;
+			const halos = canvas.getContext("2d")!;
+			const { box, scale } = geometry;
+			halos.setTransform(scale, 0, 0, scale, -box.minX * scale, -box.minY * scale);
+			halos.globalCompositeOperation = "lighter";
+			const halo = this.markHaloOf();
+			for (const index of marked) {
+				const point = data.points[index];
+				halos.drawImage(halo, point.x - reach, point.y - reach, reach * 2, reach * 2);
+			}
+			layer = { canvas, box };
+		}
+		this.haloLayer = { marked: this.marked, focus: this.focus, noLinks: this.noLinks, k, layer };
+		return layer;
+	}
+
+	/** A marked paper's soft halo in the region look: pale yellow, faint, drawn additively, so that many marks close
+	 *  together read as one lit region. Made once. */
+	private markHaloOf(): HTMLCanvasElement {
+		if (this.markHalo) return this.markHalo;
+		const canvas = document.createElement("canvas");
+		canvas.width = canvas.height = 64;
+		const halo = canvas.getContext("2d")!;
+		const gradient = halo.createRadialGradient(32, 32, 0, 32, 32, 32);
+		gradient.addColorStop(0, "rgba(253, 236, 150, 0.34)");
+		gradient.addColorStop(0.5, "rgba(253, 236, 150, 0.12)");
+		gradient.addColorStop(1, "rgba(253, 236, 150, 0)");
+		halo.fillStyle = gradient;
+		halo.fillRect(0, 0, 64, 64);
+		this.markHalo = canvas;
+		return canvas;
+	}
+
+	/**
+	 * The shown marked papers: their links (x1, y1, x2, y2 each), the dots their links end at (a path) and their rings
+	 * (x, y and the ring's radius in world units before the few pixels it keeps around its dot); null with none shown.
+	 * Kept while the marks, the focus and the dots' size stay the same, so a pan or a zoom does not make them again.
+	 *
+	 * The links and rings are stroked one by one (strokeMarks): a stroke wider than a device pixel of one path with
+	 * thousands of lines takes the browser's slow way, about 55 ms a frame for 500 marked papers' links on a 1.5x
+	 * screen, where the same lines one by one take under a millisecond.
+	 */
+	private marksOf(data: CanvasData, radius: number) {
+		const kept = this.markPaths;
+		if (kept && kept.marked === this.marked && kept.noLinks === this.noLinks && kept.focus === this.focus && kept.radius === radius)
+			return kept.drawn;
+		const drawn = this.markDrawing(this.shownMarked(), data, radius);
+		this.markPaths = { marked: this.marked, noLinks: this.noLinks, focus: this.focus, radius, drawn };
+		return drawn;
+	}
+
+	/** These marked papers' links, the dots their links end at and their rings; null for none. */
+	private markDrawing(marked: number[], data: CanvasData, radius: number): MarkDrawing | null {
+		if (marked.length === 0) return null;
+		const links: number[] = [];
+		const ends = new Path2D();
+		const rings = new Float64Array(marked.length * 3);
+		marked.forEach((index, order) => {
+			const point = data.points[index];
+			// a mark drawn without its links keeps its ring (and its name); hovering it still shows its links
+			for (const other of this.noLinks.has(index) ? [] : this.linked[index]) {
+				if (!this.lit(other)) continue;
+				const end = data.points[other];
+				links.push(point.x, point.y, end.x, end.y);
+				const size = radius * data.sizes[other] * 1.1;
+				ends.moveTo(end.x + size, end.y);
+				ends.arc(end.x, end.y, size, 0, Math.PI * 2);
+			}
+			rings.set([point.x, point.y, radius * data.sizes[index] * 1.5], order * 3);
+		});
+		return { links: Float64Array.from(links), ends, rings };
+	}
+
+	/** Stroke each of `lines` (x1, y1, x2, y2 each) on its own, in the current stroke style. */
+	private strokeLines(lines: Float64Array) {
+		const { ctx } = this;
+		for (let at = 0; at < lines.length; at += 4) {
+			ctx.beginPath();
+			ctx.moveTo(lines[at], lines[at + 1]);
+			ctx.lineTo(lines[at + 2], lines[at + 3]);
+			ctx.stroke();
+		}
+	}
+
+	/** Stroke each of `rings` (x, y, radius each, plus `more` world units) on its own, in the current stroke style. */
+	private strokeRings(rings: Float64Array, more: number) {
+		const { ctx } = this;
+		for (let at = 0; at < rings.length; at += 3) {
+			ctx.beginPath();
+			ctx.arc(rings[at], rings[at + 1], rings[at + 2] + more, 0, Math.PI * 2);
+			ctx.stroke();
+		}
 	}
 
 	/** Which group each paper is drawn in (-1: dimmed) and each group's hue (null: grey): its community's at this
@@ -564,23 +924,27 @@ export class GraphCanvasRenderer {
 
 	/** The marked papers that are shown: all of them, or with a focus only those in it. */
 	private shownMarked(): number[] {
-		if (!this.marksShown) return [];
 		return this.focus === null ? this.marked : this.marked.filter((index) => this.lit(index));
 	}
 
 	/** Report where the shown marked papers and the papers they link to (those in focus) are on screen, in view
-	 *  or not: the graph view picks which to name. */
+	 *  or not: the graph view picks which to name. Only the newest marks name their neighbours (MOST_LABELS), so only
+	 *  theirs are told: with hundreds marked, the others' would be worked out on every move of the camera for nothing. */
 	private tellMarked() {
 		const points = this.data?.points;
 		if (!points) return this.callbacks.onMarked([]);
-		const place = (index: number) => {
-			const [x, y] = this.transform.apply([points[index].x, points[index].y]);
-			return { index, x, y };
-		};
+		const { x: tx, y: ty, k } = this.transform;
+		const place = (index: number) => ({ index, x: points[index].x * k + tx, y: points[index].y * k + ty });
+		// in the region, only a marked paper hovered or selected is named, as it is shown in full
+		const named = this.inRegion
+			? this.shownMarked().filter((index) => index === this.hovered || index === this.selected)
+			: this.shownMarked();
 		this.callbacks.onMarked(
-			this.shownMarked().map((index) => ({
+			named.map((index, order) => ({
 				...place(index),
-				linked: this.linked[index].filter((other) => this.lit(other)).map(place),
+				// a mark drawn without its links names none of its neighbours either
+				linked:
+					order < MOST_LABELS.marked && !this.noLinks.has(index) ? this.linked[index].filter((other) => this.lit(other)).map(place) : [],
 			})),
 		);
 	}
@@ -590,15 +954,17 @@ export class GraphCanvasRenderer {
 		this.hovered = index;
 		this.canvas.style.cursor = index === null ? "" : "pointer";
 		this.tellHover();
+		if (this.inRegion) this.tellMarked(); // a marked paper hovered in the region is named
 		this.markDirty();
 	}
 
-	private onMove = (event: MouseEvent) => this.hover(this.pick(event));
+	private onMove = (event: MouseEvent) => this.hover(this.intro ? null : this.pick(event));
 
 	private onLeave = () => this.hover(null);
 
 	// d3-zoom swallows the click that ends a drag, so this only fires for a real click.
 	private onClick = (event: MouseEvent) => {
+		if (this.skipPress || this.intro) return void (this.skipPress = false); // the press that ended the intro
 		if (performance.now() - this.selectedAt < SAME_PRESS_MS) return; // the end of a lasso or of a select-click
 		this.callbacks.onPick(this.pick(event));
 	};
@@ -634,6 +1000,7 @@ export class GraphCanvasRenderer {
 		if (!lasso || !this.data) return;
 		this.selectedAt = performance.now();
 		if (reach(lasso.line) < LASSO_MIN) {
+			if (this.skipPress) return; // the press that ended the intro marks nothing
 			const index = this.pick(event);
 			if (index !== null) this.callbacks.onMark(index);
 			return;
@@ -662,19 +1029,203 @@ export class GraphCanvasRenderer {
 	// Right-click marks a paper. The browser's own menu has nothing to offer on the graph, so it never opens here.
 	private onContextMenu = (event: MouseEvent) => {
 		event.preventDefault();
+		if (this.skipPress || this.intro) return void (this.skipPress = false); // the press that ended the intro
 		const index = this.pick(event);
 		if (index !== null) this.callbacks.onMark(index);
 	};
 
+	/** The intro's frame now, or null when it is not playing (or has just ended: this frame is the usual graph). */
+	private introNow(): IntroFrame | null {
+		const intro = this.intro;
+		if (!intro) return null;
+		const p = introProgress(performance.now() - intro.started, intro.duration);
+		if (p >= 1) {
+			this.endIntro();
+			return null;
+		}
+		return introFrame(p);
+	}
+
+	/** The layer the intro fades the labels in with, as large as the canvas and empty: made once per intro. */
+	private labelLayerOf(): CanvasRenderingContext2D | null {
+		const { width, height } = this.canvas;
+		let layer = this.labelLayer;
+		if (!layer) {
+			layer = document.createElement("canvas").getContext("2d");
+			if (!layer) return null;
+			this.labelLayer = layer;
+		}
+		if (layer.canvas.width !== width) layer.canvas.width = width;
+		if (layer.canvas.height !== height) layer.canvas.height = height;
+		layer.setTransform(1, 0, 0, 1, 0, 0);
+		layer.clearRect(0, 0, width, height);
+		return layer;
+	}
+
+	/** One tile of the star field with its first `count` stars, drawn once for this device pixel ratio and kept. */
+	private starTileOf(count: number): CanvasPattern | null {
+		const { dpr } = this;
+		if (this.starTile?.count === count && this.starTile.dpr === dpr) return this.starTile.pattern;
+		const side = Math.round(FIELD_TILE * dpr);
+		const canvas = this.starTile?.canvas ?? document.createElement("canvas");
+		canvas.width = canvas.height = side;
+		const tile = canvas.getContext("2d");
+		if (!tile) return null;
+		tile.fillStyle = STAR;
+		for (let index = 0; index < count; index++) {
+			const size = FIELD.size[index] * dpr;
+			tile.globalAlpha = FIELD.bright[index];
+			tile.fillRect(FIELD.place[index * 2] * side - size / 2, FIELD.place[index * 2 + 1] * side - size / 2, size, size);
+		}
+		const pattern = this.ctx.createPattern(canvas, "repeat");
+		if (!pattern) return null;
+		this.starTile = { count, dpr, canvas, pattern };
+		return pattern;
+	}
+
+	/** The star field behind everything (lib/graph/sky.ts), `count` stars a tile, as strong as `alpha`: one repeated
+	 *  image, in screen space, moved a small share of the camera's pan since the graph was first shown. */
+	private drawStarField(count: number, alpha: number) {
+		if (count <= 0 || alpha <= 0) return;
+		const pattern = this.starTileOf(count);
+		if (!pattern) return;
+		const { ctx, dpr } = this;
+		const { x, y } = this.transform;
+		const offset = fieldOffset(x - (this.origin?.x ?? x), y - (this.origin?.y ?? y));
+		pattern.setTransform(new DOMMatrix([1, 0, 0, 1, offset.x * dpr, offset.y * dpr]));
+		ctx.setTransform(1, 0, 0, 1, 0, 0);
+		ctx.globalAlpha = alpha;
+		ctx.fillStyle = pattern;
+		ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+		ctx.globalAlpha = 1;
+	}
+
+	/** How many stars behind the graph: none, a few or many (Settings, "Background stars"). */
+	setStars(stars: StarField) {
+		if (stars === this.stars) return;
+		this.stars = stars;
+		this.markDirty();
+	}
+
+	/** The pixels the gathering stars are written into: as large as the canvas, made once and kept while it keeps
+	 *  its size. */
+	private starPixelsOf(intro: Intro) {
+		const { width, height } = this.canvas;
+		const known = intro.pixels;
+		if (known && known.image.width === width && known.image.height === height) return known;
+		if (known) known.canvas.width = known.canvas.height = 0;
+		const canvas = document.createElement("canvas");
+		canvas.width = width;
+		canvas.height = height;
+		const context = canvas.getContext("2d");
+		if (!context) return null;
+		const image = context.createImageData(width, height);
+		intro.pixels = { canvas, context, image, words: new Uint32Array(image.data.buffer) };
+		return intro.pixels;
+	}
+
+	/**
+	 * The intro's papers on their way from where they started (somewhere in view) to their places: pale squares
+	 * written straight into pixels, then drawn as one image. Thousands of stars move every frame, and one canvas call
+	 * for each would cost more than a frame has.
+	 */
+	private drawGathering(intro: Intro, frame: IntroFrame, data: CanvasData, radius: number, now: number) {
+		const pixels = this.starPixelsOf(intro);
+		if (!pixels) return;
+		const { ctx, dpr } = this;
+		const { x: tx, y: ty, k } = this.transform;
+		const { gathered } = frame;
+		// a slight twinkle while they appear, steady once they are on their way
+		const groupAlpha = intro.groupAlpha;
+		for (let group = 0; group < TWINKLE_GROUPS; group++)
+			groupAlpha[group] = frame.stars * (1 - (1 - gathered) * 0.25 * (0.5 + 0.5 * Math.sin(now / 260 + group * 1.7)));
+		// a star's side in device pixels, before its paper's own size
+		const side = radius * STAR_SIDE * k * dpr;
+		paintGathering(
+			{ words: pixels.words, width: pixels.image.width, height: pixels.image.height },
+			intro.plan,
+			data.points,
+			data.sizes,
+			{ x: tx, y: ty, k, dpr },
+			side,
+			gathered,
+			groupAlpha,
+			STAR_WORD,
+		);
+		pixels.context.putImageData(pixels.image, 0, 0);
+		ctx.setTransform(1, 0, 0, 1, 0, 0);
+		ctx.globalAlpha = 1; // each star's own strength is in its pixels
+		ctx.drawImage(pixels.canvas, 0, 0);
+		ctx.setTransform(dpr * k, 0, 0, dpr * k, dpr * tx, dpr * ty);
+	}
+
+	/** The constellations traced so far: one line per community, and a white dot on each paper it has reached. */
+	private drawConstellations(intro: Intro, frame: IntroFrame, data: CanvasData, radius: number) {
+		const { ctx } = this;
+		const { k } = this.transform;
+		const { papers, offsets } = intro.constellations;
+		const { points } = data;
+		const line = new Path2D();
+		const dots = new Path2D();
+		const dot = radius * 1.7;
+		for (let community = 0; community + 1 < offsets.length; community++) {
+			const first = offsets[community];
+			const count = offsets[community + 1] - first;
+			if (count === 0) continue;
+			const { whole, part } = tracedTo(frame.trace, count - 1);
+			const begin = points[papers[first]];
+			line.moveTo(begin.x, begin.y);
+			for (let step = 0; step <= whole && step < count; step++) {
+				const point = points[papers[first + step]];
+				if (step > 0) line.lineTo(point.x, point.y);
+				dots.moveTo(point.x + dot, point.y);
+				dots.arc(point.x, point.y, dot, 0, Math.PI * 2);
+			}
+			if (part > 0 && whole + 1 < count) {
+				const from = points[papers[first + whole]];
+				const to = points[papers[first + whole + 1]];
+				line.lineTo(from.x + (to.x - from.x) * part, from.y + (to.y - from.y) * part);
+			}
+		}
+		ctx.globalAlpha = frame.line;
+		ctx.strokeStyle = STAR_LINE;
+		ctx.lineWidth = 1 / k;
+		ctx.stroke(line);
+		ctx.globalAlpha = Math.min(1, frame.line / LINE_ALPHA) * 0.9;
+		ctx.fillStyle = STAR_LINE;
+		ctx.fill(dots);
+		ctx.globalAlpha = 1;
+	}
+
 	private draw() {
+		if (this.cameraMoved) {
+			this.cameraMoved = false;
+			this.tellHover();
+			this.tellMarked();
+		}
 		const { ctx, data, dpr } = this;
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		ctx.clearRect(0, 0, this.canvas.clientWidth, this.canvas.clientHeight);
 		if (!data) return;
+		const intro = this.intro;
+		const frame = this.introNow();
+		const now = performance.now();
 		const { x: tx, y: ty, k } = this.transform;
 		const level = data.levels[Math.min(this.level, data.levels.length - 1)];
 		// a paper in no group of this level (a run whose communities do not list it) is drawn in the first one's hue
 		const groupOf = (index: number) => level.groups[level.of[index]] ?? level.groups[0] ?? { hue: 0 };
+		// how strongly each of the usual layers is drawn: in full, unless the intro is bringing it up
+		const lit = frame ? frame.light : 1;
+		const named = frame ? frame.names : 1;
+		// how far the marked papers are drawn as a highlighted region rather than rings (lib/graph/mark-look.ts)
+		const region = this.lookNow(now);
+		const changingLook = region !== this.look.target;
+
+		// 0. The star field, behind everything (drawn first, the glows add over it). In the intro it comes up with the
+		// stars and stays as chosen in Settings; with none chosen, it is the intro's dust and goes as the communities light.
+		if (frame) this.drawStarField(skyStarCount(this.stars), this.stars === "off" ? frame.dust : frame.stars);
+		else this.drawStarField(FIELD_STARS[this.stars], 1);
+		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
 		// THE camera: one transform, then everything is world coordinates.
 		ctx.setTransform(dpr * k, 0, 0, dpr * k, dpr * tx, dpr * ty);
@@ -687,8 +1238,12 @@ export class GraphCanvasRenderer {
 		// the level and the focus stay the same; when that layer would be too large, halo by halo, only those that
 		// reach the screen (the canvas would clip the others, after paying for them).
 		ctx.globalCompositeOperation = "lighter";
+		// turned down while the marked papers are a region, so that the region stands out
+		ctx.globalAlpha = lit * (1 - (1 - REGION_GLOW) * region);
 		const layer = this.glowLayerOf(level, data);
-		if (layer) {
+		if (lit <= 0) {
+			// the intro's communities have not lit up yet
+		} else if (layer) {
 			const { box } = layer.geometry;
 			ctx.drawImage(layer.canvas, box.minX, box.minY, box.maxX - box.minX, box.maxY - box.minY);
 		} else {
@@ -701,25 +1256,27 @@ export class GraphCanvasRenderer {
 			});
 		}
 		ctx.globalCompositeOperation = "source-over";
+		// the marked papers, the hovered and the selected one come up with the names
+		ctx.globalAlpha = named;
 
 		// 1b. Links, under the papers: a line runs from a paper's centre to another's and crosses whatever lies between,
 		// so every dot is drawn over it. The marked papers' links (those in focus), then the hovered paper's.
-		const marked = this.shownMarked();
-		if (marked.length > 0) {
-			const links = new Path2D();
-			for (const index of marked) {
-				const point = data.points[index];
-				for (const other of this.linked[index]) {
-					if (!this.lit(other)) continue;
-					const end = data.points[other];
-					links.moveTo(point.x, point.y);
-					links.lineTo(end.x, end.y);
-				}
-			}
-			ctx.strokeStyle = MARK_LINK;
-			ctx.lineWidth = 1 / k;
-			ctx.stroke(links);
+		const radius = dotRadius(k);
+		// every shown mark's links and rings, giving way to the region; in the region, those of a marked paper hovered or
+		// selected, which is shown in full
+		const marks = region < 1 ? this.marksOf(data, radius) : null;
+		const full = region > 0 ? this.markDrawing(this.markedInFull(), data, radius) : null;
+		ctx.strokeStyle = MARK_LINK;
+		ctx.lineWidth = 1 / k;
+		if (marks) {
+			ctx.globalAlpha = named * (1 - region);
+			this.strokeLines(marks.links);
 		}
+		if (full) {
+			ctx.globalAlpha = named * region;
+			this.strokeLines(full.links);
+		}
+		ctx.globalAlpha = named;
 		if (this.hovered !== null && data.points[this.hovered]) {
 			const point = data.points[this.hovered];
 			ctx.strokeStyle = MARKED_LINK;
@@ -736,44 +1293,78 @@ export class GraphCanvasRenderer {
 
 		// 2. Papers: one path per group (a community, or a feature's group) plus one for everything out of focus or
 		// in no group. Never under ~1px on screen.
-		const radius = dotRadius(k);
-		const { dots, dimmed } = this.dotsOf(level, data, radius);
-		const { hues } = this.paintOf(level);
-		ctx.fillStyle = DIM;
-		ctx.fill(dimmed);
-		dots.forEach((path, group) => {
-			const hue = hues[group];
-			ctx.fillStyle = hue === null ? GREY : hsl(hue, 74);
-			ctx.fill(path);
-		});
+		// In the intro, pale stars on their way to their places, then the same dots as always, pale and then in their
+		// colours.
+		if (frame && intro && !frame.settled) this.drawGathering(intro, frame, data, radius, now);
+		else {
+			const { dots, dimmed } = this.dotsOf(level, data, radius);
+			const { hues } = this.paintOf(level);
+			if (frame && lit < 1) {
+				ctx.globalAlpha = frame.stars * (1 - lit);
+				ctx.fillStyle = STAR;
+				ctx.fill(dimmed);
+				for (const path of dots) ctx.fill(path);
+			}
+			const fill = (paths: { dots: Path2D[]; dimmed: Path2D }, alpha: number) => {
+				ctx.globalAlpha = alpha;
+				ctx.fillStyle = DIM;
+				ctx.fill(paths.dimmed);
+				paths.dots.forEach((path, group) => {
+					const hue = hues[group];
+					ctx.fillStyle = hue === null ? GREY : hsl(hue, 74);
+					ctx.fill(path);
+				});
+			};
+			// the usual dots, and the region's (only the shown marked papers in colour), the one giving way to the other
+			if (lit > 0 && region < 1) fill({ dots, dimmed }, lit * (1 - region));
+			if (lit > 0 && region > 0) {
+				// every paper dimmed, as out of focus, then the shown marked papers over them in their colours
+				ctx.globalAlpha = lit * region;
+				ctx.fillStyle = DIM;
+				ctx.fill(dimmed);
+				for (const path of dots) ctx.fill(path);
+				fill(this.regionDotsOf(level, data, radius), lit * region);
+				// each shown marked paper's soft halo, a few pixels across whatever the zoom: one image while it can be kept,
+				// else those in view one by one
+				ctx.globalCompositeOperation = "lighter";
+				ctx.globalAlpha = lit * region;
+				const halos = this.haloLayerOf(data, k);
+				if (halos)
+					ctx.drawImage(halos.canvas, halos.box.minX, halos.box.minY, halos.box.maxX - halos.box.minX, halos.box.maxY - halos.box.minY);
+				else {
+					const halo = this.markHaloOf();
+					const reach = REGION_HALO_PX / k;
+					const view = visibleWorld(this.transform, this.canvas.clientWidth, this.canvas.clientHeight, reach);
+					for (const index of this.shownMarked()) {
+						const point = data.points[index];
+						if (inside(view, point.x, point.y)) ctx.drawImage(halo, point.x - reach, point.y - reach, reach * 2, reach * 2);
+					}
+				}
+				ctx.globalCompositeOperation = "source-over";
+			}
+		}
+		// 2b. The intro's constellations, over the papers they go through.
+		if (frame && intro && frame.trace > 0 && frame.line > 0) this.drawConstellations(intro, frame, data, radius);
+		ctx.globalAlpha = named;
 
 		// 3. Marked papers (those in focus): the papers their links (1b) end at, then a yellow ring on a dark rim. The
 		// ring sits outside where the selected paper's ring goes, so a paper that is both shows both.
-		if (marked.length > 0) {
-			const ends = new Path2D();
-			const rings = new Path2D();
-			for (const index of marked) {
-				const point = data.points[index];
-				for (const other of this.linked[index]) {
-					if (!this.lit(other)) continue;
-					const end = data.points[other];
-					const size = radius * data.sizes[other] * 1.1;
-					ends.moveTo(end.x + size, end.y);
-					ends.arc(end.x, end.y, size, 0, Math.PI * 2);
-				}
-				const ring = radius * data.sizes[index] * 1.5 + 7 / k;
-				rings.moveTo(point.x + ring, point.y);
-				rings.arc(point.x, point.y, ring, 0, Math.PI * 2);
-			}
+		for (const [drawing, alpha] of [
+			[marks, named * (1 - region)],
+			[full, named * region],
+		] as const) {
+			if (!drawing || alpha <= 0) continue;
+			ctx.globalAlpha = alpha;
 			ctx.fillStyle = MARK_LINK;
-			ctx.fill(ends);
+			ctx.fill(drawing.ends);
 			ctx.strokeStyle = MARK_EDGE;
 			ctx.lineWidth = 4 / k;
-			ctx.stroke(rings);
+			this.strokeRings(drawing.rings, 7 / k);
 			ctx.strokeStyle = MARK;
 			ctx.lineWidth = 2 / k;
-			ctx.stroke(rings);
+			this.strokeRings(drawing.rings, 7 / k);
 		}
+		ctx.globalAlpha = named;
 
 		// 4. Hovered and selected papers: a halo, a white core, a ring. The hovered one also shows the papers its links
 		// (1b) end at.
@@ -802,19 +1393,25 @@ export class GraphCanvasRenderer {
 			ctx.stroke();
 		}
 
-		// 5. Labels of the groups that have a paper in focus, in screen space so they stay one size.
+		// 5. Labels of the groups that have a paper in focus, in screen space so they stay one size. While the intro
+		// fades them in, they are drawn whole into a layer of their own and the layer is faded: a label drawn faint
+		// would show its dark outline through its own letters.
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+		const fading = named > 0 && named < 1 ? this.labelLayerOf() : null;
+		const pen = fading ?? ctx;
+		pen.setTransform(dpr, 0, 0, dpr, 0, 0);
 		const shown = new Set<number>();
 		if (this.focus) for (const index of this.focus) shown.add(level.of[index]);
-		ctx.font = '600 11px "JetBrains Mono", ui-monospace, monospace';
-		ctx.textAlign = "center";
-		ctx.textBaseline = "middle";
-		ctx.lineJoin = "round";
-		ctx.lineWidth = 3;
+		pen.font = '600 11px "JetBrains Mono", ui-monospace, monospace';
+		pen.textAlign = "center";
+		pen.textBaseline = "middle";
+		pen.lineJoin = "round";
+		pen.lineWidth = 3;
 		// Biggest groups first; a label that would cover one already placed waits until there is room (zoom in).
 		const placed: { left: number; right: number; top: number; bottom: number }[] = [];
 		const order = level.groups.map((_, index) => index).sort((a, b) => level.groups[b].size - level.groups[a].size);
 		for (const index of order) {
+			if (named <= 0) break; // the intro has not come to the names
 			if (this.focus && !shown.has(index)) continue;
 			const group = level.groups[index];
 			// A label gets the room its group has on screen, and never less than the minimum: zoomed in, the
@@ -827,7 +1424,7 @@ export class GraphCanvasRenderer {
 			);
 			const x = group.x * k + tx;
 			const y = group.y * k + ty;
-			const half = Math.max(...lines.map((line) => ctx.measureText(line).width)) / 2 + 4;
+			const half = Math.max(...lines.map((line) => pen.measureText(line).width)) / 2 + 4;
 			const tall = (lines.length * LABEL_LINE) / 2 + 2;
 			const box = { left: x - half, right: x + half, top: y - tall, bottom: y + tall };
 			const covers = (other: typeof box) =>
@@ -836,12 +1433,22 @@ export class GraphCanvasRenderer {
 			placed.push(box);
 			lines.forEach((line, row) => {
 				const lineY = y + (row - (lines.length - 1) / 2) * LABEL_LINE;
-				ctx.strokeStyle = "rgba(20, 20, 20, 0.85)";
-				ctx.strokeText(line, x, lineY);
-				ctx.fillStyle = hsl(group.hue, 86);
-				ctx.fillText(line, x, lineY);
+				pen.strokeStyle = "rgba(20, 20, 20, 0.85)";
+				pen.strokeText(line, x, lineY);
+				pen.fillStyle = hsl(group.hue, 86);
+				pen.fillText(line, x, lineY);
 			});
 		}
+		if (fading) {
+			ctx.setTransform(1, 0, 0, 1, 0, 0);
+			ctx.globalAlpha = named;
+			ctx.drawImage(fading.canvas, 0, 0);
+			ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+		}
+
+		ctx.globalAlpha = 1;
+		// the intro's next frame; its last one was the usual graph, drawn just now
+		if (frame || changingLook) this.markDirty();
 
 		// 6. The lasso being drawn, in screen space: the line the pointer took, closed back to where it began.
 		if (this.lasso && this.lasso.line.length > 1) {

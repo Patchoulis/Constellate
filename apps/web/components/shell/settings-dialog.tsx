@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { Dialog } from "radix-ui";
 import { FileSearch, RotateCcw, X } from "lucide-react";
 import { REDO_STEPS, type Catalog, type Library, type ModelProvider, type RedoStep, type Settings } from "@rp/contracts";
@@ -12,6 +13,10 @@ import { Input, Label, SwitchRow } from "@/components/ui/field";
 import { Choice, GroupedPicker } from "@/components/ui/picker";
 import { splitByOwner } from "@/lib/net/engine";
 import { SELECT_KEYS, selectKeyName, setPrefs, usePrefs, useSelectKeyName } from "@/lib/ui/prefs";
+import type { IntroWhen } from "@/lib/graph/intro";
+import type { StarField } from "@/lib/graph/sky";
+import { REGION_FROM, regionFromOf } from "@/lib/graph/mark-look";
+import { prefersLessMotion } from "@/lib/graph/glide";
 import { cn } from "@/lib/utils";
 
 /** The whole dialog as data: every setting appears once here, with how it is edited. */
@@ -26,9 +31,23 @@ type Field = { key: keyof Settings; label: string; hint?: string } & (
 	| { kind: "model"; role: ModelRole }
 );
 
+/** When the constellation intro plays, as the choice is offered. */
+export const INTRO_CHOICES: readonly { value: IntroWhen; label: string }[] = [
+	{ value: "opened", label: "Whenever a run is opened" },
+	{ value: "made", label: "When a run is made" },
+	{ value: "never", label: "Never" },
+];
+
+/** How many stars are drawn behind the graph, as the choice is offered. */
+export const STAR_CHOICES: readonly { value: StarField; label: string }[] = [
+	{ value: "off", label: "Off" },
+	{ value: "few", label: "A few" },
+	{ value: "many", label: "Many" },
+];
+
 /**
- * How the graph is used in this window: the key that selects papers, and whether marks are shown. Kept in this
- * browser (lib/ui/prefs.ts), applied at once, and nothing a run depends on.
+ * How the graph is used in this window: the key that selects papers, whether marks are shown, and when the intro
+ * plays. Kept in this browser (lib/ui/prefs.ts), applied at once, and nothing a run depends on.
  */
 function GraphChoices() {
 	const prefs = usePrefs();
@@ -36,6 +55,9 @@ function GraphChoices() {
 	// the names as on this keyboard: Ctrl is Command on a Mac, Alt is Option
 	const mac = useSelectKeyName("primary") !== "Ctrl";
 	const keys = SELECT_KEYS.map((key) => ({ value: key, label: selectKeyName(key, mac) }));
+	// the choice stays the person's own; when the system asks for less motion, the hint says why nothing plays
+	const [lessMotion, setLessMotion] = useState(false);
+	useEffect(() => setLessMotion(prefersLessMotion()), []);
 	return (
 		<section className="flex flex-col gap-2">
 			<Heading>The graph</Heading>
@@ -51,18 +73,77 @@ function GraphChoices() {
 				<Segmented className="shrink-0" options={keys} value={prefs.selectKey} onChange={(selectKey) => setPrefs({ selectKey })} />
 			</div>
 			<SwitchRow
-				label="Show marked papers on the graph"
-				hint="Their yellow rings, links and names. The eye beside the Marked tab does the same. Hidden marks stay marked and listed."
-				checked={prefs.marksShown}
-				onCheckedChange={(marksShown) => setPrefs({ marksShown })}
-			/>
-			<SwitchRow
-				label="Show marks again when a paper is marked"
-				hint="Marking a paper while the marks are hidden shows them. Off: marks stay hidden until the eye is clicked."
+				label="Show hidden marks again when a paper is marked"
+				hint="A paper you mark is always shown on the graph. On: marking one also shows every marked paper you hid there. Off: they stay hidden until shown again under Marked, or with the eye beside it."
 				checked={prefs.showMarksOnMark}
 				onCheckedChange={(showMarksOnMark) => setPrefs({ showMarksOnMark })}
 			/>
+			<div className="flex flex-col gap-1.5 py-1.5">
+				<span className="flex flex-col gap-0.5">
+					<span className="text-sm text-foreground">Play the constellation intro</span>
+					<span className="text-xs text-muted-foreground">
+						The papers gather as stars into their communities, which then light up. It lasts a few seconds; a click, a key, the wheel or a
+						drag ends it. It never plays when your system is set to reduce motion.
+					</span>
+					{lessMotion && prefs.intro !== "never" && (
+						<span className="text-xs text-warning">It is not playing now: your system asks for less motion.</span>
+					)}
+				</span>
+				<Segmented options={INTRO_CHOICES} value={prefs.intro} onChange={(intro) => setPrefs({ intro })} />
+			</div>
+			<div className="flex flex-col gap-1.5 py-1.5">
+				<span className="flex flex-col gap-0.5">
+					<span className="text-sm text-foreground">Background stars</span>
+					<span className="text-xs text-muted-foreground">
+						Tiny faint stars behind the graph, the same as the sky shown while a run loads. They move only a little as the graph is moved.
+					</span>
+				</span>
+				<Segmented className="self-start" options={STAR_CHOICES} value={prefs.stars} onChange={(stars) => setPrefs({ stars })} />
+			</div>
+			<RegionFrom value={prefs.regionFrom} />
 		</section>
+	);
+}
+
+/** From how many shown marked papers they are a highlighted region: typed freely, kept once it is a number, and put
+ *  within its bounds when the field is left. */
+function RegionFrom({ value }: { value: number }) {
+	const [typed, setTyped] = useState(String(value));
+	useEffect(() => setTyped(String(value)), [value]);
+	return (
+		<div className="flex items-start justify-between gap-4 py-1.5">
+			<span className="flex flex-col gap-0.5">
+				<Label htmlFor="region-from" className="text-sm text-foreground">
+					Show marked papers as a highlighted region from
+				</Label>
+				<span className="text-xs text-muted-foreground">
+					With this many marked papers shown or more, they keep their colours with a soft halo and every other paper is dimmed, in place of
+					a ring, links and a name for each. A marked paper hovered or opened still shows them. From {REGION_FROM.least} to{" "}
+					{REGION_FROM.most}.
+				</span>
+			</span>
+			<Input
+				id="region-from"
+				type="number"
+				inputMode="numeric"
+				min={REGION_FROM.least}
+				max={REGION_FROM.most}
+				step={1}
+				className="w-20 shrink-0 tabular-nums"
+				value={typed}
+				onChange={(event) => {
+					setTyped(event.target.value);
+					const number = Number(event.target.value);
+					if (event.target.value.trim() !== "" && number >= REGION_FROM.least && number <= REGION_FROM.most)
+						setPrefs({ regionFrom: regionFromOf(number) });
+				}}
+				onBlur={() => {
+					const kept = regionFromOf(typed);
+					setPrefs({ regionFrom: kept });
+					setTyped(String(kept));
+				}}
+			/>
+		</div>
 	);
 }
 

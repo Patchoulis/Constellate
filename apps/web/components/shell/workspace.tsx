@@ -19,9 +19,13 @@ import { ANSWER_OWNER, GraphColouringContext, colouringStep, type GraphColouring
 import { useMarks } from "@/lib/community/marks";
 import type { Job } from "@/lib/shell/use-job";
 import { ready, useAsync } from "@/lib/use-async";
-import { setPrefs, usePrefs } from "@/lib/ui/prefs";
+import { usePrefs } from "@/lib/ui/prefs";
 import { useResizable } from "@/lib/ui/use-resizable";
 import { stepLine } from "@/lib/shell/run-step";
+import { SkyLoading } from "@/components/graph/sky-loading";
+import { LoadingWords } from "@/components/ui/loading-dots";
+import { prefersLessMotion } from "@/lib/graph/glide";
+import { BEATS, INTRO_MS, introPlays, type Opening } from "@/lib/graph/intro";
 
 /** The run's log, folded to its last line until opened. */
 export function ActivityLog({ job }: { job: Job }) {
@@ -70,8 +74,14 @@ export function ActivityLog({ job }: { job: Job }) {
 }
 
 export function Notice({ children }: { children: React.ReactNode }) {
-	return <div className="flex size-full items-center justify-center p-8 text-center text-sm text-muted-foreground">{children}</div>;
+	// positioned, so that it is drawn over a sky behind it (components/graph/sky-loading.tsx)
+	return (
+		<div className="relative flex size-full items-center justify-center p-8 text-center text-sm text-muted-foreground">{children}</div>
+	);
 }
+
+/** How long the loading sky takes to fade once the graph's intro begins: as long as the intro's stars take to come. */
+const SKY_HANDOVER_MS = Math.round(INTRO_MS * BEATS.stars[1]);
 
 /** One run on screen: its graph, its communities, and the paper being read. Mount it with key={name}, so
  *  opening another run starts with nothing selected. `children` are laid over the graph. */
@@ -80,9 +90,13 @@ export function Workspace({
 	title,
 	catalog,
 	model,
+	opening = "opened",
 	children,
 }: {
 	name: string;
+	/** why the run is shown: made by a job just now, opened, or only shown again; the intro may play for the first two
+	 *  (Settings, "Play the constellation intro") */
+	opening?: Opening;
 	/** the run's title, as the list shows it */
 	title?: string;
 	catalog: Catalog | undefined;
@@ -117,18 +131,23 @@ export function Workspace({
 	const known = useMemo(() => (graph ? new Set(graph.nodes.map((node) => node.id)) : null), [graph]);
 	const stored = useMarks(name, known);
 	const prefs = usePrefs();
-	// Marking while the marks are hidden shows them again, where the person chose that (Settings).
+	// Whether the graph comes up with the intro: decided once, as the run is opened.
+	const [intro] = useState(() => introPlays(prefs.intro, opening, prefersLessMotion()));
+	// the loading sky, fading out over the intro's first stars once the graph is there
+	const [skyLeft, setSkyLeft] = useState(!intro);
+	// A paper marked is always shown with its links (lib/community/marks.ts); where the person chose that (Settings),
+	// marking one also shows every hidden mark again.
 	const { showMarksOnMark } = prefs;
 	const marks = useMemo(() => {
-		const show = () => showMarksOnMark && setPrefs({ marksShown: true });
+		const showAll = () => showMarksOnMark && stored.hidden.size > 0 && stored.setShown([...stored.hidden], true);
 		return {
 			...stored,
 			toggle: (id: string) => {
-				if (!stored.has(id)) show();
+				if (!stored.has(id)) showAll();
 				stored.toggle(id);
 			},
 			addMany: (ids: readonly string[]) => {
-				show();
+				showAll();
 				stored.addMany(ids);
 			},
 		};
@@ -184,9 +203,11 @@ export function Workspace({
 	}, [graph, roots, marks.marked]);
 
 	if (!result || !graph) {
+		const failed = run.status === "failed";
 		return (
 			<main className="relative min-w-0 flex-1">
-				<Notice>{run.status === "failed" ? run.error : "Loading the run…"}</Notice>
+				{!failed && <SkyLoading />}
+				<Notice>{failed ? run.error : <LoadingWords words="Loading the run" />}</Notice>
 				{children}
 			</main>
 		);
@@ -218,14 +239,27 @@ export function Workspace({
 							selectedPaper={paper}
 							ratings={ratings}
 							marked={marks.marked}
-							marksShown={prefs.marksShown}
+							hiddenMarks={marks.hidden}
+							marksWithoutLinks={marks.noLinks}
 							selectKey={prefs.selectKey}
 							goTo={goTo}
+							intro={intro}
+							stars={prefs.stars}
+							regionFrom={prefs.regionFrom}
 							onPickPaper={openPaper}
 							onMarkPaper={marks.toggle}
 							onMarkPapers={marks.addMany}
 						/>
 					</SectionBoundary>
+					{!skyLeft && (
+						<div
+							className="leave-fade pointer-events-none absolute inset-0"
+							style={{ animationDuration: `${SKY_HANDOVER_MS}ms` }}
+							onAnimationEnd={() => setSkyLeft(true)}
+						>
+							<SkyLoading />
+						</div>
+					)}
 					{children}
 					<SectionBoundary
 						what="asking about the run"
@@ -285,8 +319,6 @@ export function Workspace({
 						onOpenPaper={openPaper}
 						marks={marks}
 						markedPapers={markedPapers}
-						marksShown={prefs.marksShown}
-						onMarksShown={(marksShown) => setPrefs({ marksShown })}
 						onGoToPaper={goToPaper}
 						onNamed={run.reload}
 						title={title ?? name}
