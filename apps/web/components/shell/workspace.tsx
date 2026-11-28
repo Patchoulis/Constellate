@@ -13,6 +13,7 @@ import { ResizeHandle } from "@/components/ui/resize-handle";
 import { api } from "@/lib/net/api";
 import { communityTree, nodeAt, type CommunityNode } from "@/lib/community/community";
 import { withCounted } from "@/lib/reader/citations";
+import { linkedPapers } from "@/lib/graph/related";
 import { ANSWER_OWNER, GraphColouringContext, colouringStep, type GraphColouring, type PaperColouring } from "@/lib/graph/graph-colouring";
 import { useMarks } from "@/lib/community/marks";
 import type { Job } from "@/lib/shell/use-job";
@@ -198,13 +199,11 @@ export function Workspace({
 			</main>
 		);
 	}
-	const paperIndex = paper === null ? -1 : graph.nodes.findIndex((node) => node.id === paper);
-	const paperNode = graph.nodes[paperIndex];
+	// The open paper may not be in the run as it is now (read again since it was opened): it is still read, with no
+	// community and no linked papers.
+	const paperNode = paper === null ? undefined : graph.nodes.find((node) => node.id === paper);
 	// The papers the open one is linked to, closest first.
-	const related = graph.edges
-		.filter(([a, b]) => a === paperIndex || b === paperIndex)
-		.map(([a, b, similarity]) => ({ ...graph.nodes[a === paperIndex ? b : a], similarity }))
-		.sort((a, b) => b.similarity - a.similarity);
+	const related = linkedPapers(graph, paper);
 	return (
 		<EvidenceProvider value={evidence}>
 			<GraphColouringContext value={colourings}>

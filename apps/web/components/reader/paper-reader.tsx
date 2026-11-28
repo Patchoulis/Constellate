@@ -31,7 +31,8 @@ export interface Related {
 	id: string;
 	title: string;
 	similarity: number;
-	community: CommunityNode;
+	/** absent for a paper whose community the run's communities do not have */
+	community?: CommunityNode;
 }
 
 type View = "abstract" | "paper" | "text" | "reviews" | "citations" | "claims";
@@ -351,7 +352,7 @@ function Abstract({
 					{related.map((other) => (
 						<RowButton key={other.id} className="items-baseline gap-2" onClick={() => onOpen(other.id)}>
 							<span className="translate-y-px">
-								<CommunityDot hue={other.community.hue} />
+								{other.community && <CommunityDot hue={other.community.hue} />}
 							</span>
 							<span className="flex-1 text-base leading-snug">
 								<MathText>{other.title}</MathText>

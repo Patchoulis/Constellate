@@ -49,7 +49,7 @@ import { communityLabel, type CommunityNode } from "@/lib/community/community";
 import type { MarksOf } from "@/lib/community/marks";
 import { useResizable } from "@/lib/ui/use-resizable";
 import { cn, hsl } from "@/lib/utils";
-import { UNIQUENESS_NOTE, uniqueness } from "@/lib/community/community";
+import { barScale, barWidth, highlightShare, UNIQUENESS_NOTE, uniqueness } from "@/lib/community/community";
 import { count, distance, percent, similarity, SIMILARITY_NOTE } from "@/lib/units";
 
 /** How a user marks a paper, said wherever marking is offered. */
@@ -81,8 +81,8 @@ const SORTS: readonly {
 		value: "highlights",
 		label: "Highlights",
 		title: "Share of its papers accepted as orals or spotlights",
-		of: (c: Community) => ((c.acceptance.oral ?? 0) + (c.acceptance.spotlight ?? 0)) / c.size,
-		show: (c: Community) => `${percent(((c.acceptance.oral ?? 0) + (c.acceptance.spotlight ?? 0)) / c.size)} of its papers`,
+		of: (c: Community) => (c.size > 0 ? highlightShare(c) : null),
+		show: (c: Community) => `${percent(highlightShare(c))} of its papers`,
 	},
 	{
 		value: "cited",
@@ -392,9 +392,11 @@ function Detail({
 				</Block>
 			)}
 			<Block title={`Closest ${node.depth ? "sibling" : "communities"}`}>
-				{community.closest_communities.map((other) => (
-					<Line key={other.id} node={siblings[other.id]} figure={similarity(other.cosine)} onClick={() => onSelect(siblings[other.id])} />
-				))}
+				{/* by Community.id among its siblings; one the tree does not have (a file written halfway) is not listed */}
+				{community.closest_communities.flatMap((other) => {
+					const sibling = siblings.find((one) => one.community.id === other.id && one !== node);
+					return sibling ? [<Line key={other.id} node={sibling} figure={similarity(other.cosine)} onClick={() => onSelect(sibling)} />] : [];
+				})}
 			</Block>
 			<Block title="Nearest to the mean embedding">
 				{community.nearest_to_centroid.map((paper) => (
@@ -416,14 +418,15 @@ function Detail({
 }
 
 function List({ nodes, sort, onSelect }: { nodes: CommunityNode[]; sort: Sort; onSelect: (node: CommunityNode) => void }) {
-	const values = nodes.map((node) => sort.by.of(node.community)).filter((value): value is number => value !== null);
 	// Counts are bars from zero; uniqueness sits in a narrow band, so its bars start just under the lowest.
-	const low = sort.by.value === "uniqueness" ? Math.min(...values) * 0.9 : 0;
-	const span = Math.max(...values) - low || 1;
+	const scale = barScale(
+		nodes.map((node) => sort.by.of(node.community)),
+		sort.by.value === "uniqueness",
+	);
 	// a figure not known yet goes last whichever way the list is ordered
 	const ordered = [...nodes].sort((a, b) => {
 		const [x, y] = [sort.by.of(a.community), sort.by.of(b.community)];
-		if (x === null || y === null) return (x === null ? 1 : 0) - (y === null ? 1 : 0);
+		if (x === null || y === null || Number.isNaN(x) || Number.isNaN(y)) return (x === null || Number.isNaN(x) ? 1 : 0) - (y === null || Number.isNaN(y) ? 1 : 0);
 		return (sort.descending ? -1 : 1) * (x - y);
 	});
 	return (
@@ -440,7 +443,7 @@ function List({ nodes, sort, onSelect }: { nodes: CommunityNode[]; sort: Sort; o
 							<span
 								className="block h-full rounded-full"
 								style={{
-									width: `${(100 * ((sort.by.of(node.community) ?? low) - low)) / span}%`,
+									width: `${barWidth(sort.by.of(node.community), scale)}%`,
 									background: hsl(node.hue, 60, 0.8),
 								}}
 							/>
@@ -775,7 +778,7 @@ function Communities({
 					<>
 						<span className="flex-1 px-1 text-sm font-semibold">All communities</span>
 						<span className="text-xs text-muted-foreground tabular-nums">
-							{count(roots.length, "community", "communities")} · modularity {result.modularity.toFixed(2)} of 1
+							{count(roots.length, "community", "communities")} · {Number.isFinite(result.modularity) ? `modularity ${result.modularity.toFixed(2)} of 1` : "modularity not known"}
 						</span>
 					</>
 				)}

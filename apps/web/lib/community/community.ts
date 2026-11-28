@@ -60,9 +60,10 @@ export function treeDepth(roots: CommunityNode[]): number {
 	return roots.reduce((deepest, node) => Math.max(deepest, node.children.length ? 1 + treeDepth(node.children) : 0), 0);
 }
 
-/** A community's title: its written name as it is, or its two most characteristic terms, capitalised. */
+/** A community's title: its written name as it is, or its two most characteristic terms, capitalised; its place in
+ *  the tree for one that has neither (a run saved before terms were kept). */
 export function communityLabel(community: Community): string {
-	return community.name ?? titleCase(community.keywords.slice(0, 2).join(" · "));
+	return community.name ?? (titleCase(community.keywords.slice(0, 2).join(" · ")) || `Community ${community.tree_path}`);
 }
 
 /**
@@ -76,3 +77,28 @@ export function uniqueness(community: Pick<Community, "similarity_to_mean">): nu
 
 export const UNIQUENESS_NOTE =
 	"How much its papers differ from each other: the mean cosine distance of its papers from the community's mean embedding (1 minus their cosine similarity to it). Low: its papers are all doing much the same thing. High: the work in it is more varied.";
+
+/**
+ * Where a list's bars start and how much of the bar one unit is: from 0 for counts, or (`fromLowest`) from just under
+ * the lowest figure, for figures that sit in a narrow band. Finite whatever the figures are: with none known yet (a
+ * list sorted by citations before they are counted) every bar is empty, not NaN wide.
+ */
+export function barScale(values: readonly (number | null)[], fromLowest: boolean): { low: number; span: number } {
+	const known = values.filter((value): value is number => value !== null && Number.isFinite(value));
+	if (known.length === 0) return { low: 0, span: 1 };
+	const low = fromLowest ? known.reduce((least, value) => Math.min(least, value), Infinity) * 0.9 : 0;
+	const high = known.reduce((most, value) => Math.max(most, value), -Infinity);
+	return { low, span: high - low || 1 };
+}
+
+/** The share of a bar a figure fills, 0 to 100: 0 for one not known. */
+export function barWidth(value: number | null, { low, span }: { low: number; span: number }): number {
+	if (value === null || !Number.isFinite(value)) return 0;
+	return Math.min(100, Math.max(0, (100 * (value - low)) / span));
+}
+
+/** Of a community's papers, the share accepted as orals or spotlights; not known (NaN) for one with no papers. */
+export function highlightShare(community: Pick<Community, "acceptance" | "size">): number {
+	const singled = (community.acceptance.oral ?? 0) + (community.acceptance.spotlight ?? 0);
+	return community.size > 0 ? singled / community.size : Number.NaN;
+}
