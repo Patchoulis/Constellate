@@ -59,7 +59,7 @@ use crate::library::papers::passages::PDF_FOLDER;
 use crate::library::{AnswerKey, Feature, Library, PaperReading};
 use crate::model::batch::{Asking, IN_FLIGHT};
 use crate::model::chosen::{Accepted, Terms, budget};
-use crate::model::language::{Budget, Estimate, Provider};
+use crate::model::language::{Budget, Estimate, ForRun, Provider};
 use crate::usage::Usd;
 
 /// How long a request waits for an index being built before it is told how far the building has got.
@@ -475,10 +475,18 @@ async fn start(
         let transport = Arc::clone(&engine.transport);
         let subject = prepared.subject.clone();
         let about = About { feature: Feature::Answers, subject: subject.clone(), item: Some(id.clone()) };
+        let run = scope.run.clone();
         let started = engine.job.start_about(JOB, about, move |tracker| {
             tracker.log(&line);
-            let asking =
-                Asking { library: &worker, transport: &*transport, endpoint, recorder: &*worker, in_flight: IN_FLIGHT };
+            // asked of the run, one of its communities, or its marked papers: the run's cost
+            let recorder = ForRun::new(&*worker, Some(&run));
+            let asking = Asking {
+                library: &worker,
+                transport: &*transport,
+                endpoint,
+                recorder: &recorder,
+                in_flight: IN_FLIGHT,
+            };
             let came = answer(asking, &prepared, &budget, tracker)?;
             tracker.log(&format!("The model {came}."));
             Ok(Finished::Feature { feature: Feature::Answers, subject })
@@ -1252,6 +1260,9 @@ mod tests {
         assert_eq!(jobs.len(), 1, "one job asks it");
         assert_eq!(finished(&router, &jobs[0]).await["state"], "done");
         assert_eq!(transport.sent().len(), 1, "asked once");
+        // a question asked of the run is its cost, paid once
+        let (_, spent) = call(&router, "GET", "/api/usage?run=r1", None).await;
+        assert_eq!((spent["run_calls"].clone(), spent["calls"].clone()), (json!(1), json!(1)), "{spent}");
         let (_, listed) = call(&router, "GET", "/api/runs/r1/answers", None).await;
         assert_eq!(listed.as_array().unwrap().len(), 1, "the question being asked is still listed: {listed}");
         assert_eq!(listed[0]["answered"], true, "{listed}");

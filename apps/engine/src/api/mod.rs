@@ -7,7 +7,7 @@
 //! | [`papers`]   | one paper: its record, PDF, declarations, passages, reviews and citations          |
 //! | [`runs`]     | the runs: making one, listing, serving, renaming, deleting; the catalogue           |
 //! | [`models`]   | the language models' providers and models, for the interface to choose from        |
-//! | [`usage`]    | what the language model has cost: in all, by model and purpose, and this session   |
+//! | [`usage`]    | what the language model has cost: in all, by model and purpose, and of a run       |
 //!
 //! [`Server`] puts them together: bound to its address, it says once where it is ([`Server::startup_line`]) and
 //! serves until it is told to stop.

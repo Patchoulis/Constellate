@@ -5,11 +5,14 @@
 //! and a total by any other measure (by day, say) can be asked for later. Prices are whole millionths of a US
 //! dollar, so a sum of thousands of tiny calls is exact. A call to a model whose price is not known has no price,
 //! is counted in tokens only, and is counted as unpriced so that the total can say it is short.
+//!
+//! A row names the run it was made for, so that what a run cost is a sum over its rows too. Nothing kept from
+//! before that column was added says which run a call was for (a run's opens are kept, its cost never was; an
+//! answer kept for a run does not say which call paid for it), so those rows name no run rather than one guessed.
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, SecondsFormat, Utc};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
 use crate::library::{Library, LibraryError, now};
@@ -17,6 +20,9 @@ use crate::library::{Library, LibraryError, now};
 /// One call to the API, as made.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Call<'a> {
+    /// The run it was made for, by name; none for a call of no run, and for every call recorded before calls were
+    /// counted by run ([`Library::runs_counted_since`]).
+    pub run: Option<&'a str>,
     pub model: &'a str,
     /// What it was for: naming communities, overviews, training the AI-text detector.
     pub purpose: &'a str,
@@ -85,8 +91,8 @@ pub(in crate::library) fn put_calls(
 ) -> rusqlite::Result<usize> {
     connection.execute(
         "INSERT INTO spending (at, model, purpose, calls, input_tokens, output_tokens, price_micros,
-                               cache_read_tokens, cache_write_tokens)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                               cache_read_tokens, cache_write_tokens, run)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             at,
             call.model,
@@ -96,7 +102,8 @@ pub(in crate::library) fn put_calls(
             call.output_tokens,
             call.price_micros,
             call.cache_read_tokens,
-            call.cache_write_tokens
+            call.cache_write_tokens,
+            call.run
         ],
     )
 }
@@ -105,6 +112,17 @@ fn grouped(connection: &Connection, column: &str) -> rusqlite::Result<BTreeMap<S
     let mut statement = connection.prepare(&format!("SELECT {column}, {SUMS} FROM spending GROUP BY {column}"))?;
     let rows = statement.query_map([], |row| Ok((row.get(0)?, totals_from(row, 1)?)))?;
     rows.collect()
+}
+
+/// What one run cost: the calls recorded for it, in all and by purpose.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct RunSpending {
+    pub total: Totals,
+    pub purposes: BTreeMap<String, Totals>,
+    /// The day calls began to be counted by run, when calls were recorded before it: those have no run, so what a
+    /// run made before that day cost then is in the total of everything spent and not in its own. None when every
+    /// call recorded was counted by run.
+    pub counted_since: Option<String>,
 }
 
 impl Library {
@@ -127,14 +145,36 @@ impl Library {
         })
     }
 
-    /// The calls recorded at `from` or later, added up: what was spent since then (since the engine started, say).
-    /// Every row is stamped as [`now`] writes it, UTC to the second in RFC 3339, which sorts as text; `from` is
-    /// written the same way, so the comparison is one of instants, to the second.
-    pub fn spending_since(&self, from: DateTime<Utc>) -> Result<Totals, LibraryError> {
-        let from = from.to_rfc3339_opts(SecondsFormat::Secs, true);
+    /// When calls began to be counted by run (UTC, RFC 3339): the moment this library was first opened by a version
+    /// that counts them.
+    pub fn runs_counted_since(&self) -> Result<String, LibraryError> {
         self.read(|connection| {
-            let sql = format!("SELECT {SUMS} FROM spending WHERE at >= ?1");
-            Ok(connection.query_row(&sql, [from], |row| totals_from(row, 0))?)
+            Ok(connection.query_row("SELECT at FROM spending_runs_since WHERE id = 1", [], |row| row.get(0))?)
+        })
+    }
+
+    /// What the run named `run` cost: every call recorded for it, whenever it was made, so that a run deleted and
+    /// made again under the same name goes on counting under it. A run's calls are never removed with it: the
+    /// money was spent, and the total of everything spent never goes down.
+    pub fn run_spending(&self, run: &str) -> Result<RunSpending, LibraryError> {
+        self.read(|connection| {
+            let total = connection
+                .prepare_cached(&format!("SELECT {SUMS} FROM spending WHERE run = ?1"))?
+                .query_row([run], |row| totals_from(row, 0))?;
+            let mut statement = connection
+                .prepare_cached(&format!("SELECT purpose, {SUMS} FROM spending WHERE run = ?1 GROUP BY purpose"))?;
+            let purposes = statement
+                .query_map([run], |row| Ok((row.get(0)?, totals_from(row, 1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            let counted_since: Option<String> = connection
+                .query_row(
+                    "SELECT since.at FROM spending_runs_since AS since
+                 WHERE since.id = 1 AND EXISTS (SELECT 1 FROM spending WHERE at < since.at)",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            Ok(RunSpending { total, purposes, counted_since: counted_since.map(|at| at.chars().take(10).collect()) })
         })
     }
 }
@@ -146,6 +186,7 @@ mod tests {
 
     fn call<'a>(model: &'a str, purpose: &'a str, price_micros: Option<i64>) -> Call<'a> {
         Call {
+            run: None,
             model,
             purpose,
             input_tokens: 1_000,
@@ -209,21 +250,60 @@ mod tests {
         assert_eq!((spent.total.calls, spent.total.price_micros), (200, 200));
     }
 
+    fn for_run<'a>(run: &'a str, purpose: &'a str, price_micros: Option<i64>) -> Call<'a> {
+        Call { run: Some(run), ..call("claude-opus-5-5", purpose, price_micros) }
+    }
+
     #[test]
-    fn spending_since_an_instant_counts_the_calls_from_then_on_and_none_before() {
+    fn a_run_costs_the_calls_recorded_for_it_by_purpose_and_no_others() {
         let folder = tempfile::tempdir().unwrap();
         let library = Library::open(folder.path()).unwrap();
-        let at = |instant: &str| DateTime::parse_from_rfc3339(instant).unwrap().with_timezone(&Utc);
+        library.record_call(&for_run("r1", "naming communities", Some(5_000))).unwrap();
+        library.record_call(&for_run("r1", "community overviews", Some(7_000))).unwrap();
+        library.record_call(&Call { model: "mystery", ..for_run("r1", "community overviews", None) }).unwrap();
+        library.record_call(&for_run("r2", "naming communities", Some(100))).unwrap();
+        library.record_call(&call("claude-opus-5-5", "training the AI-text detector", Some(9))).unwrap();
+        let r1 = library.run_spending("r1").unwrap();
+        assert_eq!((r1.total.calls, r1.total.price_micros, r1.total.unpriced_calls), (3, 12_000, 1));
+        assert_eq!(r1.purposes["community overviews"].calls, 2);
+        assert_eq!(r1.purposes["naming communities"].price_micros, 5_000);
+        assert_eq!(library.run_spending("r2").unwrap().total.price_micros, 100);
+        assert_eq!(library.run_spending("never made").unwrap().total, Totals::default());
+        // the detector's call is in the total and in no run's
+        assert_eq!(library.spending().unwrap().total.price_micros, 12_109);
+        assert_eq!(r1.counted_since, None, "every call recorded was counted by run");
+    }
+
+    #[test]
+    fn a_deleted_runs_calls_stay_in_the_total_and_in_its_name_and_a_reopened_library_says_the_same() {
+        let folder = tempfile::tempdir().unwrap();
+        {
+            let library = Library::open(folder.path()).unwrap();
+            library.record_call(&for_run("r1", "naming communities", Some(5_000))).unwrap();
+            library.forget_run("r1").unwrap();
+            // made again under the same name: counted on under it
+            library.record_call(&for_run("r1", "naming communities", Some(2_000))).unwrap();
+        }
+        let reopened = Library::open(folder.path()).unwrap();
+        assert_eq!(reopened.spending().unwrap().total.price_micros, 7_000);
+        assert_eq!(reopened.run_spending("r1").unwrap().total.price_micros, 7_000);
+    }
+
+    #[test]
+    fn calls_recorded_before_runs_were_counted_say_from_which_day_a_runs_figure_counts() {
+        let folder = tempfile::tempdir().unwrap();
+        let library = Library::open(folder.path()).unwrap();
+        let since = library.runs_counted_since().unwrap();
+        assert_eq!(since.len(), "2026-11-28T10:00:00Z".len());
+        library.record_call(&for_run("r1", "naming communities", Some(5))).unwrap();
+        assert_eq!(library.run_spending("r1").unwrap().counted_since, None);
+        // a call from before (the Python's ledger, or this ledger before the run column) has no run
         library
-            .write(|transaction| {
-                put_calls(transaction, "2026-11-26T09:59:59Z", &call("claude-opus-5-5", "p", Some(5)), 1)?;
-                put_calls(transaction, "2026-11-26T10:00:00Z", &call("claude-opus-5-5", "p", Some(7)), 2)?;
-                Ok(put_calls(transaction, "2026-11-27T08:00:00Z", &call("mystery", "p", None), 1)?)
-            })
+            .write(|transaction| Ok(put_calls(transaction, "2026-01-01T00:00:00Z", &call("m", "p", Some(3)), 1)?))
             .unwrap();
-        let since = library.spending_since(at("2026-11-26T10:00:00.250+00:00")).unwrap();
-        assert_eq!((since.calls, since.price_micros, since.unpriced_calls), (3, 7, 1));
-        assert_eq!(library.spending_since(at("2026-11-28T00:00:00Z")).unwrap(), Totals::default());
+        let r1 = library.run_spending("r1").unwrap();
+        assert_eq!(r1.counted_since.as_deref(), Some(&since[..10]));
+        assert_eq!(r1.total.price_micros, 5, "the call of no run is not guessed into the run's");
     }
 
     #[test]

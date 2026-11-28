@@ -42,7 +42,7 @@ use crate::library::core::store::read_json;
 use crate::library::{Feature, Library, PaperReading, Subject};
 use crate::model::batch::{Asking, IN_FLIGHT};
 use crate::model::chosen::{Accepted, Refused, Terms, budget};
-use crate::model::language::{Estimate, Provider};
+use crate::model::language::{Estimate, ForRun, Provider};
 
 /// The most a run of the table may be given to spend, in US dollars: a bound on what is accepted, far above
 /// what a table costs.
@@ -571,11 +571,13 @@ async fn start(
             let pairs: Vec<(&str, &PaperReading)> = ids.iter().copied().zip(&readings).collect();
             let plan = Plan::new(&library, &chosen, &columns, &pairs).map_err(|error| error.to_string())?;
             tracker.log(&format!("Asking {chosen} about {} of {} papers", plan.papers(), papers.len()));
+            // the table of a community or of marked papers of the run: the run's cost
+            let recorder = ForRun::new(&*library, Some(&run));
             let asking = Asking {
                 library: &library,
                 transport: &*transport,
                 endpoint,
-                recorder: &*library,
+                recorder: &recorder,
                 in_flight: IN_FLIGHT,
             };
             let ran = extraction::run(asking, &plan, &budget, tracker).map_err(|error| error.to_string())?;
@@ -803,6 +805,9 @@ mod tests {
             assert_eq!(asked.len() - sent, 3, "one call per paper");
             sent_to(&asked[sent..], chosen);
             sent = asked.len();
+            // the table of one of the run's communities is the run's cost
+            let (_, spent) = call(&router, "GET", "/api/usage?run=r1", None).await;
+            assert_eq!((spent["run_calls"].clone(), spent["calls"].clone()), (json!(sent), json!(sent)), "{spent}");
 
             let (_, table) =
                 call(&router, "POST", "/api/runs/r1/extraction/table", Some(json!({"scope": scope}))).await;

@@ -794,9 +794,16 @@ export interface Usage {
 	calls: number;
 	/** calls to a model whose price is not known: counted in tokens only, so `usd` is short by them */
 	unpriced_calls: number;
-	/** since the app was started; null as `usd` is */
-	session_usd: number | null;
-	session_calls: number;
+	/** spent on the run asked about (`?run=`): null when none was asked about, or as `usd` is. A run deleted keeps
+	 *  what it cost, and one made again under the same name goes on counting under it */
+	run_usd: number | null;
+	run_calls: number;
+	run_unpriced_calls: number;
+	/** the run's calls by what they were for */
+	run_purposes: Record<string, UsageEntry>;
+	/** the day the run's figure counts from, when calls were recorded before calls were counted by run (those name
+	 *  no run); null when every call recorded was counted by run, or no run was asked about */
+	run_counted_since: string | null;
 	models: Record<string, UsageEntry>;
 	/** what the calls were for: naming communities, overviews, ... */
 	purposes: Record<string, UsageEntry>;
@@ -813,6 +820,12 @@ export interface UsageEntry {
 	/** of the priced calls; null when none of its calls had a price, which is not a cost of 0 */
 	usd: number | null;
 	unpriced_calls: number;
+}
+
+/** In the body of a question about one paper: the run open in the interface, when the paper is read from inside
+ *  one, so that what the question costs is that run's (`Usage.run_usd`). A name that is no run's counts for no run. */
+export interface AskedFrom {
+	run?: string;
 }
 
 /**
@@ -1067,7 +1080,7 @@ export interface Critique {
 
 /** `POST /api/papers/<id>/critique`'s body: the model whose estimate was shown, and its worst case accepted (refused
  *  when asking would now cost more: the paper's text, its reviews or the model changed), or a budget of one's own. */
-export type CritiqueStart = ShownModel & (AcceptedCost | BudgetOf);
+export type CritiqueStart = ShownModel & (AcceptedCost | BudgetOf) & AskedFrom;
 
 /** `POST /api/papers/<id>/critique`: the job started, or nothing asked because the reading is kept. */
 export type CritiqueStarted = { outcome: "started"; job: number } | { outcome: "kept" };
@@ -1315,7 +1328,7 @@ export interface ExplanationRequest {
 
 /** `POST /api/papers/<id>/explanation`: the passage, and the model and worst case the reader was shown; the
  *  engine refuses when either changed since, so nothing is paid that was not shown. */
-export type ExplanationStart = ExplanationRequest & ShownModel & AcceptedCost;
+export type ExplanationStart = ExplanationRequest & ShownModel & AcceptedCost & AskedFrom;
 
 /** What is asked about a passage, from its kind (engine features/explanation/mod.rs). */
 export type ExplanationQuestion = "passage" | "equation" | "table" | "figure";
@@ -1570,7 +1583,7 @@ export interface ClaimsView {
 }
 
 /** `POST /api/papers/<id>/claims`: the most the calls may spend, and the model the estimate was shown for. */
-export type ClaimsStart = BudgetOf & ShownModel;
+export type ClaimsStart = BudgetOf & ShownModel & AskedFrom;
 
 /** `GET /api/runs/<run>/communities/<tree path>/claims/contested`: per paper mapped, its contested claims. */
 export interface ContestedClaims {

@@ -44,7 +44,7 @@ use crate::jobs::{Finished, Progress};
 use crate::library::{AnswerKey, Feature, Library, PaperReading, Subject};
 use crate::model::batch::{Asking, BatchEstimate, IN_FLIGHT, estimate_batch};
 use crate::model::chosen::{Accepted, Chosen, Refused, Terms, budget};
-use crate::model::language::Provider;
+use crate::model::language::{ForRun, Provider};
 use crate::text::pdf::passages::Passages;
 use crate::text::pdf::references::Citing;
 use crate::usage::Usd;
@@ -667,11 +667,13 @@ async fn classify_run(
                 plan.kept,
                 plan.calls.len()
             ));
+            // the citations of the run or of one of its communities: the run's cost
+            let recorder = ForRun::new(&*library, Some(&run));
             let asking = Asking {
                 library: &library,
                 transport: &*transport,
                 endpoint,
-                recorder: &*library,
+                recorder: &recorder,
                 in_flight: IN_FLIGHT,
             };
             let done = kinds::classify(asking, &plan, &budget, tracker).map_err(|error| error.to_string())?;
@@ -995,6 +997,9 @@ mod tests {
             assert_eq!(all.len() - sent, 2, "one call per cited paper");
             sent_to(&all[sent..], chosen);
             sent = all.len();
+            // the run's citations are its cost
+            let (_, spent) = call(&router, "GET", "/api/usage?run=r1", None).await;
+            assert_eq!((spent["run_calls"].clone(), spent["calls"].clone()), (json!(sent), json!(sent)), "{spent}");
 
             let (_, summary) = call(&router, "GET", "/api/runs/r1/citation-kinds", None).await;
             assert_eq!(summary["model"], MODEL);

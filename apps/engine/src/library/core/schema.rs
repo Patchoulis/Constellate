@@ -373,6 +373,20 @@ pub const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX asking_by_time ON asking (asked_at);
     ",
+    // 15: which run each call was made for, so that what a run cost can be told beside what was spent in all
+    r"
+    -- The name of the run a call was made for (making or naming it, a feature asked of it or of one of its
+    -- communities, a paper asked about from inside it). NULL for a call of no run (the detector's training), and for
+    -- every call recorded before this column was added: nothing kept says which run those were for.
+    ALTER TABLE spending ADD COLUMN run TEXT;
+    CREATE INDEX spending_by_run ON spending (run);
+    -- When calls began to be counted by run: a run's own figure counts from then on.
+    CREATE TABLE spending_runs_since (
+        id BIGINT PRIMARY KEY CHECK (id = 1),
+        at TEXT NOT NULL
+    );
+    INSERT INTO spending_runs_since (id, at) VALUES (1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+    ",
 ];
 
 /// Bring `connection` to the last of `migrations`. Refuses a database newer than the list.
@@ -464,6 +478,30 @@ mod tests {
             assert!(library.paper("2601.00001").unwrap().is_some(), "from version {earlier}");
             assert_eq!(library.settings().unwrap()["max_links"], 8, "from version {earlier}");
         }
+    }
+
+    #[test]
+    fn calls_recorded_before_runs_were_counted_stay_in_the_total_and_name_no_run() {
+        let folder = tempfile::tempdir().unwrap();
+        {
+            let connection = Connection::open(folder.path().join(DATABASE)).unwrap();
+            migrate(&connection, &MIGRATIONS[..14]).unwrap();
+            connection
+                .execute_batch(
+                    "INSERT INTO spending (at, model, purpose, calls, input_tokens, output_tokens, price_micros)
+                     VALUES ('2026-11-01T09:00:00Z', 'claude-opus-5-5', 'naming communities', 2, 10, 5, 1200);",
+                )
+                .unwrap();
+        }
+        let library = Library::open(folder.path()).unwrap();
+        let spent = library.spending().unwrap();
+        assert_eq!((spent.total.calls, spent.total.price_micros), (2, 1200), "an old row is read as before");
+        let run: Option<String> =
+            library.connection().query_row("SELECT run FROM spending", [], |row| row.get(0)).unwrap();
+        assert_eq!(run, None, "nothing kept says which run it was for");
+        let since = library.runs_counted_since().unwrap();
+        assert!(since.as_str() > "2026-11-01T09:00:00Z", "{since}");
+        assert_eq!(library.run_spending("r1").unwrap().counted_since.as_deref(), Some(&since[..10]));
     }
 
     #[test]
