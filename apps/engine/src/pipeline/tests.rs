@@ -775,6 +775,9 @@ fn a_run_named_within_what_was_accepted_carries_its_names_and_costs_the_estimate
     let spent = budget.spent().1.dollars();
     assert!(spent > 0.0 && spent <= most, "spent {spent} of the {most} accepted");
     assert!(log.iter().any(|line| line.contains("named now")), "{log:?}");
+    // making the run named it: every call of it is the run's cost
+    let (of_run, in_all) = (library.run_spending(&name).unwrap().total, library.spending().unwrap().total);
+    assert!(of_run.calls > 0 && of_run == in_all, "{of_run:?} of {in_all:?}");
     // the same run again: every name kept, nothing sent
     let sent = transport.sent().len();
     let (again, _) = accepted(&naming_settings());

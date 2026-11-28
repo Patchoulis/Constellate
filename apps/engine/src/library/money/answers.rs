@@ -456,6 +456,7 @@ mod tests {
         let library = Library::open(folder.path()).unwrap();
         let first = slot(Feature::Critique, Subject::Paper("p".to_owned()), "q");
         let call = |model| super::super::ledger::Call {
+            run: None,
             model,
             purpose: "a paper's weaknesses",
             input_tokens: 100,

@@ -109,6 +109,14 @@ impl Engine {
         self.import_problems.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
+    /// The run a request about one paper says it was asked from (the run open in the interface), when that is the
+    /// name of a run there is: what the paper's questions cost is then the run's. A name that is not one, or no
+    /// name, is no run: never a reason to refuse the request.
+    pub fn asked_from(&self, run: Option<&str>) -> Option<String> {
+        let run = run.filter(|run| one_name(run).is_ok())?;
+        crate::pipeline::results::files::folder_of(&self.data, run).is_ok().then(|| run.to_owned())
+    }
+
     /// The library in the data folder, opened once and shared by every request.
     pub fn library(&self) -> Result<Arc<Library>, ApiError> {
         let mut opened = self.library.lock().unwrap_or_else(PoisonError::into_inner);

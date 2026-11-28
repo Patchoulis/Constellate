@@ -1,4 +1,5 @@
 import type {
+	AskedFrom,
 	Catalog,
 	CitationNetwork,
 	Critique,
@@ -78,6 +79,9 @@ const send = (method: string, body: unknown): RequestInit => ({
 
 const run = (name: string) => `/api/runs/${encodeURIComponent(name)}`;
 
+/** The run a paper is read from inside, for the body of a question about it: what the question costs is that run's. */
+const askedFrom = (fromRun: string | undefined): AskedFrom => (fromRun ? { run: fromRun } : {});
+
 /** Hand over the text of a paper's reviews page and its address: the engine keeps the whole discussion. */
 const readReviews = (id: string, text: string, url: string) =>
 	call<ReviewsRead>(`/api/papers/${encodeURIComponent(id)}/reviews`, send("POST", { text, url }));
@@ -101,8 +105,10 @@ export const api = {
 	settings: () => call<Settings>("/api/settings"),
 	saveSettings: (changes: Partial<Settings>) => call<Settings>("/api/settings", send("PUT", changes)),
 	library: () => call<Library>("/api/library"),
-	/** what was spent, with the worth of a US dollar in `currency` (a three-letter code) */
-	usage: (currency: string) => call<Usage>(`/api/usage?currency=${encodeURIComponent(currency)}`),
+	/** what was spent, with the worth of a US dollar in `currency` (a three-letter code); with `ofRun` (a run's
+	 *  name), what that run cost beside it */
+	usage: (currency: string, ofRun?: string | null) =>
+		call<Usage>(`/api/usage?currency=${encodeURIComponent(currency)}${ofRun ? `&run=${encodeURIComponent(ofRun)}` : ""}`),
 	/** calls to the language model whose outcome is unknown and that may have been billed: never in `usage`'s totals */
 	unsettled: () => call<import("@rp/contracts").Unsettled>("/api/usage/unsettled"),
 	catalog: () => call<Catalog>("/api/catalog"),
@@ -148,12 +154,17 @@ export const api = {
 	critique: (id: string) => reading<Critique>(`/api/papers/${encodeURIComponent(id)}/critique`),
 	/** ask for the model's reading, as the one job, for the model the estimate was shown for: within the worst case
 	 *  accepted (refused when asking would now cost more) or a budget of one's own; in US dollars, or in tokens for a
-	 *  model with no price */
+	 *  model with no price; `fromRun`, the run it is read from inside, whose cost it is */
 	readCritique: (
 		id: string,
 		shown: import("@rp/contracts").ShownModel,
 		budget: import("@rp/contracts").AcceptedCost | import("@rp/contracts").BudgetOf,
-	) => starting<CritiqueStarted>(`/api/papers/${encodeURIComponent(id)}/critique`, send("POST", { ...shown, ...budget })),
+		fromRun?: string,
+	) =>
+		starting<CritiqueStarted>(
+			`/api/papers/${encodeURIComponent(id)}/critique`,
+			send("POST", { ...shown, ...budget, ...askedFrom(fromRun) }),
+		),
 	/** forget the model's reading of the paper, so that it can be asked again */
 	forgetCritique: (id: string) => call<{ forgotten: number }>(`/api/papers/${encodeURIComponent(id)}/critique`, { method: "DELETE" }),
 	/** where a community's papers (or the marked ones) stand on a question (engine features/stances/routes.rs) */
@@ -219,13 +230,19 @@ export const api = {
 	prepareExplanation: (id: string, address: PassageAddress) =>
 		reading<ExplanationPrepared>(`/api/papers/${encodeURIComponent(id)}/explanation/prepare`, send("POST", { address })),
 	/** ask the model to explain the passage at `address`, as a job (none is started when one is kept) */
-	/** ask, for the model and the worst case the reader was shown (the engine refuses if either changed) */
+	/** ask, for the model and the worst case the reader was shown (the engine refuses if either changed); `fromRun`,
+	 *  the run the paper is read from inside, whose cost it is */
 	explain: (
 		id: string,
 		address: PassageAddress,
 		shown: import("@rp/contracts").ShownModel,
 		accepted: import("@rp/contracts").AcceptedCost,
-	) => starting<ExplanationStarted>(`/api/papers/${encodeURIComponent(id)}/explanation`, send("POST", { address, ...shown, ...accepted })),
+		fromRun?: string,
+	) =>
+		starting<ExplanationStarted>(
+			`/api/papers/${encodeURIComponent(id)}/explanation`,
+			send("POST", { address, ...shown, ...accepted, ...askedFrom(fromRun) }),
+		),
 	/** forget the kept explanation of a passage, so that it is asked for again; `redone` says whether there was one */
 	redoExplanation: (id: string, address: PassageAddress) =>
 		call<{ redone: boolean }>(`/api/papers/${encodeURIComponent(id)}/explanation`, send("DELETE", { address })),
@@ -236,9 +253,10 @@ export const api = {
 		reading<RelatedPassages>(`${run(name)}/papers/${encodeURIComponent(id)}/related`, send("POST", { address })),
 	/** a paper's claim tree with its reviews mapped onto it, as kept, and what asking the rest would cost (asks nothing) */
 	claims: (id: string) => reading<ClaimsView>(`/api/papers/${encodeURIComponent(id)}/claims`),
-	/** ask the model what is not kept, within `budget_usd`; answers the job's number */
-	startClaims: (id: string, start: ClaimsStart) =>
-		starting<{ job: number }>(`/api/papers/${encodeURIComponent(id)}/claims`, send("POST", start)),
+	/** ask the model what is not kept, within `budget_usd`; answers the job's number. `fromRun`: the run the paper is
+	 *  read from inside, whose cost it is */
+	startClaims: (id: string, start: ClaimsStart, fromRun?: string) =>
+		starting<{ job: number }>(`/api/papers/${encodeURIComponent(id)}/claims`, send("POST", { ...start, ...askedFrom(fromRun) })),
 	/** forget the paper's tree and mapping: asked again on the next start */
 	forgetClaims: (id: string) => call<{ forgotten: number }>(`/api/papers/${encodeURIComponent(id)}/claims`, { method: "DELETE" }),
 	/** per paper of a community whose reviews were mapped, its contested claims */

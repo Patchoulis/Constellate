@@ -22,7 +22,13 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   would cost, and ask it once that is accepted. Answers already given by the naming model (such as Opus) are kept
   and found again when "The same as the naming model" is chosen in the menu beside any of those estimates or in
   Settings. With another provider, papers are read by the naming model unless another is chosen, as before.
-
+- The bottom of the sidebar says what was spent in all and on the run that is open: "USD 3.77 spent (USD 1.20 this
+  run)", in place of what was spent since the app was started. Both are kept in the library, so they read the same
+  after Constellate is closed and opened again. A run's figure counts making and naming it, everything asked of it
+  and of its communities, and what is asked about one of its papers while that run is open; training the AI-text
+  detector belongs to no run. Deleting a run takes nothing off the total, and a run made again under the same name
+  goes on counting. Money spent before this version was not recorded by run, so a run made earlier counts from the
+  day this version was first opened, and its tooltip says so.
 - Communities are ordered by "Uniqueness" in place of "Saturation" and "Tightness": how far a community's papers are,
   on average, from what the community is about (a cosine distance). Low means its papers all do much the same thing;
   high means the work in it is more varied.

@@ -271,8 +271,11 @@ function Abstract({
 	onOpen,
 	onRead,
 	onReviews,
+	run,
 }: {
 	paper: Paper;
+	/** the run the paper is opened from: what is asked about it costs that run */
+	run?: string;
 	community?: CommunityNode;
 	related: Related[];
 	flagNames: Record<string, CatalogItem>;
@@ -341,7 +344,7 @@ function Abstract({
 				</div>
 			)}
 			<Declared paper={paper} flagNames={flagNames} />
-			<Weaknesses id={paper.id} onReviews={onReviews} />
+			<Weaknesses id={paper.id} run={run} onReviews={onReviews} />
 			{related.length > 0 && (
 				<section className="mt-2">
 					<Heading className="mb-1.5 font-ui">Closest papers</Heading>
@@ -497,7 +500,12 @@ export function PaperReader({
 					{paper.status === "loading" && <p className="text-sm text-muted-foreground">Loading…</p>}
 					{found && view === "citations" && <Citations paper={found} run={run} onOpen={onOpen} />}
 					{found && view === "claims" && (
-						<ClaimsView key={found.id} id={found.id} onOpenReviews={from.reviews && EMBEDS ? () => setView("reviews") : undefined} />
+						<ClaimsView
+							key={found.id}
+							id={found.id}
+							run={run}
+							onOpenReviews={from.reviews && EMBEDS ? () => setView("reviews") : undefined}
+						/>
 					)}
 					{found && view === "citations" && <CitationSentences paper={found.id} run={run} onOpen={onOpen} />}
 					{found && view === "text" && (
@@ -514,6 +522,7 @@ export function PaperReader({
 							onReviews={from.reviews && EMBEDS ? () => setView("reviews") : undefined}
 							onOpen={onOpen}
 							onRead={from.paper ? () => openPdf(1) : undefined}
+							run={run}
 						/>
 					)}
 				</div>

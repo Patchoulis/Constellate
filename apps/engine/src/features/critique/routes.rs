@@ -32,7 +32,7 @@ use crate::jobs::{Finished, Tracker};
 use crate::library::{Feature, Library, PaperReading, Subject};
 use crate::model::batch::{Asking, BatchEstimate, IN_FLIGHT, Outcome, Stopped};
 use crate::model::chosen::{Accepted, Terms, budget};
-use crate::model::language::{Budget, Endpoint, Provider, Transport};
+use crate::model::language::{Budget, Endpoint, ForRun, Provider, Transport};
 
 /// The most one paper's reading may be allowed to cost, in US dollars, whatever is asked: one call, however long
 /// the paper, costs well under this.
@@ -111,6 +111,8 @@ struct Start {
     /// The model whose estimate the user saw, and its provider.
     model: Option<String>,
     provider: Option<Provider>,
+    /// The run open in the interface, when the paper is read from inside one: what the call costs is the run's.
+    run: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -239,8 +241,9 @@ async fn start(State(engine): State<Shared>, Path(id): Path<String>, body: Bytes
         let transport = engine.transport.clone();
         let about =
             crate::jobs::About { feature: Feature::Critique, subject: Subject::Paper(plan.paper.clone()), item: None };
+        let run = engine.asked_from(asked.run.as_deref());
         let job = engine.job.start_about("a paper's weaknesses", about, move |tracker| {
-            work(&library, &*transport, endpoint, &plan, &budget, tracker)
+            work(&library, &*transport, endpoint, run.as_deref(), &plan, &budget, tracker)
         })?;
         Ok(Started::Started { job })
     })
@@ -249,16 +252,18 @@ async fn start(State(engine): State<Shared>, Path(id): Path<String>, body: Bytes
 }
 
 /// The job: ask about one paper through `transport`, say in its log what came of it, and hand back the paper whose
-/// weaknesses were read (nothing when it was stopped before).
+/// weaknesses were read (nothing when it was stopped before). What it costs is the run's it was asked from, if any.
 fn work(
     library: &Library,
     transport: &dyn Transport,
     endpoint: Endpoint,
+    run: Option<&str>,
     plan: &Plan,
     budget: &Budget,
     tracker: &Tracker<'_>,
 ) -> Result<Finished, String> {
-    let asking = Asking { library, transport, endpoint, recorder: library, in_flight: IN_FLIGHT };
+    let recorder = ForRun::new(library, run);
+    let asking = Asking { library, transport, endpoint, recorder: &recorder, in_flight: IN_FLIGHT };
     let read = Finished::Feature { feature: Feature::Critique, subject: Subject::Paper(plan.paper.clone()) };
     let (said, finished) = match plan.ask(asking, budget, tracker).map_err(|error| error.to_string())? {
         Outcome::Answered(_) => ("The model read the paper for weaknesses.", read),
@@ -654,7 +659,8 @@ mod tests {
         let cancel = Cancel::new();
         cancel.cancel();
         let stopped = Fake::new(Vec::new());
-        let told = work(&library, &stopped, endpoint(), &plan, &budget(), &Tracker::new(&log, &progress, &cancel));
+        let told =
+            work(&library, &stopped, endpoint(), None, &plan, &budget(), &Tracker::new(&log, &progress, &cancel));
         assert_eq!(told, Ok(Finished::Nothing), "stopped before the model was asked");
         assert!(stopped.sent().is_empty());
 
@@ -662,12 +668,12 @@ mod tests {
         let usage = json!({"input_tokens": 100, "output_tokens": 50});
         let fake = Fake::new(vec![Ok(ok(&message("claude-opus-5-5", &answer, "end_turn", usage)))]);
         let going = Cancel::new();
-        let told = work(&library, &fake, endpoint(), &plan, &budget(), &Tracker::new(&log, &progress, &going));
+        let told = work(&library, &fake, endpoint(), None, &plan, &budget(), &Tracker::new(&log, &progress, &going));
         let read = Finished::Feature { feature: Feature::Critique, subject: Subject::Paper("2601.00002".to_owned()) };
         assert_eq!(told, Ok(read.clone()));
         assert_eq!(fake.sent().len(), 1);
         assert!(plan.kept(&library).unwrap().is_some());
-        let again = work(&library, &fake, endpoint(), &plan, &budget(), &Tracker::new(&log, &progress, &going));
+        let again = work(&library, &fake, endpoint(), None, &plan, &budget(), &Tracker::new(&log, &progress, &going));
         assert_eq!(again, Ok(read), "kept from before: nothing was asked");
         assert_eq!(fake.sent().len(), 1);
     }

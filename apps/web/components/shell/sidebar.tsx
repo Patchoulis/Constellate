@@ -2,7 +2,7 @@
 
 import { useEffect, useReducer, useRef, useState } from "react";
 import { Loader2, Pencil, Play, RotateCcw, Settings as SettingsIcon, Trash2 } from "lucide-react";
-import type { Catalog, Library, RunPage, RunRequest, RunSummary, Settings, UsageEntry } from "@rp/contracts";
+import type { Catalog, Library, RunPage, RunRequest, RunSummary, Settings } from "@rp/contracts";
 import { Logo } from "@/components/brand";
 import { ModelChoice, chosenPrice } from "@/components/shell/model-choice";
 import { Button, Heading, RowButton, Segmented } from "@/components/ui/button";
@@ -39,7 +39,8 @@ import {
 } from "@/lib/shell/runs-list";
 import { ready, useAsync } from "@/lib/use-async";
 import { useResizable } from "@/lib/ui/use-resizable";
-import { count, currencyOf, money, tokens } from "@/lib/units";
+import { runDetail, spentParts, usageLines } from "@/lib/shell/spent";
+import { count, currencyOf, money } from "@/lib/units";
 import { APP_NAME } from "@/lib/utils";
 
 const MODES = [
@@ -401,15 +402,21 @@ function CostLine({
 	settings,
 	providerOwned,
 	onChange,
+	run,
+	runTitle,
 }: {
 	choosable: Choosable;
 	settings: Settings | undefined;
 	providerOwned: boolean;
 	onChange: (changes: Partial<Settings>) => void;
+	/** the open run, whose cost is said beside the total, and its title */
+	run: string | null;
+	runTitle: string;
 }) {
 	const locale = typeof navigator === "undefined" ? undefined : navigator.language;
 	const wanted = currencyOf(locale); // the currency of the user's region; the bills themselves are in US dollars
-	const usage = useAsync(() => api.usage(wanted), [wanted]);
+	// another run's figure is never shown for the one opened now, not even until its own is in
+	const usage = useAsync(() => api.usage(wanted, run), [wanted, run], { keep: false });
 	// calls whose outcome is unknown: said on their own, never added into what was spent
 	const unsettledAsked = useAsync(api.unsettled, []);
 	const unsettled = ready(unsettledAsked);
@@ -498,20 +505,15 @@ function CostLine({
 				{unknownLine}
 			</div>
 		);
-	const allTokens = Object.values(spent.models).reduce((sum, entry) => sum + entry.input_tokens + entry.output_tokens, 0);
 	const cost = (usd: number) => money(usd, spent.currency, locale);
-	const lines = (table: Record<string, UsageEntry>) =>
-		Object.entries(table).map(([name, entry]) => {
-			const counted = `${count(entry.calls, "call")}, ${tokens(entry.input_tokens)} sent, ${tokens(entry.output_tokens)} received`;
-			// no priced call: no cost is shown, since none is known (not a cost of 0)
-			return entry.usd === null ? `  ${name}: ${counted}` : `  ${name}: ${cost(entry.usd)} (${counted})`;
-		});
+	const spentNow = spentParts(spent, run, cost);
 	const detail = [
 		spent.since ? `Counted since ${spent.since}; calls made before that were not recorded.` : "Nothing spent yet.",
-		...(spent.calls ? ["By purpose:", ...lines(spent.purposes), "By model:", ...lines(spent.models)] : []),
+		...(spent.calls ? ["By purpose:", ...usageLines(spent.purposes, cost), "By model:", ...usageLines(spent.models, cost)] : []),
 		...(spent.unpriced_calls
 			? [`${count(spent.unpriced_calls, "call")} to a model with no price ${spent.unpriced_calls === 1 ? "is" : "are"} not in this total.`]
 			: []),
+		...runDetail(spent, run, runTitle, cost),
 		...(unknownOutcome ? [`${unknownOutcome} Not counted above.`] : []),
 		...(price ? [`${chosenLabel(chosen)}${apart ? " (names, overviews)" : ""}: ${price}.`] : []),
 		...(readerPrice ? [`${chosenLabel(reader)} (reads papers): ${readerPrice}.`] : []),
@@ -526,19 +528,21 @@ function CostLine({
 		<div className="flex flex-col gap-0.5">
 			{choice}
 			{/* what was spent goes onto lines of its own when the sidebar is too narrow: never past its edge */}
-			<div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
-				<span className="max-w-full min-w-0 truncate" title={priceShown ?? undefined}>
-					{priceShown}
+			{/* the prices together (one per model), then what was spent: on a line of its own when the sidebar is too
+			    narrow, never past its edge */}
+			<div className="flex flex-wrap items-end justify-between gap-x-2 gap-y-0.5">
+				<span className="flex max-w-full min-w-0 flex-col">
+					<span className="max-w-full min-w-0 truncate" title={priceShown ?? undefined}>
+						{priceShown}
+					</span>
+					{readerLine}
 				</span>
 				<span className="flex max-w-full min-w-0 flex-wrap gap-x-1 text-foreground/80" title={detail}>
-					{/* no priced call: no amount at all, only the calls and their tokens */}
-					<span>{spent.usd === null ? `${count(spent.calls, "call")}, ${tokens(allTokens)}` : `${cost(spent.usd)} spent`}</span>
-					{spent.session_calls > 0 && spent.session_usd !== null && (
-						<span className="text-muted-foreground">· {cost(spent.session_usd)} this session</span>
-					)}
+					{/* no priced call: no amount at all, only the calls and their tokens (lib/shell/spent.ts) */}
+					<span className="max-w-full min-w-0 break-words">{spentNow.total}</span>
+					{spentNow.ofRun && <span className="max-w-full min-w-0 break-words text-muted-foreground">{spentNow.ofRun}</span>}
 				</span>
 			</div>
-			{readerLine}
 			{unknownLine}
 		</div>
 	);
@@ -677,7 +681,14 @@ export function Sidebar({
 				<div>
 					Library: {library ? count(library.papers, "paper") : "–"} · {count(embedded, "embedding")}
 				</div>
-				<CostLine choosable={choosable} settings={settings} providerOwned={providerOwned} onChange={onChange} />
+				<CostLine
+					choosable={choosable}
+					settings={settings}
+					providerOwned={providerOwned}
+					onChange={onChange}
+					run={current}
+					runTitle={runs.find((run) => run.name === current)?.title ?? current ?? ""}
+				/>
 			</div>
 		</aside>
 	);
