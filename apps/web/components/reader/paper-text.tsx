@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { FigureView, useFigureRenderer } from "@/components/reader/figure-view";
 import { SectionBoundary } from "@/components/ui/section-boundary";
 import { api } from "@/lib/net/api";
-import { highlighted, pages, passageAt, unreadableParts, whollyUnreadable } from "@/lib/reader/evidence";
+import { highlighted, pages, passageAt, scriptParts, unreadableParts, whollyUnreadable } from "@/lib/reader/evidence";
 import { explainable, placeKey, resolveSelection, selectionQuote } from "@/lib/features/explanation/explanation";
 import { noReadablePdf } from "@/lib/reader/no-pdf";
 import { ready, useAsync } from "@/lib/use-async";
@@ -35,7 +35,17 @@ function WithNotes({ text, page, onOpenPdf }: { text: string; page: number; onOp
 	const note = "mx-0.5 font-ui text-xs text-muted-foreground italic select-none before:content-[attr(data-label)]";
 	return unreadableParts(text).map((words, at) =>
 		words !== null ? (
-			<Fragment key={at}>{words}</Fragment>
+			<Fragment key={at}>
+				{scriptParts(words).map((part, index) =>
+					part.script === "sup" ? (
+						<sup key={index}>{part.text}</sup>
+					) : part.script === "sub" ? (
+						<sub key={index}>{part.text}</sub>
+					) : (
+						<Fragment key={index}>{part.text}</Fragment>
+					),
+				)}
+			</Fragment>
 		) : onOpenPdf ? (
 			<button
 				key={at}

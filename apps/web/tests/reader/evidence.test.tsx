@@ -13,6 +13,7 @@ import {
 	placeName,
 	readerTarget,
 	shortLabel,
+	scriptParts,
 	unreadableParts,
 	whollyUnreadable,
 } from "@/lib/reader/evidence";
@@ -125,4 +126,22 @@ test("a formula the PDF could not say is cut out of the text for a note, and the
 	assert.equal(whollyUnreadable({ text: `${UNREADABLE} (12)` }), true, "an equation number is not text to explain");
 	assert.equal(whollyUnreadable({ text: `the bound ${UNREADABLE} holds` }), false);
 	assert.equal(whollyUnreadable({ text: "(1)" }), false, "nothing unreadable in it");
+});
+
+test("scripts the engine marks are raised and lowered, their marks left out, and a cut mark is shown as it is", () => {
+	assert.deepEqual(scriptParts("CoT^{gt}_{d} and R^{m},"), [
+		{ text: "CoT", script: null },
+		{ text: "gt", script: "sup" },
+		{ text: "d", script: "sub" },
+		{ text: " and R", script: null },
+		{ text: "m", script: "sup" },
+		{ text: ",", script: null },
+	]);
+	assert.deepEqual(
+		scriptParts("(1)/(|T^{gt}_{d}|)")
+			.map((part) => part.text)
+			.join(""),
+		"(1)/(|Tgtd|)",
+	);
+	assert.deepEqual(scriptParts("CoT^{g"), [{ text: "CoT^{g", script: null }]);
 });

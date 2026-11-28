@@ -27,6 +27,24 @@ export function unreadableParts(text: string): (string | null)[] {
 	return parts;
 }
 
+/**
+ * `text` cut at the superscripts and subscripts the engine marks as `^{…}` and `_{…}` ("CoT^{gt}_{d}"): each piece
+ * with whether it is raised, lowered or on the line, the marks themselves left out. A mark cut in two (a highlight
+ * that ends inside one) is shown as it is.
+ */
+export function scriptParts(text: string): { text: string; script: "sup" | "sub" | null }[] {
+	const parts: { text: string; script: "sup" | "sub" | null }[] = [];
+	let from = 0;
+	for (const found of text.matchAll(/([\^_])\{([^{}]*)\}/g)) {
+		const at = found.index ?? 0;
+		if (at > from) parts.push({ text: text.slice(from, at), script: null });
+		parts.push({ text: found[2], script: found[1] === "^" ? "sup" : "sub" });
+		from = at + found[0].length;
+	}
+	if (from < text.length) parts.push({ text: text.slice(from), script: null });
+	return parts;
+}
+
 /** Is the passage all formula that could not be read, with hardly a letter or digit of its own (an equation
  *  number at most)? There is nothing in it to explain. As the engine's `Passage::unreadable`. */
 export function whollyUnreadable(passage: { text: string }): boolean {
