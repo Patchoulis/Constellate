@@ -983,7 +983,6 @@ baseline.\nAfter: It wins.\n"
 
     #[test]
     fn a_reading_kept_under_an_older_reader_counts_only_for_the_same_sentence_word_for_word() {
-        use crate::text::pdf::passages::READER;
         let (_folder, library) = library();
         let cases = cases()[30..31].to_vec();
         let case = &cases[0];
@@ -991,9 +990,9 @@ baseline.\nAfter: It wins.\n"
         let older = AnswerKey::from_stored(
             crate::library::AnswerKey::older_for_tests(&key).first().cloned().expect("an older reader"),
         );
-        assert!(READER > 1);
         let keep = |reading: &Classified| {
-            let slot = Slot { feature: Feature::CitationKinds, key: older.clone(), subject: Subject::Paper("arith".into()) };
+            let slot =
+                Slot { feature: Feature::CitationKinds, key: older.clone(), subject: Subject::Paper("arith".into()) };
             library.keep(&slot, MODEL, PROMPT, reading).unwrap();
         };
         // kept for other words at that place: not this sentence's reading
@@ -1003,7 +1002,8 @@ baseline.\nAfter: It wins.\n"
         keep(&Classified { kind: CitationKind::Uses, quote: "q".into(), sentence: None });
         assert_eq!(kept_reading(&library, &key, case).unwrap(), None);
         // kept for these very words: found, without being asked again
-        let same = Classified { kind: CitationKind::Uses, quote: "q".into(), sentence: Some(case.context.sentence.clone()) };
+        let same =
+            Classified { kind: CitationKind::Uses, quote: "q".into(), sentence: Some(case.context.sentence.clone()) };
         keep(&same);
         assert_eq!(kept_reading(&library, &key, case).unwrap(), Some(same));
     }

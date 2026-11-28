@@ -225,7 +225,10 @@ impl AnswerKey {
     fn with_older(feature: Feature, model: &str, prompt: u32, papers: &[&str], question: &str) -> Self {
         Self {
             hex: Self::hashed(feature, model, prompt, READER, papers, question),
-            older: (1..READER).rev().map(|reader| Self::hashed(feature, model, prompt, reader, papers, question)).collect(),
+            older: (1..READER)
+                .rev()
+                .map(|reader| Self::hashed(feature, model, prompt, reader, papers, question))
+                .collect(),
         }
     }
 
@@ -447,7 +450,11 @@ fn put_answer(
 
 /// The answer kept under `key` and under its keys of older passages readers: what a redo asked for by key
 /// forgets, since otherwise the older answer would be found again in its place ([`Library::kept`]).
-fn forget_all_versions(connection: &rusqlite::Connection, feature: Feature, key: &AnswerKey) -> Result<usize, LibraryError> {
+fn forget_all_versions(
+    connection: &rusqlite::Connection,
+    feature: Feature,
+    key: &AnswerKey,
+) -> Result<usize, LibraryError> {
     let mut forgotten = forget_key(connection, feature, key.as_str())?;
     for older in &key.older {
         forgotten += forget_key(connection, feature, older)?;
@@ -522,7 +529,14 @@ mod tests {
     }
 
     /// [`key_before_providers`] with the passages reader's version given.
-    fn key_with_reader(feature: Feature, model: &str, prompt: u32, reader: u32, papers: &[&str], question: &str) -> String {
+    fn key_with_reader(
+        feature: Feature,
+        model: &str,
+        prompt: u32,
+        reader: u32,
+        papers: &[&str],
+        question: &str,
+    ) -> String {
         let mut papers = papers.to_vec();
         papers.sort_unstable();
         papers.dedup();
@@ -549,7 +563,8 @@ mod tests {
         // still among those a key of this reader looks under
         let kept = AnswerKey::hashed(Feature::Answers, "claude-opus-5-5", 1, 1, &["a", "b"], "What is new?");
         assert_eq!(kept, "b03f1011ed6dc1dfbbaa131184f88fa329802546c1b0a7e5d502c54e28878644");
-        let now = AnswerKey::new(Feature::Answers, Provider::Anthropic, "claude-opus-5-5", 1, &["a", "b"], "What is new?");
+        let now =
+            AnswerKey::new(Feature::Answers, Provider::Anthropic, "claude-opus-5-5", 1, &["a", "b"], "What is new?");
         assert_eq!(now.older.last(), Some(&kept));
         for reader in 1..READER {
             let older = key_with_reader(Feature::Answers, "claude-opus-5-5", 1, reader, &["a", "b"], "What is new?");
@@ -568,7 +583,9 @@ mod tests {
         } else {
             AnswerKey::from_stored(AnswerKey::hashed(feature, "claude-opus-5-5", 1, reader, &["p"], "q"))
         };
-        library.keep(&Slot { feature, key, subject: Subject::Paper("p".into()) }, "claude-opus-5-5", 1, &answer).unwrap();
+        library
+            .keep(&Slot { feature, key, subject: Subject::Paper("p".into()) }, "claude-opus-5-5", 1, &answer)
+            .unwrap();
         now
     }
 
@@ -595,7 +612,8 @@ mod tests {
             assert_eq!(library.kept::<String>(feature, &key).unwrap().unwrap().answer, "this reader's");
             // read where it is, not moved: the older rows are all still there
             for reader in 1..READER {
-                let older = AnswerKey::from_stored(AnswerKey::hashed(feature, "claude-opus-5-5", 1, reader, &["p"], "q"));
+                let older =
+                    AnswerKey::from_stored(AnswerKey::hashed(feature, "claude-opus-5-5", 1, reader, &["p"], "q"));
                 assert!(library.kept::<String>(feature, &older).unwrap().is_some());
             }
         }
