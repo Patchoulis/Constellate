@@ -339,12 +339,19 @@ export class GraphCanvasRenderer {
 		this.observer = new ResizeObserver(() => this.resize());
 		this.observer.observe(canvas);
 		this.resize();
+		// The community labels are drawn in the page's own font, which may still be loading for the first frames: they
+		// are drawn again once it is there, rather than left in the fallback font until something else moves.
+		document.fonts?.addEventListener("loadingdone", this.onFontsLoaded);
+		void document.fonts?.ready.then(this.onFontsLoaded);
 	}
+
+	private onFontsLoaded = () => this.markDirty();
 
 	destroy() {
 		this.stopGliding();
 		cancelAnimationFrame(this.frame);
 		this.observer.disconnect();
+		document.fonts?.removeEventListener("loadingdone", this.onFontsLoaded);
 		this.dprQuery?.removeEventListener("change", this.onDprChange);
 		this.dprQuery = null;
 		select(this.canvas).on(".zoom", null);
@@ -460,13 +467,14 @@ export class GraphCanvasRenderer {
 
 	/**
 	 * Play the intro over the papers set last (lib/graph/intro.ts), `lines` being each community's constellation (its
-	 * papers in the order the line goes through them). The camera is fitted to the whole graph first. Not for someone
+	 * papers in the order the line goes through them), with the camera fitted to the whole graph by the caller. Not for someone
 	 * who asked their system for less motion: the graph is simply there.
 	 */
 	playIntro(lines: readonly (readonly number[])[], duration = INTRO_MS) {
 		const data = this.data;
 		if (!data || prefersLessMotion()) return;
-		if (this.whole) this.fit(this.whole, true, true);
+		// the camera is the one the graph was just fitted with (components/graph/graph-view.tsx): fitted again here, the
+		// graph after the intro could end a fraction of a pixel away from one opened without it
 		const plan = introPlan(data.points.length);
 		this.hover(null);
 		this.stopGliding();
