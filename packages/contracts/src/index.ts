@@ -197,7 +197,16 @@ export type JobOutcome =
 
 /** The features that keep the model's answers (engine library/money/answers.rs `Feature`). */
 export type FeatureName =
-	"extraction" | "citation_kinds" | "stances" | "answers" | "critique" | "explanation" | "claim_tree" | "describing" | "overview";
+	| "extraction"
+	| "citation_kinds"
+	| "stances"
+	| "answers"
+	| "critique"
+	| "explanation"
+	| "claim_tree"
+	| "describing"
+	| "overview"
+	| "closest_papers";
 
 /** What a feature's answers are about. */
 export type FeatureSubject = { paper: string } | { run: string } | { community: { run: string; community: string } };
@@ -1915,6 +1924,47 @@ export interface DescribeEstimate {
  *  with sections those described plainly before; with `redo`, all of them again. An ordinary one never asks again
  *  about a community described plainly. */
 export type DescribeRequest = ShownModel & AcceptedCost & { redo?: boolean; add_sections?: boolean };
+
+/** `GET /api/runs/<run>/closest/<path>`: each statement of a community's description (a section's text, or a
+ *  sentence of a plain description) with the community's papers closest to it in meaning, found with the run's
+ *  embedding model on this computer (engine features/writing/closest.rs). It costs nothing and sends nothing
+ *  anywhere. Closeness of meaning, not a check that a paper says the statement. */
+export interface ClosestPapers {
+	state: JobState;
+	/** every statement with its papers, once all are found */
+	statements: ClosestStatement[] | null;
+	error: string | null;
+	/** why they cannot be found on this computer now ("The embedding model is not on this computer: ..."):
+	 *  nothing is started */
+	unavailable: string | null;
+	/** the embedding model they are found with */
+	model: string;
+	/** no paper below this cosine similarity is shown */
+	floor: number;
+}
+
+export interface ClosestStatement {
+	statement: string;
+	/** the section's heading it is the text of; null for a sentence of a plain description */
+	section: string | null;
+	/** at most 5, closest first (ties by paper id); empty when no paper reaches `floor` */
+	papers: ClosestPaper[];
+}
+
+export interface ClosestPaper {
+	id: string;
+	title: string;
+	/** cosine similarity of the statement and the paper's embedding, to 3 decimals */
+	cosine: number;
+	/** the paper's sentence closest to the statement, in its own words, located in its title or abstract */
+	evidence: Evidence;
+}
+
+/** `POST /api/runs/<run>/closest/<path>`: the job finding them, or none when they were found before. */
+export interface ClosestStarted {
+	ok: true;
+	id: number | null;
+}
 
 /** The job naming them; it finishes as `{kind: "run", run}`: open the run again to see the names. */
 export interface DescribeStarted {

@@ -17,6 +17,7 @@
 //!
 //! Its routes are in [`routes`]; the names, descriptions and overviews are kept by [`store`].
 
+pub mod closest;
 pub mod describe;
 pub mod overview;
 pub mod routes;

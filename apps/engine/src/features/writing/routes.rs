@@ -13,7 +13,14 @@
 //!                                             (`OverviewStatus`, with its estimate when it is to be written)
 //! POST /api/runs/{run}/overview/{path}        {provider, model, accepted_usd | accepted_tokens}: write it, as the
 //!                                             one job (`OverviewStatus`)
+//! GET  /api/runs/{run}/closest/{path}         each statement of the community's description with its papers closest
+//!                                             in meaning, when found (`ClosestPapers`)
+//! POST /api/runs/{run}/closest/{path}         find them, as the one job (`ClosestStarted`); nothing when kept
 //! ```
+//!
+//! The closest papers cost nothing and send nothing anywhere: they are found with the run's embedding model on this
+//! computer ([`crate::features::writing::closest`]). Without the model's files here, the answer says so
+//! (`unavailable`) and nothing is started.
 //!
 //! A community described before sections (a plain description) is never asked again by an ordinary naming:
 //! only by one with `add_sections` (or `redo`), whose own estimate the interface shows first.
@@ -38,15 +45,17 @@ use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 
 use crate::api::routes::{ApiError, Shared, on_the_side, one_name};
+use crate::features::writing::closest::{self, Statement};
 use crate::features::writing::describe::{self, Again, Group, Outcome, Run};
 use crate::features::writing::overview::{self, Community, Graph, NotWritten, Overview, Prepared, Standing};
 use crate::features::writing::{Stored, StoredTree, read_tree, tree_path};
-use crate::jobs::{Finished, Phase, Tracker};
+use crate::jobs::{About, Finished, Phase, Tracker};
 use crate::library::core::store::read_json;
-use crate::library::{Feature, Library, Paper};
+use crate::library::{Feature, Library, Paper, Subject};
 use crate::model::batch::{Asking, BatchEstimate, IN_FLIGHT};
 use crate::model::chosen::{Accepted, Chosen, Terms, budget};
 use crate::model::language::{Estimate, Provider};
+use crate::pipeline::steps::model_files::{self, QWEN3};
 use crate::settings;
 
 /// What the job naming a run's communities is called in `/api/status`.
@@ -59,6 +68,7 @@ pub fn table() -> Vec<(&'static str, MethodRouter<Shared>)> {
         ("/api/runs/{run}/describe/estimate", get(run_estimate)),
         ("/api/runs/{run}/describe", post(describe_now)),
         ("/api/runs/{run}/overview/{path}", get(overview_status).post(write_overview)),
+        ("/api/runs/{run}/closest/{path}", get(closest_papers).post(find_closest)),
     ]
 }
 
@@ -538,6 +548,168 @@ async fn write_overview(
     Ok(Json(told))
 }
 
+// ------------------------------------------------------------------ closest papers
+
+/// `ClosestPapers` in the contracts.
+#[derive(Serialize)]
+pub struct ClosestStatus {
+    pub state: Phase,
+    /// Every statement with its papers, once all are found (`done`).
+    pub statements: Option<Vec<closest::Shown>>,
+    pub error: Option<String>,
+    /// Why they cannot be found on this computer now (the embedding model is not here, say): nothing is started.
+    pub unavailable: Option<String>,
+    /// The embedding model they are (or would be) found with.
+    pub model: String,
+    /// No paper below this cosine similarity is shown.
+    pub floor: f32,
+}
+
+/// `ClosestStarted` in the contracts: the job's number, or none when nothing needed finding.
+#[derive(Serialize)]
+pub struct ClosestStarted {
+    pub ok: bool,
+    pub id: Option<u64>,
+}
+
+/// A community of a made run, as finding its closest papers needs it.
+struct Described {
+    /// Its papers' ids, in its order.
+    members: Vec<String>,
+    /// The run's embedding model.
+    model: String,
+    statements: Vec<Statement>,
+    subject: Subject,
+}
+
+fn described(engine: &Shared, run: &str, path: &str) -> Result<Described, ApiError> {
+    let path = tree_path(path).ok_or(ApiError::NotFound)?;
+    let (_, file, tree) = run_files(engine, run)?;
+    let community = tree.find(path).ok_or(ApiError::NotFound)?;
+    Ok(Described {
+        members: community.members.iter().filter_map(|&index| file.paper_ids.get(index)).cloned().collect(),
+        model: file.settings.embedding_model,
+        statements: closest::statements_of(community),
+        subject: Subject::Community { run: run.to_owned(), community: path.to_owned() },
+    })
+}
+
+/// Why `model` cannot embed on this computer now, in words for the interface; `None` when it can.
+fn unavailable(engine: &Shared, model: &str) -> Option<String> {
+    if model.is_empty() {
+        return Some("This run does not say which embedding model embedded its papers.".to_owned());
+    }
+    if model != engine.runs.embedding.model() {
+        return Some(format!("This run's papers were embedded with {model}, which this version cannot run."));
+    }
+    model_files::present(&QWEN3, &engine.data).is_none().then(|| {
+        "The embedding model is not on this computer: it is downloaded the first time a run is made here.".to_owned()
+    })
+}
+
+fn closest_status(engine: &Shared, run: &str, path: &str) -> Result<ClosestStatus, ApiError> {
+    let library = engine.library()?;
+    let about = described(engine, run, path)?;
+    let ids: Vec<&str> = about.members.iter().map(String::as_str).collect();
+    let kept = closest::kept_of(&library, &about.model, &ids, &about.statements)?;
+    let told = |state: Phase| ClosestStatus {
+        state,
+        statements: None,
+        error: None,
+        unavailable: None,
+        model: about.model.clone(),
+        floor: closest::FLOOR,
+    };
+    if kept.iter().all(Option::is_some) {
+        // only the papers shown are read
+        let mut shown_ids: Vec<String> =
+            kept.iter().flatten().flat_map(|kept| kept.papers.iter().map(|found| found.paper.clone())).collect();
+        shown_ids.sort_unstable();
+        shown_ids.dedup();
+        let records = records_of(&library, &shown_ids)?;
+        let statements = about
+            .statements
+            .iter()
+            .zip(kept.iter().flatten())
+            .map(|(statement, kept)| closest::shown(statement, kept, &records))
+            .collect();
+        return Ok(ClosestStatus { statements: Some(statements), ..told(Phase::Done) });
+    }
+    let job = engine.job.snapshot(usize::MAX);
+    let ours = job.about.as_ref().is_some_and(|job| job.feature == Feature::Closest && job.subject == about.subject);
+    Ok(match (job.state, ours) {
+        (Phase::Running, true) => told(Phase::Running),
+        (Phase::Failed, true) => ClosestStatus { error: job.error, ..told(Phase::Failed) },
+        _ => ClosestStatus { unavailable: unavailable(engine, &about.model), ..told(Phase::Idle) },
+    })
+}
+
+async fn closest_papers(
+    State(engine): State<Shared>,
+    Path((run, path)): Path<(String, String)>,
+) -> Result<Json<ClosestStatus>, ApiError> {
+    Ok(Json(on_the_side(move || closest_status(&engine, &run, &path)).await?))
+}
+
+async fn find_closest(
+    State(engine): State<Shared>,
+    Path((run, path)): Path<(String, String)>,
+) -> Result<Json<ClosestStarted>, ApiError> {
+    let told = on_the_side(move || {
+        let now = closest_status(&engine, &run, &path)?;
+        match now.state {
+            Phase::Done => return Ok(ClosestStarted { ok: true, id: None }),
+            Phase::Running => return Ok(ClosestStarted { ok: true, id: Some(engine.job.snapshot(usize::MAX).id) }),
+            Phase::Idle | Phase::Failed => {}
+        }
+        if let Some(why) = now.unavailable.or_else(|| unavailable(&engine, &now.model)) {
+            return Err(ApiError::Invalid(why));
+        }
+        let folder = model_files::present(&QWEN3, &engine.data)
+            .ok_or_else(|| ApiError::Invalid("The embedding model is not on this computer.".to_owned()))?;
+        engine.runs.embedding.use_folder(folder);
+        let library = engine.library()?;
+        let Described { members, model, statements, subject } = described(&engine, &run, &path)?;
+        let embedding = Arc::clone(&engine.runs.embedding);
+        let about = About { feature: Feature::Closest, subject: subject.clone(), item: None };
+        let id = engine.job.start_about(closest::JOB, about, move |tracker| {
+            let started = std::time::Instant::now();
+            tracker.log(&format!(
+                "Finding the papers of {path} of {run} closest to its description, with {model} on this computer: \
+                 nothing is sent anywhere."
+            ));
+            let failed = |error: &dyn std::fmt::Display| {
+                eprintln!("closest papers: {error}");
+                "the engine could not read the community's papers or their embeddings".to_owned()
+            };
+            let ids: Vec<&str> = members.iter().map(String::as_str).collect();
+            let kept = closest::kept_of(&library, &model, &ids, &statements).map_err(|error| failed(&error))?;
+            let todo: Vec<Statement> =
+                statements.iter().zip(&kept).filter(|(_, kept)| kept.is_none()).map(|(statement, _)| statement.clone()).collect();
+            let papers: Vec<Paper> = library.papers(&ids).map_err(|error| failed(&error))?.into_iter().flatten().collect();
+            let vectors = library.vectors(&model, &papers).map_err(|error| {
+                eprintln!("closest papers: {error}");
+                format!("some of this community's papers have no embedding by {model}: make the run again (nothing is redone)")
+            })?;
+            let rows: Vec<Vec<f32>> = vectors.outer_iter().map(|row| row.to_vec()).collect();
+            let asked = closest::Asked { model: &model, statements: &todo, members: &papers, vectors: &rows };
+            closest::find(embedding.as_ref(), &asked, tracker, &mut |_, found| {
+                closest::keep(&library, &subject, &model, &ids, &found)
+            })?;
+            tracker.log(&format!(
+                "Found the closest papers of {} statements among {} papers in {:.1} s.",
+                todo.len(),
+                papers.len(),
+                started.elapsed().as_secs_f64()
+            ));
+            Ok(Finished::Feature { feature: Feature::Closest, subject })
+        })?;
+        Ok(ClosestStarted { ok: true, id: Some(id) })
+    })
+    .await?;
+    Ok(Json(told))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -557,10 +729,12 @@ mod tests {
     use crate::api::routes::Engine;
     use crate::api::tests::served;
     use crate::features::writing::describe::tests::{answering, described_before_sections};
+    use crate::library::Subject;
     use crate::library::papers::tests::paper;
     use crate::library::{Known, Library};
     use crate::model::language::Effort;
     use crate::model::language::{ApiKey, KeyHeader, Providers, Reply, Transport, TransportError};
+    use crate::pipeline::steps::model_files::QWEN3;
 
     const AT: &str = "127.0.0.1:8765";
 
@@ -992,6 +1166,78 @@ mod tests {
         assert_eq!(file["communities"][1]["sections"][0]["heading"], "Problem");
         let (_, after) = call(&router, "GET", &format!("{at}/estimate?add_sections=true"), None).await;
         assert_eq!((after["plain"].clone(), after["estimate"]["to_ask"].clone()), (json!(0), json!(0)));
+    }
+
+    #[tokio::test]
+    async fn the_closest_papers_cost_nothing_say_when_the_model_is_not_here_and_are_shown_once_kept() {
+        use crate::features::writing::closest::{self, Kept, KeptPaper};
+        let data = data();
+        // the run's description, plain: two sentences
+        let file = data.path().join("runs/r1/communities.json");
+        let mut tree: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        tree["communities"][1]["name"] = json!("Routers");
+        tree["communities"][1]["description"] = json!("Papers balance routers. They report accuracy.");
+        std::fs::write(&file, tree.to_string()).unwrap();
+        let run_file = data.path().join("runs/r1/run.json");
+        let mut run: Value = serde_json::from_slice(&std::fs::read(&run_file).unwrap()).unwrap();
+        run["settings"]["embedding_model"] = json!(QWEN3.model);
+        std::fs::write(&run_file, run.to_string()).unwrap();
+        let transport = Scripted::new(model);
+        let router = router(data.path(), Picked::OpenAi, transport.clone());
+        let at = "/api/runs/r1/closest/c10";
+        let (status, idle) = call(&router, "GET", at, None).await;
+        assert_eq!(status, StatusCode::OK, "{idle}");
+        matches(&idle, "ClosestPapers");
+        assert_eq!(idle["state"], "idle");
+        assert_eq!(idle["model"], QWEN3.model);
+        assert!(
+            idle["unavailable"].as_str().unwrap().starts_with("The embedding model is not on this computer"),
+            "{idle}"
+        );
+        // asked anyway: refused with the same reason, and nothing started
+        let (status, refused) = call(&router, "POST", at, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(refused["error"].as_str().unwrap().contains("not on this computer"), "{refused}");
+        assert!(transport.sent().is_empty(), "no language model is asked");
+
+        // found before: shown at once, the sentence located in the paper, without the model
+        let library = Library::open(&data.path().join("library")).unwrap();
+        let members = ["p3", "p4", "p5"];
+        let subject = Subject::Community { run: "r1".into(), community: "c10".into() };
+        for (statement, papers) in
+            [("Papers balance routers.", vec![("p4", 0.612_f32)]), ("They report accuracy.", vec![])]
+        {
+            let kept = Kept {
+                statement: statement.into(),
+                papers: papers
+                    .into_iter()
+                    .map(|(paper, cosine)| KeptPaper { paper: paper.into(), cosine, sentence: said_by(4) })
+                    .collect(),
+            };
+            closest::keep(&library, &subject, QWEN3.model, &members, &kept).unwrap();
+        }
+        drop(library);
+        let (_, done) = call(&router, "GET", at, None).await;
+        matches(&done, "ClosestPapers");
+        assert_eq!(done["state"], "done", "{done}");
+        let first = &done["statements"][0];
+        matches(first, "ClosestStatement");
+        assert_eq!(first["statement"], "Papers balance routers.");
+        assert_eq!(first["section"], Value::Null);
+        matches(&first["papers"][0], "ClosestPaper");
+        assert_eq!(first["papers"][0]["id"], "p4");
+        assert_eq!(first["papers"][0]["title"], "Title 4");
+        assert_eq!(first["papers"][0]["evidence"]["quote"], said_by(4).trim_end_matches('.'));
+        assert_eq!(first["papers"][0]["evidence"]["established"]["kind"], "abstract");
+        assert_eq!(done["statements"][1]["papers"], json!([]), "nothing close: none, and said so");
+        let (_, again) = call(&router, "POST", at, None).await;
+        assert_eq!(again, json!({"ok": true, "id": null}), "kept: nothing to start");
+        // the description changes: its new sentence is not found yet
+        let mut tree: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        tree["communities"][1]["description"] = json!("Papers balance routers. A new sentence now.");
+        std::fs::write(&file, tree.to_string()).unwrap();
+        assert_eq!(call(&router, "GET", at, None).await.1["state"], "idle");
+        assert_eq!(call(&router, "GET", "/api/runs/r1/closest/c100", None).await.0, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
