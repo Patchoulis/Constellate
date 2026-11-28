@@ -216,7 +216,10 @@ export function capitalised(text: string): string {
 /** Why a provider cannot be used ("Set OPENAI_API_KEY"), or null when it can. The engine says it in lower case, as
  *  the end of a sentence; here it stands alone. */
 export function unavailableBecause(provider: ModelProvider): string | null {
-	return provider.available.state === "ready" ? null : capitalised(provider.available.why);
+	if (provider.available.state === "ready") return null;
+	// a state this version does not know (a newer engine) may come without its reason
+	const why = (provider.available as { why?: unknown }).why;
+	return typeof why === "string" && why ? capitalised(why) : "Not available";
 }
 
 /** One provider's part of the menu. */

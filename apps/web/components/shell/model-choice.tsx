@@ -214,13 +214,13 @@ export function ModelChoice({
 			</DropdownMenu.Root>
 			{efforts.length > 0 && sent && !locked && (
 				<DropdownMenu.Root>
-					<Trigger text={EFFORT_LABEL[sent]} empty={false} quiet={quiet} />
+					<Trigger text={EFFORT_LABEL[sent] ?? sent} empty={false} quiet={quiet} />
 					<DropdownMenu.Portal>
 						<DropdownMenu.Content align="start" sideOffset={4} className={cn(MENU, "w-48")}>
 							{efforts.map((effort: Effort) => (
 								<DropdownMenu.Item key={effort} className={ROW} onSelect={() => onChange(effortChange(effort, role))}>
 									<Check className={cn("size-3.5 shrink-0", effort !== sent && "invisible")} />
-									{EFFORT_LABEL[effort]}
+									{EFFORT_LABEL[effort] ?? effort}
 								</DropdownMenu.Item>
 							))}
 						</DropdownMenu.Content>

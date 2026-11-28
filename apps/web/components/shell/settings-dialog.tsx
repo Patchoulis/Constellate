@@ -312,7 +312,7 @@ function Editor({
 				{field.label}
 				<GroupedPicker
 					groups={catalog?.[field.from] ?? []}
-					picked={settings[field.key] as string[]}
+					picked={(settings[field.key] as string[] | undefined) ?? []} // absent from an older engine's settings
 					onChange={set}
 					placeholder={field.placeholder}
 				/>
